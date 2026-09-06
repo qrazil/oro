@@ -1,0 +1,382 @@
+//! Abstract syntax tree for Oro.
+//!
+//! The tree is intentionally close to the concrete grammar: it is produced by
+//! the parser (see `src/parser/`) and consumed by the compiler. Two enums carry
+//! everything: [`Stmt`] for statements and [`Expr`] for expressions, boxed at
+//! the recursive edges.
+//!
+//! Design commitments, matching the frozen language spec:
+//!
+//! * **Every node carries the 1-based `line`/`col` of its first token.** Later
+//!   stages report errors against these positions, so no variant may omit them.
+//! * **Numeric literals stay as raw source text.** The i64-vs-bignum promotion
+//!   decision belongs to the compiler; the parser must not lose the original
+//!   spelling.
+
+/// A unary prefix operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    /// `-x`
+    Neg,
+    /// `+x`
+    Pos,
+    /// `not x`
+    Not,
+}
+
+/// A binary arithmetic operator (the `and`/`or` logical operators are
+/// [`Expr::BoolOp`], and comparisons are [`Expr::Compare`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinOp {
+    /// `+`
+    Add,
+    /// `-`
+    Sub,
+    /// `*`
+    Mul,
+    /// `/`
+    Div,
+    /// `//`
+    FloorDiv,
+    /// `%`
+    Mod,
+    /// `**`
+    Pow,
+}
+
+/// A short-circuiting logical operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoolOp {
+    /// `and`
+    And,
+    /// `or`
+    Or,
+}
+
+/// A comparison operator. All comparisons share one precedence level and chain
+/// (`a < b < c`), so they live in [`Expr::Compare`] rather than [`Expr::Binary`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmpOp {
+    /// `==`
+    Eq,
+    /// `!=`
+    NotEq,
+    /// `<`
+    Lt,
+    /// `>`
+    Gt,
+    /// `<=`
+    LtEq,
+    /// `>=`
+    GtEq,
+    /// `is`
+    Is,
+    /// `is not`
+    IsNot,
+    /// `in`
+    In,
+    /// `not in`
+    NotIn,
+}
+
+/// An augmented-assignment operator (`+=`, `-=`, `*=`, `/=`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AugOp {
+    /// `+=`
+    Add,
+    /// `-=`
+    Sub,
+    /// `*=`
+    Mul,
+    /// `/=`
+    Div,
+}
+
+/// A single parameter in a `def` header: `name`, `name: ann`, `name = default`,
+/// or `name: ann = default`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Param {
+    pub name: String,
+    /// Optional type annotation (`name: ann`). Kept as an expression; the parser
+    /// does not interpret it.
+    pub annotation: Option<Expr>,
+    /// Optional default value (`name = default`).
+    pub default: Option<Expr>,
+    pub line: usize,
+    pub col: usize,
+}
+
+/// A single `except` clause of a `try` statement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExceptHandler {
+    /// The exception type being caught. Bare `except:` is rejected by the
+    /// parser, so this is always present.
+    pub exc_type: Expr,
+    /// The bound name in `except E as e`.
+    pub name: Option<String>,
+    pub body: Vec<Stmt>,
+    pub line: usize,
+    pub col: usize,
+}
+
+/// A statement.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Stmt {
+    /// A bare expression used for its side effects.
+    Expr { value: Expr, line: usize, col: usize },
+    /// `a = b`, `a = b = c` (chained; `targets` holds every left-hand side).
+    Assign {
+        targets: Vec<Expr>,
+        value: Expr,
+        line: usize,
+        col: usize,
+    },
+    /// `a += b` and friends.
+    AugAssign {
+        target: Expr,
+        op: AugOp,
+        value: Expr,
+        line: usize,
+        col: usize,
+    },
+    /// `if` / `elif` / `else`.
+    If {
+        cond: Expr,
+        body: Vec<Stmt>,
+        elifs: Vec<(Expr, Vec<Stmt>)>,
+        orelse: Option<Vec<Stmt>>,
+        line: usize,
+        col: usize,
+    },
+    /// `while`.
+    While {
+        cond: Expr,
+        body: Vec<Stmt>,
+        line: usize,
+        col: usize,
+    },
+    /// `for target in iter:`.
+    For {
+        target: Expr,
+        iter: Expr,
+        body: Vec<Stmt>,
+        line: usize,
+        col: usize,
+    },
+    /// `def name(params) -> ret:`.
+    Def {
+        name: String,
+        params: Vec<Param>,
+        ret: Option<Expr>,
+        body: Vec<Stmt>,
+        line: usize,
+        col: usize,
+    },
+    /// `class name(base):` (single inheritance only).
+    Class {
+        name: String,
+        base: Option<Expr>,
+        body: Vec<Stmt>,
+        line: usize,
+        col: usize,
+    },
+    /// `return` with an optional value.
+    Return {
+        value: Option<Expr>,
+        line: usize,
+        col: usize,
+    },
+    Break { line: usize, col: usize },
+    Continue { line: usize, col: usize },
+    Pass { line: usize, col: usize },
+    /// `try` / `except` / `finally`.
+    Try {
+        body: Vec<Stmt>,
+        handlers: Vec<ExceptHandler>,
+        finalbody: Option<Vec<Stmt>>,
+        line: usize,
+        col: usize,
+    },
+    /// `raise` with an optional exception (bare `raise` re-raises).
+    Raise {
+        exc: Option<Expr>,
+        line: usize,
+        col: usize,
+    },
+    /// `import a.b.c` / `import a.b.c as name`. `path` is the dotted segments.
+    Import {
+        path: Vec<String>,
+        alias: Option<String>,
+        line: usize,
+        col: usize,
+    },
+    /// `yield` with an optional value, used as a statement.
+    Yield {
+        value: Option<Expr>,
+        line: usize,
+        col: usize,
+    },
+}
+
+/// An expression.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Expr {
+    /// Integer literal, raw source text (e.g. `"42"`).
+    Int { value: String, line: usize, col: usize },
+    /// Float literal, raw source text (e.g. `"3.14"`).
+    Float { value: String, line: usize, col: usize },
+    /// String literal (escapes already decoded by the lexer).
+    Str { value: String, line: usize, col: usize },
+    /// f-string literal (raw inner text; interpolation parsed later).
+    FString { value: String, line: usize, col: usize },
+    /// `True` / `False`.
+    Bool { value: bool, line: usize, col: usize },
+    /// `None`.
+    NoneLit { line: usize, col: usize },
+    /// A bare identifier used as a value.
+    Name { name: String, line: usize, col: usize },
+    /// A unary prefix operation.
+    Unary {
+        op: UnaryOp,
+        operand: Box<Expr>,
+        line: usize,
+        col: usize,
+    },
+    /// A binary arithmetic operation.
+    Binary {
+        op: BinOp,
+        left: Box<Expr>,
+        right: Box<Expr>,
+        line: usize,
+        col: usize,
+    },
+    /// A short-circuiting `and`/`or`.
+    BoolOp {
+        op: BoolOp,
+        left: Box<Expr>,
+        right: Box<Expr>,
+        line: usize,
+        col: usize,
+    },
+    /// A (possibly chained) comparison: `first (op right)+`.
+    Compare {
+        first: Box<Expr>,
+        rest: Vec<(CmpOp, Expr)>,
+        line: usize,
+        col: usize,
+    },
+    /// A call: `func(args, kw=val)`.
+    Call {
+        func: Box<Expr>,
+        args: Vec<Expr>,
+        kwargs: Vec<(String, Expr)>,
+        line: usize,
+        col: usize,
+    },
+    /// Attribute access: `value.attr`.
+    Attribute {
+        value: Box<Expr>,
+        attr: String,
+        line: usize,
+        col: usize,
+    },
+    /// Subscript: `value[index]`.
+    Subscript {
+        value: Box<Expr>,
+        index: Box<Expr>,
+        line: usize,
+        col: usize,
+    },
+    /// Slice: `value[lower:upper:step]` (any part may be absent).
+    Slice {
+        value: Box<Expr>,
+        lower: Option<Box<Expr>>,
+        upper: Option<Box<Expr>>,
+        step: Option<Box<Expr>>,
+        line: usize,
+        col: usize,
+    },
+    /// List literal `[...]`.
+    List { elements: Vec<Expr>, line: usize, col: usize },
+    /// Tuple literal (parenthesised or bare).
+    Tuple { elements: Vec<Expr>, line: usize, col: usize },
+    /// Set literal `{a, b}`.
+    Set { elements: Vec<Expr>, line: usize, col: usize },
+    /// Dict literal `{k: v}`.
+    Dict {
+        entries: Vec<(Expr, Expr)>,
+        line: usize,
+        col: usize,
+    },
+}
+
+impl Expr {
+    /// The 1-based `(line, col)` of the expression's first token.
+    pub fn pos(&self) -> (usize, usize) {
+        match self {
+            Expr::Int { line, col, .. }
+            | Expr::Float { line, col, .. }
+            | Expr::Str { line, col, .. }
+            | Expr::FString { line, col, .. }
+            | Expr::Bool { line, col, .. }
+            | Expr::NoneLit { line, col, .. }
+            | Expr::Name { line, col, .. }
+            | Expr::Unary { line, col, .. }
+            | Expr::Binary { line, col, .. }
+            | Expr::BoolOp { line, col, .. }
+            | Expr::Compare { line, col, .. }
+            | Expr::Call { line, col, .. }
+            | Expr::Attribute { line, col, .. }
+            | Expr::Subscript { line, col, .. }
+            | Expr::Slice { line, col, .. }
+            | Expr::List { line, col, .. }
+            | Expr::Tuple { line, col, .. }
+            | Expr::Set { line, col, .. }
+            | Expr::Dict { line, col, .. } => (*line, *col),
+        }
+    }
+
+    /// The 1-based line of the expression's first token.
+    pub fn line(&self) -> usize {
+        self.pos().0
+    }
+
+    /// The 1-based column of the expression's first token.
+    pub fn col(&self) -> usize {
+        self.pos().1
+    }
+}
+
+impl Stmt {
+    /// The 1-based `(line, col)` of the statement's first token.
+    pub fn pos(&self) -> (usize, usize) {
+        match self {
+            Stmt::Expr { line, col, .. }
+            | Stmt::Assign { line, col, .. }
+            | Stmt::AugAssign { line, col, .. }
+            | Stmt::If { line, col, .. }
+            | Stmt::While { line, col, .. }
+            | Stmt::For { line, col, .. }
+            | Stmt::Def { line, col, .. }
+            | Stmt::Class { line, col, .. }
+            | Stmt::Return { line, col, .. }
+            | Stmt::Break { line, col, .. }
+            | Stmt::Continue { line, col, .. }
+            | Stmt::Pass { line, col, .. }
+            | Stmt::Try { line, col, .. }
+            | Stmt::Raise { line, col, .. }
+            | Stmt::Import { line, col, .. }
+            | Stmt::Yield { line, col, .. } => (*line, *col),
+        }
+    }
+
+    /// The 1-based line of the statement's first token.
+    pub fn line(&self) -> usize {
+        self.pos().0
+    }
+
+    /// The 1-based column of the statement's first token.
+    pub fn col(&self) -> usize {
+        self.pos().1
+    }
+}
