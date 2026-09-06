@@ -1,0 +1,20 @@
+[package]
+name = "oro-lang"
+version = "0.1.0"
+edition = "2021"
+description = "The Oro programming language (Python-inspired, Rust implementation, bytecode VM)."
+license = "MIT OR Apache-2.0"
+
+# Deliberate: pin the 2021 edition. We prioritise edition stability over
+# chasing the latest edition's features for a long-lived language runtime.
+
+[[bin]]
+name = "oro"
+path = "src/main.rs"
+
+[lib]
+name = "oro_lang"
+path = "src/lib.rs"
+
+# No dependencies yet. The lexer is hand-written and depends on nothing but std.
+[dependencies]
