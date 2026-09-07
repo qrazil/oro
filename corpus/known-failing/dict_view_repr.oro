@@ -1,0 +1,6 @@
+# BROKEN: dict.keys()/.values() return plain lists, so their repr is `['a']`
+# instead of CPython's `dict_keys(['a'])` / `dict_values([1])`. Fix: give them
+# view objects (or view-repr) so print(d.keys()) matches CPython.
+d = {"a": 1, "b": 2}
+print(d.keys())
+print(d.values())

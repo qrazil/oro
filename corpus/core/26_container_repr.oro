@@ -1,0 +1,40 @@
+# A container's repr runs each element's __repr__ — including instances nested
+# in lists, tuples, and dicts — and is cycle-safe.
+
+class Point:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+    def __repr__(self):
+        return "Point(" + str(self.x) + ", " + str(self.y) + ")"
+
+print([Point(1, 2), Point(3, 4)])
+print((Point(5, 6),))
+print({"a": Point(7, 8), "b": Point(9, 10)})
+print([[Point(1, 1)], [Point(2, 2), Point(3, 3)]])
+print({"points": [Point(0, 0)]})
+
+# str() and f-strings of a container of instances.
+print(str([Point(1, 2)]))
+print(f"here: {[Point(4, 4)]}")
+
+# Plain nested containers (no instances) still render correctly.
+print([[1, 2], {"k": [3, 4]}, (5, 6)])
+
+# A class whose __str__ itself builds a container string.
+class Path:
+    def __init__(self, pts):
+        self.pts = pts
+    def __str__(self):
+        return "Path(" + str(self.pts) + ")"
+
+print(Path([Point(1, 1), Point(2, 2)]))
+
+# Reference cycles render as CPython does, without looping forever.
+a = [1, 2]
+a.append(a)
+print(a)
+
+d = {}
+d["self"] = d
+print(d)

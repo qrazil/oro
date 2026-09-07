@@ -1,0 +1,11 @@
+[Point(1, 2), Point(3, 4)]
+(Point(5, 6),)
+{'a': Point(7, 8), 'b': Point(9, 10)}
+[[Point(1, 1)], [Point(2, 2), Point(3, 3)]]
+{'points': [Point(0, 0)]}
+[Point(1, 2)]
+here: [Point(4, 4)]
+[[1, 2], {'k': [3, 4]}, (5, 6)]
+Path([Point(1, 1), Point(2, 2)])
+[1, 2, [...]]
+{'self': {...}}

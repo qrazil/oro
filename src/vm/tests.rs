@@ -600,3 +600,25 @@ fn continue_runs_enclosing_finally() {
     // Every iteration runs its finally, even the one that continues.
     assert_eq!(got, vec![0, 10, 11, 2, 12]);
 }
+
+// --- container repr dispatches element dunders ----------------------------
+
+#[test]
+fn container_repr_runs_element_dunders() {
+    let src = "class P:\n    def __init__(self, n):\n        self.n = n\n    def __repr__(self):\n        return \"P(\" + str(self.n) + \")\"\n\
+               out = str([P(1), P(2)])\n";
+    assert_eq!(fstr(src), "[P(1), P(2)]");
+}
+
+#[test]
+fn nested_container_repr() {
+    let src = "class P:\n    def __init__(self, n):\n        self.n = n\n    def __repr__(self):\n        return \"P\" + str(self.n)\n\
+               out = str({\"k\": [P(1), P(2)]})\n";
+    assert_eq!(fstr(src), "{'k': [P1, P2]}");
+}
+
+#[test]
+fn self_referential_list_repr_terminates() {
+    let src = "a = [1]\na.append(a)\nout = str(a)\n";
+    assert_eq!(fstr(src), "[1, [...]]");
+}

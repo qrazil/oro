@@ -99,6 +99,9 @@ enum ReturnAction {
     DropForInit,
     /// Feed the returned string into the active `print` job and continue it.
     DrivePrint,
+    /// Feed the returned `__repr__` string into the active container-stringify
+    /// job and continue it.
+    DriveStr,
     /// Push the boolean negation of the return value's truthiness. Used for
     /// `!=` when a class defines `__eq__` but not `__ne__`.
     NegateBool,
@@ -137,6 +140,27 @@ struct PrintJob {
     next: usize,
 }
 
+/// Rendering a container to a string, where some elements are instances whose
+/// `__repr__` must run (via a frame). Phase 1 collected those instances; phase 2
+/// runs each and fills `results`; phase 3 rebuilds the string splicing them in.
+struct StrJob {
+    value: Value,
+    instances: Vec<Value>,
+    results: Vec<String>,
+    next: usize,
+    cont: StrCont,
+}
+
+/// What to do with a finished [`StrJob`] string.
+enum StrCont {
+    /// Push it (result of `str`/`repr` of a container).
+    Push,
+    /// Feed it into the active print job and continue printing.
+    Print,
+    /// Apply an f-string format spec, then push.
+    FormatSpec(String),
+}
+
 /// The virtual machine.
 pub struct Vm {
     frames: Vec<Frame>,
@@ -148,6 +172,8 @@ pub struct Vm {
     /// Stack of in-flight `print` calls whose instance args are being rendered
     /// through `__str__`. A `__str__` that itself prints nests cleanly.
     prints: Vec<PrintJob>,
+    /// Stack of in-flight container-stringify jobs (see [`StrJob`]).
+    str_jobs: Vec<StrJob>,
     /// The built-in exception classes, by name (shared identity for the run).
     excs: HashMap<&'static str, Rc<Class>>,
     /// Exceptions currently being handled (top = innermost), for bare `raise`.
@@ -218,6 +244,7 @@ impl Vm {
             col: 0,
             last_locals: Vec::new(),
             prints: Vec::new(),
+            str_jobs: Vec::new(),
             excs: exceptions::build_registry(),
             handling: Vec::new(),
             finally_why: Vec::new(),
@@ -636,6 +663,12 @@ impl Vm {
                             return Ok(Step::Next);
                         }
                     }
+                    // A container is rendered element-by-element (element
+                    // __repr__ dunders, cycle-safe), then the spec is applied.
+                    if is_container(&value) {
+                        self.begin_stringify(value, StrCont::FormatSpec(spec_str))?;
+                        return Ok(Step::Next);
+                    }
                     let out = self.wrap(crate::format::format_value(&value, conv, &spec_str))?;
                     self.push(Value::str(out));
                 }
@@ -894,6 +927,11 @@ impl Vm {
                     "repr" if matches!(args.first(), Some(Value::Instance(_))) && args.len() == 1 => {
                         return self.stringify_instance(args.into_iter().next().unwrap(), true);
                     }
+                    // str()/repr() of a container render elements' __repr__ (and
+                    // are cycle-safe), which needs VM dispatch, not native repr.
+                    "str" | "repr" if args.len() == 1 && is_container(&args[0]) => {
+                        return self.begin_stringify(args.into_iter().next().unwrap(), StrCont::Push);
+                    }
                     "len" if matches!(args.first(), Some(Value::Instance(_))) && args.len() == 1 => {
                         return self.dunder_len(args.into_iter().next().unwrap());
                     }
@@ -1089,9 +1127,64 @@ impl Vm {
                     );
                 }
             }
+            // A container argument is rendered element-by-element (running
+            // element __repr__ dunders, cycle-safe); the StrJob feeds its result
+            // back into this print job.
+            if is_container(&next_val) {
+                return self.begin_stringify(next_val, StrCont::Print);
+            }
             let s = next_val.display();
             self.prints.last_mut().unwrap().rendered.push(s);
         }
+    }
+
+    /// Begin rendering a container `value` to a string, running element
+    /// `__repr__` dunders through frames. If nothing needs a dunder, the string
+    /// is built immediately; otherwise a [`StrJob`] drives the dunder calls.
+    fn begin_stringify(&mut self, value: Value, cont: StrCont) -> Result<(), RuntimeError> {
+        let mut instances = Vec::new();
+        let mut path = Vec::new();
+        collect_repr_instances(&value, &mut instances, &mut path);
+        self.str_jobs.push(StrJob { value, instances, results: Vec::new(), next: 0, cont });
+        self.drive_str()
+    }
+
+    /// Advance the top str job by one element `__repr__` call, or finish it.
+    /// Re-entered via the `DriveStr` return action after each dunder returns.
+    fn drive_str(&mut self) -> Result<(), RuntimeError> {
+        let next_inst = {
+            let job = self.str_jobs.last().expect("active str job");
+            (job.next < job.instances.len()).then(|| job.instances[job.next].clone())
+        };
+        if let Some(inst) = next_inst {
+            self.str_jobs.last_mut().unwrap().next += 1;
+            // Every collected instance has an Oro __repr__ (the collection
+            // criterion), so this always dispatches a frame.
+            let (f, defclass) =
+                instance_method(&inst, "__repr__").expect("collected instance has __repr__");
+            return self.invoke_user(f, inst, defclass, Vec::new(), Vec::new(), ReturnAction::DriveStr);
+        }
+        // All element reprs are ready: rebuild the string and run the cont.
+        let job = self.str_jobs.pop().unwrap();
+        let mut idx = 0;
+        let mut path = Vec::new();
+        let s = build_repr(&job.value, &job.results, &mut idx, &mut path);
+        match job.cont {
+            StrCont::Push => self.push(Value::str(s)),
+            StrCont::Print => {
+                self.prints.last_mut().expect("print job").rendered.push(s);
+                self.drive_print()?;
+            }
+            StrCont::FormatSpec(spec) => {
+                let out = self.wrap(crate::format::format_value(
+                    &Value::str(s),
+                    crate::format::CONV_NONE,
+                    &spec,
+                ))?;
+                self.push(Value::str(out));
+            }
+        }
+        Ok(())
     }
 
     /// Dispatch a rich-comparison dunder for an instance `a`. Returns `true`
@@ -1355,6 +1448,14 @@ impl Vm {
                 };
                 self.prints.last_mut().expect("print job").rendered.push(s);
                 self.drive_print()?;
+            }
+            ReturnAction::DriveStr => {
+                let s = match &value {
+                    Value::Str(s) => s.s.clone(),
+                    other => other.display(),
+                };
+                self.str_jobs.last_mut().expect("str job").results.push(s);
+                self.drive_str()?;
             }
             ReturnAction::NegateBool => self.push(Value::Bool(!value.truthy())),
             ReturnAction::FormatSpec(spec) => {
@@ -1989,6 +2090,118 @@ fn classify_error(msg: &str) -> &'static str {
     } else {
         // A genuine internal/uncategorised failure.
         "RuntimeError"
+    }
+}
+
+/// Whether `v` is a container whose stringification must render element
+/// `__repr__` dunders (and be cycle-safe) rather than use native `repr`.
+fn is_container(v: &Value) -> bool {
+    matches!(v, Value::List(_) | Value::Tuple(_) | Value::Dict(_))
+}
+
+/// Whether `value`, walked as a container, reaches any instance with an Oro
+/// `__repr__` — those need a frame to render. Also the phase-1 half of the
+/// cycle-safe container repr: it collects such instances in build order.
+fn collect_repr_instances(value: &Value, out: &mut Vec<Value>, path: &mut Vec<*const ()>) {
+    match value {
+        Value::List(l) => {
+            let p = Rc::as_ptr(l) as *const ();
+            if path.contains(&p) {
+                return; // cycle: rendered as "[...]", no instances inside
+            }
+            path.push(p);
+            for v in l.borrow().iter() {
+                collect_repr_instances(v, out, path);
+            }
+            path.pop();
+        }
+        Value::Tuple(t) => {
+            let p = Rc::as_ptr(t) as *const ();
+            if path.contains(&p) {
+                return;
+            }
+            path.push(p);
+            for v in t.iter() {
+                collect_repr_instances(v, out, path);
+            }
+            path.pop();
+        }
+        Value::Dict(d) => {
+            let p = Rc::as_ptr(d) as *const ();
+            if path.contains(&p) {
+                return;
+            }
+            path.push(p);
+            for (k, v) in d.borrow().items() {
+                collect_repr_instances(k, out, path);
+                collect_repr_instances(v, out, path);
+            }
+            path.pop();
+        }
+        Value::Instance(_) if instance_method(value, "__repr__").is_some() => {
+            out.push(value.clone());
+        }
+        _ => {}
+    }
+}
+
+/// Phase-3 half: rebuild the repr string, splicing the phase-2 `results` in for
+/// instances that have an Oro `__repr__` (consumed left-to-right via `idx`), and
+/// emitting `[...]`/`{...}`/`(...)` for reference cycles — matching CPython.
+fn build_repr(value: &Value, results: &[String], idx: &mut usize, path: &mut Vec<*const ()>) -> String {
+    match value {
+        Value::List(l) => {
+            let p = Rc::as_ptr(l) as *const ();
+            if path.contains(&p) {
+                return "[...]".to_string();
+            }
+            path.push(p);
+            let parts: Vec<String> =
+                l.borrow().iter().map(|v| build_repr(v, results, idx, path)).collect();
+            path.pop();
+            format!("[{}]", parts.join(", "))
+        }
+        Value::Tuple(t) => {
+            let p = Rc::as_ptr(t) as *const ();
+            if path.contains(&p) {
+                return "(...)".to_string();
+            }
+            path.push(p);
+            let parts: Vec<String> =
+                t.iter().map(|v| build_repr(v, results, idx, path)).collect();
+            path.pop();
+            if parts.len() == 1 {
+                format!("({},)", parts[0])
+            } else {
+                format!("({})", parts.join(", "))
+            }
+        }
+        Value::Dict(d) => {
+            let p = Rc::as_ptr(d) as *const ();
+            if path.contains(&p) {
+                return "{...}".to_string();
+            }
+            path.push(p);
+            let parts: Vec<String> = d
+                .borrow()
+                .items()
+                .iter()
+                .map(|(k, v)| {
+                    let ks = build_repr(k, results, idx, path);
+                    let vs = build_repr(v, results, idx, path);
+                    format!("{ks}: {vs}")
+                })
+                .collect();
+            path.pop();
+            format!("{{{}}}", parts.join(", "))
+        }
+        Value::Instance(_) if instance_method(value, "__repr__").is_some() => {
+            let s = results.get(*idx).cloned().unwrap_or_default();
+            *idx += 1;
+            s
+        }
+        // Scalars, and instances without a __repr__ (default/exception form).
+        other => other.repr(),
     }
 }
 

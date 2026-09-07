@@ -285,13 +285,9 @@ Stated plainly:
   state on an object, or restructure. Assigning to a name that also exists at
   module scope makes it *local* (exactly as in Python) — Oro turns the resulting
   unbound-variable error into a message that explains the fix.
-- **An instance inside a stringified container shows the default form.**
-  `print(obj)`, `str(obj)`, `repr(obj)`, and f-strings run an instance's
-  `__str__`/`__repr__` correctly, but an instance *nested* in a container that is
-  itself stringified — `print([obj])` — shows `<Class object>` instead. Container
-  stringification happens in native code that cannot re-enter the VM to run each
-  element's dunder; doing it properly means rewriting recursive `repr` as an
-  iterative state machine over the frame stack, deferred for now.
+- **`dict.keys()` / `dict.values()` return lists, not view objects.** So
+  `print(d.keys())` shows `['a']` where CPython shows `dict_keys(['a'])`. Tracked
+  in `corpus/known-failing/` (see [The corpus](#the-corpus-cpython-as-an-oracle)).
 - **Binary/encoding file modes, and `sys.path` mutation, are unsupported.**
   `open` is UTF-8 text only (`r`/`w`/`a`); modules resolve against the one
   documented search path (the script's directory) with no runtime path changes.
@@ -319,7 +315,13 @@ Oro's own fixtures happily agreed with Oro's own (wrong or missing) behavior.
 
 `corpus/divergence/` holds programs that intentionally behave differently from
 Python (the block-scope and `with`-free examples above); it is excluded from the
-differential run for that reason.
+differential run for that reason. `corpus/known-failing/` is the opposite — it
+holds programs that are *correct Python which Oro currently gets wrong* and that
+we intend to fix. `run.sh` reports its count separately and never fails the build
+on it, so those bugs stay **visible** instead of being quietly omitted; when a
+fix lands the file moves to `core/`. Keeping the two directories separate matters:
+`divergence/` is a design record, `known-failing/` is a bug list, and mixing them
+would ruin both.
 
 Some features can't be checked differentially and are covered by manual
 differential runs and unit tests instead: anything invocation- or
