@@ -292,10 +292,6 @@ Stated plainly:
   stringification happens in native code that cannot re-enter the VM to run each
   element's dunder; doing it properly means rewriting recursive `repr` as an
   iterative state machine over the frame stack, deferred for now.
-- **`break`/`continue` do not run an enclosing `finally`.** A `finally` runs on
-  normal completion, on a handled or propagating exception, and on `return` — but
-  a `break` or `continue` that jumps out of a `try` skips its `finally`. Rare;
-  documented rather than fixed.
 - **Binary/encoding file modes, and `sys.path` mutation, are unsupported.**
   `open` is UTF-8 text only (`r`/`w`/`a`); modules resolve against the one
   documented search path (the script's directory) with no runtime path changes.

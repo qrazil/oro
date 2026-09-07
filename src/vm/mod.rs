@@ -83,6 +83,9 @@ enum BlockKind {
     /// A try...finally: routes here with the exception pushed onto the operand
     /// stack so `EndFinally` can re-raise it after the finally body runs.
     Finally,
+    /// A loop: `break`/`continue` unwind to it (running enclosing finallys).
+    /// `Block.target` is the after-loop target; `cont` is the continue point.
+    Loop { cont: usize },
 }
 
 /// What the VM does with a frame's return value — the mechanism that lets a
@@ -113,6 +116,8 @@ enum Why {
     Normal,
     Raise(Value),
     Return(Value),
+    Break,
+    Continue,
 }
 
 /// How the interpreter loop should proceed after one instruction.
@@ -727,6 +732,16 @@ impl Vm {
                 Op::PopBlock => {
                     self.top().blocks.pop();
                 }
+                Op::SetupLoop { brk, cont } => {
+                    let stack_len = self.top().stack.len();
+                    self.top().blocks.push(Block {
+                        kind: BlockKind::Loop { cont },
+                        target: brk,
+                        stack_len,
+                    });
+                }
+                Op::Break => return Ok(self.do_break()),
+                Op::Continue => return Ok(self.do_continue()),
                 Op::Raise => {
                     let v = self.pop();
                     let exc = self.normalize_raise(v)?;
@@ -770,6 +785,8 @@ impl Vm {
                         Why::Normal => {}
                         Why::Raise(exc) => return Ok(Step::Raise(exc)),
                         Why::Return(v) => return self.do_return(v),
+                        Why::Break => return Ok(self.do_break()),
+                        Why::Continue => return Ok(self.do_continue()),
                     }
                 }
             }
@@ -1350,6 +1367,68 @@ impl Vm {
         Ok(Step::Next)
     }
 
+    /// `break`: unwind blocks to the innermost loop, running each enclosing
+    /// `finally` first (deferring the break), then leave the loop.
+    fn do_break(&mut self) -> Step {
+        while let Some(b) = self.top().blocks.pop() {
+            match b.kind {
+                BlockKind::Finally => {
+                    let frame = self.top();
+                    frame.stack.truncate(b.stack_len);
+                    frame.pc = b.target;
+                    self.finally_why.push(Why::Break);
+                    return Step::Next;
+                }
+                BlockKind::Loop { .. } => {
+                    // Restore the stack to loop entry (removing any iterator) and
+                    // jump past the loop.
+                    let frame = self.top();
+                    frame.stack.truncate(b.stack_len);
+                    frame.pc = b.target;
+                    return Step::Next;
+                }
+                // An except block being exited is simply discarded.
+                BlockKind::Except => {}
+            }
+        }
+        unreachable!("break with no enclosing loop block")
+    }
+
+    /// `continue`: like `do_break`, but stop at the loop without leaving it and
+    /// jump to its continue point (the loop block stays active).
+    fn do_continue(&mut self) -> Step {
+        loop {
+            // Peek: a Loop block must remain on the stack.
+            let kind_is_loop = matches!(
+                self.top().blocks.last().map(|b| &b.kind),
+                Some(BlockKind::Loop { .. })
+            );
+            if kind_is_loop {
+                let b = self.top().blocks.last().unwrap();
+                let cont = match b.kind {
+                    BlockKind::Loop { cont } => cont,
+                    _ => unreachable!(),
+                };
+                self.top().pc = cont;
+                return Step::Next;
+            }
+            match self.top().blocks.pop() {
+                Some(b) => match b.kind {
+                    BlockKind::Finally => {
+                        let frame = self.top();
+                        frame.stack.truncate(b.stack_len);
+                        frame.pc = b.target;
+                        self.finally_why.push(Why::Continue);
+                        return Step::Next;
+                    }
+                    BlockKind::Except => {}
+                    BlockKind::Loop { .. } => unreachable!("handled above"),
+                },
+                None => unreachable!("continue with no enclosing loop block"),
+            }
+        }
+    }
+
     /// A generator frame reached `return` (or fell off the end): mark it done
     /// and route its driver's `for` loop to the exhaustion target.
     fn generator_stop(&mut self) -> Step {
@@ -1387,6 +1466,8 @@ impl Vm {
                             self.finally_why.push(Why::Raise(exc));
                             return None;
                         }
+                        // A loop being unwound by an exception is just abandoned.
+                        BlockKind::Loop { .. } => {}
                     }
                 }
                 None => {

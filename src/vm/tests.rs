@@ -575,3 +575,28 @@ fn generator_is_a_generator_value() {
         Value::Generator(_)
     ));
 }
+
+// --- break/continue run finally -------------------------------------------
+
+#[test]
+fn break_runs_enclosing_finally() {
+    let src = "log = []\ndef f():\n    global log\n    for i in range(3):\n        try:\n            if i == 1:\n                break\n            log.append(i)\n        finally:\n            log.append(10 + i)\nf()\nout = log\n";
+    let v = eval_last(src);
+    let got: Vec<i64> = match v {
+        Value::List(l) => l.borrow().iter().map(|x| match x { Value::Int(i)=>*i, _=>-1 }).collect(),
+        _ => panic!("expected list"),
+    };
+    // i=0: append 0, finally 10; i=1: break but finally 11 still runs.
+    assert_eq!(got, vec![0, 10, 11]);
+}
+
+#[test]
+fn continue_runs_enclosing_finally() {
+    let src = "log = []\ndef f():\n    global log\n    for i in range(3):\n        try:\n            if i == 1:\n                continue\n            log.append(i)\n        finally:\n            log.append(10 + i)\nf()\nout = log\n";
+    let got: Vec<i64> = match eval_last(src) {
+        Value::List(l) => l.borrow().iter().map(|x| match x { Value::Int(i)=>*i, _=>-1 }).collect(),
+        _ => panic!("expected list"),
+    };
+    // Every iteration runs its finally, even the one that continues.
+    assert_eq!(got, vec![0, 10, 11, 2, 12]);
+}

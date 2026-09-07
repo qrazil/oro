@@ -1,0 +1,76 @@
+# break and continue must run any enclosing finally on the way out — cleanup
+# that doesn't run is exactly the bug finally exists to prevent.
+
+def break_runs_finally():
+    log = []
+    for i in range(5):
+        try:
+            if i == 2:
+                break
+            log.append(i)
+        finally:
+            log.append("f" + str(i))
+    return log
+
+print(break_runs_finally())
+
+def continue_runs_finally():
+    log = []
+    for i in range(4):
+        try:
+            if i % 2 == 0:
+                continue
+            log.append(i)
+        finally:
+            log.append("c" + str(i))
+    return log
+
+print(continue_runs_finally())
+
+# A nested try/finally: an inner break runs BOTH finally blocks.
+def nested():
+    log = []
+    for i in range(3):
+        try:
+            try:
+                if i == 1:
+                    break
+                log.append("body" + str(i))
+            finally:
+                log.append("inner" + str(i))
+        finally:
+            log.append("outer" + str(i))
+    return log
+
+print(nested())
+
+# break inside a try that also has an except.
+def with_except():
+    log = []
+    while True:
+        try:
+            log.append("body")
+            break
+        except ValueError:
+            log.append("except")
+        finally:
+            log.append("finally")
+    return log
+
+print(with_except())
+
+# continue in a while loop with finally.
+def while_continue():
+    log = []
+    n = 0
+    while n < 4:
+        n = n + 1
+        try:
+            if n == 2:
+                continue
+            log.append(n)
+        finally:
+            log.append("done" + str(n))
+    return log
+
+print(while_continue())

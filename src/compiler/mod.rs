@@ -186,6 +186,15 @@ pub enum Op {
     EndHandler,
     /// Pop a class then the exception; push whether the exception matches it.
     ExcMatch,
+    /// Push a loop block so `break`/`continue` can unwind through any `finally`
+    /// bodies between them and the loop. `brk` is the after-loop target; `cont`
+    /// is the loop's continue point.
+    SetupLoop { brk: usize, cont: usize },
+    /// Leave the innermost loop, running enclosing `finally` bodies first.
+    Break,
+    /// Jump to the innermost loop's continue point, running enclosing `finally`
+    /// bodies first.
+    Continue,
     /// Enter a finally body on the normal fall-through path (no suspended
     /// exception or return).
     BeginFinally,

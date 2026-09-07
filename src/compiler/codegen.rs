@@ -24,16 +24,9 @@ use super::{CaptureSource, CodeObject, CompileError, FuncProto, Op, ParamInfo, V
 
 type CResult<T> = Result<T, CompileError>;
 
-/// Per-loop bookkeeping so `break`/`continue` can emit patched jumps.
-struct LoopCtx {
-    /// Where `continue` jumps to (loop test, or the `ForIter`).
-    continue_target: usize,
-    /// True inside a `for` loop, where the iterator sits on the stack and must
-    /// be popped before a `break` leaves.
-    iter_on_stack: bool,
-    /// Indices of `break` jumps awaiting the after-loop target.
-    breaks: Vec<usize>,
-}
+/// Marks that codegen is inside a loop, so `break`/`continue` are legal. The
+/// jump targets live in the runtime loop block, not here.
+struct LoopCtx;
 
 struct Codegen<'a> {
     table: &'a SymTable,
@@ -538,27 +531,36 @@ impl<'a> Codegen<'a> {
     }
 
     fn emit_while(&mut self, cond: &Expr, body: &[Stmt]) -> CResult<()> {
-        let top = self.here();
         let (cl, cc) = cond.pos();
+        // The loop block is pushed once, before the condition; break/continue
+        // unwind to it (running any enclosing finally).
+        let setup = self.emit(Op::SetupLoop { brk: 0, cont: 0 }, cl, cc);
+        let top = self.here();
+        self.patch_loop_cont(setup, top);
         self.emit_expr(cond)?;
         let exit = self.emit(Op::PopJumpIfFalse(0), cl, cc);
-        self.loops.push(LoopCtx { continue_target: top, iter_on_stack: false, breaks: Vec::new() });
+        self.loops.push(LoopCtx);
         self.emit_child_block(body)?;
         self.emit(Op::Jump(top), cl, cc);
+        // Normal exit: drop the loop block, then land after it.
+        let exit_here = self.here();
+        self.set_target(exit, exit_here);
+        self.emit(Op::PopBlock, cl, cc);
         let after = self.here();
-        self.set_target(exit, after);
-        let ctx = self.loops.pop().unwrap();
-        for b in ctx.breaks {
-            self.set_target(b, after);
-        }
+        self.patch_loop_brk(setup, after);
+        self.loops.pop();
         Ok(())
     }
 
     fn emit_for(&mut self, target: &Expr, iter: &Expr, body: &[Stmt]) -> CResult<()> {
         let (il, ic) = iter.pos();
+        // SetupLoop before the iterator so the loop block's saved stack depth is
+        // *below* the iterator — a `break` then removes it on the way out.
+        let setup = self.emit(Op::SetupLoop { brk: 0, cont: 0 }, il, ic);
         self.emit_expr(iter)?;
         self.emit(Op::GetIter, il, ic);
         let top = self.here();
+        self.patch_loop_cont(setup, top);
         let foriter = self.emit(Op::ForIter(0), il, ic);
         // The loop target and body live in the child block scope.
         let child = self.next_child();
@@ -567,39 +569,49 @@ impl<'a> Codegen<'a> {
         self.scope = child;
         self.cursor = 0;
         self.emit_store(target)?;
-        self.loops.push(LoopCtx { continue_target: top, iter_on_stack: true, breaks: Vec::new() });
+        self.loops.push(LoopCtx);
         self.emit_body(body)?;
         self.emit(Op::Jump(top), il, ic);
+        // Normal exhaustion: ForIter pops the iterator and lands here; drop the
+        // loop block, then continue after the loop.
+        let exit_here = self.here();
+        self.set_target(foriter, exit_here);
+        self.emit(Op::PopBlock, il, ic);
         let after = self.here();
-        self.set_target(foriter, after);
-        let ctx = self.loops.pop().unwrap();
-        for b in ctx.breaks {
-            self.set_target(b, after);
-        }
+        self.patch_loop_brk(setup, after);
+        self.loops.pop();
         self.scope = saved_scope;
         self.cursor = saved_cursor;
         Ok(())
     }
 
-    fn emit_break(&mut self, line: usize, col: usize) -> CResult<()> {
-        let iter_on_stack = match self.loops.last() {
-            Some(l) => l.iter_on_stack,
-            None => return Err(self.err("`break` outside of a loop", line, col)),
-        };
-        if iter_on_stack {
-            self.emit(Op::Pop, line, col);
+    fn patch_loop_cont(&mut self, setup: usize, target: usize) {
+        if let Op::SetupLoop { cont, .. } = &mut self.ops[setup] {
+            *cont = target;
         }
-        let j = self.emit(Op::Jump(0), line, col);
-        self.loops.last_mut().unwrap().breaks.push(j);
+    }
+
+    fn patch_loop_brk(&mut self, setup: usize, target: usize) {
+        if let Op::SetupLoop { brk, .. } = &mut self.ops[setup] {
+            *brk = target;
+        }
+    }
+
+    fn emit_break(&mut self, line: usize, col: usize) -> CResult<()> {
+        if self.loops.is_empty() {
+            return Err(self.err("`break` outside of a loop", line, col));
+        }
+        // The VM unwinds to the innermost loop block, running any enclosing
+        // finally first, then restores the stack and jumps past the loop.
+        self.emit(Op::Break, line, col);
         Ok(())
     }
 
     fn emit_continue(&mut self, line: usize, col: usize) -> CResult<()> {
-        let target = match self.loops.last() {
-            Some(l) => l.continue_target,
-            None => return Err(self.err("`continue` outside of a loop", line, col)),
-        };
-        self.emit(Op::Jump(target), line, col);
+        if self.loops.is_empty() {
+            return Err(self.err("`continue` outside of a loop", line, col));
+        }
+        self.emit(Op::Continue, line, col);
         Ok(())
     }
 
