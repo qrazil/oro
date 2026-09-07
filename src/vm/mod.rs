@@ -101,6 +101,9 @@ enum ReturnAction {
     NegateBool,
     /// Apply an f-string format spec to the returned (string) value, then push.
     FormatSpec(String),
+    /// A module body finished: capture its namespace into a module value, cache
+    /// it under the dotted path, and push it as the import result.
+    BuildModule(Rc<str>),
 }
 
 /// Why a `finally` body is running — decides what happens after it (see
@@ -155,6 +158,13 @@ pub struct Vm {
     argv: Vec<String>,
     /// Set when `sys.exit(code)` runs; becomes the process exit status.
     exit_code: Option<i32>,
+    /// Directory user modules are resolved against — the single search-path
+    /// rule (the main script's directory). No runtime mutation.
+    import_root: std::path::PathBuf,
+    /// Imported user modules by dotted path (module identity), run once.
+    module_cache: HashMap<String, Value>,
+    /// Modules whose bodies are currently running, to detect circular imports.
+    importing: std::collections::HashSet<String>,
 }
 
 /// Add two values with the VM's numeric/sequence `+` semantics. Exposed for
@@ -175,6 +185,14 @@ pub fn run(code: Rc<CodeObject>) -> Result<Value, RuntimeError> {
 /// normal completion, or the argument of `sys.exit`). `argv[0]` is the script.
 pub fn run_main(code: Rc<CodeObject>, argv: Vec<String>) -> Result<i32, RuntimeError> {
     let mut vm = Vm::new(argv);
+    // User modules resolve against the main script's directory (argv[0]).
+    if let Some(script) = vm.argv.first() {
+        if let Some(dir) = std::path::Path::new(script).parent() {
+            if !dir.as_os_str().is_empty() {
+                vm.import_root = dir.to_path_buf();
+            }
+        }
+    }
     vm.push_module_frame(code);
     match vm.run_loop() {
         Ok(_) => Ok(vm.exit_code.unwrap_or(0)),
@@ -201,6 +219,9 @@ impl Vm {
             gen_stack: Vec::new(),
             argv,
             exit_code: None,
+            import_root: std::path::PathBuf::from("."),
+            module_cache: HashMap::new(),
+            importing: std::collections::HashSet::new(),
         }
     }
 
@@ -549,15 +570,7 @@ impl Vm {
                     self.build_class(name, members, has_base)?;
                 }
                 Op::ImportModule(path) => {
-                    match modules::build(&path, &self.argv) {
-                        Some(m) => self.push(m),
-                        None => {
-                            let class = self.excs["ModuleNotFoundError"].clone();
-                            let msg = Value::str(format!("No module named '{path}'"));
-                            let exc = self.make_exception_instance(class, vec![msg]);
-                            return Ok(Step::Raise(exc));
-                        }
-                    }
+                    return self.import_module(&path);
                 }
                 Op::LoadSuper => {
                     let sup = match self.top().super_ctx.clone() {
@@ -1135,6 +1148,95 @@ impl Vm {
         Ok(())
     }
 
+    // --- Imports -------------------------------------------------------------
+
+    /// Import the module named by the dotted `path`: a built-in, a cached user
+    /// module, or a freshly loaded one whose body runs once (as a frame) before
+    /// its namespace is captured. Pushes the module value (or raises).
+    fn import_module(&mut self, path: &str) -> Result<Step, RuntimeError> {
+        // Built-in modules first.
+        if let Some(m) = modules::build(path, &self.argv) {
+            self.push(m);
+            return Ok(Step::Next);
+        }
+        // Already imported? Reuse the cached namespace (import runs once).
+        if let Some(m) = self.module_cache.get(path) {
+            self.push(m.clone());
+            return Ok(Step::Next);
+        }
+        // A module still initialising means a cycle.
+        if self.importing.contains(path) {
+            let class = self.excs["ImportError"].clone();
+            let msg = Value::str(format!("circular import detected while importing '{path}'"));
+            return Ok(Step::Raise(self.make_exception_instance(class, vec![msg])));
+        }
+
+        // Resolve `a.b.c` to `<root>/a/b/c.oro`.
+        let mut file = self.import_root.clone();
+        for seg in path.split('.') {
+            file.push(seg);
+        }
+        file.set_extension("oro");
+
+        let source = match std::fs::read_to_string(&file) {
+            Ok(s) => s,
+            Err(_) => {
+                let class = self.excs["ModuleNotFoundError"].clone();
+                let msg = Value::str(format!("No module named '{path}'"));
+                return Ok(Step::Raise(self.make_exception_instance(class, vec![msg])));
+            }
+        };
+        let code = match compile_source(&source) {
+            Ok(c) => c,
+            Err(e) => {
+                let class = self.excs["ImportError"].clone();
+                let msg = Value::str(format!("error importing '{path}': {e}"));
+                return Ok(Step::Raise(self.make_exception_instance(class, vec![msg])));
+            }
+        };
+
+        // Run the module body as a frame; BuildModule captures its namespace on
+        // return and pushes the module value to the importer.
+        self.importing.insert(path.to_string());
+        let mut frame = Frame {
+            locals: vec![Value::Unbound; code.nlocals],
+            cells: (0..code.ncells).map(|_| Rc::new(RefCell::new(Value::Unbound))).collect(),
+            free: Vec::new(),
+            stack: Vec::new(),
+            pc: 0,
+            code,
+            ret_action: ReturnAction::BuildModule(Rc::from(path)),
+            super_ctx: None,
+            blocks: Vec::new(),
+        };
+        frame.pc = 0;
+        self.frames.push(frame);
+        Ok(Step::Next)
+    }
+
+    /// Build a module value from a finished module-body `frame`, cache it, and
+    /// push it to the importer.
+    fn finish_module(&mut self, path: Rc<str>, frame: Frame) {
+        let mut members = HashMap::new();
+        for (name, target) in &frame.code.module_names {
+            let value = match target {
+                VarTarget::Local(s) => frame.locals[*s as usize].clone(),
+                VarTarget::Cell(s) => frame.cells[*s as usize].borrow().clone(),
+            };
+            // Unbound names (declared but never assigned on this path) are skipped.
+            if !matches!(value, Value::Unbound) {
+                members.insert(name.to_string(), value);
+            }
+        }
+        let module = Value::Module(Rc::new(crate::value::Module {
+            name: Rc::from(path.as_ref()),
+            members: RefCell::new(members),
+        }));
+        self.importing.remove(path.as_ref());
+        self.module_cache.insert(path.to_string(), module.clone());
+        self.push(module);
+    }
+
     // --- Exceptions ----------------------------------------------------------
 
     /// Turn a `raise EXPR` operand into the exception instance to propagate:
@@ -1220,12 +1322,15 @@ impl Vm {
             // Except blocks are simply discarded on the way out.
         }
 
-        let frame = self.frames.pop().expect("return with no frame");
+        let mut frame = self.frames.pop().expect("return with no frame");
         if self.frames.is_empty() {
             self.last_locals = frame.locals;
             return Ok(Step::Done(value));
         }
-        match frame.ret_action {
+        // Take the action out so the whole `frame` stays usable (BuildModule
+        // needs it to read the module namespace).
+        let action = std::mem::replace(&mut frame.ret_action, ReturnAction::Normal);
+        match action {
             ReturnAction::Normal => self.push(value),
             ReturnAction::DropForInit => {
                 // __init__ must return None; the instance is already on the
@@ -1248,6 +1353,7 @@ impl Vm {
                     self.wrap(crate::format::format_value(&value, crate::format::CONV_NONE, &spec))?;
                 self.push(Value::str(out));
             }
+            ReturnAction::BuildModule(path) => self.finish_module(path, frame),
         }
         Ok(Step::Next)
     }
@@ -1748,6 +1854,14 @@ fn bind_member(member: Value, receiver: Value, defclass: Rc<Class>) -> Value {
         })),
         other => other,
     }
+}
+
+/// Lex, parse, and compile module source (for `import`). Errors are flattened
+/// to a string for the ImportError message.
+fn compile_source(source: &str) -> Result<Rc<CodeObject>, String> {
+    let tokens = crate::lexer::Lexer::new(source).tokenize().map_err(|e| e.to_string())?;
+    let program = crate::parser::Parser::new(tokens).parse().map_err(|e| e.message.clone())?;
+    crate::compiler::compile(&program).map_err(|e| e.message.clone())
 }
 
 /// Map an internal error message to the CPython exception type it should raise.

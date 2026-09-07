@@ -89,6 +89,11 @@ impl<'a> Codegen<'a> {
             nfree: self.table.nfree(self.func) as usize,
             params,
             is_generator: self.is_generator,
+            module_names: if self.func == self.table.module() {
+                self.table.module_member_targets()
+            } else {
+                Vec::new()
+            },
             shadow_hints: self.table.shadow_hints(self.func),
         }
     }

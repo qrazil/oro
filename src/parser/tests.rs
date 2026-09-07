@@ -1125,3 +1125,17 @@ fn import_parses_dotted_and_alias() {
         other => panic!("expected Import, got {other:?}"),
     }
 }
+
+// --- imports: cut forms ---------------------------------------------------
+
+#[test]
+fn reject_from_import() {
+    let e = parse_err("from os import path\n");
+    assert!(e.message.contains("from X import Y"), "got: {}", e.message);
+}
+
+#[test]
+fn reject_import_star() {
+    let e = parse_err("import os.*\n");
+    assert!(e.message.contains("import *"), "got: {}", e.message);
+}

@@ -697,6 +697,29 @@ impl SymTable {
         hints
     }
 
+    /// The module scope's own bound names and where each is stored, so an
+    /// `import` can read the module's namespace after its body runs.
+    pub fn module_member_targets(&self) -> Vec<(std::rc::Rc<str>, super::VarTarget)> {
+        let m = self.module;
+        let mut out = Vec::new();
+        for (name, &sym) in &self.scopes[m].decls {
+            if self.symbols[sym].owner != m {
+                continue;
+            }
+            let target = if self.symbols[sym].captured {
+                super::VarTarget::Cell(self.symbols[sym].slot)
+            } else {
+                super::VarTarget::Local(self.symbols[sym].slot)
+            };
+            out.push((std::rc::Rc::from(name.as_str()), target));
+        }
+        out
+    }
+
+    pub fn module(&self) -> usize {
+        self.module
+    }
+
     pub fn ncells(&self, func: usize) -> u16 {
         self.scopes[func].cellvars.len() as u16
     }

@@ -251,6 +251,9 @@ pub struct CodeObject {
     /// True when this function's body contains `yield`; calling it produces a
     /// generator instead of running the body.
     pub is_generator: bool,
+    /// For a module code object only: its top-level names and where each is
+    /// stored, so an `import` can capture the module's namespace after it runs.
+    pub module_names: Vec<(Rc<str>, VarTarget)>,
 }
 
 impl std::fmt::Debug for Value {
