@@ -15,8 +15,10 @@ use std::rc::Rc;
 use crate::ast::CmpOp;
 use crate::compiler::{CaptureSource, CodeObject, Op, ParamInfo, VarTarget};
 use crate::value::{
-    Function, IterState, OroDict, OroSet, RangeVal, Value,
+    BoundMethod, Class, Function, Instance, IterState, MethodKind, OroDict, OroSet, RangeVal,
+    SuperProxy, Value,
 };
+use std::collections::HashMap;
 
 /// A runtime error carrying the source position of the faulting instruction.
 #[derive(Debug, Clone, PartialEq)]
@@ -52,6 +54,38 @@ struct Frame {
     free: Vec<Rc<RefCell<Value>>>,
     /// The operand stack.
     stack: Vec<Value>,
+    /// What to do with this frame's return value when it returns. Non-`Normal`
+    /// only for frames the VM sets up itself (dunder dispatch), never for
+    /// ordinary Oro calls.
+    ret_action: ReturnAction,
+    /// When this frame is a method body: the class it is defined in and the
+    /// receiver, so `super()` can search from the base and rebind to `self`.
+    super_ctx: Option<(Rc<Class>, Value)>,
+}
+
+/// What the VM does with a frame's return value — the mechanism that lets a
+/// native operation (an operator, `str()`, `print()`) invoke an Oro dunder
+/// without the interpreter recursing in Rust.
+enum ReturnAction {
+    /// Push the value onto the caller's operand stack (an ordinary call).
+    Normal,
+    /// Discard the value; an instance was already left on the caller's stack.
+    /// Used for `__init__`, which must return `None`.
+    DropForInit,
+    /// Feed the returned string into the active `print` job and continue it.
+    DrivePrint,
+    /// Push the boolean negation of the return value's truthiness. Used for
+    /// `!=` when a class defines `__eq__` but not `__ne__`.
+    NegateBool,
+    /// Apply an f-string format spec to the returned (string) value, then push.
+    FormatSpec(String),
+}
+
+/// A `print(...)` call in progress: some arguments still need `__str__`.
+struct PrintJob {
+    rendered: Vec<String>,
+    remaining: Vec<Value>,
+    next: usize,
 }
 
 /// The virtual machine.
@@ -62,6 +96,9 @@ pub struct Vm {
     /// The module frame's locals, captured when the top-level frame returns.
     /// Written exactly once (at program end); used only by tests.
     last_locals: Vec<Value>,
+    /// Stack of in-flight `print` calls whose instance args are being rendered
+    /// through `__str__`. A `__str__` that itself prints nests cleanly.
+    prints: Vec<PrintJob>,
 }
 
 /// Add two values with the VM's numeric/sequence `+` semantics. Exposed for
@@ -72,7 +109,7 @@ pub fn add_values(a: &Value, b: &Value) -> Result<Value, String> {
 
 /// Run a compiled module to completion, returning its (ignored) result.
 pub fn run(code: Rc<CodeObject>) -> Result<Value, RuntimeError> {
-    let mut vm = Vm { frames: Vec::new(), line: 0, col: 0, last_locals: Vec::new() };
+    let mut vm = Vm { frames: Vec::new(), line: 0, col: 0, last_locals: Vec::new(), prints: Vec::new() };
     let frame = Frame {
         locals: vec![Value::Unbound; code.nlocals],
         cells: (0..code.ncells).map(|_| Rc::new(RefCell::new(Value::Unbound))).collect(),
@@ -80,6 +117,8 @@ pub fn run(code: Rc<CodeObject>) -> Result<Value, RuntimeError> {
         stack: Vec::new(),
         pc: 0,
         code,
+        ret_action: ReturnAction::Normal,
+        super_ctx: None,
     };
     vm.frames.push(frame);
     vm.run_loop()
@@ -237,14 +276,34 @@ impl Vm {
                 | Op::BinPow => {
                     let b = self.pop();
                     let a = self.pop();
-                    let r = self.wrap(arith::binary(&op, &a, &b))?;
-                    self.push(r);
+                    let dunder = arith_dunder(&op);
+                    match instance_method(&a, dunder) {
+                        Some((f, defclass)) => {
+                            self.invoke_user(f, a, defclass, vec![b], Vec::new(), ReturnAction::Normal)?;
+                        }
+                        None if matches!(a, Value::Instance(_)) => {
+                            return Err(self.err(format!(
+                                "unsupported operand type(s) for {}: '{}' and '{}'",
+                                arith_symbol(&op),
+                                a.type_label(),
+                                b.type_label()
+                            )));
+                        }
+                        None => {
+                            let r = self.wrap(arith::binary(&op, &a, &b))?;
+                            self.push(r);
+                        }
+                    }
                 }
                 Op::Compare(cmp) => {
                     let b = self.pop();
                     let a = self.pop();
-                    let r = self.wrap(compare(cmp, &a, &b))?;
-                    self.push(Value::Bool(r));
+                    // An instance may define a rich-comparison dunder; if so it
+                    // is dispatched and produces the result via its return.
+                    if !(matches!(a, Value::Instance(_)) && self.try_compare_dunder(cmp, &a, &b)?) {
+                        let r = self.wrap(compare(cmp, &a, &b))?;
+                        self.push(Value::Bool(r));
+                    }
                 }
                 Op::Jump(t) => self.top().pc = t,
                 Op::PopJumpIfFalse(t) => {
@@ -345,8 +404,42 @@ impl Vm {
                 }
                 Op::LoadAttr(name) => {
                     let obj = self.pop();
-                    let r = self.wrap(load_attr(obj, &name))?;
+                    let r = self.wrap(get_attr(&obj, &name))?;
                     self.push(r);
+                }
+                Op::StoreAttr(name) => {
+                    let obj = self.pop();
+                    let value = self.pop();
+                    match &obj {
+                        Value::Instance(inst) => {
+                            inst.fields.borrow_mut().insert(name.to_string(), value);
+                        }
+                        other => {
+                            let msg = format!(
+                                "cannot set attribute '{}' on '{}' object",
+                                name,
+                                other.type_label()
+                            );
+                            return Err(self.err(msg));
+                        }
+                    }
+                }
+                Op::BuildClass { name, members, has_base } => {
+                    self.build_class(name, members, has_base)?;
+                }
+                Op::LoadSuper => {
+                    let sup = match self.top().super_ctx.clone() {
+                        Some((defclass, instance)) => Value::Super(Rc::new(SuperProxy {
+                            start: defclass.base.clone(),
+                            instance,
+                        })),
+                        None => {
+                            return Err(self.err(
+                                "super() is only valid inside a method".to_string(),
+                            ))
+                        }
+                    };
+                    self.push(sup);
                 }
                 Op::UnpackSequence(n) => {
                     let seq = self.pop();
@@ -376,6 +469,31 @@ impl Vm {
                             return Err(self.err(msg));
                         }
                     };
+                    // An instance renders via __str__/__repr__ (which run on a
+                    // frame); the format spec is then applied to the result.
+                    if matches!(value, Value::Instance(_)) {
+                        let want_repr = conv == crate::format::CONV_REPR;
+                        let names: [&str; 2] =
+                            if want_repr { ["__repr__", "__str__"] } else { ["__str__", "__repr__"] };
+                        let mut dispatched = false;
+                        for nm in names {
+                            if let Some((f, defclass)) = instance_method(&value, nm) {
+                                self.invoke_user(
+                                    f,
+                                    value.clone(),
+                                    defclass,
+                                    Vec::new(),
+                                    Vec::new(),
+                                    ReturnAction::FormatSpec(spec_str.clone()),
+                                )?;
+                                dispatched = true;
+                                break;
+                            }
+                        }
+                        if dispatched {
+                            continue;
+                        }
+                    }
                     let out = self.wrap(crate::format::format_value(&value, conv, &spec_str))?;
                     self.push(Value::str(out));
                 }
@@ -427,7 +545,33 @@ impl Vm {
                         self.last_locals = frame.locals;
                         return Ok(value);
                     }
-                    self.push(value);
+                    match frame.ret_action {
+                        ReturnAction::Normal => self.push(value),
+                        ReturnAction::DropForInit => {
+                            // __init__ must return None; the instance is already
+                            // on the caller's stack as the constructor result.
+                            if !matches!(value, Value::None) {
+                                return Err(self.err("__init__() should return None".to_string()));
+                            }
+                        }
+                        ReturnAction::DrivePrint => {
+                            let s = match &value {
+                                Value::Str(s) => s.s.clone(),
+                                other => other.display(),
+                            };
+                            self.prints.last_mut().expect("print job").rendered.push(s);
+                            self.drive_print()?;
+                        }
+                        ReturnAction::NegateBool => self.push(Value::Bool(!value.truthy())),
+                        ReturnAction::FormatSpec(spec) => {
+                            let out = self.wrap(crate::format::format_value(
+                                &value,
+                                crate::format::CONV_NONE,
+                                &spec,
+                            ))?;
+                            self.push(Value::str(out));
+                        }
+                    }
                 }
             }
         }
@@ -523,6 +667,22 @@ impl Vm {
     ) -> Result<(), RuntimeError> {
         match callee {
             Value::Builtin(b) => {
+                // A few builtins may need to run an Oro dunder (which must go
+                // through a frame, not a Rust re-entry), so they are handled in
+                // the VM rather than as pure native functions.
+                match b.name {
+                    "print" => return self.do_print(args, kwargs),
+                    "str" if matches!(args.first(), Some(Value::Instance(_))) && args.len() == 1 => {
+                        return self.stringify_instance(args.into_iter().next().unwrap(), false);
+                    }
+                    "repr" if matches!(args.first(), Some(Value::Instance(_))) && args.len() == 1 => {
+                        return self.stringify_instance(args.into_iter().next().unwrap(), true);
+                    }
+                    "len" if matches!(args.first(), Some(Value::Instance(_))) && args.len() == 1 => {
+                        return self.dunder_len(args.into_iter().next().unwrap());
+                    }
+                    _ => {}
+                }
                 if !kwargs.is_empty() {
                     return Err(self.err(format!("{}() takes no keyword arguments", b.name)));
                 }
@@ -530,14 +690,24 @@ impl Vm {
                 self.push(r);
                 Ok(())
             }
-            Value::Method(m) => {
-                if !kwargs.is_empty() {
-                    return Err(self.err("methods take no keyword arguments in this build"));
+            Value::Method(m) => match &m.kind {
+                MethodKind::Native(name) => {
+                    if !kwargs.is_empty() {
+                        return Err(self.err("methods take no keyword arguments in this build"));
+                    }
+                    let r = self.wrap(crate::builtins::call_method(&m.receiver, name, args))?;
+                    self.push(r);
+                    Ok(())
                 }
-                let r = self.wrap(crate::builtins::call_method(&m.receiver, &m.name, args))?;
-                self.push(r);
-                Ok(())
-            }
+                MethodKind::User { func, defclass } => self.invoke_user(
+                    func.clone(),
+                    m.receiver.clone(),
+                    defclass.clone(),
+                    args,
+                    kwargs,
+                    ReturnAction::Normal,
+                ),
+            },
             Value::Func(f) => {
                 if self.frames.len() >= MAX_FRAMES {
                     return Err(self.err("maximum recursion depth exceeded"));
@@ -546,8 +716,206 @@ impl Vm {
                 self.frames.push(frame);
                 Ok(())
             }
-            other => Err(self.err(format!("'{}' object is not callable", other.type_name()))),
+            Value::Class(class) => self.instantiate(class, args, kwargs),
+            other => Err(self.err(format!("'{}' object is not callable", other.type_label()))),
         }
+    }
+
+    /// Call an Oro method: push `receiver` as `self`, then the rest, into a
+    /// fresh frame carrying the `super()` context and the requested return
+    /// action.
+    fn invoke_user(
+        &mut self,
+        func: Rc<Function>,
+        receiver: Value,
+        defclass: Rc<Class>,
+        args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
+        action: ReturnAction,
+    ) -> Result<(), RuntimeError> {
+        if self.frames.len() >= MAX_FRAMES {
+            return Err(self.err("maximum recursion depth exceeded"));
+        }
+        let mut call_args = Vec::with_capacity(args.len() + 1);
+        call_args.push(receiver.clone());
+        call_args.extend(args);
+        let mut frame = self.bind_call(&func, call_args, kwargs)?;
+        frame.ret_action = action;
+        frame.super_ctx = Some((defclass, receiver));
+        self.frames.push(frame);
+        Ok(())
+    }
+
+    /// Construct an instance of `class`, running `__init__` if defined. The
+    /// instance is left on the caller's stack as the constructor's result.
+    fn instantiate(
+        &mut self,
+        class: Rc<Class>,
+        args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
+    ) -> Result<(), RuntimeError> {
+        let inst = Value::Instance(Rc::new(Instance {
+            class: class.clone(),
+            fields: RefCell::new(HashMap::new()),
+        }));
+        match Class::find(&class, "__init__") {
+            Some((Value::Func(init), defclass)) => {
+                // Leave the instance as the eventual result; __init__ returns
+                // None (checked) and its frame is dropped.
+                self.push(inst.clone());
+                self.invoke_user(init, inst, defclass, args, kwargs, ReturnAction::DropForInit)
+            }
+            Some(_) => Err(self.err(format!("{}.__init__ is not a function", class.name))),
+            None => {
+                if !args.is_empty() || !kwargs.is_empty() {
+                    return Err(self.err(format!("{}() takes no arguments", class.name)));
+                }
+                self.push(inst);
+                Ok(())
+            }
+        }
+    }
+
+    /// `str()`/`repr()` of an instance: run `__str__` (or `__repr__` when
+    /// `want_repr`), falling back to the other, then to the default text.
+    fn stringify_instance(&mut self, value: Value, want_repr: bool) -> Result<(), RuntimeError> {
+        let inst = match &value {
+            Value::Instance(i) => i.clone(),
+            _ => unreachable!("stringify_instance on a non-instance"),
+        };
+        let order: [&str; 2] = if want_repr {
+            ["__repr__", "__str__"]
+        } else {
+            ["__str__", "__repr__"]
+        };
+        for name in order {
+            if let Some((Value::Func(f), defclass)) = Class::find(&inst.class, name) {
+                return self.invoke_user(f, value, defclass, Vec::new(), Vec::new(), ReturnAction::Normal);
+            }
+        }
+        self.push(Value::str(value.repr()));
+        Ok(())
+    }
+
+    fn dunder_len(&mut self, value: Value) -> Result<(), RuntimeError> {
+        let inst = match &value {
+            Value::Instance(i) => i.clone(),
+            _ => unreachable!(),
+        };
+        match Class::find(&inst.class, "__len__") {
+            Some((Value::Func(f), defclass)) => {
+                self.invoke_user(f, value, defclass, Vec::new(), Vec::new(), ReturnAction::Normal)
+            }
+            _ => Err(self.err(format!("object of type '{}' has no len()", inst.class.name))),
+        }
+    }
+
+    /// Drive an in-flight `print`: render remaining args left to right, calling
+    /// `__str__` (through a frame) for instances that define one. When the last
+    /// argument is rendered, join with spaces, emit, and push `None`.
+    fn do_print(
+        &mut self,
+        args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
+    ) -> Result<(), RuntimeError> {
+        if !kwargs.is_empty() {
+            return Err(self.err("print() keyword arguments are not supported in this build"));
+        }
+        self.prints.push(PrintJob { rendered: Vec::new(), remaining: args, next: 0 });
+        self.drive_print()
+    }
+
+    fn drive_print(&mut self) -> Result<(), RuntimeError> {
+        loop {
+            let next_val = {
+                let job = self.prints.last().expect("active print job");
+                if job.next >= job.remaining.len() {
+                    let job = self.prints.pop().unwrap();
+                    println!("{}", job.rendered.join(" "));
+                    self.push(Value::None);
+                    return Ok(());
+                }
+                job.remaining[job.next].clone()
+            };
+            self.prints.last_mut().unwrap().next += 1;
+
+            if let Value::Instance(inst) = &next_val {
+                let cls = inst.class.clone();
+                let hit = Class::find(&cls, "__str__").or_else(|| Class::find(&cls, "__repr__"));
+                if let Some((Value::Func(f), defclass)) = hit {
+                    return self.invoke_user(
+                        f,
+                        next_val.clone(),
+                        defclass,
+                        Vec::new(),
+                        Vec::new(),
+                        ReturnAction::DrivePrint,
+                    );
+                }
+            }
+            let s = next_val.display();
+            self.prints.last_mut().unwrap().rendered.push(s);
+        }
+    }
+
+    /// Dispatch a rich-comparison dunder for an instance `a`. Returns `true`
+    /// (and pushes a frame) when one was found; `false` to fall back to the
+    /// default comparison.
+    fn try_compare_dunder(&mut self, cmp: CmpOp, a: &Value, b: &Value) -> Result<bool, RuntimeError> {
+        let name = match cmp {
+            CmpOp::Eq => "__eq__",
+            CmpOp::NotEq => "__ne__",
+            CmpOp::Lt => "__lt__",
+            CmpOp::Gt => "__gt__",
+            CmpOp::LtEq => "__le__",
+            CmpOp::GtEq => "__ge__",
+            // `is`, `in`, and their negations have no rich-comparison dunder.
+            _ => return Ok(false),
+        };
+        if let Some((f, defclass)) = instance_method(a, name) {
+            self.invoke_user(f, a.clone(), defclass, vec![b.clone()], Vec::new(), ReturnAction::Normal)?;
+            return Ok(true);
+        }
+        // `!=` falls back to the negation of `__eq__`.
+        if matches!(cmp, CmpOp::NotEq) {
+            if let Some((f, defclass)) = instance_method(a, "__eq__") {
+                self.invoke_user(f, a.clone(), defclass, vec![b.clone()], Vec::new(), ReturnAction::NegateBool)?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Assemble a class from the member values on the stack (see
+    /// [`Op::BuildClass`]) and push it.
+    fn build_class(
+        &mut self,
+        name: Rc<str>,
+        member_names: Vec<Rc<str>>,
+        has_base: bool,
+    ) -> Result<(), RuntimeError> {
+        let member_vals = self.popn(member_names.len());
+        let base = if has_base {
+            match self.pop() {
+                Value::Class(c) => Some(c),
+                other => {
+                    return Err(self.err(format!(
+                        "base of class '{}' must be a class, not '{}'",
+                        name,
+                        other.type_label()
+                    )))
+                }
+            }
+        } else {
+            None
+        };
+        let mut members = HashMap::with_capacity(member_names.len());
+        for (n, v) in member_names.into_iter().zip(member_vals) {
+            members.insert(n.to_string(), v);
+        }
+        let class = Class { name, base, members: RefCell::new(members) };
+        self.push(Value::Class(Rc::new(class)));
+        Ok(())
     }
 
     /// Bind arguments to a fresh frame's slots and cells.
@@ -571,6 +939,8 @@ impl Vm {
             stack: Vec::new(),
             pc: 0,
             code: code.clone(),
+            ret_action: ReturnAction::Normal,
+            super_ctx: None,
         };
 
         let normal: Vec<&ParamInfo> =
@@ -898,15 +1268,97 @@ fn slice_indices(len: usize, lower: Option<i64>, upper: Option<i64>, step: i64) 
 
 // --- Attributes -------------------------------------------------------------
 
-fn load_attr(obj: Value, name: &str) -> Result<Value, String> {
-    if crate::builtins::method_exists(&obj, name) {
-        Ok(Value::Method(Rc::new(crate::value::BoundMethod {
-            receiver: obj,
-            name: Rc::from(name),
-        })))
-    } else {
-        Err(format!("'{}' object has no attribute '{}'", obj.type_name(), name))
+/// Attribute read for any value. Instances, classes, and `super` proxies are
+/// handled here (no `__getattr__` hook exists, so this never runs Oro code);
+/// everything else falls back to builtin-method binding.
+fn get_attr(obj: &Value, name: &str) -> Result<Value, String> {
+    match obj {
+        Value::Instance(inst) => {
+            if let Some(v) = inst.fields.borrow().get(name) {
+                return Ok(v.clone());
+            }
+            match Class::find(&inst.class, name) {
+                Some((member, defclass)) => Ok(bind_member(member, obj.clone(), defclass)),
+                None => Err(format!("'{}' object has no attribute '{}'", inst.class.name, name)),
+            }
+        }
+        Value::Class(class) => match Class::find(class, name) {
+            // A method accessed on the class itself stays an unbound function.
+            Some((member, _)) => Ok(member),
+            None => Err(format!("type object '{}' has no attribute '{}'", class.name, name)),
+        },
+        Value::Super(sp) => {
+            let mut cur = sp.start.clone();
+            while let Some(c) = cur {
+                if let Some(member) = c.members.borrow().get(name).cloned() {
+                    return Ok(bind_member(member, sp.instance.clone(), c.clone()));
+                }
+                cur = c.base.clone();
+            }
+            Err(format!("'super' object has no attribute '{name}'"))
+        }
+        _ => {
+            if crate::builtins::method_exists(obj, name) {
+                Ok(Value::Method(Rc::new(BoundMethod {
+                    receiver: obj.clone(),
+                    kind: MethodKind::Native(Rc::from(name)),
+                })))
+            } else {
+                Err(format!("'{}' object has no attribute '{}'", obj.type_name(), name))
+            }
+        }
     }
+}
+
+/// Bind a looked-up class member to a receiver: a function becomes a bound
+/// method; any other value (a class-level attribute) is returned unchanged.
+fn bind_member(member: Value, receiver: Value, defclass: Rc<Class>) -> Value {
+    match member {
+        Value::Func(f) => Value::Method(Rc::new(BoundMethod {
+            receiver,
+            kind: MethodKind::User { func: f, defclass },
+        })),
+        other => other,
+    }
+}
+
+/// The dunder method name for a binary-arithmetic opcode.
+fn arith_dunder(op: &Op) -> &'static str {
+    match op {
+        Op::BinAdd => "__add__",
+        Op::BinSub => "__sub__",
+        Op::BinMul => "__mul__",
+        Op::BinDiv => "__truediv__",
+        Op::BinFloorDiv => "__floordiv__",
+        Op::BinMod => "__mod__",
+        Op::BinPow => "__pow__",
+        _ => unreachable!("arith_dunder on a non-arithmetic op"),
+    }
+}
+
+/// The operator symbol for a binary-arithmetic opcode (for error messages).
+fn arith_symbol(op: &Op) -> &'static str {
+    match op {
+        Op::BinAdd => "+",
+        Op::BinSub => "-",
+        Op::BinMul => "*",
+        Op::BinDiv => "/",
+        Op::BinFloorDiv => "//",
+        Op::BinMod => "%",
+        Op::BinPow => "**",
+        _ => unreachable!("arith_symbol on a non-arithmetic op"),
+    }
+}
+
+/// If `v` is an instance whose class chain defines method `name`, return the
+/// function and the class it is defined in.
+fn instance_method(v: &Value, name: &str) -> Option<(Rc<Function>, Rc<Class>)> {
+    if let Value::Instance(inst) = v {
+        if let Some((Value::Func(f), defclass)) = Class::find(&inst.class, name) {
+            return Some((f, defclass));
+        }
+    }
+    None
 }
 
 // --- Comparison -------------------------------------------------------------

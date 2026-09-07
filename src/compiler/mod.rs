@@ -123,6 +123,15 @@ pub enum Op {
     LoadSlice,
     /// Load an attribute (used for method access like `s.split`).
     LoadAttr(Rc<str>),
+    /// Pop the object (top) then the value; set `obj.<name> = value`. Only
+    /// user-class instances have settable attributes.
+    StoreAttr(Rc<str>),
+    /// Build a class from the base (if `has_base`, below the members) and the
+    /// `members.len()` member values above it (in `members` order), then push
+    /// the resulting class. Members are methods and class-level attributes.
+    BuildClass { name: Rc<str>, members: Vec<Rc<str>>, has_base: bool },
+    /// Push a `super()` proxy for the current method's `super_ctx`.
+    LoadSuper,
     /// Pop an iterable and push `n` elements in reverse (top = first element).
     UnpackSequence(usize),
     /// Format an f-string replacement field: pop the format-spec string (top)

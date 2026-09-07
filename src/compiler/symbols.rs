@@ -197,6 +197,9 @@ impl SymTable {
             }
             Stmt::AugAssign { target, .. } => self.collect_target_names(scope_id, target),
             Stmt::Def { name, .. } => self.maybe_declare(scope_id, name),
+            // A class binds its own name in the enclosing scope; its methods are
+            // not names here (they are reached via the class or an instance).
+            Stmt::Class { name, .. } => self.maybe_declare(scope_id, name),
             // For/While/If bind nothing at this level (targets live in the child
             // block). Import/Class/Try/Raise/Yield are handled — or rejected —
             // by codegen; they introduce no reachable bindings here.
@@ -283,12 +286,17 @@ impl SymTable {
                 self.child_block(scope_id, func, body, &names);
             }
             Stmt::Def { params, body, .. } => {
-                // A function is a new closure boundary.
-                let fid = self.new_scope(ScopeKind::Function, Some(scope_id), 0);
-                self.scopes[fid].func = fid;
-                self.scopes[scope_id].children.push(fid);
-                let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
-                self.build_scope(fid, body, &param_names);
+                self.build_function_scope(scope_id, params, body);
+            }
+            Stmt::Class { body, .. } => {
+                // Each method is a function scope of the *enclosing* scope, not
+                // of the class — Python method bodies do not see class-body
+                // names as free variables. Class-level attributes bind nothing.
+                for member in body {
+                    if let Stmt::Def { params, body, .. } = member {
+                        self.build_function_scope(scope_id, params, body);
+                    }
+                }
             }
             Stmt::Match { cases, .. } => {
                 // Each `case` body is a block scope, like an `if` body. The
@@ -299,6 +307,16 @@ impl SymTable {
             }
             _ => {}
         }
+    }
+
+    /// Create a `Function` scope (a closure boundary) for a `def`/method body
+    /// as a child of `scope_id`, with its parameters predeclared.
+    fn build_function_scope(&mut self, scope_id: usize, params: &[crate::ast::Param], body: &[Stmt]) {
+        let fid = self.new_scope(ScopeKind::Function, Some(scope_id), 0);
+        self.scopes[fid].func = fid;
+        self.scopes[scope_id].children.push(fid);
+        let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+        self.build_scope(fid, body, &param_names);
     }
 
     fn child_block(&mut self, parent: usize, func: usize, body: &[Stmt], predeclared: &[String]) {
@@ -376,15 +394,23 @@ impl SymTable {
                 self.resolve_block(child, body, &mut c);
             }
             Stmt::Def { params, body, .. } => {
-                // Defaults are evaluated in the enclosing scope.
-                for p in params {
-                    if let Some(d) = &p.default {
-                        self.resolve_expr(scope_id, d);
+                self.resolve_function(scope_id, params, body, cursor);
+            }
+            Stmt::Class { base, body, .. } => {
+                // The base and any class-attribute values are evaluated in the
+                // enclosing scope; each method resolves in its own child scope.
+                if let Some(b) = base {
+                    self.resolve_expr(scope_id, b);
+                }
+                for member in body {
+                    match member {
+                        Stmt::Def { params, body, .. } => {
+                            self.resolve_function(scope_id, params, body, cursor);
+                        }
+                        Stmt::Assign { value, .. } => self.resolve_expr(scope_id, value),
+                        _ => {}
                     }
                 }
-                let child = self.next_child(scope_id, cursor);
-                let mut c = 0;
-                self.resolve_block(child, body, &mut c);
             }
             Stmt::Return { value: Some(v), .. } => self.resolve_expr(scope_id, v),
             Stmt::Match { subject, cases, .. } => {
@@ -402,6 +428,25 @@ impl SymTable {
             }
             _ => {}
         }
+    }
+
+    /// Resolve a `def`/method: its default expressions in the enclosing scope,
+    /// then its body in the next child scope.
+    fn resolve_function(
+        &mut self,
+        scope_id: usize,
+        params: &[crate::ast::Param],
+        body: &[Stmt],
+        cursor: &mut usize,
+    ) {
+        for p in params {
+            if let Some(d) = &p.default {
+                self.resolve_expr(scope_id, d);
+            }
+        }
+        let child = self.next_child(scope_id, cursor);
+        let mut c = 0;
+        self.resolve_block(child, body, &mut c);
     }
 
     fn resolve_store_target(&mut self, scope_id: usize, target: &Expr) {

@@ -12,7 +12,7 @@ fn run_locals(src: &str) -> Vec<Value> {
     let tokens = Lexer::new(src).tokenize().expect("lex");
     let program = Parser::new(tokens).parse().expect("parse");
     let code = compile(&program).expect("compile");
-    let mut vm = Vm { frames: Vec::new(), line: 0, col: 0, last_locals: Vec::new() };
+    let mut vm = Vm { frames: Vec::new(), line: 0, col: 0, last_locals: Vec::new(), prints: Vec::new() };
     let frame = Frame {
         locals: vec![Value::Unbound; code.nlocals],
         cells: (0..code.ncells).map(|_| Rc::new(RefCell::new(Value::Unbound))).collect(),
@@ -20,6 +20,8 @@ fn run_locals(src: &str) -> Vec<Value> {
         stack: Vec::new(),
         pc: 0,
         code,
+        ret_action: ReturnAction::Normal,
+        super_ctx: None,
     };
     vm.frames.push(frame);
     vm.run_loop().expect("run");
@@ -42,6 +44,12 @@ fn run_err(src: &str) -> RuntimeError {
     let program = Parser::new(tokens).parse().expect("parse");
     let code = compile(&program).expect("compile");
     run(code).expect_err("expected a runtime error")
+}
+
+fn compile_err(src: &str) -> crate::compiler::CompileError {
+    let tokens = Lexer::new(src).tokenize().expect("lex");
+    let program = Parser::new(tokens).parse().expect("parse");
+    compile(&program).expect_err("expected a compile error")
 }
 
 fn int(v: &Value) -> i64 {
@@ -416,4 +424,41 @@ fn match_dotted_pattern_runs_and_falls_through() {
                return 1\n        case _:\n            return 0\n\
                r = f(\"anything\")\n";
     assert_eq!(int(&eval_last(src)), 0);
+}
+
+// --- classes --------------------------------------------------------------
+
+#[test]
+fn class_instantiation_and_methods() {
+    let src = "class Counter:\n    def __init__(self, start):\n        self.n = start\n    \
+               def inc(self):\n        self.n = self.n + 1\n        return self.n\n\
+               c = Counter(10)\nr1 = c.inc()\nr2 = c.inc()\n";
+    let locals = run_locals(src);
+    let ints: Vec<i64> = locals.iter().filter_map(|v| match v {
+        Value::Int(i) => Some(*i),
+        _ => None,
+    }).collect();
+    assert!(ints.contains(&11) && ints.contains(&12), "got {ints:?}");
+}
+
+#[test]
+fn class_super_and_inheritance() {
+    let src = "class A:\n    def val(self):\n        return 1\n\
+               class B(A):\n    def val(self):\n        return super().val() + 10\n\
+               b = B()\nr = b.val()\n";
+    assert_eq!(int(&eval_last(src)), 11);
+}
+
+#[test]
+fn class_arithmetic_dunder() {
+    let src = "class N:\n    def __init__(self, v):\n        self.v = v\n    \
+               def __add__(self, other):\n        return N(self.v + other.v)\n\
+               r = (N(2) + N(3)).v\n";
+    assert_eq!(int(&eval_last(src)), 5);
+}
+
+#[test]
+fn unsupported_class_dunder_is_rejected() {
+    let err = compile_err("class X:\n    def __getattr__(self, n):\n        return 0\n");
+    assert!(err.message.contains("__getattr__"), "got: {}", err.message);
 }

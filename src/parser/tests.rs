@@ -1066,3 +1066,28 @@ fn reject_nonfinal_wildcard() {
     let e = parse_err("match n:\n    case _:\n        pass\n    case 1:\n        pass\n");
     assert!(e.message.contains("wildcard last"), "got: {}", e.message);
 }
+
+// --- classes: cut features get specific errors ----------------------------
+
+#[test]
+fn reject_metaclass_kwarg() {
+    let e = parse_err("class X(metaclass=type):\n    pass\n");
+    assert!(e.message.contains("metaclass"), "got: {}", e.message);
+}
+
+#[test]
+fn reject_multiple_inheritance() {
+    let e = parse_err("class X(A, B):\n    pass\n");
+    assert!(e.message.contains("multiple inheritance"), "got: {}", e.message);
+}
+
+#[test]
+fn class_parses_with_single_base() {
+    match parse_one("class Dog(Animal):\n    pass\n") {
+        Stmt::Class { name, base, .. } => {
+            assert_eq!(name, "Dog");
+            assert!(matches!(base, Some(Expr::Name { .. })));
+        }
+        other => panic!("expected a Class, got {other:?}"),
+    }
+}

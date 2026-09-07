@@ -668,6 +668,16 @@ impl Parser {
             if self.eat(&TokenKind::RParen) {
                 None
             } else {
+                // A class keyword argument such as `metaclass=` appears as a
+                // name immediately followed by `=`.
+                if matches!(self.cur_kind(), TokenKind::Ident(_))
+                    && matches!(self.peek_kind(), TokenKind::Eq)
+                {
+                    return Err(self.error(
+                        "class keyword arguments (metaclass=, etc.) are not supported in Oro — \
+                         metaclasses are cut; a class takes at most a single positional base",
+                    ));
+                }
                 let base = self.expression()?;
                 if self.check(&TokenKind::Comma) {
                     return Err(self.error(

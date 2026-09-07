@@ -183,8 +183,8 @@ impl<'a> Codegen<'a> {
             // A declaration only — its effect was recorded by the symbol pass,
             // so name references now resolve to module scope. No code to emit.
             Stmt::Global { .. } => {}
-            Stmt::Class { line, col, .. } => {
-                return Err(self.err("classes are not yet implemented in this build", *line, *col))
+            Stmt::Class { name, base, body, line, col } => {
+                self.emit_class(name, base, body, *line, *col)?;
             }
             Stmt::Try { line, col, .. } => {
                 return Err(self.err(
@@ -554,11 +554,26 @@ impl<'a> Codegen<'a> {
         line: usize,
         col: usize,
     ) -> CResult<()> {
+        self.emit_make_function(name, params, body, line, col)?;
+        self.emit_store(&Expr::Name { name: name.to_string(), line, col })?;
+        Ok(())
+    }
+
+    /// Compile a `def`/method body into a function prototype and emit
+    /// `MakeFunction`, leaving the resulting function on the stack. Consumes one
+    /// child scope (the pre-pass created one per `def`, in source order).
+    fn emit_make_function(
+        &mut self,
+        name: &str,
+        params: &[Param],
+        body: &[Stmt],
+        line: usize,
+        col: usize,
+    ) -> CResult<()> {
         let child = self.next_child();
         let proto = self.compile_function(name, params, body, child)?;
         let proto_idx = self.protos.len();
         self.protos.push(Rc::new(proto));
-
         // Evaluate default values in this (enclosing) scope, in order.
         for p in params {
             if let Some(d) = &p.default {
@@ -566,6 +581,82 @@ impl<'a> Codegen<'a> {
             }
         }
         self.emit(Op::MakeFunction(proto_idx), line, col);
+        Ok(())
+    }
+
+    /// Compile a class: push its base (if any), then each member value, then a
+    /// `BuildClass`, and bind the result to the class name.
+    fn emit_class(
+        &mut self,
+        name: &str,
+        base: &Option<Expr>,
+        body: &[Stmt],
+        line: usize,
+        col: usize,
+    ) -> CResult<()> {
+        let has_base = base.is_some();
+        if let Some(b) = base {
+            self.emit_expr(b)?;
+        }
+
+        let mut members: Vec<Rc<str>> = Vec::new();
+        for member in body {
+            match member {
+                Stmt::Def { name: mname, params, body: mbody, line: ml, col: mc, .. } => {
+                    if let Some(why) = unsupported_dunder(mname) {
+                        return Err(self.err(why, *ml, *mc));
+                    }
+                    self.emit_make_function(mname, params, mbody, *ml, *mc)?;
+                    members.push(Rc::from(mname.as_str()));
+                }
+                Stmt::Assign { targets, value, line: al, col: ac } => {
+                    // Class-level attributes: each target must be a bare name.
+                    let mut names = Vec::new();
+                    for t in targets {
+                        match t {
+                            Expr::Name { name, .. } if name == "__slots__" => {
+                                return Err(self.err(
+                                    "__slots__ is not supported in Oro — instance attributes are \
+                                     always stored in a per-instance dict",
+                                    *al,
+                                    *ac,
+                                ))
+                            }
+                            Expr::Name { name, .. } => names.push(name.clone()),
+                            _ => {
+                                return Err(self.err(
+                                    "a class-body assignment target must be a plain name",
+                                    *al,
+                                    *ac,
+                                ))
+                            }
+                        }
+                    }
+                    self.emit_expr(value)?;
+                    // One stack copy per target name (all share the value).
+                    for _ in 1..names.len() {
+                        self.emit(Op::Dup, *al, *ac);
+                    }
+                    for n in names {
+                        members.push(Rc::from(n.as_str()));
+                    }
+                }
+                // Docstrings and `pass` are allowed and produce no member.
+                Stmt::Pass { .. } => {}
+                Stmt::Expr { value: Expr::Str { .. }, .. } => {}
+                other => {
+                    let (l, c) = other.pos();
+                    return Err(self.err(
+                        "a class body may contain only methods, attribute assignments, and \
+                         docstrings in this build",
+                        l,
+                        c,
+                    ));
+                }
+            }
+        }
+
+        self.emit(Op::BuildClass { name: Rc::from(name), members, has_base }, line, col);
         self.emit_store(&Expr::Name { name: name.to_string(), line, col })?;
         Ok(())
     }
@@ -656,12 +747,10 @@ impl<'a> Codegen<'a> {
                     self.emit_store(e)?;
                 }
             }
-            Expr::Attribute { line, col, .. } => {
-                return Err(self.err(
-                    "attribute assignment is not supported (no classes in this build)",
-                    *line,
-                    *col,
-                ))
+            Expr::Attribute { value, attr, line, col } => {
+                // Stack for StoreAttr: value (below), then the object.
+                self.emit_expr(value)?;
+                self.emit(Op::StoreAttr(Rc::from(attr.as_str())), *line, *col);
             }
             other => {
                 let (l, c) = other.pos();
@@ -854,6 +943,19 @@ impl<'a> Codegen<'a> {
         line: usize,
         col: usize,
     ) -> CResult<()> {
+        // `super()` — a zero-argument call to the global name `super` — pushes
+        // the current method's super proxy directly.
+        if args.is_empty() && kwargs.is_empty() {
+            if let Expr::Name { name, .. } = func {
+                if name == "super"
+                    && matches!(self.table.resolve_name(self.scope, name), Resolution::Global)
+                {
+                    self.emit(Op::LoadSuper, line, col);
+                    return Ok(());
+                }
+            }
+        }
+
         let simple = args.iter().all(|a| matches!(a, Arg::Positional(_))) && kwargs.is_empty();
         self.emit_expr(func)?;
         if simple {
@@ -1216,6 +1318,24 @@ fn decode_escape(chars: &[char], i: &mut usize) -> String {
         '"' => "\"".to_string(),
         '0' => "\0".to_string(),
         other => format!("\\{other}"),
+    }
+}
+
+/// The reason a class dunder is rejected, if it names a deliberately-cut hook.
+fn unsupported_dunder(name: &str) -> Option<&'static str> {
+    match name {
+        "__new__" => Some(
+            "__new__ is not supported in Oro — define __init__ instead; there is no separate \
+             allocation hook",
+        ),
+        "__getattr__" | "__getattribute__" => Some(
+            "__getattr__/__getattribute__ are not supported in Oro — attribute access is fixed so \
+             it can be read directly; store data in instance fields",
+        ),
+        "__setattr__" | "__delattr__" => Some(
+            "__setattr__/__delattr__ are not supported in Oro — attribute assignment is direct",
+        ),
+        _ => None,
     }
 }
 

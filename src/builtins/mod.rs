@@ -28,6 +28,8 @@ pub fn lookup(name: &str) -> Option<Value> {
         "max" => bi_max,
         "sum" => bi_sum,
         "sorted" => bi_sorted,
+        "isinstance" => bi_isinstance,
+        "repr" => bi_repr,
         _ => return None,
     };
     Some(Value::Builtin(Rc::new(Builtin { name: intern(name), func: f })))
@@ -49,6 +51,8 @@ fn intern(name: &str) -> &'static str {
         "max" => "max",
         "sum" => "sum",
         "sorted" => "sorted",
+        "isinstance" => "isinstance",
+        "repr" => "repr",
         _ => "builtin",
     }
 }
@@ -113,6 +117,11 @@ fn bi_str(args: Vec<Value>) -> VResult<Value> {
     }
 }
 
+fn bi_repr(args: Vec<Value>) -> VResult<Value> {
+    exactly(&args, 1, "repr")?;
+    Ok(Value::str(args[0].repr()))
+}
+
 fn bi_int(args: Vec<Value>) -> VResult<Value> {
     match args.as_slice() {
         [] => Ok(Value::Int(0)),
@@ -157,7 +166,43 @@ fn bi_bool(args: Vec<Value>) -> VResult<Value> {
 
 fn bi_type(args: Vec<Value>) -> VResult<Value> {
     exactly(&args, 1, "type")?;
-    Ok(Value::str(format!("<class '{}'>", args[0].type_name())))
+    match &args[0] {
+        // The type of a user instance is its class object.
+        Value::Instance(i) => Ok(Value::Class(i.class.clone())),
+        other => Ok(Value::str(format!("<class '{}'>", other.type_name()))),
+    }
+}
+
+fn bi_isinstance(args: Vec<Value>) -> VResult<Value> {
+    exactly(&args, 2, "isinstance")?;
+    let obj = &args[0];
+    let ok = match &args[1] {
+        Value::Class(cls) => match obj {
+            Value::Instance(i) => crate::value::Class::is_subclass(&i.class, cls),
+            _ => false,
+        },
+        // A builtin type name (e.g. `int`, `str`) matches by type name.
+        Value::Builtin(b) => builtin_type_matches(b.name, obj),
+        other => {
+            return Err(format!(
+                "isinstance() arg 2 must be a class, not '{}'",
+                other.type_name()
+            ))
+        }
+    };
+    Ok(Value::Bool(ok))
+}
+
+/// Whether `obj` matches a builtin type-constructor name used as `isinstance`'s
+/// second argument (`isinstance(x, int)`).
+fn builtin_type_matches(name: &str, obj: &Value) -> bool {
+    match name {
+        "int" => matches!(obj, Value::Int(_) | Value::Big(_) | Value::Bool(_)),
+        "float" => matches!(obj, Value::Float(_)),
+        "bool" => matches!(obj, Value::Bool(_)),
+        "str" => matches!(obj, Value::Str(_)),
+        _ => false,
+    }
 }
 
 fn bi_abs(args: Vec<Value>) -> VResult<Value> {

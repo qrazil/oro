@@ -50,6 +50,9 @@ pub enum Value {
     Func(Rc<Function>),
     Builtin(Rc<Builtin>),
     Method(Rc<BoundMethod>),
+    Class(Rc<Class>),
+    Instance(Rc<Instance>),
+    Super(Rc<SuperProxy>),
     /// Internal sentinel for a local/cell slot that has not been assigned yet.
     /// Never reachable by user code: reading it raises a clean runtime error.
     Unbound,
@@ -142,11 +145,71 @@ pub struct Builtin {
     pub func: fn(Vec<Value>) -> VResult<Value>,
 }
 
-/// A method bound to a receiver, e.g. `"a,b".split` or `xs.append`. Dispatched
-/// by name at call time in `crate::builtins`.
+/// A method bound to a receiver. Either a native builtin method (dispatched by
+/// name in `crate::builtins`, e.g. `"a,b".split` or `xs.append`) or an Oro
+/// method defined on a user class.
 pub struct BoundMethod {
     pub receiver: Value,
+    pub kind: MethodKind,
+}
+
+pub enum MethodKind {
+    /// A builtin method, dispatched by name.
+    Native(Rc<str>),
+    /// An Oro method: `func` is called with `receiver` as its first (`self`)
+    /// argument. `defclass` is the class the method is defined in, so that
+    /// `super()` inside it searches from `defclass`'s base.
+    User { func: Rc<Function>, defclass: Rc<Class> },
+}
+
+/// A user-defined class (single inheritance only).
+pub struct Class {
     pub name: Rc<str>,
+    pub base: Option<Rc<Class>>,
+    /// Methods and class-level attributes, by name.
+    pub members: RefCell<HashMap<String, Value>>,
+}
+
+impl Class {
+    /// Find `name` in this class or its base chain, returning the member and the
+    /// class it was found in (the latter fixes `super()`'s search origin).
+    pub fn find(class: &Rc<Class>, name: &str) -> Option<(Value, Rc<Class>)> {
+        let mut cur = Some(class.clone());
+        while let Some(c) = cur {
+            if let Some(v) = c.members.borrow().get(name) {
+                return Some((v.clone(), c.clone()));
+            }
+            cur = c.base.clone();
+        }
+        None
+    }
+
+    /// True when `class` is `other` or a subclass of it (used by `isinstance`).
+    pub fn is_subclass(class: &Rc<Class>, other: &Rc<Class>) -> bool {
+        let mut cur = Some(class.clone());
+        while let Some(c) = cur {
+            if Rc::ptr_eq(&c, other) {
+                return true;
+            }
+            cur = c.base.clone();
+        }
+        false
+    }
+}
+
+/// An instance of a user class. Instance attributes live in `fields`.
+pub struct Instance {
+    pub class: Rc<Class>,
+    pub fields: RefCell<HashMap<String, Value>>,
+}
+
+/// The proxy returned by `super()`: attribute access searches the method
+/// resolution order starting *after* the defining class, but binds to the
+/// original instance.
+pub struct SuperProxy {
+    /// Where to begin the search — the defining class's base.
+    pub start: Option<Rc<Class>>,
+    pub instance: Value,
 }
 
 /// An insertion-ordered dictionary. Order is preserved for iteration and repr,
@@ -320,6 +383,10 @@ impl Value {
             Value::Set(s) => !s.borrow().is_empty(),
             Value::Range(r) => !r.is_empty(),
             Value::Iter(_) | Value::Func(_) | Value::Builtin(_) | Value::Method(_) => true,
+            Value::Class(_) | Value::Super(_) => true,
+            // An instance is truthy unless its class defines a falsy __len__;
+            // the VM overrides this when a __len__/__bool__ dunder is present.
+            Value::Instance(_) => true,
             Value::Unbound => false,
         }
     }
@@ -341,7 +408,21 @@ impl Value {
             Value::Func(_) => "function",
             Value::Builtin(_) => "builtin_function",
             Value::Method(_) => "method",
+            Value::Class(_) => "type",
+            Value::Instance(_) => "object",
+            Value::Super(_) => "super",
             Value::Unbound => "unbound",
+        }
+    }
+
+    /// Like [`type_name`](Self::type_name), but returns the actual class name for
+    /// a user instance (`Point` rather than the generic `object`). Used where a
+    /// diagnostic should match CPython, e.g. attribute errors.
+    pub fn type_label(&self) -> String {
+        match self {
+            Value::Instance(i) => i.class.name.to_string(),
+            Value::Class(c) => c.name.to_string(),
+            other => other.type_name().to_string(),
         }
     }
 
@@ -426,7 +507,12 @@ impl Value {
             Value::Iter(_) => "<iterator>".to_string(),
             Value::Func(f) => format!("<function {}>", f.code.name),
             Value::Builtin(b) => format!("<builtin {}>", b.name),
-            Value::Method(m) => format!("<method {}>", m.name),
+            Value::Method(_) => "<bound method>".to_string(),
+            Value::Class(c) => format!("<class '{}'>", c.name),
+            // Default form only; a __repr__/__str__ dunder is applied by the VM
+            // before this fallback is reached.
+            Value::Instance(i) => format!("<{} object>", i.class.name),
+            Value::Super(_) => "<super>".to_string(),
             Value::Unbound => "<unbound>".to_string(),
         }
     }
@@ -454,6 +540,10 @@ impl Value {
                         b.get(k).ok().flatten().map(|bv| bv.equals(v)).unwrap_or(false)
                     })
             }
+            // Default identity equality; a __eq__ dunder, when present, is
+            // dispatched by the VM before this fallback is used.
+            (Value::Instance(a), Value::Instance(b)) => Rc::ptr_eq(a, b),
+            (Value::Class(a), Value::Class(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }

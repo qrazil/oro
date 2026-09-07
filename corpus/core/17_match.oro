@@ -65,20 +65,21 @@ print(numeric(1.0))
 print(numeric(2))
 
 # Dotted-name value pattern: the name is looked up at runtime and compared by
-# equality (this is the sequential compare-chain path, not the jump table).
-# Oro has no enums/classes yet, so there is nothing whose attribute equals a
-# plain value; here the dotted name resolves to a string method, never equals
-# the subject, and the match falls through to the default. It demonstrates that
-# a dotted pattern is evaluated at runtime and behaves identically under CPython.
-def routed(s):
-    text = "x"
-    match s:
-        case text.upper:
-            return "dotted-hit"
-        case "on":
-            return "enabled"
-        case _:
-            return "default"
+# equality (the sequential compare-chain path, not the jump table). Class-level
+# attributes act as the enum members.
+class Cmd:
+    QUIT = "q"
+    HELP = "h"
 
-print(routed("on"))
-print(routed("off"))
+def route(c):
+    match c:
+        case Cmd.QUIT:
+            return "quitting"
+        case Cmd.HELP:
+            return "helping"
+        case _:
+            return "unknown"
+
+print(route("q"))
+print(route("h"))
+print(route("x"))
