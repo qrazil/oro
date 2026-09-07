@@ -725,10 +725,11 @@ fn try_requires_except_or_finally() {
 
 #[test]
 fn import_dotted() {
-    match parse_one("import a.b.c") {
+    // A dotted import must name its binding with `as` (single-segment need not).
+    match parse_one("import a.b.c as c") {
         Stmt::Import { path, alias, .. } => {
             assert_eq!(path, vec!["a", "b", "c"]);
-            assert!(alias.is_none());
+            assert_eq!(alias, Some("c".to_string()));
         }
         other => panic!("expected import, got {other:?}"),
     }
