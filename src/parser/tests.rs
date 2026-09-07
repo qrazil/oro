@@ -1143,6 +1143,15 @@ fn import_parses_dotted_and_alias() {
 // --- imports: cut forms ---------------------------------------------------
 
 #[test]
+fn reject_bare_multisegment_import() {
+    let e = parse_err("import a.b.c\n");
+    assert!(e.message.contains("must use `as`"), "got: {}", e.message);
+    // Single-segment is fine, and the `as` form is fine.
+    assert!(matches!(parse_one("import json\n"), Stmt::Import { .. }));
+    assert!(matches!(parse_one("import a.b.c as c\n"), Stmt::Import { .. }));
+}
+
+#[test]
 fn reject_from_import() {
     let e = parse_err("from os import path\n");
     assert!(e.message.contains("from X import Y"), "got: {}", e.message);

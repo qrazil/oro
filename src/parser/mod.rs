@@ -269,6 +269,20 @@ impl Parser {
         } else {
             None
         };
+        // A bare multi-segment import would bind the last segment (Go-style),
+        // which is NOT what Python does — Python binds the first. Requiring `as`
+        // makes the binding explicit and keeps `import a.b.c as c` meaning the
+        // same in both, so the "every Oro program is valid Python" invariant
+        // has no exceptions.
+        if path.len() > 1 && alias.is_none() {
+            return Err(self.error(format!(
+                "a multi-segment import must use `as` to name the binding: write \
+                 `import {p} as {last}` (Python binds the first segment here, Oro the last, so \
+                 Oro requires you to say which)",
+                p = path.join("."),
+                last = path.last().unwrap(),
+            )));
+        }
         Ok(Stmt::Import { path, alias, line, col })
     }
 

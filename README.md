@@ -47,13 +47,14 @@ This one-directional property is what makes Oro cheap to own:
 
 To keep the property intact, Oro is *more* restrictive than Python wherever it
 differs — it rejects things Python accepts, never the other way around. Reject-
-not-accept is the invariant that guarantees the subset relationship holds.
+not-accept is the invariant that guarantees the subset relationship holds, and
+it holds with **no exceptions**.
 
-**One knowing exception:** a multi-segment `import a.b.c` *without* `as` binds
-the last segment (`c`), Go-style, where Python binds the first (`a`). So that
-one form is not valid-Python-equivalent. Single imports (`import os`) and
-aliased ones (`import a.b.c as name`) bind identically in both; use `as` when
-you want the guarantee to hold for a dotted import.
+The one form that could have broken it — a multi-segment `import a.b.c`, which
+Python binds to `a` but a last-segment rule would bind to `c` — is simply
+rejected: a dotted import must use `as` (`import a.b.c as c`), which means
+exactly the same thing in CPython and Oro. Single-segment imports (`import os`)
+are unaffected.
 
 ## The frozen feature set
 
