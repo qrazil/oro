@@ -1,0 +1,9 @@
+vals = [0, 1, "", "x", [], [1], {}, None]
+i = 0
+while i < len(vals):
+    v = vals[i]
+    if v:
+        print("truthy")
+    else:
+        print("falsy")
+    i = i + 1

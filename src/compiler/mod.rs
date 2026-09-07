@@ -125,8 +125,10 @@ pub enum Op {
     LoadAttr(Rc<str>),
     /// Pop an iterable and push `n` elements in reverse (top = first element).
     UnpackSequence(usize),
-    /// Pop a value and push its `str()` form (for f-string interpolation).
-    FormatValue,
+    /// Format an f-string replacement field: pop the format-spec string (top)
+    /// and the value beneath it, apply the `!r`/`!s` conversion encoded in the
+    /// byte, and push the resulting string.
+    FormatValue(u8),
     /// Pop `n` strings and push their concatenation (f-string assembly).
     BuildString(usize),
 
@@ -198,6 +200,10 @@ pub struct CodeObject {
     pub nfree: usize,
     /// Parameters in declaration order (empty for a module).
     pub params: Vec<ParamInfo>,
+    /// Local slots whose name also exists at module scope but was made local by
+    /// assignment (no `global` declaration). Used only to turn an
+    /// unbound-local error into a teaching message. Empty for the module.
+    pub shadow_hints: Vec<(u16, Rc<str>)>,
 }
 
 impl std::fmt::Debug for Value {

@@ -196,6 +196,7 @@ impl Parser {
                 }
                 Ok(Stmt::Raise { exc: Some(exc), line, col })
             }
+            TokenKind::Ident(n) if n == "global" => self.global_stmt(line, col),
             TokenKind::Import => self.import_stmt(line, col),
             TokenKind::Yield => {
                 self.advance();
@@ -211,6 +212,15 @@ impl Parser {
     }
 
     // --- Simple statements ---------------------------------------------------
+
+    fn global_stmt(&mut self, line: usize, col: usize) -> PResult<Stmt> {
+        self.advance(); // `global`
+        let mut names = vec![self.expect_ident("a name after `global`")?.0];
+        while self.eat(&TokenKind::Comma) {
+            names.push(self.expect_ident("a name after `,` in a `global` statement")?.0);
+        }
+        Ok(Stmt::Global { names, line, col })
+    }
 
     fn import_stmt(&mut self, line: usize, col: usize) -> PResult<Stmt> {
         self.advance(); // `import`

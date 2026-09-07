@@ -1,0 +1,22 @@
+def total(*nums):
+    t = 0
+    for n in nums:
+        t = t + n
+    return t
+
+def describe(name, *tags, **opts):
+    parts = [name]
+    for t in tags:
+        parts.append(t)
+    keys = sorted(opts.keys())
+    for k in keys:
+        parts.append(k + "=" + str(opts[k]))
+    return " ".join(parts)
+
+def forward(*args, **kwargs):
+    return describe(*args, **kwargs)
+
+print(total(1, 2, 3, 4))
+print(total())
+print(describe("box", "red", "small", w=3, h=4))
+print(forward("box", "blue", h=9))

@@ -238,3 +238,119 @@ fn name_error_for_unknown_global() {
     let err = run_err("r = nonexistent_name\n");
     assert!(err.message.contains("is not defined"));
 }
+
+// --- f-strings: format specs, conversions, nesting, escapes ---------------
+
+/// The string bound to the last module variable.
+fn fstr(src: &str) -> String {
+    match eval_last(src) {
+        Value::Str(s) => s.s.clone(),
+        other => panic!("expected str, got {}", other.repr()),
+    }
+}
+
+#[test]
+fn fstring_plain_interpolation() {
+    assert_eq!(fstr("name = \"oro\"\nout = f\"lang={name}\"\n"), "lang=oro");
+    assert_eq!(fstr("n = 42\nout = f\"n={n} x2={n * 2}\"\n"), "n=42 x2=84");
+}
+
+#[test]
+fn fstring_width_and_alignment() {
+    assert_eq!(fstr("n = 42\nout = f\"{n:5}\"\n"), "   42");
+    assert_eq!(fstr("n = 42\nout = f\"{n:<5}\"\n"), "42   ");
+    assert_eq!(fstr("n = 42\nout = f\"{n:^6}\"\n"), "  42  ");
+    assert_eq!(fstr("s = \"hi\"\nout = f\"{s:>5}\"\n"), "   hi");
+}
+
+#[test]
+fn fstring_zero_pad_and_thousands() {
+    assert_eq!(fstr("n = 42\nout = f\"{n:05d}\"\n"), "00042");
+    assert_eq!(fstr("n = 1234567\nout = f\"{n:,}\"\n"), "1,234,567");
+}
+
+#[test]
+fn fstring_float_precision() {
+    assert_eq!(fstr("x = 3.14159\nout = f\"{x:.2f}\"\n"), "3.14");
+    assert_eq!(fstr("x = 3.14159\nout = f\"{x:10.3f}\"\n"), "     3.142");
+}
+
+#[test]
+fn fstring_conversions() {
+    assert_eq!(fstr("s = \"hi\"\nout = f\"{s!r}\"\n"), "'hi'");
+    assert_eq!(fstr("s = \"hi\"\nout = f\"{s!s}\"\n"), "hi");
+}
+
+#[test]
+fn fstring_nested_spec() {
+    // Precision comes from an inner expression.
+    assert_eq!(fstr("x = 3.14159\np = 2\nout = f\"{x:.{p}f}\"\n"), "3.14");
+    assert_eq!(fstr("x = 3.14159\np = 4\nout = f\"{x:.{p}f}\"\n"), "3.1416");
+    // Width from an inner expression, too.
+    assert_eq!(fstr("n = 7\nw = 4\nout = f\"{n:{w}}\"\n"), "   7");
+}
+
+#[test]
+fn fstring_escapes_and_literal_braces() {
+    assert_eq!(fstr("out = f\"a\\tb\"\n"), "a\tb");
+    assert_eq!(fstr("out = f\"a\\nb\"\n"), "a\nb");
+    assert_eq!(fstr("out = f\"{{literal}}\"\n"), "{literal}");
+}
+
+// --- global statement -----------------------------------------------------
+
+#[test]
+fn global_lets_a_function_mutate_module_state() {
+    let src = "count = 0\n\
+               def bump():\n    global count\n    count = count + 1\n    return count\n\
+               r1 = bump()\nr2 = bump()\n";
+    // count, bump, r1, r2 — inspect module `count` (slot 0, a cell).
+    let locals = run_locals(src);
+    // After two bumps the module count is 2; r2 is 2, r1 is 1.
+    let vals: Vec<i64> = locals.iter().filter_map(|v| match v {
+        Value::Int(i) => Some(*i),
+        _ => None,
+    }).collect();
+    assert!(vals.contains(&2), "expected count/r2 == 2, got {vals:?}");
+    assert!(vals.contains(&1), "expected r1 == 1, got {vals:?}");
+}
+
+#[test]
+fn global_creates_module_binding_when_absent() {
+    let src = "def make():\n    global created\n    created = 99\n\
+               make()\nout = created\n";
+    assert_eq!(int(&eval_last(src)), 99);
+}
+
+#[test]
+fn global_with_multiple_names() {
+    // `a`/`b` are captured (cells), so read them into plain module locals to
+    // observe the swap.
+    let src = "a = 1\nb = 2\n\
+               def swap():\n    global a, b\n    a, b = b, a\n\
+               swap()\nra = a\nrb = b\n";
+    let locals = run_locals(src);
+    let ra = int(locals.iter().rev().nth(1).unwrap());
+    let rb = int(locals.last().unwrap());
+    assert_eq!(ra, 2);
+    assert_eq!(rb, 1);
+}
+
+#[test]
+fn assignment_without_global_stays_local() {
+    // The module binding must be untouched.
+    let src = "n = 100\n\
+               def shadow():\n    n = 5\n    return n\n\
+               inner = shadow()\n";
+    let locals = run_locals(src);
+    assert_eq!(int(&locals[0]), 100); // module n unchanged
+}
+
+#[test]
+fn unbound_local_shadowing_module_teaches_global() {
+    let err = run_err("count = 0\n\
+                       def bump():\n    count = count + 1\n    return count\n\
+                       bump()\n");
+    assert!(err.message.contains("global count"), "got: {}", err.message);
+    assert!(err.message.contains("shadows the module-level"), "got: {}", err.message);
+}

@@ -1,0 +1,21 @@
+def risky(n):
+    if n < 0:
+        raise ValueError("negative")
+    return n * 2
+
+try:
+    print(risky(5))
+    print(risky(-1))
+except ValueError as e:
+    print("caught:", str(e))
+finally:
+    print("done")
+
+def safe(n):
+    try:
+        return risky(n)
+    except ValueError as e:
+        return 0
+
+print(safe(3))
+print(safe(-3))

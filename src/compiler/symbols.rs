@@ -12,7 +12,7 @@
 //!
 //! Codegen then asks [`SymTable::resolve_name`] where each name lives.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{Arg, Expr, Kwarg, Stmt};
 
@@ -60,6 +60,9 @@ pub struct Scope {
     /// order.
     pub freevars: Vec<usize>,
     pub nlocals: u16,
+    /// Names declared `global` in this function; they bind to module scope and
+    /// an assignment to them does not create a local. Function scopes only.
+    pub globals: HashSet<String>,
 }
 
 impl Scope {
@@ -74,6 +77,7 @@ impl Scope {
             cellvars: Vec::new(),
             freevars: Vec::new(),
             nlocals: 0,
+            globals: HashSet::new(),
         }
     }
 
@@ -126,6 +130,13 @@ impl SymTable {
     /// collected before descending into child blocks, so a nested block that
     /// rebinds a name sees the enclosing binding.
     fn build_scope(&mut self, scope_id: usize, stmts: &[Stmt], predeclared: &[String]) {
+        // Step 0: for a function/module, gather every `global` declaration in
+        // its body (including nested blocks, but not nested defs) before any
+        // bindings are collected, so an assignment to a global name is never
+        // mistaken for a local — regardless of source order.
+        if self.scopes[scope_id].is_function() {
+            self.collect_globals(scope_id, stmts);
+        }
         for name in predeclared {
             self.declare_here(scope_id, name);
         }
@@ -136,6 +147,39 @@ impl SymTable {
         // Step 2: descend, creating child scopes in source order.
         for stmt in stmts {
             self.build_children(scope_id, stmt);
+        }
+    }
+
+    /// Register every `global` name found in `stmts` (recursing into `if`/`for`/
+    /// `while` bodies but not nested `def`s) onto function scope `func`, and
+    /// ensure each is bound at module scope — matching Python, where
+    /// `global x; x = 1` creates the module-level `x` if it did not exist.
+    fn collect_globals(&mut self, func: usize, stmts: &[Stmt]) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Global { names, .. } => {
+                    for name in names {
+                        self.scopes[func].globals.insert(name.clone());
+                        let m = self.module;
+                        self.declare_here(m, name);
+                    }
+                }
+                Stmt::If { body, elifs, orelse, .. } => {
+                    self.collect_globals(func, body);
+                    for (_, ebody) in elifs {
+                        self.collect_globals(func, ebody);
+                    }
+                    if let Some(ebody) = orelse {
+                        self.collect_globals(func, ebody);
+                    }
+                }
+                Stmt::While { body, .. } | Stmt::For { body, .. } => {
+                    self.collect_globals(func, body);
+                }
+                // A `def`/`class` starts a new function scope with its own
+                // `global` declarations — do not descend.
+                _ => {}
+            }
         }
     }
 
@@ -172,6 +216,12 @@ impl SymTable {
     /// Declare `name` in this scope unless it is already visible within the same
     /// function (in which case the assignment rebinds the existing variable).
     fn maybe_declare(&mut self, scope_id: usize, name: &str) {
+        // A name declared `global` in this function binds to module scope; an
+        // assignment must not shadow it with a local.
+        let func = self.scopes[scope_id].func;
+        if self.scopes[func].globals.contains(name) {
+            return;
+        }
         if self.lookup_in_function(scope_id, name).is_some() {
             return;
         }
@@ -331,7 +381,11 @@ impl SymTable {
 
     fn resolve_store_target(&mut self, scope_id: usize, target: &Expr) {
         match target {
-            Expr::Name { .. } => { /* stores always resolve within the function */ }
+            // A store to a plain name is a reference too: for an ordinary local
+            // this is a no-op, but for a `global` name it resolves to the module
+            // symbol and must mark it captured and thread the cell as a free var
+            // (otherwise a write-only global would never set up its storage).
+            Expr::Name { name, .. } => self.reference(scope_id, name),
             Expr::Tuple { elements, .. } | Expr::List { elements, .. } => {
                 for e in elements {
                     self.resolve_store_target(scope_id, e);
@@ -493,6 +547,33 @@ impl SymTable {
                 .expect("free variable must be threaded through this function") as u16;
             Resolution::Free(idx)
         }
+    }
+
+    /// Local slots of function `func` whose name is also bound at module scope
+    /// but was made local by assignment (i.e. not declared `global`). Codegen
+    /// stores these on the [`super::CodeObject`] so an unbound-local error can
+    /// point the user at `global`. Empty for the module scope itself.
+    pub fn shadow_hints(&self, func: usize) -> Vec<(u16, std::rc::Rc<str>)> {
+        if func == self.module {
+            return Vec::new();
+        }
+        let mut hints = Vec::new();
+        for s in 0..self.scopes.len() {
+            if self.scopes[s].func != func {
+                continue;
+            }
+            for (name, &sym) in &self.scopes[s].decls {
+                // Only plain (uncaptured) locals reach the LoadFast unbound path,
+                // and only names that actually collide with a module binding.
+                if self.symbols[sym].owner == func
+                    && !self.symbols[sym].captured
+                    && self.scopes[self.module].decls.contains_key(name)
+                {
+                    hints.push((self.symbols[sym].slot, std::rc::Rc::from(name.as_str())));
+                }
+            }
+        }
+        hints
     }
 
     pub fn ncells(&self, func: usize) -> u16 {

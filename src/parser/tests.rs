@@ -897,9 +897,20 @@ fn cut_lambda() {
 }
 
 #[test]
-fn cut_global_and_nonlocal() {
-    assert_cut("global x", "`global` statement is not supported");
+fn cut_nonlocal_but_global_is_supported() {
+    // `nonlocal` stays deliberately cut.
     assert_cut("nonlocal x", "`nonlocal` statement is not supported");
+    // `global` is a real statement now.
+    match parse_one("global x") {
+        Stmt::Global { names, .. } => assert_eq!(names, vec!["x".to_string()]),
+        other => panic!("expected a Global statement, got {other:?}"),
+    }
+    match parse_one("global a, b, c") {
+        Stmt::Global { names, .. } => {
+            assert_eq!(names, vec!["a".to_string(), "b".to_string(), "c".to_string()])
+        }
+        other => panic!("expected a Global statement, got {other:?}"),
+    }
 }
 
 #[test]

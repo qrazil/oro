@@ -1,0 +1,23 @@
+lines = ["alice,30,dallas", "bob,25,austin", "carol,35,houston"]
+rows = []
+for line in lines:
+    rows.append(line.split(","))
+
+total = 0
+for r in rows:
+    total = total + int(r[1])
+print(total)
+
+names = []
+for r in rows:
+    names.append(r[0].upper())
+print(", ".join(names))
+
+oldest = ""
+best = 0
+for r in rows:
+    age = int(r[1])
+    if age > best:
+        best = age
+        oldest = r[0]
+print(oldest, best)

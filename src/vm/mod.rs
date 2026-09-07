@@ -363,9 +363,21 @@ impl Vm {
                         self.push(v);
                     }
                 }
-                Op::FormatValue => {
-                    let v = self.pop();
-                    self.push(Value::str(v.display()));
+                Op::FormatValue(conv) => {
+                    let spec = self.pop();
+                    let value = self.pop();
+                    let spec_str = match &spec {
+                        Value::Str(s) => s.s.clone(),
+                        other => {
+                            let msg = format!(
+                                "format spec must be a string, not '{}'",
+                                other.type_name()
+                            );
+                            return Err(self.err(msg));
+                        }
+                    };
+                    let out = self.wrap(crate::format::format_value(&value, conv, &spec_str))?;
+                    self.push(Value::str(out));
                 }
                 Op::BuildString(n) => {
                     let parts = self.popn(n);
@@ -408,9 +420,22 @@ impl Vm {
     }
 
     fn unbound_local_msg(&self, slot: u16) -> String {
+        let code = &self.frames.last().unwrap().code;
+        // A name that also exists at module scope but was made local by an
+        // assignment (no `global`) is the classic footgun — teach the fix.
+        for (s, name) in &code.shadow_hints {
+            if *s == slot {
+                return format!(
+                    "local variable '{name}' referenced before assignment: '{name}' is assigned \
+                     inside this function, which makes it local and shadows the module-level \
+                     '{name}'. To read and update the module value, declare `global {name}` at \
+                     the top of the function; otherwise keep the state on an object, or rename \
+                     the local."
+                );
+            }
+        }
         // Recover the variable's name from its parameter descriptor when we can,
         // for a friendlier message.
-        let code = &self.frames.last().unwrap().code;
         for p in &code.params {
             if let VarTarget::Local(s) = p.target {
                 if s == slot {

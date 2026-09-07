@@ -1,0 +1,76 @@
+count = 0
+
+def bump():
+    global count
+    count = count + 1
+    return count
+
+print(bump())
+print(bump())
+print(bump())
+print(count)
+
+total = 0
+
+def add(n):
+    global total
+    total = total + n
+
+add(5)
+add(10)
+add(100)
+print(total)
+
+def make():
+    global created
+    created = 42
+
+make()
+print(created)
+
+a = 1
+b = 2
+
+def swap():
+    global a, b
+    a, b = b, a
+
+swap()
+print(a, b)
+
+flag = 0
+
+def setflag(x):
+    global flag
+    if x > 0:
+        flag = x
+    else:
+        flag = -1
+
+setflag(7)
+print(flag)
+setflag(-3)
+print(flag)
+
+# A name assigned in a function WITHOUT global stays local: the module
+# binding is untouched.
+n = 100
+
+def shadow():
+    n = 5
+    return n
+
+print(shadow())
+print(n)
+
+# global inside a loop body, accumulating across calls
+acc = 0
+
+def push(items):
+    global acc
+    for x in items:
+        acc = acc + x
+
+push([1, 2, 3])
+push([10, 20])
+print(acc)

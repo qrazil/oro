@@ -1,0 +1,10 @@
+# INTENTIONAL DIVERGENCE FROM PYTHON.
+# Oro gives if/for/while bodies real block scope. Names do NOT leak out.
+# Under CPython this script prints 9 then 2; under Oro both lookups must
+# be errors. This file is NOT part of the CPython differential set.
+
+for i in range(10):
+    leaked = i
+
+print(leaked)
+print(i)

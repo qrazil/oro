@@ -1,0 +1,15 @@
+d = {"a": 1, "b": 2}
+d["c"] = 3
+print(len(d))
+print(d["a"])
+print(d.get("zz"))
+print(sorted(d.keys()))
+print(sorted(d.values()))
+counts = {}
+for w in ["x", "y", "x", "z", "x"]:
+    if w in counts:
+        counts[w] = counts[w] + 1
+    else:
+        counts[w] = 1
+print(sorted(counts.keys()))
+print(counts["x"])

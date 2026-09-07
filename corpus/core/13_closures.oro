@@ -1,0 +1,15 @@
+def make_counter():
+    count = 0
+    def bump():
+        return count + 1
+    return bump()
+
+print(make_counter())
+
+def apply_twice(f, x):
+    return f(f(x))
+
+def double(x):
+    return x * 2
+
+print(apply_twice(double, 5))

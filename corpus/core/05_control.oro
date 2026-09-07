@@ -1,0 +1,30 @@
+i = 0
+total = 0
+while i < 10:
+    if i % 3 == 0:
+        total = total + i
+    elif i % 5 == 0:
+        total = total + 100
+    else:
+        total = total - 1
+    i = i + 1
+print(total)
+
+n = 0
+for x in range(5):
+    n = n + x
+print(n)
+
+found = -1
+for x in range(20):
+    if x * x > 50:
+        found = x
+        break
+print(found)
+
+c = 0
+for x in range(10):
+    if x % 2 == 0:
+        continue
+    c = c + 1
+print(c)

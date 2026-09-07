@@ -83,6 +83,7 @@ impl<'a> Codegen<'a> {
             ncells: self.table.ncells(self.func) as usize,
             nfree: self.table.nfree(self.func) as usize,
             params,
+            shadow_hints: self.table.shadow_hints(self.func),
         }
     }
 
@@ -175,6 +176,9 @@ impl<'a> Codegen<'a> {
             Stmt::Break { line, col } => self.emit_break(*line, *col)?,
             Stmt::Continue { line, col } => self.emit_continue(*line, *col)?,
             Stmt::Pass { .. } => {}
+            // A declaration only — its effect was recorded by the symbol pass,
+            // so name references now resolve to module scope. No code to emit.
+            Stmt::Global { .. } => {}
             Stmt::Class { line, col, .. } => {
                 return Err(self.err("classes are not yet implemented in this build", *line, *col))
             }
@@ -750,43 +754,180 @@ impl<'a> Codegen<'a> {
                     literal.push('}');
                     i += 2;
                 }
+                // Escape sequences in the literal text are decoded (the lexer
+                // keeps f-string text raw so interpolation can be parsed here).
+                '\\' => {
+                    i += 1;
+                    let decoded = decode_escape(&chars, &mut i);
+                    literal.push_str(&decoded);
+                }
                 '{' => {
                     flush!();
                     i += 1;
-                    let mut depth = 1;
-                    let mut src = String::new();
-                    while i < chars.len() && depth > 0 {
-                        match chars[i] {
-                            '{' => {
-                                depth += 1;
-                                src.push('{');
-                            }
-                            '}' => {
-                                depth -= 1;
-                                if depth == 0 {
-                                    break;
-                                }
-                                src.push('}');
-                            }
-                            c => src.push(c),
-                        }
-                        i += 1;
-                    }
-                    if depth != 0 {
-                        return Err(self.err(
-                            "unterminated `{` in f-string",
-                            line,
-                            col,
-                        ));
-                    }
-                    i += 1; // consume '}'
-                    let expr = self.parse_fstring_expr(&src, line, col)?;
-                    self.emit_expr(&expr)?;
-                    self.emit(Op::FormatValue, line, col);
+                    let src = self.capture_field(&chars, &mut i, line, col)?;
+                    self.emit_field(&src, line, col)?;
                     parts += 1;
                 }
                 '}' => {
                     return Err(self.err("single `}` in f-string", line, col));
+                }
+                c => {
+                    literal.push(c);
+                    i += 1;
+                }
+            }
+        }
+        flush!();
+
+        match parts {
+            0 => {
+                let idx = self.add_const(Value::str(String::new()));
+                self.emit(Op::LoadConst(idx), line, col);
+            }
+            1 => {}
+            n => {
+                self.emit(Op::BuildString(n), line, col);
+            }
+        }
+        Ok(())
+    }
+
+    /// Capture the raw text of a replacement field: everything up to the `}`
+    /// that closes it, tracking nested `{ }` (from nested format specs) so the
+    /// spec's own braces don't terminate the field early. `i` points just past
+    /// the opening `{` on entry and just past the closing `}` on return.
+    fn capture_field(
+        &self,
+        chars: &[char],
+        i: &mut usize,
+        line: usize,
+        col: usize,
+    ) -> CResult<String> {
+        let mut depth = 1;
+        let mut src = String::new();
+        while *i < chars.len() && depth > 0 {
+            match chars[*i] {
+                '{' => {
+                    depth += 1;
+                    src.push('{');
+                }
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                    src.push('}');
+                }
+                c => src.push(c),
+            }
+            *i += 1;
+        }
+        if depth != 0 {
+            return Err(self.err("unterminated `{` in f-string", line, col));
+        }
+        *i += 1; // consume the closing '}'
+        Ok(src)
+    }
+
+    /// Emit code for one replacement field `expr[!conv][:spec]`: push the value,
+    /// push the (possibly nested) format-spec string, then `FormatValue`.
+    fn emit_field(&mut self, src: &str, line: usize, col: usize) -> CResult<()> {
+        let field = split_field(src);
+        let expr = self.parse_fstring_expr(&field.expr, line, col)?;
+        self.emit_expr(&expr)?;
+
+        let conv = match field.conv {
+            None => crate::format::CONV_NONE,
+            Some('s') => crate::format::CONV_STR,
+            Some('r') => crate::format::CONV_REPR,
+            Some('a') => crate::format::CONV_ASCII,
+            Some(c) => {
+                return Err(self.err(
+                    format!("f-string: invalid conversion character '{c}' (expected 's', 'r', or 'a')"),
+                    line,
+                    col,
+                ))
+            }
+        };
+
+        match field.spec {
+            None => {
+                let idx = self.add_const(Value::str(String::new()));
+                self.emit(Op::LoadConst(idx), line, col);
+            }
+            Some(spec) => self.emit_spec(&spec, line, col)?,
+        }
+
+        self.emit(Op::FormatValue(conv), line, col);
+        Ok(())
+    }
+
+    /// Build a format-spec string on the stack. A static spec is a single
+    /// constant; a spec with nested `{expr}` fields is assembled at runtime.
+    fn emit_spec(&mut self, spec: &str, line: usize, col: usize) -> CResult<()> {
+        let chars: Vec<char> = spec.chars().collect();
+        let mut i = 0;
+        let mut literal = String::new();
+        let mut parts = 0usize;
+
+        macro_rules! flush {
+            () => {
+                if !literal.is_empty() {
+                    let idx = self.add_const(Value::str(std::mem::take(&mut literal)));
+                    self.emit(Op::LoadConst(idx), line, col);
+                    parts += 1;
+                }
+            };
+        }
+
+        while i < chars.len() {
+            match chars[i] {
+                '{' if chars.get(i + 1) == Some(&'{') => {
+                    literal.push('{');
+                    i += 2;
+                }
+                '}' if chars.get(i + 1) == Some(&'}') => {
+                    literal.push('}');
+                    i += 2;
+                }
+                '{' => {
+                    flush!();
+                    i += 1;
+                    // A nested field may not itself carry a nested spec (Python
+                    // allows only one level), so capture up to a plain `}`.
+                    let mut inner = String::new();
+                    while i < chars.len() && chars[i] != '}' {
+                        inner.push(chars[i]);
+                        i += 1;
+                    }
+                    if i >= chars.len() {
+                        return Err(self.err("unterminated `{` in f-string format spec", line, col));
+                    }
+                    i += 1; // consume '}'
+                    let field = split_field(&inner);
+                    if field.spec.is_some() {
+                        return Err(self.err(
+                            "f-string: format spec nested too deeply",
+                            line,
+                            col,
+                        ));
+                    }
+                    let expr = self.parse_fstring_expr(&field.expr, line, col)?;
+                    self.emit_expr(&expr)?;
+                    let conv = match field.conv {
+                        None => crate::format::CONV_NONE,
+                        Some('s') => crate::format::CONV_STR,
+                        Some('r') => crate::format::CONV_REPR,
+                        Some('a') => crate::format::CONV_ASCII,
+                        Some(_) => crate::format::CONV_NONE,
+                    };
+                    let idx = self.add_const(Value::str(String::new()));
+                    self.emit(Op::LoadConst(idx), line, col);
+                    self.emit(Op::FormatValue(conv), line, col);
+                    parts += 1;
+                }
+                '}' => {
+                    return Err(self.err("single `}` in f-string format spec", line, col));
                 }
                 c => {
                     literal.push(c);
@@ -823,6 +964,86 @@ impl<'a> Codegen<'a> {
             [Stmt::Expr { value, .. }] => Ok(value.clone()),
             _ => Err(self.err("f-string field must be a single expression", line, col)),
         }
+    }
+}
+
+/// The three pieces of a replacement field: the expression source, an optional
+/// `!` conversion char, and an optional `:` format spec.
+struct Field {
+    expr: String,
+    conv: Option<char>,
+    spec: Option<String>,
+}
+
+/// Split `expr[!conv][:spec]`. The `!` and `:` separators are only recognised
+/// at bracket depth zero and outside string literals, so slices (`a[1:2]`),
+/// dict literals, and `!=` operators inside the expression are left intact.
+fn split_field(src: &str) -> Field {
+    let chars: Vec<char> = src.chars().collect();
+    let mut depth = 0i32;
+    let mut in_str: Option<char> = None;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if let Some(q) = in_str {
+            if c == '\\' {
+                i += 2;
+                continue;
+            }
+            if c == q {
+                in_str = None;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            '\'' | '"' => in_str = Some(c),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            '!' if depth == 0 => {
+                // A conversion is `!` + one of r/s/a, then end-of-field or `:`.
+                // Anything else (e.g. `!=`) belongs to the expression.
+                if let Some(&n) = chars.get(i + 1) {
+                    if matches!(n, 'r' | 's' | 'a') && matches!(chars.get(i + 2), None | Some(':')) {
+                        let expr: String = chars[..i].iter().collect();
+                        let spec = if chars.get(i + 2) == Some(&':') {
+                            Some(chars[i + 3..].iter().collect())
+                        } else {
+                            None
+                        };
+                        return Field { expr, conv: Some(n), spec };
+                    }
+                }
+            }
+            ':' if depth == 0 => {
+                let expr: String = chars[..i].iter().collect();
+                let spec: String = chars[i + 1..].iter().collect();
+                return Field { expr, conv: None, spec: Some(spec) };
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    Field { expr: src.to_string(), conv: None, spec: None }
+}
+
+/// Decode one escape sequence in f-string literal text. `i` points at the
+/// character after the backslash; it is advanced past the consumed char(s).
+/// Unknown escapes keep the backslash verbatim (matching the string lexer).
+fn decode_escape(chars: &[char], i: &mut usize) -> String {
+    let Some(&e) = chars.get(*i) else {
+        return "\\".to_string();
+    };
+    *i += 1;
+    match e {
+        'n' => "\n".to_string(),
+        't' => "\t".to_string(),
+        'r' => "\r".to_string(),
+        '\\' => "\\".to_string(),
+        '\'' => "'".to_string(),
+        '"' => "\"".to_string(),
+        '0' => "\0".to_string(),
+        other => format!("\\{other}"),
     }
 }
 

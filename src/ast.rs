@@ -254,6 +254,13 @@ pub enum Stmt {
         line: usize,
         col: usize,
     },
+    /// `global a, b` — binds the listed names to module scope for the rest of
+    /// the enclosing function. Module scope only; `nonlocal` is unsupported.
+    Global {
+        names: Vec<String>,
+        line: usize,
+        col: usize,
+    },
 }
 
 /// An expression.
@@ -406,7 +413,8 @@ impl Stmt {
             | Stmt::Try { line, col, .. }
             | Stmt::Raise { line, col, .. }
             | Stmt::Import { line, col, .. }
-            | Stmt::Yield { line, col, .. } => (*line, *col),
+            | Stmt::Yield { line, col, .. }
+            | Stmt::Global { line, col, .. } => (*line, *col),
         }
     }
 

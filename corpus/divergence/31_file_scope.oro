@@ -1,0 +1,16 @@
+# INTENTIONAL DIVERGENCE.
+# Oro has no `with`. Refcounting plus block scope closes the file at the
+# end of the block. Returning a file keeps it alive via the refcount.
+
+def read_it(path):
+    f = open(path)
+    text = f.read()
+    return text
+
+def hand_back(path):
+    f = open(path)
+    return f
+
+print(len(read_it("sample.txt")) > 0)
+h = hand_back("sample.txt")
+print(len(h.read()) >= 0)

@@ -1,0 +1,23 @@
+def add(a, b):
+    return a + b
+
+def greet(name, greeting="hi"):
+    return greeting + ", " + name
+
+def fib(n):
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+print(add(2, 3))
+print(greet("ashwin"))
+print(greet("ashwin", "hello"))
+print(fib(20))
+
+def outer():
+    return inner() + 1
+
+def inner():
+    return 41
+
+print(outer())

@@ -27,6 +27,7 @@ pub fn lookup(name: &str) -> Option<Value> {
         "min" => bi_min,
         "max" => bi_max,
         "sum" => bi_sum,
+        "sorted" => bi_sorted,
         _ => return None,
     };
     Some(Value::Builtin(Rc::new(Builtin { name: intern(name), func: f })))
@@ -47,6 +48,7 @@ fn intern(name: &str) -> &'static str {
         "min" => "min",
         "max" => "max",
         "sum" => "sum",
+        "sorted" => "sorted",
         _ => "builtin",
     }
 }
@@ -211,6 +213,40 @@ fn bi_sum(args: Vec<Value>) -> VResult<Value> {
     Ok(acc)
 }
 
+fn bi_sorted(args: Vec<Value>) -> VResult<Value> {
+    let iterable = match args.as_slice() {
+        [it] => it,
+        _ => return Err("sorted() takes exactly 1 argument".to_string()),
+    };
+    let mut items = crate::vm::iterate_to_vec(iterable)?;
+    sort_values(&mut items)?;
+    Ok(Value::List(Rc::new(RefCell::new(items))))
+}
+
+/// Stable sort by Oro's `<` ordering. Because [`Value::compare`] is fallible
+/// (unorderable pairs are a `TypeError`), we capture the first error and, once
+/// tripped, treat every remaining comparison as `Equal` so the sort finishes
+/// quickly before we surface the error.
+fn sort_values(items: &mut [Value]) -> VResult<()> {
+    let mut err: Option<String> = None;
+    items.sort_by(|a, b| {
+        if err.is_some() {
+            return std::cmp::Ordering::Equal;
+        }
+        match a.compare(b) {
+            Ok(ord) => ord,
+            Err(e) => {
+                err = Some(e);
+                std::cmp::Ordering::Equal
+            }
+        }
+    });
+    match err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
 // --- Numeric conversion helpers ---------------------------------------------
 
 fn as_i64(v: &Value) -> VResult<i64> {
@@ -264,7 +300,7 @@ pub fn method_exists(recv: &Value, name: &str) -> bool {
             "split" | "join" | "strip" | "lstrip" | "rstrip" | "upper" | "lower"
                 | "replace" | "startswith" | "endswith" | "find"
         ),
-        Value::List(_) => matches!(name, "append" | "pop" | "extend"),
+        Value::List(_) => matches!(name, "append" | "pop" | "extend" | "sort" | "reverse"),
         Value::Dict(_) => matches!(name, "get" | "keys" | "values" | "items"),
         Value::Set(_) => matches!(name, "add"),
         _ => false,
@@ -388,6 +424,21 @@ fn list_method(l: &Rc<RefCell<Vec<Value>>>, name: &str, args: Vec<Value>) -> VRe
                 _ => return Err("pop() takes at most 1 argument".to_string()),
             };
             Ok(b.remove(idx))
+        }
+        "sort" => {
+            exactly(&args, 0, "sort")?;
+            // Sort a temporary snapshot so the list is never observed in a
+            // half-ordered state (and to avoid holding the borrow across the
+            // fallible comparisons).
+            let mut items = l.borrow().clone();
+            sort_values(&mut items)?;
+            *l.borrow_mut() = items;
+            Ok(Value::None)
+        }
+        "reverse" => {
+            exactly(&args, 0, "reverse")?;
+            l.borrow_mut().reverse();
+            Ok(Value::None)
         }
         _ => Err(format!("'list' object has no method '{name}'")),
     }

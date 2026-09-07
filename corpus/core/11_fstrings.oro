@@ -1,0 +1,6 @@
+name = "oro"
+n = 42
+print(f"lang={name}")
+print(f"n={n} doubled={n * 2}")
+print(f"{n:5}")
+print(f"nested={len(name)}")
