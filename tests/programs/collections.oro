@@ -21,5 +21,8 @@ print(d.keys())
 print(d.values())
 print("a" in d, "z" in d)
 
-nums = {1, 2, 2, 3, 3, 3}
-print(len(nums))
+grid = {}
+grid[(0, 0)] = "origin"
+grid[(1, 2)] = "point"
+print(grid[(0, 0)], grid[(1, 2)])
+print((1, 2) in grid)

@@ -31,6 +31,7 @@ pub fn lookup(name: &str) -> Option<Value> {
         "isinstance" => bi_isinstance,
         "repr" => bi_repr,
         "open" => bi_open,
+        "set" => bi_set,
         _ => return None,
     };
     Some(Value::Builtin(Rc::new(Builtin { name: intern(name), func: f })))
@@ -55,6 +56,7 @@ fn intern(name: &str) -> &'static str {
         "isinstance" => "isinstance",
         "repr" => "repr",
         "open" => "open",
+        "set" => "set",
         _ => "builtin",
     }
 }
@@ -90,7 +92,6 @@ fn bi_len(args: Vec<Value>) -> VResult<Value> {
         Value::List(l) => l.borrow().len(),
         Value::Tuple(t) => t.len(),
         Value::Dict(d) => d.borrow().len(),
-        Value::Set(s) => s.borrow().len(),
         Value::Range(r) => r.len(),
         other => return Err(format!("object of type '{}' has no len()", other.type_name())),
     };
@@ -122,6 +123,13 @@ fn bi_str(args: Vec<Value>) -> VResult<Value> {
 fn bi_repr(args: Vec<Value>) -> VResult<Value> {
     exactly(&args, 1, "repr")?;
     Ok(Value::str(args[0].repr()))
+}
+
+fn bi_set(_args: Vec<Value>) -> VResult<Value> {
+    Err("set() is not supported in Oro — sets are cut. Use a dict for membership \
+         (`{k: True}`, then `k in d`), or dedup with a loop that skips keys already in a dict; \
+         a Set data structure may return in the stdlib."
+        .to_string())
 }
 
 fn bi_open(args: Vec<Value>) -> VResult<Value> {
@@ -381,7 +389,6 @@ pub fn method_exists(recv: &Value, name: &str) -> bool {
         ),
         Value::List(_) => matches!(name, "append" | "pop" | "extend" | "sort" | "reverse"),
         Value::Dict(_) => matches!(name, "get" | "keys" | "values" | "items"),
-        Value::Set(_) => matches!(name, "add"),
         Value::File(_) => matches!(
             name,
             "read" | "readline" | "readlines" | "write" | "close"
@@ -396,7 +403,6 @@ pub fn call_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value>
         Value::Str(_) => str_method(recv, name, args),
         Value::List(l) => list_method(l, name, args),
         Value::Dict(d) => dict_method(d, name, args),
-        Value::Set(s) => set_method(s, name, args),
         Value::File(f) => file_method(f, name, args),
         other => Err(format!("'{}' object has no method '{}'", other.type_name(), name)),
     }
@@ -609,13 +615,3 @@ fn dict_method(d: &Rc<RefCell<OroDict>>, name: &str, args: Vec<Value>) -> VResul
     }
 }
 
-fn set_method(s: &Rc<RefCell<crate::value::OroSet>>, name: &str, args: Vec<Value>) -> VResult<Value> {
-    match name {
-        "add" => {
-            exactly(&args, 1, "add")?;
-            s.borrow_mut().insert(args.into_iter().next().unwrap())?;
-            Ok(Value::None)
-        }
-        _ => Err(format!("'set' object has no method '{name}'")),
-    }
-}

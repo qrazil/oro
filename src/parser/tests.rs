@@ -135,10 +135,6 @@ fn sexp(e: &Expr) -> String {
             let parts: Vec<String> = elements.iter().map(sexp).collect();
             format!("(tuple {})", parts.join(" "))
         }
-        Expr::Set { elements, .. } => {
-            let parts: Vec<String> = elements.iter().map(sexp).collect();
-            format!("(set {})", parts.join(" "))
-        }
         Expr::Dict { entries, .. } => {
             let parts: Vec<String> =
                 entries.iter().map(|(k, v)| format!("{}:{}", sexp(k), sexp(v))).collect();
@@ -306,7 +302,7 @@ fn slices() {
 fn nested_collection_literals() {
     assert_eq!(sexp_of("[1, [2, 3], 4]"), "(list 1 (list 2 3) 4)");
     assert_eq!(sexp_of("{1: [2, 3]}"), "(dict 1:(list 2 3))");
-    assert_eq!(sexp_of("{1, 2, 3}"), "(set 1 2 3)");
+    assert_eq!(sexp_of("{(1, 2): 3}"), "(dict (tuple 1 2):3)");
 }
 
 #[test]
@@ -854,8 +850,26 @@ fn cut_dict_comprehension() {
 }
 
 #[test]
-fn cut_set_comprehension() {
-    assert_cut("{x for x in xs}", "set comprehensions are not supported");
+fn reject_set_literal() {
+    // Sets are cut; `{a, b}` and `{x for ...}` both report the set-literal error.
+    assert_cut("{1, 2, 3}", "set literals are not supported");
+    assert_cut("s = {\"a\", \"b\"}", "set literals are not supported");
+    assert_cut("{x for x in xs}", "set literals are not supported");
+}
+
+#[test]
+fn set_builtin_is_rejected() {
+    // `set(...)` reaches the runtime as a builtin that errors; the parser still
+    // accepts the call syntax, so this is checked as a plain parse of the call.
+    assert!(matches!(parse_one("set()\n"), Stmt::Expr { .. }));
+}
+
+#[test]
+fn empty_braces_is_empty_dict() {
+    match parse_one("d = {}\n") {
+        Stmt::Assign { value, .. } => assert!(matches!(value, Expr::Dict { .. })),
+        other => panic!("expected assign, got {other:?}"),
+    }
 }
 
 #[test]

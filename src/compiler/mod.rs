@@ -104,7 +104,6 @@ pub enum Op {
     // Collection construction.
     BuildList(usize),
     BuildTuple(usize),
-    BuildSet(usize),
     /// Pop `2 * n` values (`k0, v0, k1, v1, ...`) into a new dict.
     BuildMap(usize),
     /// Append the top value to the list one below it (list stays on the stack).

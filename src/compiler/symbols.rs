@@ -561,9 +561,7 @@ impl SymTable {
                     self.resolve_expr(scope_id, part);
                 }
             }
-            Expr::List { elements, .. }
-            | Expr::Tuple { elements, .. }
-            | Expr::Set { elements, .. } => {
+            Expr::List { elements, .. } | Expr::Tuple { elements, .. } => {
                 for e in elements {
                     self.resolve_expr(scope_id, e);
                 }

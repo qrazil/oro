@@ -1,0 +1,43 @@
+t = (1, 2, 3)
+print(t[0], t[-1])
+print(len(t))
+
+# Multiple assignment and swap — tuples are load-bearing here.
+a, b = 1, 2
+print(a, b)
+a, b = b, a
+print(a, b)
+
+# A function returning multiple values returns a tuple.
+def minmax(xs):
+    lo = xs[0]
+    hi = xs[0]
+    for x in xs:
+        if x < lo:
+            lo = x
+        if x > hi:
+            hi = x
+    return lo, hi
+
+print(minmax([3, 1, 4, 1, 5, 9, 2]))
+
+# The reason tuples stay: they are the only hashable composite, so they can be
+# dict keys. A list cannot (mutable + hash-by-value are incompatible).
+grid = {}
+grid[(0, 0)] = "origin"
+grid[(2, 3)] = "far"
+print(grid[(0, 0)])
+print(grid[(2, 3)])
+print((0, 0) in grid)
+print((9, 9) in grid)
+
+# Counting pairs with composite keys.
+counts = {}
+pairs = [("a", 1), ("b", 2), ("a", 1), ("a", 1)]
+for p in pairs:
+    if p in counts:
+        counts[p] = counts[p] + 1
+    else:
+        counts[p] = 1
+print(counts[("a", 1)])
+print(counts[("b", 2)])

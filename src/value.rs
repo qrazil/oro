@@ -43,7 +43,6 @@ pub enum Value {
     List(Rc<RefCell<Vec<Value>>>),
     Tuple(Rc<Vec<Value>>),
     Dict(Rc<RefCell<OroDict>>),
-    Set(Rc<RefCell<OroSet>>),
     Range(Rc<RangeVal>),
     /// A live iterator produced by `GetIter`.
     Iter(Rc<RefCell<IterState>>),
@@ -310,44 +309,6 @@ impl OroDict {
     }
 }
 
-/// An insertion-ordered set.
-#[derive(Default)]
-pub struct OroSet {
-    index: HashMap<HKey, usize>,
-    items: Vec<Value>,
-}
-
-impl OroSet {
-    pub fn new() -> OroSet {
-        OroSet::default()
-    }
-
-    pub fn len(&self) -> usize {
-        self.items.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
-
-    pub fn insert(&mut self, value: Value) -> VResult<()> {
-        let hk = HKey::from_value(&value)?;
-        if !self.index.contains_key(&hk) {
-            self.index.insert(hk, self.items.len());
-            self.items.push(value);
-        }
-        Ok(())
-    }
-
-    pub fn contains(&self, value: &Value) -> VResult<bool> {
-        HKey::from_value(value).map(|hk| self.index.contains_key(&hk))
-    }
-
-    pub fn items(&self) -> &[Value] {
-        &self.items
-    }
-}
-
 /// A hashable projection of a [`Value`], used as a dict/set key.
 ///
 /// Numeric keys are normalised so that `True`, `1` and `1.0` collide, matching
@@ -422,7 +383,6 @@ impl Value {
             Value::List(l) => !l.borrow().is_empty(),
             Value::Tuple(t) => !t.is_empty(),
             Value::Dict(d) => !d.borrow().is_empty(),
-            Value::Set(s) => !s.borrow().is_empty(),
             Value::Range(r) => !r.is_empty(),
             Value::Iter(_) | Value::Func(_) | Value::Builtin(_) | Value::Method(_) => true,
             Value::Class(_) | Value::Super(_) => true,
@@ -445,7 +405,6 @@ impl Value {
             Value::List(_) => "list",
             Value::Tuple(_) => "tuple",
             Value::Dict(_) => "dict",
-            Value::Set(_) => "set",
             Value::Range(_) => "range",
             Value::Iter(_) => "iterator",
             Value::Func(_) => "function",
@@ -531,21 +490,6 @@ impl Value {
                 out.push('}');
                 out
             }
-            Value::Set(s) => {
-                let s = s.borrow();
-                if s.is_empty() {
-                    return "set()".to_string();
-                }
-                let mut out = String::from("{");
-                for (i, v) in s.items().iter().enumerate() {
-                    if i > 0 {
-                        out.push_str(", ");
-                    }
-                    out.push_str(&v.repr());
-                }
-                out.push('}');
-                out
-            }
             Value::Range(r) => {
                 if r.step == 1 {
                     format!("range({}, {})", r.start, r.stop)
@@ -586,11 +530,6 @@ impl Value {
             (Value::Str(a), Value::Str(b)) => a.s == b.s,
             (Value::List(a), Value::List(b)) => seq_eq(&a.borrow(), &b.borrow()),
             (Value::Tuple(a), Value::Tuple(b)) => seq_eq(a, b),
-            (Value::Set(a), Value::Set(b)) => {
-                let (a, b) = (a.borrow(), b.borrow());
-                a.len() == b.len()
-                    && a.items().iter().all(|v| b.contains(v).unwrap_or(false))
-            }
             (Value::Dict(a), Value::Dict(b)) => {
                 let (a, b) = (a.borrow(), b.borrow());
                 a.len() == b.len()

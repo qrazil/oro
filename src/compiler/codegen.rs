@@ -985,12 +985,6 @@ impl<'a> Codegen<'a> {
                 }
                 self.emit(Op::BuildTuple(elements.len()), *line, *col);
             }
-            Expr::Set { elements, line, col } => {
-                for e in elements {
-                    self.emit_expr(e)?;
-                }
-                self.emit(Op::BuildSet(elements.len()), *line, *col);
-            }
             Expr::Dict { entries, line, col } => {
                 for (k, v) in entries {
                     self.emit_expr(k)?;

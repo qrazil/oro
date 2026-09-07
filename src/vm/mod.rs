@@ -17,7 +17,7 @@ use std::rc::Rc;
 use crate::ast::CmpOp;
 use crate::compiler::{CaptureSource, CodeObject, Op, ParamInfo, VarTarget};
 use crate::value::{
-    BoundMethod, Class, Function, Instance, IterState, MethodKind, OroDict, OroSet, RangeVal,
+    BoundMethod, Class, Function, Instance, IterState, MethodKind, OroDict, RangeVal,
     SuperProxy, Value,
 };
 use std::collections::HashMap;
@@ -481,14 +481,6 @@ impl Vm {
                 Op::BuildTuple(n) => {
                     let items = self.popn(n);
                     self.push(Value::Tuple(Rc::new(items)));
-                }
-                Op::BuildSet(n) => {
-                    let items = self.popn(n);
-                    let mut set = OroSet::new();
-                    for it in items {
-                        self.wrap(set.insert(it))?;
-                    }
-                    self.push(Value::Set(Rc::new(RefCell::new(set))));
                 }
                 Op::BuildMap(n) => {
                     let items = self.popn(2 * n);
@@ -1557,7 +1549,6 @@ fn get_iter(v: &Value) -> Result<Value, String> {
             IterState::Str { chars, idx: 0 }
         }
         Value::Dict(d) => IterState::Snapshot { items: d.borrow().keys(), idx: 0 },
-        Value::Set(s) => IterState::Snapshot { items: s.borrow().items().to_vec(), idx: 0 },
         Value::File(f) => IterState::File { file: f.clone() },
         // A generator is its own iterator; ForIter resumes it directly.
         Value::Generator(_) => return Ok(v.clone()),
@@ -1988,7 +1979,6 @@ fn value_is(a: &Value, b: &Value) -> bool {
         (Value::List(x), Value::List(y)) => Rc::ptr_eq(x, y),
         (Value::Tuple(x), Value::Tuple(y)) => Rc::ptr_eq(x, y),
         (Value::Dict(x), Value::Dict(y)) => Rc::ptr_eq(x, y),
-        (Value::Set(x), Value::Set(y)) => Rc::ptr_eq(x, y),
         (Value::Func(x), Value::Func(y)) => Rc::ptr_eq(x, y),
         _ => false,
     }
@@ -2002,7 +1992,6 @@ fn contains(container: &Value, item: &Value) -> Result<bool, String> {
         },
         Value::List(l) => Ok(l.borrow().iter().any(|v| v.equals(item))),
         Value::Tuple(t) => Ok(t.iter().any(|v| v.equals(item))),
-        Value::Set(s) => s.borrow().contains(item),
         Value::Dict(d) => d.borrow().contains(item),
         Value::Range(r) => Ok(range_contains(r, item)),
         other => Err(format!("argument of type '{}' is not iterable", other.type_name())),

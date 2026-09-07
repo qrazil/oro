@@ -1018,7 +1018,7 @@ impl Parser {
             }
             TokenKind::LParen => self.group_or_tuple(line, col),
             TokenKind::LBracket => self.list_literal(line, col),
-            TokenKind::LBrace => self.dict_or_set(line, col),
+            TokenKind::LBrace => self.dict_stmt(line, col),
             other => Err(self.error(format!(
                 "expected an expression, found {}",
                 describe(&other)
@@ -1081,52 +1081,39 @@ impl Parser {
         Ok(Expr::List { elements, line, col })
     }
 
-    fn dict_or_set(&mut self, line: usize, col: usize) -> PResult<Expr> {
+    /// `{ ... }` is always a dict — sets are cut, so there is no ambiguity and
+    /// no colon-lookahead. `{}` is the empty dict, matching Python.
+    fn dict_stmt(&mut self, line: usize, col: usize) -> PResult<Expr> {
         self.advance(); // `{`
         if self.eat(&TokenKind::RBrace) {
-            // `{}` is the empty dict, matching Python.
             return Ok(Expr::Dict { entries: Vec::new(), line, col });
         }
 
         let first = self.expression()?;
-
-        if self.eat(&TokenKind::Colon) {
-            // Dict.
-            let value = self.expression()?;
-            if self.check(&TokenKind::For) {
-                return Err(self.error(
-                    "dict comprehensions are not supported in Oro — use a loop",
-                ));
-            }
-            let mut entries = vec![(first, value)];
-            while self.eat(&TokenKind::Comma) {
-                if self.check(&TokenKind::RBrace) {
-                    break;
-                }
-                let key = self.expression()?;
-                self.expect(&TokenKind::Colon, "`:` between a dict key and value")?;
-                let value = self.expression()?;
-                entries.push((key, value));
-            }
-            self.expect(&TokenKind::RBrace, "`}` to close the dict")?;
-            Ok(Expr::Dict { entries, line, col })
-        } else {
-            // Set.
-            if self.check(&TokenKind::For) {
-                return Err(self.error(
-                    "set comprehensions are not supported in Oro — use a loop",
-                ));
-            }
-            let mut elements = vec![first];
-            while self.eat(&TokenKind::Comma) {
-                if self.check(&TokenKind::RBrace) {
-                    break;
-                }
-                elements.push(self.expression()?);
-            }
-            self.expect(&TokenKind::RBrace, "`}` to close the set")?;
-            Ok(Expr::Set { elements, line, col })
+        // A `{...}` without `:` was a set literal — now a designed error.
+        if !self.check(&TokenKind::Colon) {
+            return Err(self.error(
+                "set literals are not supported in Oro — sets are cut. Use a dict for membership \
+                 (`{1: True, 2: True}`) or a list; a Set data structure may return in the stdlib.",
+            ));
         }
+        self.advance(); // `:`
+        let value = self.expression()?;
+        if self.check(&TokenKind::For) {
+            return Err(self.error("dict comprehensions are not supported in Oro — use a loop"));
+        }
+        let mut entries = vec![(first, value)];
+        while self.eat(&TokenKind::Comma) {
+            if self.check(&TokenKind::RBrace) {
+                break;
+            }
+            let key = self.expression()?;
+            self.expect(&TokenKind::Colon, "`:` between a dict key and value")?;
+            let value = self.expression()?;
+            entries.push((key, value));
+        }
+        self.expect(&TokenKind::RBrace, "`}` to close the dict")?;
+        Ok(Expr::Dict { entries, line, col })
     }
 
     // --- Operator tables -----------------------------------------------------

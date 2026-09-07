@@ -380,8 +380,6 @@ pub enum Expr {
     List { elements: Vec<Expr>, line: usize, col: usize },
     /// Tuple literal (parenthesised or bare).
     Tuple { elements: Vec<Expr>, line: usize, col: usize },
-    /// Set literal `{a, b}`.
-    Set { elements: Vec<Expr>, line: usize, col: usize },
     /// Dict literal `{k: v}`.
     Dict {
         entries: Vec<(Expr, Expr)>,
@@ -411,7 +409,6 @@ impl Expr {
             | Expr::Slice { line, col, .. }
             | Expr::List { line, col, .. }
             | Expr::Tuple { line, col, .. }
-            | Expr::Set { line, col, .. }
             | Expr::Dict { line, col, .. } => (*line, *col),
         }
     }
