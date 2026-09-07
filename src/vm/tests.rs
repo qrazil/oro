@@ -354,3 +354,66 @@ fn unbound_local_shadowing_module_teaches_global() {
     assert!(err.message.contains("global count"), "got: {}", err.message);
     assert!(err.message.contains("shadows the module-level"), "got: {}", err.message);
 }
+
+// --- match: value-only switch ---------------------------------------------
+
+#[test]
+fn match_literal_jump_table() {
+    // All-literal patterns compile to MatchDispatch.
+    let src = "def f(w):\n    match w:\n        case \"a\":\n            return 1\n        \
+               case \"b\":\n            return 2\n        case _:\n            return 0\n\
+               r1 = f(\"a\")\nr2 = f(\"b\")\nr3 = f(\"z\")\n";
+    let locals = run_locals(src);
+    let got: Vec<i64> = locals.iter().filter_map(|v| match v {
+        Value::Int(i) => Some(*i),
+        _ => None,
+    }).collect();
+    assert!(got.contains(&1) && got.contains(&2) && got.contains(&0), "got {got:?}");
+}
+
+#[test]
+fn match_no_default_is_noop() {
+    let src = "def f(n):\n    x = 10\n    match n:\n        case 1:\n            x = 1\n\
+               \n    return x\n\
+               hit = f(1)\nmiss = f(9)\n";
+    let locals = run_locals(src);
+    let got: Vec<i64> = locals.iter().filter_map(|v| match v {
+        Value::Int(i) => Some(*i),
+        _ => None,
+    }).collect();
+    assert!(got.contains(&1), "expected a hit==1, got {got:?}");
+    assert!(got.contains(&10), "expected a miss==10, got {got:?}");
+}
+
+#[test]
+fn match_numeric_cross_equality_first_wins() {
+    // 1 == True == 1.0; the first matching case wins, even through the table.
+    let src = "def f(v):\n    match v:\n        case 1:\n            return \"one\"\n        \
+               case True:\n            return \"true\"\n        case _:\n            return \"x\"\n\
+               a = f(1)\nb = f(True)\n";
+    let locals = run_locals(src);
+    for v in locals {
+        if let Value::Str(s) = v {
+            if s.s == "true" {
+                panic!("True should have matched `case 1` first, not `case True`");
+            }
+        }
+    }
+}
+
+#[test]
+fn match_case_body_is_block_scoped() {
+    // A name bound in a case body must not leak (Oro divergence from Python).
+    let err = run_err("match 1:\n    case 1:\n        leaked = 5\nr = leaked\n");
+    assert!(err.message.contains("not defined"), "got: {}", err.message);
+}
+
+#[test]
+fn match_dotted_pattern_runs_and_falls_through() {
+    // Dotted pattern forces the compare-chain path; a string method never
+    // equals the subject, so control reaches the default.
+    let src = "def f(s):\n    text = \"x\"\n    match s:\n        case text.upper:\n            \
+               return 1\n        case _:\n            return 0\n\
+               r = f(\"anything\")\n";
+    assert_eq!(int(&eval_last(src)), 0);
+}

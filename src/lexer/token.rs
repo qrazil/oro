@@ -75,6 +75,7 @@ pub enum TokenKind {
     RBracket,    // ]
     LBrace,      // {
     RBrace,      // }
+    Pipe,        // |
     Comma,       // ,
     Dot,         // .
     Colon,       // :

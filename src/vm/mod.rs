@@ -7,7 +7,7 @@
 //! makes 5000-deep recursion (and, later, generators/coroutines) possible
 //! without growing the native stack.
 
-mod arith;
+pub mod arith;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -386,6 +386,20 @@ impl Vm {
                         s.push_str(&p.display());
                     }
                     self.push(Value::str(s));
+                }
+                Op::MatchDispatch { table, default } => {
+                    let subject = self.pop();
+                    let dict = match &self.top().code.consts[table] {
+                        Value::Dict(d) => d.clone(),
+                        _ => unreachable!("MatchDispatch table is always a dict const"),
+                    };
+                    // An unhashable subject cannot equal any literal key, so it
+                    // takes the default — matching the compare-chain path.
+                    let target = match dict.borrow().get(&subject) {
+                        Ok(Some(Value::Int(t))) => t as usize,
+                        _ => default,
+                    };
+                    self.top().pc = target;
                 }
                 Op::GetIter => {
                     let v = self.pop();

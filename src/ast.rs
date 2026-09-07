@@ -261,6 +261,39 @@ pub enum Stmt {
         line: usize,
         col: usize,
     },
+    /// `match subject:` — a value-only switch (see [`MatchCase`]/[`Pattern`]).
+    /// Not full pattern matching: no destructuring, binding, or or-patterns.
+    Match {
+        subject: Expr,
+        cases: Vec<MatchCase>,
+        line: usize,
+        col: usize,
+    },
+}
+
+/// One `case PATTERN:` clause of a [`Stmt::Match`]. Its body is a block scope,
+/// exactly like an `if` body, so names bound inside do not leak.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchCase {
+    pub pattern: Pattern,
+    pub body: Vec<Stmt>,
+    pub line: usize,
+    pub col: usize,
+}
+
+/// The allowed `case` patterns. Deliberately a strict subset of Python's
+/// pattern grammar — only what makes `match` a switch, nothing that binds.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pattern {
+    /// A literal: int / float / str / `True` / `False` / `None`, with an
+    /// optional leading `-` on numbers. Matched by equality. The inner `Expr`
+    /// is guaranteed by the parser to be one of those literal forms.
+    Literal(Expr),
+    /// A dotted name such as `Cmd.QUIT`: looked up at runtime and matched by
+    /// equality. The inner `Expr` is an attribute-access chain.
+    Dotted(Expr),
+    /// `case _`: the wildcard/default. Matches anything.
+    Wildcard,
 }
 
 /// An expression.
@@ -414,7 +447,8 @@ impl Stmt {
             | Stmt::Raise { line, col, .. }
             | Stmt::Import { line, col, .. }
             | Stmt::Yield { line, col, .. }
-            | Stmt::Global { line, col, .. } => (*line, *col),
+            | Stmt::Global { line, col, .. }
+            | Stmt::Match { line, col, .. } => (*line, *col),
         }
     }
 

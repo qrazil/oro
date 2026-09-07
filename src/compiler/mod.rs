@@ -131,6 +131,12 @@ pub enum Op {
     FormatValue(u8),
     /// Pop `n` strings and push their concatenation (f-string assembly).
     BuildString(usize),
+    /// All-literal `match` dispatch. Pop the subject and look it up in the
+    /// dict constant at `table` (mapping each literal pattern to the op index of
+    /// its case body, first case winning on equal keys); jump there, or to
+    /// `default` on no match / an unhashable subject. O(1) versus a compare
+    /// chain — the reason `match` earns its keep over `if`/`elif`.
+    MatchDispatch { table: usize, default: usize },
 
     // Iteration.
     GetIter,

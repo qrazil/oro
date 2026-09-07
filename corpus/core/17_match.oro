@@ -1,0 +1,84 @@
+# `match` in Oro is a value-only switch: literal and dotted-name patterns,
+# plus `case _`. No fallthrough — one case runs, then control leaves.
+
+# String cases (compiled to an O(1) jump table since all patterns are literals).
+def command(word):
+    match word:
+        case "quit":
+            return "goodbye"
+        case "help":
+            return "read the docs"
+        case "":
+            return "say something"
+        case _:
+            return "unknown command"
+
+print(command("quit"))
+print(command("help"))
+print(command(""))
+print(command("dance"))
+
+# Integer cases, including a negative literal and a no-default no-op.
+def sign(n):
+    match n:
+        case 0:
+            return "zero"
+        case -1:
+            return "minus one"
+        case 1:
+            return "one"
+        case _:
+            return "many"
+
+print(sign(0))
+print(sign(-1))
+print(sign(1))
+print(sign(7))
+
+def only_two(n):
+    label = "untouched"
+    match n:
+        case 2:
+            label = "two"
+        case 4:
+            label = "four"
+    return label
+
+print(only_two(2))
+print(only_two(4))
+print(only_two(5))
+
+# Literal patterns match by equality, so Python's cross-type numeric equality
+# holds: 1 == True == 1.0, and the first matching case wins.
+def numeric(v):
+    match v:
+        case 1:
+            return "int-one-or-true"
+        case 1.0:
+            return "float-one"
+        case _:
+            return "other"
+
+print(numeric(1))
+print(numeric(True))
+print(numeric(1.0))
+print(numeric(2))
+
+# Dotted-name value pattern: the name is looked up at runtime and compared by
+# equality (this is the sequential compare-chain path, not the jump table).
+# Oro has no enums/classes yet, so there is nothing whose attribute equals a
+# plain value; here the dotted name resolves to a string method, never equals
+# the subject, and the match falls through to the default. It demonstrates that
+# a dotted pattern is evaluated at runtime and behaves identically under CPython.
+def routed(s):
+    text = "x"
+    match s:
+        case text.upper:
+            return "dotted-hit"
+        case "on":
+            return "enabled"
+        case _:
+            return "default"
+
+print(routed("on"))
+print(routed("off"))

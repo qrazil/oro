@@ -836,8 +836,11 @@ fn cut_walrus() {
 }
 
 #[test]
-fn cut_match() {
-    assert_cut("match x:\n    pass\n", "match statements are not supported");
+fn match_requires_case_clauses_not_a_bare_block() {
+    // `match` is supported now (as a value switch); its body must be `case`
+    // clauses, not arbitrary statements.
+    let e = parse_err("match x:\n    pass\n");
+    assert!(e.message.contains("case"), "got: {}", e.message);
 }
 
 #[test]
@@ -965,4 +968,101 @@ fn dangling_operator_errors() {
 fn empty_program_is_ok() {
     assert!(parse("").is_empty());
     assert!(parse("\n\n# just a comment\n").is_empty());
+}
+
+// --- match: value-only switch ---------------------------------------------
+
+/// Build a one-case match around `pat` for rejection tests.
+fn match_with(pat_and_body: &str) -> ParseError {
+    parse_err(&format!("match cmd:\n    case {pat_and_body}\n"))
+}
+
+#[test]
+fn match_parses_literals_dotted_and_wildcard() {
+    let stmt = parse_one(
+        "match cmd:\n    case 1:\n        pass\n    case \"x\":\n        pass\n    \
+         case Cmd.QUIT:\n        pass\n    case _:\n        pass\n",
+    );
+    let cases = match stmt {
+        Stmt::Match { cases, .. } => cases,
+        other => panic!("expected a Match, got {other:?}"),
+    };
+    assert_eq!(cases.len(), 4);
+    assert!(matches!(cases[0].pattern, Pattern::Literal(Expr::Int { .. })));
+    assert!(matches!(cases[1].pattern, Pattern::Literal(Expr::Str { .. })));
+    assert!(matches!(cases[2].pattern, Pattern::Dotted(Expr::Attribute { .. })));
+    assert!(matches!(cases[3].pattern, Pattern::Wildcard));
+}
+
+#[test]
+fn match_accepts_negative_and_special_literals() {
+    let stmt = parse_one(
+        "match n:\n    case -1:\n        pass\n    case True:\n        pass\n    \
+         case None:\n        pass\n",
+    );
+    if let Stmt::Match { cases, .. } = stmt {
+        assert!(matches!(cases[0].pattern, Pattern::Literal(Expr::Unary { .. })));
+        assert!(matches!(cases[1].pattern, Pattern::Literal(Expr::Bool { value: true, .. })));
+        assert!(matches!(cases[2].pattern, Pattern::Literal(Expr::NoneLit { .. })));
+    } else {
+        panic!("expected a Match");
+    }
+}
+
+#[test]
+fn match_is_a_soft_keyword() {
+    // `match` as an ordinary identifier still works.
+    assert!(matches!(parse_one("match = 5\n"), Stmt::Assign { .. }));
+    assert!(matches!(parse_one("match(x)\n"), Stmt::Expr { .. }));
+}
+
+#[test]
+fn reject_bare_capture_name() {
+    let e = match_with("QUIT:\n        pass");
+    assert!(e.message.contains("bare capture name"), "got: {}", e.message);
+    assert!(e.message.contains("SILENTLY REBINDS"), "got: {}", e.message);
+    assert!(e.message.contains("footgun"), "got: {}", e.message);
+}
+
+#[test]
+fn reject_or_pattern() {
+    let e = match_with("\"a\" | \"b\":\n        pass");
+    assert!(e.message.contains("or-patterns"), "got: {}", e.message);
+    assert!(e.message.contains("separate `case`"), "got: {}", e.message);
+}
+
+#[test]
+fn reject_class_pattern() {
+    let e = match_with("Point(x=1):\n        pass");
+    assert!(e.message.contains("class patterns"), "got: {}", e.message);
+}
+
+#[test]
+fn reject_sequence_pattern() {
+    let e = match_with("[a, b]:\n        pass");
+    assert!(e.message.contains("sequence patterns"), "got: {}", e.message);
+}
+
+#[test]
+fn reject_mapping_pattern() {
+    let e = match_with("{\"k\": v}:\n        pass");
+    assert!(e.message.contains("mapping patterns"), "got: {}", e.message);
+}
+
+#[test]
+fn reject_guard() {
+    let e = match_with("1 if cond:\n        pass");
+    assert!(e.message.contains("guards"), "got: {}", e.message);
+}
+
+#[test]
+fn reject_as_pattern() {
+    let e = match_with("1 as n:\n        pass");
+    assert!(e.message.contains("as-patterns"), "got: {}", e.message);
+}
+
+#[test]
+fn reject_nonfinal_wildcard() {
+    let e = parse_err("match n:\n    case _:\n        pass\n    case 1:\n        pass\n");
+    assert!(e.message.contains("wildcard last"), "got: {}", e.message);
 }

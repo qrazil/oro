@@ -29,7 +29,8 @@
 use std::fmt;
 
 use crate::ast::{
-    Arg, AugOp, BinOp, BoolOp, CmpOp, ExceptHandler, Expr, Kwarg, Param, ParamKind, Stmt, UnaryOp,
+    Arg, AugOp, BinOp, BoolOp, CmpOp, ExceptHandler, Expr, Kwarg, MatchCase, Param, ParamKind,
+    Pattern, Stmt, UnaryOp,
 };
 use crate::lexer::{Token, TokenKind};
 
@@ -101,13 +102,40 @@ impl Parser {
         if self.check(&TokenKind::At) {
             return Err(self.error("decorators are not supported in Oro"));
         }
-        if self.is_compound_start() {
+        if self.at_match_stmt() {
+            let s = self.match_stmt()?;
+            out.push(s);
+            Ok(())
+        } else if self.is_compound_start() {
             let s = self.compound_statement()?;
             out.push(s);
             Ok(())
         } else {
             self.simple_line(out)
         }
+    }
+
+    /// `match` is a soft keyword: it opens a `match` statement only when a
+    /// subject expression follows it. `match = 1`, `match(x)`, `match.y`, and a
+    /// bare `match` stay ordinary identifiers. (A subject may not begin with
+    /// `(`/`[`/`{`; write `match value:` rather than `match (value):`.)
+    fn at_match_stmt(&self) -> bool {
+        if !matches!(self.cur_kind(), TokenKind::Ident(n) if n == "match") {
+            return false;
+        }
+        matches!(
+            self.peek_kind(),
+            TokenKind::Int(_)
+                | TokenKind::Float(_)
+                | TokenKind::Str(_)
+                | TokenKind::FString(_)
+                | TokenKind::True
+                | TokenKind::False
+                | TokenKind::None
+                | TokenKind::Ident(_)
+                | TokenKind::Minus
+                | TokenKind::Not
+        )
     }
 
     fn is_compound_start(&self) -> bool {
@@ -301,6 +329,172 @@ impl Parser {
         };
 
         Ok(Stmt::If { cond, body, elifs, orelse, line, col })
+    }
+
+    /// `match SUBJECT:` followed by an indented block of `case` clauses.
+    fn match_stmt(&mut self) -> PResult<Stmt> {
+        let (line, col) = self.cur_pos();
+        self.advance(); // soft-keyword `match`
+        let subject = self.expression()?;
+        self.expect(&TokenKind::Colon, "`:` after the match subject")?;
+        if !self.eat(&TokenKind::Newline) {
+            return Err(self.error("the body of a `match` must be on its own indented line"));
+        }
+        self.expect(&TokenKind::Indent, "an indented block of `case` clauses")?;
+
+        let mut cases = Vec::new();
+        while !self.check(&TokenKind::Dedent) && !self.check(&TokenKind::Eof) {
+            if self.eat(&TokenKind::Newline) {
+                continue;
+            }
+            if !matches!(self.cur_kind(), TokenKind::Ident(n) if n == "case") {
+                return Err(self.error(format!(
+                    "expected a `case` clause inside `match`, found {}",
+                    describe(self.cur_kind())
+                )));
+            }
+            cases.push(self.case_clause()?);
+        }
+        self.eat(&TokenKind::Dedent);
+        if cases.is_empty() {
+            return Err(self.error("a `match` needs at least one `case` clause"));
+        }
+        // `case _` is irrefutable: any case after it is unreachable. CPython
+        // makes this a SyntaxError, so Oro rejects it too — otherwise a valid
+        // Oro program would not be valid Python.
+        if let Some(pos) = cases.iter().position(|c| c.pattern == Pattern::Wildcard) {
+            if pos != cases.len() - 1 {
+                return Err(self.error(
+                    "`case _` matches everything, so the cases after it can never run — put the \
+                     wildcard last (this matches CPython, which rejects it as a SyntaxError).",
+                ));
+            }
+        }
+        Ok(Stmt::Match { subject, cases, line, col })
+    }
+
+    /// `case PATTERN:` and its block. `case` is a soft keyword recognised only
+    /// here, at the head of a clause inside a `match`.
+    fn case_clause(&mut self) -> PResult<MatchCase> {
+        let (line, col) = self.cur_pos();
+        self.advance(); // soft-keyword `case`
+        let pattern = self.case_pattern()?;
+        // `case_pattern` stops on the `:`; `block` consumes it.
+        let body = self.block()?;
+        Ok(MatchCase { pattern, body, line, col })
+    }
+
+    /// Parse one case pattern — the value-only subset — leaving the cursor on
+    /// the trailing `:`. Every rejected Python pattern form gets its own
+    /// diagnostic explaining why Oro does not adopt it.
+    fn case_pattern(&mut self) -> PResult<Pattern> {
+        let pat = self.core_pattern()?;
+        // Reject the pattern *combinators* that turn a switch into matching.
+        match self.cur_kind() {
+            TokenKind::Pipe => Err(self.error(
+                "or-patterns (`case a | b:`) are not supported in Oro — write separate `case` \
+                 clauses with the same body. `|` means \"or\" only in languages without an `or` \
+                 keyword; Oro has `or`, so it does not reuse `|` for alternation.",
+            )),
+            TokenKind::As => Err(self.error(
+                "as-patterns (`case PATTERN as name:`) are not supported in Oro — a `case` may \
+                 not bind names; use the matched value directly.",
+            )),
+            TokenKind::If => Err(self.error(
+                "guards (`case PATTERN if cond:`) are not supported in Oro — use a nested `if` \
+                 inside the case body, or an `if`/`elif` chain instead of `match`.",
+            )),
+            TokenKind::Colon => Ok(pat),
+            other => Err(self.error(format!(
+                "expected `:` after the case pattern, found {}",
+                describe(other)
+            ))),
+        }
+    }
+
+    /// The core of a case pattern: a literal, a dotted name, or `_`.
+    fn core_pattern(&mut self) -> PResult<Pattern> {
+        match self.cur_kind() {
+            TokenKind::LBracket => Err(self.error(
+                "sequence patterns (`case [a, b]:`) are not supported in Oro — `match` is a \
+                 value switch, not destructuring. Compare a whole value, or index the sequence \
+                 inside the case body.",
+            )),
+            TokenKind::LBrace => Err(self.error(
+                "mapping patterns (`case {\"k\": v}:`) are not supported in Oro — `match` is a \
+                 value switch, not destructuring. Look keys up inside the case body.",
+            )),
+            TokenKind::Int(_)
+            | TokenKind::Float(_)
+            | TokenKind::Str(_)
+            | TokenKind::True
+            | TokenKind::False
+            | TokenKind::None
+            | TokenKind::Minus => {
+                let expr = self.pattern_literal()?;
+                Ok(Pattern::Literal(expr))
+            }
+            TokenKind::FString(_) => Err(self.error(
+                "an f-string is not a valid pattern — a `case` needs a constant literal or a \
+                 dotted name.",
+            )),
+            TokenKind::Ident(name) => {
+                let name = name.clone();
+                if name == "_" && !matches!(self.peek_kind(), TokenKind::Dot) {
+                    self.advance();
+                    return Ok(Pattern::Wildcard);
+                }
+                match self.peek_kind() {
+                    TokenKind::Dot => self.pattern_dotted(),
+                    TokenKind::LParen => Err(self.error(format!(
+                        "class patterns (`case {name}(...):`) are not supported in Oro — there \
+                         is no destructuring; compare a value or a dotted name like `Enum.MEMBER`."
+                    ))),
+                    _ => Err(self.error(format!(
+                        "`case {name}:` is a bare capture name. In Python this SILENTLY REBINDS \
+                         `{name}` and matches everything — a well-known footgun. Oro rejects it \
+                         on purpose: write a literal (`case 1:`, `case \"{name}\":`) or a dotted \
+                         name (`case Enum.{name}:`); use `case _:` for the default."
+                    ))),
+                }
+            }
+            other => Err(self.error(format!(
+                "expected a case pattern, found {}",
+                describe(other)
+            ))),
+        }
+    }
+
+    /// A literal pattern value: an optionally-negated number, a string, or one
+    /// of `True`/`False`/`None`.
+    fn pattern_literal(&mut self) -> PResult<Expr> {
+        let (line, col) = self.cur_pos();
+        if self.eat(&TokenKind::Minus) {
+            let operand = match self.cur_kind() {
+                TokenKind::Int(_) | TokenKind::Float(_) => self.atom()?,
+                other => {
+                    return Err(self.error(format!(
+                        "expected a number after `-` in a case pattern, found {}",
+                        describe(other)
+                    )))
+                }
+            };
+            return Ok(Expr::Unary { op: UnaryOp::Neg, operand: Box::new(operand), line, col });
+        }
+        // A plain literal atom.
+        self.atom()
+    }
+
+    /// A dotted-name pattern: `A.B`, `A.B.C`, … matched by value at runtime.
+    fn pattern_dotted(&mut self) -> PResult<Pattern> {
+        let (line, col) = self.cur_pos();
+        let name = self.expect_ident("a name at the start of a dotted pattern")?.0;
+        let mut expr = Expr::Name { name, line, col };
+        while self.eat(&TokenKind::Dot) {
+            let attr = self.expect_ident("an attribute name after `.` in a case pattern")?.0;
+            expr = Expr::Attribute { value: Box::new(expr), attr, line, col };
+        }
+        Ok(Pattern::Dotted(expr))
     }
 
     fn while_stmt(&mut self) -> PResult<Stmt> {
@@ -1094,7 +1288,6 @@ fn build_infix(op: &TokenKind, left: Expr, right: Expr, line: usize, col: usize)
 /// the specific diagnostic explaining the design decision.
 fn cut_keyword_message(name: &str) -> Option<String> {
     let msg = match name {
-        "match" => "match statements are not supported in Oro — use if/elif/else",
         "with" => {
             "the `with` statement is not supported in Oro — files close automatically at end of block"
         }
@@ -1169,6 +1362,7 @@ fn describe(kind: &TokenKind) -> String {
         RBracket => "`]`".to_string(),
         LBrace => "`{`".to_string(),
         RBrace => "`}`".to_string(),
+        Pipe => "`|`".to_string(),
         Comma => "`,`".to_string(),
         Dot => "`.`".to_string(),
         Colon => "`:`".to_string(),

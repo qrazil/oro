@@ -7,15 +7,16 @@
 //! cursor, so a `def`/`if`/`for` here maps to exactly the scope the pre-pass
 //! built for it.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::ast::{
-    Arg, BinOp, BoolOp, Expr, Kwarg, Param, ParamKind, Stmt, UnaryOp,
+    Arg, BinOp, BoolOp, Expr, Kwarg, MatchCase, Param, ParamKind, Pattern, Stmt, UnaryOp,
 };
 use crate::bigint::BigInt;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
-use crate::value::Value;
+use crate::value::{OroDict, Value};
 
 use super::symbols::{Resolution, SymTable};
 use super::{CaptureSource, CodeObject, CompileError, FuncProto, Op, ParamInfo, VarTarget};
@@ -161,6 +162,9 @@ impl<'a> Codegen<'a> {
             }
             Stmt::While { cond, body, .. } => self.emit_while(cond, body)?,
             Stmt::For { target, iter, body, .. } => self.emit_for(target, iter, body)?,
+            Stmt::Match { subject, cases, line, col } => {
+                self.emit_match(subject, cases, *line, *col)?
+            }
             Stmt::Def { name, params, body, line, col, .. } => {
                 self.emit_def(name, params, body, *line, *col)?;
             }
@@ -246,6 +250,174 @@ impl<'a> Codegen<'a> {
             self.set_target(j, end);
         }
         Ok(())
+    }
+
+    /// `match`. When every pattern is a literal (with at most a trailing `_`
+    /// default) we compile an O(1) [`Op::MatchDispatch`] over a dict of
+    /// constants; anything with a dotted name falls back to a first-match-wins
+    /// compare chain. Either way there is no fall-through and the subject is
+    /// left off the stack when control leaves.
+    fn emit_match(
+        &mut self,
+        subject: &Expr,
+        cases: &[MatchCase],
+        line: usize,
+        col: usize,
+    ) -> CResult<()> {
+        if self.match_is_table_eligible(cases) {
+            self.emit_match_table(subject, cases, line, col)
+        } else {
+            self.emit_match_chain(subject, cases)
+        }
+    }
+
+    /// Table dispatch is valid only when no pattern needs a runtime lookup
+    /// (dotted names) and the wildcard, if present, is the final case — so the
+    /// table can never jump past an earlier-winning `_`.
+    fn match_is_table_eligible(&self, cases: &[MatchCase]) -> bool {
+        for (i, case) in cases.iter().enumerate() {
+            match &case.pattern {
+                Pattern::Literal(_) => {}
+                Pattern::Wildcard => {
+                    if i != cases.len() - 1 {
+                        return false;
+                    }
+                }
+                Pattern::Dotted(_) => return false,
+            }
+        }
+        true
+    }
+
+    fn emit_match_table(
+        &mut self,
+        subject: &Expr,
+        cases: &[MatchCase],
+        line: usize,
+        col: usize,
+    ) -> CResult<()> {
+        self.emit_expr(subject)?;
+        // Placeholder; patched once body offsets and the table are known.
+        let dispatch = self.emit(Op::MatchDispatch { table: 0, default: 0 }, line, col);
+
+        let mut end_jumps = Vec::new();
+        let mut table = OroDict::new();
+        let mut default_target: Option<usize> = None;
+
+        for case in cases {
+            let start = self.here();
+            match &case.pattern {
+                Pattern::Literal(expr) => {
+                    let key = self.literal_value(expr)?;
+                    // First case wins when two literals are equal keys
+                    // (e.g. 1 and True, or a repeated value).
+                    if self.dict_missing(&table, &key)? {
+                        table
+                            .insert(key, Value::Int(start as i64))
+                            .map_err(|e| self.err(e, line, col))?;
+                    }
+                }
+                Pattern::Wildcard => default_target = Some(start),
+                Pattern::Dotted(_) => unreachable!("table path excludes dotted patterns"),
+            }
+            self.emit_child_block(&case.body)?;
+            end_jumps.push(self.emit(Op::Jump(0), line, col));
+        }
+
+        let end = self.here();
+        let default = default_target.unwrap_or(end);
+        let table_idx = self.add_const(Value::Dict(Rc::new(RefCell::new(table))));
+        self.ops[dispatch] = Op::MatchDispatch { table: table_idx, default };
+        for j in end_jumps {
+            self.set_target(j, end);
+        }
+        Ok(())
+    }
+
+    fn emit_match_chain(&mut self, subject: &Expr, cases: &[MatchCase]) -> CResult<()> {
+        // The subject stays on the stack across the tests; each path pops it
+        // exactly once before running a body (or on final no-match).
+        self.emit_expr(subject)?;
+        let mut end_jumps = Vec::new();
+        let mut skip: Option<usize> = None; // pending false-jump to the next test
+        let mut irrefutable = false;
+
+        for case in cases {
+            if irrefutable {
+                // Unreachable after a `_`, but still emit the body so its child
+                // scope is consumed in lockstep with the symbol pass.
+                self.emit_child_block(&case.body)?;
+                continue;
+            }
+            if let Some(s) = skip.take() {
+                let here = self.here();
+                self.set_target(s, here);
+            }
+            let (l, c) = (case.line, case.col);
+            match &case.pattern {
+                Pattern::Wildcard => {
+                    self.emit(Op::Pop, l, c); // drop the subject
+                    self.emit_child_block(&case.body)?;
+                    end_jumps.push(self.emit(Op::Jump(0), l, c));
+                    irrefutable = true;
+                }
+                Pattern::Literal(expr) | Pattern::Dotted(expr) => {
+                    self.emit(Op::Dup, l, c);
+                    self.emit_expr(expr)?;
+                    self.emit(Op::Compare(crate::ast::CmpOp::Eq), l, c);
+                    skip = Some(self.emit(Op::PopJumpIfFalse(0), l, c));
+                    self.emit(Op::Pop, l, c); // matched: drop the subject
+                    self.emit_child_block(&case.body)?;
+                    end_jumps.push(self.emit(Op::Jump(0), l, c));
+                }
+            }
+        }
+
+        if let Some(s) = skip.take() {
+            let here = self.here();
+            self.set_target(s, here);
+        }
+        if !irrefutable {
+            // No case matched and there was no `_`: discard the subject.
+            let (l, c) = subject.pos();
+            self.emit(Op::Pop, l, c);
+        }
+        let end = self.here();
+        for j in end_jumps {
+            self.set_target(j, end);
+        }
+        Ok(())
+    }
+
+    /// Fold a literal-pattern expression to its constant [`Value`] for a jump
+    /// table key. The parser guarantees `expr` is one of the literal forms.
+    fn literal_value(&self, expr: &Expr) -> CResult<Value> {
+        match expr {
+            Expr::Int { value, .. } => Ok(parse_int(value)),
+            Expr::Float { value, line, col } => value
+                .parse::<f64>()
+                .map(Value::Float)
+                .map_err(|_| self.err(format!("invalid float literal `{value}`"), *line, *col)),
+            Expr::Str { value, .. } => Ok(Value::str(value.clone())),
+            Expr::Bool { value, .. } => Ok(Value::Bool(*value)),
+            Expr::NoneLit { .. } => Ok(Value::None),
+            Expr::Unary { op: UnaryOp::Neg, operand, line, col } => {
+                let v = self.literal_value(operand)?;
+                crate::vm::arith::neg(&v).map_err(|e| self.err(e, *line, *col))
+            }
+            other => {
+                let (l, c) = other.pos();
+                Err(self.err("unsupported literal in a case pattern", l, c))
+            }
+        }
+    }
+
+    /// True when `key` is not already present in the compile-time table.
+    fn dict_missing(&self, table: &OroDict, key: &Value) -> CResult<bool> {
+        table
+            .get(key)
+            .map(|hit| hit.is_none())
+            .map_err(|e| self.err(e, 0, 0))
     }
 
     fn emit_while(&mut self, cond: &Expr, body: &[Stmt]) -> CResult<()> {

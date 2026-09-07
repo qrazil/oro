@@ -431,6 +431,10 @@ impl Lexer {
                 self.bracket_depth = self.bracket_depth.saturating_sub(1);
                 TokenKind::RBrace
             }
+            // `|` is tokenized (not rejected here) so the parser can emit a
+            // designed diagnostic — chiefly the "or-patterns are not supported"
+            // message inside a `case`. It is not a binary operator in Oro.
+            '|' => TokenKind::Pipe,
             ',' => TokenKind::Comma,
             '.' => TokenKind::Dot,
             ':' => TokenKind::Colon,

@@ -176,6 +176,11 @@ impl SymTable {
                 Stmt::While { body, .. } | Stmt::For { body, .. } => {
                     self.collect_globals(func, body);
                 }
+                Stmt::Match { cases, .. } => {
+                    for case in cases {
+                        self.collect_globals(func, &case.body);
+                    }
+                }
                 // A `def`/`class` starts a new function scope with its own
                 // `global` declarations — do not descend.
                 _ => {}
@@ -285,6 +290,13 @@ impl SymTable {
                 let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
                 self.build_scope(fid, body, &param_names);
             }
+            Stmt::Match { cases, .. } => {
+                // Each `case` body is a block scope, like an `if` body. The
+                // subject and patterns bind nothing.
+                for case in cases {
+                    self.child_block(scope_id, func, &case.body, &[]);
+                }
+            }
             _ => {}
         }
     }
@@ -375,6 +387,19 @@ impl SymTable {
                 self.resolve_block(child, body, &mut c);
             }
             Stmt::Return { value: Some(v), .. } => self.resolve_expr(scope_id, v),
+            Stmt::Match { subject, cases, .. } => {
+                self.resolve_expr(scope_id, subject);
+                for case in cases {
+                    // A dotted pattern references a name (`Cmd` in `Cmd.QUIT`);
+                    // literals and `_` reference nothing.
+                    if let crate::ast::Pattern::Dotted(expr) = &case.pattern {
+                        self.resolve_expr(scope_id, expr);
+                    }
+                    let child = self.next_child(scope_id, cursor);
+                    let mut c = 0;
+                    self.resolve_block(child, &case.body, &mut c);
+                }
+            }
             _ => {}
         }
     }
