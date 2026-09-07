@@ -1,0 +1,70 @@
+# A generator suspends and resumes on the heap-allocated frame — no Rust
+# recursion, so pipelines of generators nest freely.
+
+def naturals(n):
+    i = 0
+    while i < n:
+        yield i
+        i = i + 1
+
+def squares(source):
+    for x in source:
+        yield x * x
+
+def only_odd(source):
+    for x in source:
+        if x % 2 == 1:
+            yield x
+
+# Three-stage pipeline: naturals -> squares -> only_odd.
+result = []
+for v in only_odd(squares(naturals(10))):
+    result.append(v)
+print(result)
+
+# Partial consumption with break, then the rest is still there per fresh gen.
+def first_k(source, k):
+    out = []
+    i = 0
+    for v in source:
+        if i >= k:
+            break
+        out.append(v)
+        i = i + 1
+    return out
+
+print(first_k(naturals(1000), 5))
+
+# Generator with an early return (StopIteration before the natural end).
+def until_negative(items):
+    for x in items:
+        if x < 0:
+            return
+        yield x
+
+collected = []
+for v in until_negative([1, 2, 3, -1, 4, 5]):
+    collected.append(v)
+print(collected)
+
+# Summing a generator by hand.
+def gen_range(a, b):
+    i = a
+    while i < b:
+        yield i
+        i = i + 1
+
+total = 0
+for v in gen_range(1, 101):
+    total = total + v
+print(total)
+
+# Empty generator.
+def empty():
+    return
+    yield 1
+
+count = 0
+for v in empty():
+    count = count + 1
+print(count)

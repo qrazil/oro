@@ -59,6 +59,10 @@ pub enum Value {
     /// An open text file, refcounted so it closes deterministically when the
     /// last reference is dropped (Oro's answer to `with`).
     File(Rc<RefCell<OroFile>>),
+    /// A generator: a suspended function activation, advanced by iteration. The
+    /// concrete state lives in the VM (it holds a `Frame`), so this is an opaque
+    /// handle here.
+    Generator(Rc<RefCell<GenBox>>),
     /// Internal sentinel for a local/cell slot that has not been assigned yet.
     /// Never reachable by user code: reading it raises a clean runtime error.
     Unbound,
@@ -212,6 +216,17 @@ impl Class {
 pub struct Instance {
     pub class: Rc<Class>,
     pub fields: RefCell<HashMap<String, Value>>,
+}
+
+/// The state of a generator. Its suspended activation record is a VM `Frame`,
+/// stored opaquely here (the VM downcasts it) so `value` need not know the
+/// frame layout. `done` is set when the generator is exhausted.
+pub struct GenBox {
+    pub done: bool,
+    /// The suspended `Frame`, or `None` while the generator is running or done.
+    /// `yield` is statement-only in Oro, so resuming just continues the frame —
+    /// no sent value to inject.
+    pub frame: Option<Box<dyn std::any::Any>>,
 }
 
 /// A module namespace: a fixed set of named members (functions, sub-modules,
@@ -411,7 +426,7 @@ impl Value {
             Value::Range(r) => !r.is_empty(),
             Value::Iter(_) | Value::Func(_) | Value::Builtin(_) | Value::Method(_) => true,
             Value::Class(_) | Value::Super(_) => true,
-            Value::Module(_) | Value::File(_) => true,
+            Value::Module(_) | Value::File(_) | Value::Generator(_) => true,
             // An instance is truthy unless its class defines a falsy __len__;
             // the VM overrides this when a __len__/__bool__ dunder is present.
             Value::Instance(_) => true,
@@ -441,6 +456,7 @@ impl Value {
             Value::Super(_) => "super",
             Value::Module(_) => "module",
             Value::File(_) => "file",
+            Value::Generator(_) => "generator",
             Value::Unbound => "unbound",
         }
     }
@@ -548,6 +564,7 @@ impl Value {
             // before this fallback is reached.
             Value::Instance(i) => format!("<{} object>", i.class.name),
             Value::Super(_) => "<super>".to_string(),
+            Value::Generator(_) => "<generator>".to_string(),
             Value::Module(m) => format!("<module '{}'>", m.name),
             Value::File(f) => {
                 let f = f.borrow();

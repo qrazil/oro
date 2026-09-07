@@ -46,6 +46,8 @@ struct Codegen<'a> {
     /// Cursor into the current scope's child list.
     cursor: usize,
     loops: Vec<LoopCtx>,
+    /// True while compiling a function body that contains `yield`.
+    is_generator: bool,
 }
 
 /// Compile the module body into its top-level code object.
@@ -71,6 +73,7 @@ impl<'a> Codegen<'a> {
             protos: Vec::new(),
             cursor: 0,
             loops: Vec::new(),
+            is_generator: false,
         }
     }
 
@@ -85,6 +88,7 @@ impl<'a> Codegen<'a> {
             ncells: self.table.ncells(self.func) as usize,
             nfree: self.table.nfree(self.func) as usize,
             params,
+            is_generator: self.is_generator,
             shadow_hints: self.table.shadow_hints(self.func),
         }
     }
@@ -209,12 +213,14 @@ impl<'a> Codegen<'a> {
                 self.emit(Op::ImportModule(Rc::from(dotted.as_str())), *line, *col);
                 self.emit_store(&Expr::Name { name: bound, line: *line, col: *col })?;
             }
-            Stmt::Yield { line, col, .. } => {
-                return Err(self.err(
-                    "generators/yield are not yet implemented in this build",
-                    *line,
-                    *col,
-                ))
+            Stmt::Yield { value, line, col } => {
+                match value {
+                    Some(v) => self.emit_expr(v)?,
+                    None => {
+                        self.emit(Op::LoadNone, *line, *col);
+                    }
+                }
+                self.emit(Op::Yield, *line, *col);
             }
         }
         Ok(())
@@ -778,6 +784,9 @@ impl<'a> Codegen<'a> {
         let mut inner = Codegen::new(self.table, child);
         inner.func = child;
         inner.scope = child;
+        // A `yield` anywhere in the body (but not in nested defs) makes this a
+        // generator function.
+        inner.is_generator = contains_yield(body);
         inner.emit_body(body)?;
         let (ll, cc) = body.last().map(|s| s.pos()).unwrap_or((0, 0));
         inner.emit(Op::LoadNone, ll, cc);
@@ -1424,6 +1433,31 @@ fn decode_escape(chars: &[char], i: &mut usize) -> String {
         '"' => "\"".to_string(),
         '0' => "\0".to_string(),
         other => format!("\\{other}"),
+    }
+}
+
+/// Whether `stmts` contain a `yield` (searching nested blocks but not nested
+/// `def`/`class`, which start their own function scope).
+fn contains_yield(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(stmt_yields)
+}
+
+fn stmt_yields(s: &Stmt) -> bool {
+    match s {
+        Stmt::Yield { .. } => true,
+        Stmt::If { body, elifs, orelse, .. } => {
+            contains_yield(body)
+                || elifs.iter().any(|(_, b)| contains_yield(b))
+                || orelse.as_ref().is_some_and(|b| contains_yield(b))
+        }
+        Stmt::While { body, .. } | Stmt::For { body, .. } => contains_yield(body),
+        Stmt::Try { body, handlers, finalbody, .. } => {
+            contains_yield(body)
+                || handlers.iter().any(|h| contains_yield(&h.body))
+                || finalbody.as_ref().is_some_and(|b| contains_yield(b))
+        }
+        Stmt::Match { cases, .. } => cases.iter().any(|c| contains_yield(&c.body)),
+        _ => false,
     }
 }
 

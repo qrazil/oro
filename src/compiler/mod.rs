@@ -166,6 +166,8 @@ pub enum Op {
     CallEx,
     /// Return the top of the stack from the current frame.
     Return,
+    /// Suspend the current generator frame, yielding the top value.
+    Yield,
 
     // Exceptions.
     /// Push a try/except block; an exception routes to `target` (dispatch).
@@ -246,6 +248,9 @@ pub struct CodeObject {
     /// assignment (no `global` declaration). Used only to turn an
     /// unbound-local error into a teaching message. Empty for the module.
     pub shadow_hints: Vec<(u16, Rc<str>)>,
+    /// True when this function's body contains `yield`; calling it produces a
+    /// generator instead of running the body.
+    pub is_generator: bool,
 }
 
 impl std::fmt::Debug for Value {

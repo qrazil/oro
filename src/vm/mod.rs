@@ -147,6 +147,10 @@ pub struct Vm {
     /// Why each in-flight `finally` body is running, so `EndFinally` can resume
     /// the exception or `return` that was suspended to run the cleanup.
     finally_why: Vec<Why>,
+    /// Generators currently being advanced (innermost on top), with the
+    /// `ForIter` target to jump to when each is exhausted. Pushed on resume,
+    /// popped on `yield`/exhaustion.
+    gen_stack: Vec<(Rc<RefCell<crate::value::GenBox>>, usize)>,
     /// Program arguments, exposed as `sys.argv`.
     argv: Vec<String>,
     /// Set when `sys.exit(code)` runs; becomes the process exit status.
@@ -194,6 +198,7 @@ impl Vm {
             excs: exceptions::build_registry(),
             handling: Vec::new(),
             finally_why: Vec::new(),
+            gen_stack: Vec::new(),
             argv,
             exit_code: None,
         }
@@ -653,12 +658,35 @@ impl Vm {
                 }
                 Op::ForIter(target) => {
                     let it = self.top().stack.last().expect("ForIter on empty stack").clone();
-                    let next = self.wrap(iter_next(&it))?;
-                    match next {
-                        Some(v) => self.push(v),
-                        None => {
-                            self.pop(); // discard the exhausted iterator
-                            self.top().pc = target;
+                    // A generator is advanced by resuming its frame; the value
+                    // (or exhaustion) arrives via Yield/Return, not inline.
+                    if let Value::Generator(gen) = &it {
+                        let frame = {
+                            let mut g = gen.borrow_mut();
+                            if g.done {
+                                None
+                            } else {
+                                g.frame.take().map(|b| *b.downcast::<Frame>().expect("gen frame"))
+                            }
+                        };
+                        match frame {
+                            Some(frame) => {
+                                self.gen_stack.push((gen.clone(), target));
+                                self.frames.push(frame);
+                            }
+                            None => {
+                                self.pop();
+                                self.top().pc = target;
+                            }
+                        }
+                    } else {
+                        let next = self.wrap(iter_next(&it))?;
+                        match next {
+                            Some(v) => self.push(v),
+                            None => {
+                                self.pop(); // discard the exhausted iterator
+                                self.top().pc = target;
+                            }
                         }
                     }
                 }
@@ -666,8 +694,22 @@ impl Vm {
                 Op::Call(n) => self.do_call(n)?,
                 Op::CallEx => self.do_call_ex()?,
                 Op::Return => {
+                    // A generator body reaching return (including the implicit
+                    // one at the end) is exhausted: StopIteration for its driver.
+                    if self.top().code.is_generator {
+                        return Ok(self.generator_stop());
+                    }
                     let value = self.pop();
                     return self.do_return(value);
+                }
+                Op::Yield => {
+                    let value = self.pop();
+                    // Suspend this generator frame back into its GenBox and hand
+                    // the value to the driver (the frame beneath).
+                    let frame = self.frames.pop().expect("yield with no frame");
+                    let (gen, _target) = self.gen_stack.pop().expect("yield outside a generator");
+                    gen.borrow_mut().frame = Some(Box::new(frame));
+                    self.push(value);
                 }
                 Op::SetupExcept(target) => {
                     let stack_len = self.top().stack.len();
@@ -865,7 +907,14 @@ impl Vm {
                     return Err(self.err("maximum recursion depth exceeded"));
                 }
                 let frame = self.bind_call(&f, args, kwargs)?;
-                self.frames.push(frame);
+                if f.code.is_generator {
+                    // Calling a generator function does not run it; it produces a
+                    // generator holding the suspended (unstarted) frame.
+                    let gen = crate::value::GenBox { done: false, frame: Some(Box::new(frame)) };
+                    self.push(Value::Generator(Rc::new(RefCell::new(gen))));
+                } else {
+                    self.frames.push(frame);
+                }
                 Ok(())
             }
             Value::Class(class) => self.instantiate(class, args, kwargs),
@@ -1203,6 +1252,21 @@ impl Vm {
         Ok(Step::Next)
     }
 
+    /// A generator frame reached `return` (or fell off the end): mark it done
+    /// and route its driver's `for` loop to the exhaustion target.
+    fn generator_stop(&mut self) -> Step {
+        self.frames.pop();
+        let (gen, target) = self.gen_stack.pop().expect("generator stop outside a driver");
+        {
+            let mut g = gen.borrow_mut();
+            g.done = true;
+            g.frame = None;
+        }
+        self.pop(); // discard the exhausted generator (the ForIter operand)
+        self.top().pc = target;
+        Step::Next
+    }
+
     /// Unwind `exc` through the block and frame stacks. On success (a handler or
     /// finally took over) returns `None` and the loop resumes; if nothing
     /// catches it, returns the uncaught error to end the run.
@@ -1389,6 +1453,8 @@ fn get_iter(v: &Value) -> Result<Value, String> {
         Value::Dict(d) => IterState::Snapshot { items: d.borrow().keys(), idx: 0 },
         Value::Set(s) => IterState::Snapshot { items: s.borrow().items().to_vec(), idx: 0 },
         Value::File(f) => IterState::File { file: f.clone() },
+        // A generator is its own iterator; ForIter resumes it directly.
+        Value::Generator(_) => return Ok(v.clone()),
         Value::Iter(_) => return Ok(v.clone()),
         other => return Err(format!("'{}' object is not iterable", other.type_name())),
     };

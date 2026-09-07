@@ -442,6 +442,7 @@ impl SymTable {
             }
             Stmt::Return { value: Some(v), .. } => self.resolve_expr(scope_id, v),
             Stmt::Raise { exc: Some(e), .. } => self.resolve_expr(scope_id, e),
+            Stmt::Yield { value: Some(v), .. } => self.resolve_expr(scope_id, v),
             Stmt::Try { body, handlers, finalbody, .. } => {
                 let child = self.next_child(scope_id, cursor);
                 let mut c = 0;

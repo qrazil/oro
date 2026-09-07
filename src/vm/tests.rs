@@ -533,3 +533,45 @@ fn unknown_module_raises_module_not_found() {
     let err = run_err("import nonexistent_module\n");
     assert!(err.message.contains("No module named"), "got: {}", err.message);
 }
+
+// --- generators -----------------------------------------------------------
+
+#[test]
+fn generator_basic_iteration() {
+    let src = "def up(n):\n    i = 0\n    while i < n:\n        yield i\n        i = i + 1\n\
+               total = 0\nfor v in up(5):\n    total = total + v\n";
+    // total is a module local; sum 0..4 = 10
+    let locals = run_locals(src);
+    assert!(locals.iter().any(|v| matches!(v, Value::Int(10))), "expected 10 in {locals:?}");
+}
+
+#[test]
+fn generator_consumes_generator() {
+    let src = "def up(n):\n    i = 0\n    while i < n:\n        yield i\n        i = i + 1\n\
+               def evens(n):\n    for x in up(n):\n        if x % 2 == 0:\n            yield x\n\
+               got = []\nfor v in evens(10):\n    got.append(v)\n";
+    let locals = run_locals(src);
+    let list = locals.iter().find_map(|v| match v {
+        Value::List(l) => Some(l.borrow().iter().map(|x| match x { Value::Int(i)=>*i, _=>-1 }).collect::<Vec<_>>()),
+        _ => None,
+    }).expect("a list local");
+    assert_eq!(list, vec![0, 2, 4, 6, 8]);
+}
+
+#[test]
+fn calling_generator_does_not_run_body() {
+    // If the body ran eagerly, `marker` would be mutated; it must not be.
+    let src = "log = []\ndef g():\n    log.append(1)\n    yield 1\n\
+               it = g()\nn = len(log)\n";
+    let locals = run_locals(src);
+    // n == 0 proves the body has not executed yet.
+    assert!(locals.iter().any(|v| matches!(v, Value::Int(0))), "gen body ran too early: {locals:?}");
+}
+
+#[test]
+fn generator_is_a_generator_value() {
+    assert!(matches!(
+        eval_last("def g():\n    yield 1\nr = g()\n"),
+        Value::Generator(_)
+    ));
+}
