@@ -98,9 +98,18 @@ fn sexp(e: &Expr) -> String {
             s
         }
         Expr::Call { func, args, kwargs, .. } => {
-            let mut parts: Vec<String> = args.iter().map(sexp).collect();
-            for (k, v) in kwargs {
-                parts.push(format!("{k}={}", sexp(v)));
+            let mut parts: Vec<String> = args
+                .iter()
+                .map(|a| match a {
+                    Arg::Positional(e) => sexp(e),
+                    Arg::Star(e) => format!("*{}", sexp(e)),
+                })
+                .collect();
+            for kw in kwargs {
+                match kw {
+                    Kwarg::Keyword(k, v) => parts.push(format!("{k}={}", sexp(v))),
+                    Kwarg::DoubleStar(e) => parts.push(format!("**{}", sexp(e))),
+                }
             }
             format!("(call {} [{}])", sexp(func), parts.join(" "))
         }
@@ -243,6 +252,27 @@ fn call_no_args() {
 #[test]
 fn call_with_args_and_kwargs() {
     assert_eq!(sexp_of("f(1, 2, k=3)"), "(call f [1 2 k=3])");
+}
+
+#[test]
+fn call_with_star_and_double_star_unpacking() {
+    assert_eq!(sexp_of("f(*items)"), "(call f [*items])");
+    assert_eq!(sexp_of("f(**opts)"), "(call f [**opts])");
+    // Forwarding, the canonical stdlib wrapper shape, keeps everything in order.
+    assert_eq!(
+        sexp_of("f(a, *rest, k=1, **opts)"),
+        "(call f [a *rest k=1 **opts])"
+    );
+}
+
+#[test]
+fn call_star_after_keyword_is_rejected() {
+    let e = parse_err("f(k=1, *rest)");
+    assert!(
+        e.message.contains("positional arguments cannot follow keyword arguments"),
+        "got: {}",
+        e.message
+    );
 }
 
 #[test]
@@ -444,21 +474,27 @@ for k, v in items:
 }
 
 #[test]
-fn inline_suite() {
-    match parse_one("if a: x = 1") {
-        Stmt::If { body, orelse, .. } => {
-            assert_eq!(body.len(), 1);
-            assert!(orelse.is_none());
-        }
-        other => panic!("expected if, got {other:?}"),
-    }
+fn inline_suite_is_rejected() {
+    // The single-line suite form is cut: a block body must be on its own line.
+    let e = parse_err("if a: x = 1");
+    assert!(
+        e.message.contains("must be on its own indented line"),
+        "got: {}",
+        e.message
+    );
 }
 
 #[test]
-fn semicolon_separated_simple_statements() {
-    let prog = parse("x = 1; y = 2; z = 3");
-    assert_eq!(prog.len(), 3);
-    assert!(prog.iter().all(|s| matches!(s, Stmt::Assign { .. })));
+fn semicolons_are_rejected() {
+    let e = parse_err("x = 1; y = 2");
+    assert!(
+        e.message.contains("semicolons are not supported"),
+        "got: {}",
+        e.message
+    );
+    // Also rejected after a simple keyword statement.
+    let e = parse_err("return 1; x = 2");
+    assert!(e.message.contains("semicolons are not supported"), "got: {}", e.message);
 }
 
 // --- Functions & classes ----------------------------------------------------
@@ -497,6 +533,97 @@ def f(a: int, b: str = 'x') -> bool:
         }
         other => panic!("expected def, got {other:?}"),
     }
+}
+
+#[test]
+fn def_with_all_four_param_kinds() {
+    let src = "\
+def f(a, b=1, *args, **kwargs):
+    return a
+";
+    match parse_one(src) {
+        Stmt::Def { params, .. } => {
+            assert_eq!(params.len(), 4);
+
+            assert_eq!(params[0].name, "a");
+            assert_eq!(params[0].kind, ParamKind::Normal);
+            assert!(params[0].default.is_none());
+
+            assert_eq!(params[1].name, "b");
+            assert_eq!(params[1].kind, ParamKind::Normal);
+            assert!(params[1].default.is_some());
+
+            assert_eq!(params[2].name, "args");
+            assert_eq!(params[2].kind, ParamKind::VarArgs);
+            assert!(params[2].default.is_none());
+
+            assert_eq!(params[3].name, "kwargs");
+            assert_eq!(params[3].kind, ParamKind::KwArgs);
+            assert!(params[3].default.is_none());
+        }
+        other => panic!("expected def, got {other:?}"),
+    }
+}
+
+#[test]
+fn def_varargs_only() {
+    match parse_one("def f(*args):\n    pass\n") {
+        Stmt::Def { params, .. } => {
+            assert_eq!(params.len(), 1);
+            assert_eq!(params[0].kind, ParamKind::VarArgs);
+        }
+        other => panic!("expected def, got {other:?}"),
+    }
+}
+
+#[test]
+fn def_required_after_default_is_rejected() {
+    let e = parse_err("def f(a=1, b):\n    pass\n");
+    assert!(
+        e.message.contains("required parameter cannot follow a defaulted parameter"),
+        "got: {}",
+        e.message
+    );
+}
+
+#[test]
+fn def_param_after_varargs_is_rejected() {
+    let e = parse_err("def f(*args, b):\n    pass\n");
+    assert!(
+        e.message.contains("cannot follow `*args`"),
+        "got: {}",
+        e.message
+    );
+}
+
+#[test]
+fn def_param_after_kwargs_is_rejected() {
+    let e = parse_err("def f(**kwargs, b):\n    pass\n");
+    assert!(
+        e.message.contains("`**kwargs` must be the last parameter"),
+        "got: {}",
+        e.message
+    );
+}
+
+#[test]
+fn def_kwargs_before_varargs_is_rejected() {
+    let e = parse_err("def f(**kwargs, *args):\n    pass\n");
+    assert!(
+        e.message.contains("`*args` must come before `**kwargs`"),
+        "got: {}",
+        e.message
+    );
+}
+
+#[test]
+fn def_duplicate_varargs_is_rejected() {
+    let e = parse_err("def f(*a, *b):\n    pass\n");
+    assert!(
+        e.message.contains("only one `*args`"),
+        "got: {}",
+        e.message
+    );
 }
 
 #[test]
@@ -794,6 +921,13 @@ fn cut_assert() {
 #[test]
 fn cut_raise_from() {
     assert_cut("raise X from Y", "`raise X from Y` is not supported");
+}
+
+#[test]
+fn cut_decorators() {
+    assert_cut("@decorator\ndef f():\n    pass\n", "decorators are not supported in Oro");
+    // The `@` reaches the parser as a token rather than dying in the lexer.
+    assert_cut("@app.route('/')\ndef f():\n    pass\n", "decorators are not supported in Oro");
 }
 
 // --- Ordinary malformed input still errors gracefully (no panic) ------------

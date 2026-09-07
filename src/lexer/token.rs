@@ -80,6 +80,7 @@ pub enum TokenKind {
     Colon,       // :
     Semicolon,   // ;
     Arrow,       // ->
+    At,          // @
 
     // --- Structural ---
     Newline,

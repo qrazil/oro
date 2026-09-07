@@ -92,18 +92,56 @@ pub enum AugOp {
     Div,
 }
 
+/// The role of a parameter in a `def` header, which fixes both its calling
+/// convention and its legal position in the list (positional → defaulted →
+/// `*args` → `**kwargs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamKind {
+    /// An ordinary parameter: `name`, `name = default`.
+    Normal,
+    /// The variadic positional parameter `*args`, collecting the extra
+    /// positional arguments. At most one, after every `Normal` parameter.
+    VarArgs,
+    /// The variadic keyword parameter `**kwargs`, collecting the extra keyword
+    /// arguments. At most one, and always last.
+    KwArgs,
+}
+
 /// A single parameter in a `def` header: `name`, `name: ann`, `name = default`,
-/// or `name: ann = default`.
+/// `name: ann = default`, or the variadic forms `*args` / `**kwargs`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Param {
     pub name: String,
     /// Optional type annotation (`name: ann`). Kept as an expression; the parser
-    /// does not interpret it.
+    /// does not interpret it. Always `None` for `*args` / `**kwargs`.
     pub annotation: Option<Expr>,
-    /// Optional default value (`name = default`).
+    /// Optional default value (`name = default`). Never present on `*args` /
+    /// `**kwargs`.
     pub default: Option<Expr>,
+    /// Whether this is an ordinary, `*args`, or `**kwargs` parameter.
+    pub kind: ParamKind,
     pub line: usize,
     pub col: usize,
+}
+
+/// A single positional-side argument at a call site. Keyword-side arguments are
+/// [`Kwarg`]. Kept as an ordered list so unpacking position is preserved
+/// (`f(a, *b, c)` differs from `f(a, c, *b)`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Arg {
+    /// A plain positional argument: `f(x)`.
+    Positional(Expr),
+    /// An iterable unpacked into positional arguments: `f(*xs)`.
+    Star(Expr),
+}
+
+/// A single keyword-side argument at a call site.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Kwarg {
+    /// A named keyword argument: `f(name=value)`.
+    Keyword(String, Expr),
+    /// A mapping unpacked into keyword arguments: `f(**opts)`.
+    DoubleStar(Expr),
 }
 
 /// A single `except` clause of a `try` statement.
@@ -265,11 +303,13 @@ pub enum Expr {
         line: usize,
         col: usize,
     },
-    /// A call: `func(args, kw=val)`.
+    /// A call: `func(args, *rest, kw=val, **opts)`. `args` holds the
+    /// positional-side arguments in order (including `*` unpacking); `kwargs`
+    /// holds the keyword-side arguments in order (including `**` unpacking).
     Call {
         func: Box<Expr>,
-        args: Vec<Expr>,
-        kwargs: Vec<(String, Expr)>,
+        args: Vec<Arg>,
+        kwargs: Vec<Kwarg>,
         line: usize,
         col: usize,
     },

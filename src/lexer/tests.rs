@@ -409,3 +409,10 @@ fn unexpected_character_is_error() {
     let e = err("a $ b\n");
     assert_eq!(e.message, "unexpected character '$'");
 }
+
+#[test]
+fn at_sign_tokenizes() {
+    // `@` is no longer a lex error: it becomes an `At` token so the parser can
+    // emit a designed "decorators are not supported" message.
+    assert_eq!(kinds("@f\n"), vec![At, ident("f"), Newline, Eof]);
+}

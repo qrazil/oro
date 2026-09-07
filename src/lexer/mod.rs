@@ -435,6 +435,9 @@ impl Lexer {
             '.' => TokenKind::Dot,
             ':' => TokenKind::Colon,
             ';' => TokenKind::Semicolon,
+            // `@` is tokenized (not rejected here) so the parser can emit a
+            // designed "decorators are not supported" diagnostic.
+            '@' => TokenKind::At,
             other => {
                 return Err(LexError::new(
                     format!("unexpected character '{other}'"),

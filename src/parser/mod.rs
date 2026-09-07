@@ -29,7 +29,7 @@
 use std::fmt;
 
 use crate::ast::{
-    AugOp, BinOp, BoolOp, CmpOp, ExceptHandler, Expr, Param, Stmt, UnaryOp,
+    Arg, AugOp, BinOp, BoolOp, CmpOp, ExceptHandler, Expr, Kwarg, Param, ParamKind, Stmt, UnaryOp,
 };
 use crate::lexer::{Token, TokenKind};
 
@@ -95,9 +95,12 @@ impl Parser {
 
     // --- Statement dispatch --------------------------------------------------
 
-    /// Parse one logical line: either a single compound statement, or a run of
-    /// `;`-separated simple statements terminated by a newline.
+    /// Parse one logical line: a single compound statement, or a single simple
+    /// statement terminated by a newline.
     fn parse_line(&mut self, out: &mut Vec<Stmt>) -> PResult<()> {
+        if self.check(&TokenKind::At) {
+            return Err(self.error("decorators are not supported in Oro"));
+        }
         if self.is_compound_start() {
             let s = self.compound_statement()?;
             out.push(s);
@@ -119,32 +122,29 @@ impl Parser {
         )
     }
 
-    /// A line of one or more simple statements separated by `;`.
+    /// A single simple statement, terminated by a newline (or end of block).
+    ///
+    /// Semicolons are deliberately not a statement separator in Oro: they are a
+    /// second way to write a block, which the one-way-to-do-each-thing thesis
+    /// rules out. The `;` token still lexes, so we can reject it by name.
     fn simple_line(&mut self, out: &mut Vec<Stmt>) -> PResult<()> {
-        loop {
-            let s = self.simple_statement()?;
-            out.push(s);
-            if self.eat(&TokenKind::Semicolon) {
-                if self.eat(&TokenKind::Newline)
-                    || self.check(&TokenKind::Eof)
-                    || self.check(&TokenKind::Dedent)
-                {
-                    break;
-                }
-                continue;
-            }
-            if self.eat(&TokenKind::Newline)
-                || self.check(&TokenKind::Eof)
-                || self.check(&TokenKind::Dedent)
-            {
-                break;
-            }
-            return Err(self.error(format!(
-                "expected a newline or `;` to end the statement, found {}",
-                describe(self.cur_kind())
-            )));
+        let s = self.simple_statement()?;
+        out.push(s);
+        if self.check(&TokenKind::Semicolon) {
+            return Err(self.error(
+                "semicolons are not supported in Oro — put each statement on its own line",
+            ));
         }
-        Ok(())
+        if self.eat(&TokenKind::Newline)
+            || self.check(&TokenKind::Eof)
+            || self.check(&TokenKind::Dedent)
+        {
+            return Ok(());
+        }
+        Err(self.error(format!(
+            "expected a newline to end the statement, found {}",
+            describe(self.cur_kind())
+        )))
     }
 
     fn compound_statement(&mut self) -> PResult<Stmt> {
@@ -346,21 +346,108 @@ impl Parser {
         Ok(Stmt::Def { name, params, ret, body, line, col })
     }
 
+    /// Parse a `def` parameter list, enforcing the fixed order: positional
+    /// parameters, then defaulted ones, then a single `*args`, then a single
+    /// `**kwargs`. Each ordering violation gets its own diagnostic.
     fn param_list(&mut self) -> PResult<Vec<Param>> {
         let mut params = Vec::new();
+        let mut seen_default = false;
+        let mut seen_varargs = false;
+        let mut seen_kwargs = false;
+
         while !self.check(&TokenKind::RParen) {
-            let (name, line, col) = self.expect_ident("a parameter name")?;
-            let annotation = if self.eat(&TokenKind::Colon) {
-                Some(self.expression()?)
+            let (tok_line, tok_col) = self.cur_pos();
+
+            if self.eat(&TokenKind::DoubleStar) {
+                // `**kwargs`
+                if seen_kwargs {
+                    return Err(self.error_at(
+                        "a function may have only one `**kwargs` parameter",
+                        tok_line,
+                        tok_col,
+                    ));
+                }
+                let (name, line, col) = self.expect_ident("a parameter name after `**`")?;
+                params.push(Param {
+                    name,
+                    annotation: None,
+                    default: None,
+                    kind: ParamKind::KwArgs,
+                    line,
+                    col,
+                });
+                seen_kwargs = true;
+            } else if self.eat(&TokenKind::Star) {
+                // `*args`
+                if seen_kwargs {
+                    return Err(self.error_at(
+                        "`*args` must come before `**kwargs`",
+                        tok_line,
+                        tok_col,
+                    ));
+                }
+                if seen_varargs {
+                    return Err(self.error_at(
+                        "a function may have only one `*args` parameter",
+                        tok_line,
+                        tok_col,
+                    ));
+                }
+                let (name, line, col) = self.expect_ident("a parameter name after `*`")?;
+                params.push(Param {
+                    name,
+                    annotation: None,
+                    default: None,
+                    kind: ParamKind::VarArgs,
+                    line,
+                    col,
+                });
+                seen_varargs = true;
             } else {
-                None
-            };
-            let default = if self.eat(&TokenKind::Eq) {
-                Some(self.expression()?)
-            } else {
-                None
-            };
-            params.push(Param { name, annotation, default, line, col });
+                // An ordinary parameter.
+                if seen_kwargs {
+                    return Err(self.error_at(
+                        "`**kwargs` must be the last parameter",
+                        tok_line,
+                        tok_col,
+                    ));
+                }
+                if seen_varargs {
+                    return Err(self.error_at(
+                        "a parameter cannot follow `*args` — only `**kwargs` may",
+                        tok_line,
+                        tok_col,
+                    ));
+                }
+                let (name, line, col) = self.expect_ident("a parameter name")?;
+                let annotation = if self.eat(&TokenKind::Colon) {
+                    Some(self.expression()?)
+                } else {
+                    None
+                };
+                let default = if self.eat(&TokenKind::Eq) {
+                    seen_default = true;
+                    Some(self.expression()?)
+                } else {
+                    if seen_default {
+                        return Err(self.error_at(
+                            "a required parameter cannot follow a defaulted parameter",
+                            line,
+                            col,
+                        ));
+                    }
+                    None
+                };
+                params.push(Param {
+                    name,
+                    annotation,
+                    default,
+                    kind: ParamKind::Normal,
+                    line,
+                    col,
+                });
+            }
+
             if !self.eat(&TokenKind::Comma) {
                 break;
             }
@@ -441,31 +528,30 @@ impl Parser {
 
     // --- Blocks --------------------------------------------------------------
 
-    /// Parse the `:`-introduced suite of a compound statement, handling both the
-    /// indented block form and the inline single-line form (`if x: y`).
+    /// Parse the `:`-introduced suite of a compound statement.
+    ///
+    /// Only the indented block form is accepted. The inline single-line form
+    /// (`if x: y`) is deliberately cut: it is a second way to write a block, and
+    /// it is a large part of why Python needs autoformatters.
     fn block(&mut self) -> PResult<Vec<Stmt>> {
         self.expect(&TokenKind::Colon, "`:` to start the block")?;
 
-        if self.eat(&TokenKind::Newline) {
-            self.expect(&TokenKind::Indent, "an indented block")?;
-            let mut body = Vec::new();
-            while !self.check(&TokenKind::Dedent) && !self.check(&TokenKind::Eof) {
-                if self.eat(&TokenKind::Newline) {
-                    continue;
-                }
-                self.parse_line(&mut body)?;
-            }
-            self.eat(&TokenKind::Dedent);
-            if body.is_empty() {
-                return Err(self.error("expected an indented block"));
-            }
-            Ok(body)
-        } else {
-            // Inline suite: simple statements only, on the same line.
-            let mut body = Vec::new();
-            self.simple_line(&mut body)?;
-            Ok(body)
+        if !self.eat(&TokenKind::Newline) {
+            return Err(self.error("the body of a block must be on its own indented line"));
         }
+        self.expect(&TokenKind::Indent, "an indented block")?;
+        let mut body = Vec::new();
+        while !self.check(&TokenKind::Dedent) && !self.check(&TokenKind::Eof) {
+            if self.eat(&TokenKind::Newline) {
+                continue;
+            }
+            self.parse_line(&mut body)?;
+        }
+        self.eat(&TokenKind::Dedent);
+        if body.is_empty() {
+            return Err(self.error("expected an indented block"));
+        }
+        Ok(body)
     }
 
     // --- Expressions (Pratt) -------------------------------------------------
@@ -593,21 +679,34 @@ impl Parser {
         let mut args = Vec::new();
         let mut kwargs = Vec::new();
         while !self.check(&TokenKind::RParen) {
-            // Keyword argument: `name = value`, distinguished from `==`.
-            if matches!(self.cur_kind(), TokenKind::Ident(_))
+            if self.eat(&TokenKind::DoubleStar) {
+                // `**mapping` keyword unpacking.
+                let value = self.expression()?;
+                kwargs.push(Kwarg::DoubleStar(value));
+            } else if self.eat(&TokenKind::Star) {
+                // `*iterable` positional unpacking.
+                if !kwargs.is_empty() {
+                    return Err(self.error(
+                        "positional arguments cannot follow keyword arguments",
+                    ));
+                }
+                let value = self.expression()?;
+                args.push(Arg::Star(value));
+            } else if matches!(self.cur_kind(), TokenKind::Ident(_))
                 && *self.peek_kind() == TokenKind::Eq
             {
+                // Keyword argument: `name = value`, distinguished from `==`.
                 let (name, _, _) = self.expect_ident("a keyword argument name")?;
                 self.advance(); // `=`
                 let value = self.expression()?;
-                kwargs.push((name, value));
+                kwargs.push(Kwarg::Keyword(name, value));
             } else {
                 if !kwargs.is_empty() {
                     return Err(self.error(
                         "positional arguments cannot follow keyword arguments",
                     ));
                 }
-                args.push(self.expression()?);
+                args.push(Arg::Positional(self.expression()?));
             }
             if !self.eat(&TokenKind::Comma) {
                 break;
@@ -1065,6 +1164,7 @@ fn describe(kind: &TokenKind) -> String {
         Colon => "`:`".to_string(),
         Semicolon => "`;`".to_string(),
         Arrow => "`->`".to_string(),
+        At => "`@`".to_string(),
         Newline => "a newline".to_string(),
         Indent => "an indent".to_string(),
         Dedent => "a dedent".to_string(),
