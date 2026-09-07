@@ -49,6 +49,12 @@ To keep the property intact, Oro is *more* restrictive than Python wherever it
 differs — it rejects things Python accepts, never the other way around. Reject-
 not-accept is the invariant that guarantees the subset relationship holds.
 
+**One knowing exception:** a multi-segment `import a.b.c` *without* `as` binds
+the last segment (`c`), Go-style, where Python binds the first (`a`). So that
+one form is not valid-Python-equivalent. Single imports (`import os`) and
+aliased ones (`import a.b.c as name`) bind identically in both; use `as` when
+you want the guarantee to hold for a dotted import.
+
 ## The frozen feature set
 
 Implemented and working today:
@@ -61,13 +67,31 @@ Implemented and working today:
 - **Functions:** positional params, defaults, `*args`, `**kwargs`, and the call-
   site `*`/`**` unpacking that mirrors them. Deep and mutual recursion work
   (the VM never recurses in Rust — see [Architecture](#architecture)).
+- **Classes:** single inheritance, `__init__`/instance attributes/methods,
+  class-level attributes, `super()`, `isinstance()`, and a fixed dunder set —
+  `__str__`, `__repr__`, `__eq__`, `__len__`, the arithmetic dunders
+  (`__add__`…`__pow__`), and the comparisons (`__lt__`/`__gt__`/`__le__`/`__ge__`).
+- **Exceptions:** `try`/`except`/`finally`/`raise`, `except E as e`, bare `raise`
+  to re-raise, a real exception hierarchy (`BaseException`→`Exception`→
+  `ValueError`, `TypeError`, `KeyError`, `IndexError`, …) that `except` matches by
+  inheritance, and user exceptions via `class MyError(Exception)`. Every runtime
+  fault (index out of range, division by zero, missing key, …) raises the same
+  exception type CPython uses, so it is catchable.
+- **Generators:** `yield`, generator objects, `for` iteration, `StopIteration`
+  on exhaustion, and generators consuming generators — all on the heap frame
+  stack, so pipelines never grow the native stack.
 - **`global`** for mutating module-level state from a function.
+- **Modules:** `import a.b.c` / `import x as y`, built-in `sys` and `os`, and
+  user modules loaded from the script's directory (run once, cached).
+- **File I/O:** `open(path, mode)` (`r`/`w`/`a`, UTF-8 text) with
+  `read`/`readline`/`readlines`/`write`/`close` and line iteration; files close
+  deterministically at end of scope (no `with`).
 - **f-strings** with the full format mini-language: `{x:.2f}`, `{n:05d}`,
   `{x:,}`, alignment (`<^>`), sign/`#`/`0` flags, the `!r`/`!s` conversions, and
   nested specs like `{x:.{p}f}`.
-- **Builtins:** `print`, `len`, `range`, `str`, `int`, `float`, `bool`, `type`,
-  `abs`, `min`, `max`, `sum`, `sorted`, plus the common `str`/`list`/`dict`/
-  `set` methods.
+- **Builtins:** `print`, `len`, `range`, `str`, `repr`, `int`, `float`, `bool`,
+  `type`, `abs`, `min`, `max`, `sum`, `sorted`, `isinstance`, `open`, plus the
+  common `str`/`list`/`dict` methods.
 - **Python truthiness** and Python's cross-type numeric equality (`1 == 1.0 ==
   True`).
 
@@ -98,8 +122,19 @@ Each of these is omitted on purpose. The reason matters more than the list.
 - **No semicolons and no inline suites (`if x: y`).** Both are second ways to
   write a block, and together they are much of why Python needs autoformatters
   at all. One statement per line; one block form.
+- **No sets.** A set is a dict with no values, and the uses that matter are
+  already covered: `{k: True}` with `k in d` gives O(1) membership, and a dedup
+  loop keeps insertion order (unlike `set()`, whose arbitrary order is a real
+  bug source). Only set *algebra* (union/intersection/difference) is a genuine
+  gap, and that is rare in scripting — when wanted, it belongs in a stdlib `Set`
+  class written in Oro, the same split as JSON and CSV (primitives in Rust,
+  everything else in Oro), not in the frozen core. `{1, 2, 3}` and `set()` each
+  give an error pointing at a dict or a list. **Tuples stay** — they are the
+  only hashable composite, so `counts[(host, port)]` has no substitute, and they
+  are load-bearing for multiple return, `a, b = b, a`, and `*args`.
 
-Also cut: bare `except:`, `from x import y`, `import *`.
+Also cut: bare `except:`, `try/except/else`, `from x import y`, `import *`,
+`__new__`/`__getattr__`/`__setattr__`/`__slots__`, and class `metaclass=`.
 
 ## Deliberate divergences from Python
 
@@ -217,6 +252,24 @@ Locked design decisions, and what each one buys:
   an `is_ascii` flag computed once at creation. Indexing and length are O(1) for
   ASCII strings and fall back to correct (O(n)) char handling otherwise.
 
+## Standard library surface
+
+Two built-in modules ship in the core; everything else is meant to grow as Oro
+written on top of it.
+
+- **`sys`** — `argv` (`argv[0]` is the script), `exit(code)` (raises
+  `SystemExit`; sets the process exit status if uncaught), `platform`,
+  `stdin`/`stdout`/`stderr`.
+- **`os`** — `environ`, `getcwd()`, `listdir()`, `remove()`, `mkdir()`, and
+  `path`.
+- **`os.path`** — `exists`, `isfile`, `isdir`, `join`, `basename`, `dirname`,
+  `splitext`.
+- **`open(path, mode)`** — `r`/`w`/`a`, UTF-8 text. The file object has
+  `read()`, `readline()`, `readlines()`, `write()`, `close()`, and iterates line
+  by line. It closes when its last reference drops (see the `with`-free file
+  lifetime above). Missing files and permission errors raise `FileNotFoundError`
+  / `PermissionError`.
+
 ## Known limitations
 
 Stated plainly:
@@ -231,10 +284,23 @@ Stated plainly:
   state on an object, or restructure. Assigning to a name that also exists at
   module scope makes it *local* (exactly as in Python) — Oro turns the resulting
   unbound-variable error into a message that explains the fix.
-- **Not yet implemented:** classes, generators/`yield`, exceptions
-  (`try`/`except`/`raise`), `import`, and file I/O. The parser recognizes several
-  of these and reports a clear "not yet implemented" message rather than a
-  generic syntax error. They are planned; they are not here today.
+- **An instance inside a stringified container shows the default form.**
+  `print(obj)`, `str(obj)`, `repr(obj)`, and f-strings run an instance's
+  `__str__`/`__repr__` correctly, but an instance *nested* in a container that is
+  itself stringified — `print([obj])` — shows `<Class object>` instead. Container
+  stringification happens in native code that cannot re-enter the VM to run each
+  element's dunder; doing it properly means rewriting recursive `repr` as an
+  iterative state machine over the frame stack, deferred for now.
+- **`break`/`continue` do not run an enclosing `finally`.** A `finally` runs on
+  normal completion, on a handled or propagating exception, and on `return` — but
+  a `break` or `continue` that jumps out of a `try` skips its `finally`. Rare;
+  documented rather than fixed.
+- **Binary/encoding file modes, and `sys.path` mutation, are unsupported.**
+  `open` is UTF-8 text only (`r`/`w`/`a`); modules resolve against the one
+  documented search path (the script's directory) with no runtime path changes.
+- **No stdlib beyond `sys`/`os`.** Data structures like a `Set` class, and
+  modules like `json`/`csv`, are the intended growth area — written in Oro on top
+  of the frozen core, not baked into it.
 
 ## The corpus: CPython as an oracle
 
@@ -256,8 +322,14 @@ Oro's own fixtures happily agreed with Oro's own (wrong or missing) behavior.
 
 `corpus/divergence/` holds programs that intentionally behave differently from
 Python (the block-scope and `with`-free examples above); it is excluded from the
-differential run for that reason. `corpus/later/` targets features not built yet
-(classes, generators, exceptions).
+differential run for that reason.
+
+Some features can't be checked differentially and are covered by manual
+differential runs and unit tests instead: anything invocation- or
+environment-dependent (`sys.argv`, `sys.exit`, `os.getcwd`, `os.environ`,
+`os.listdir` — and note CPython's `argv[0]` under the oracle is `-c`, not the
+script), and user-module imports (the helper's extension is `.oro` vs CPython's
+`.py`, and CPython searches the working directory rather than the script's).
 
 ## Building and running
 
@@ -286,7 +358,8 @@ Run the CPython differential corpus:
 - `src/parser/` — Pratt-style parser producing the AST in `src/ast.rs`.
 - `src/compiler/` — two-pass compiler: `symbols.rs` (scope/slot resolution) and
   `codegen.rs` (bytecode emission); ops defined in `src/compiler/mod.rs`.
-- `src/vm/` — the flat, heap-framed bytecode interpreter.
+- `src/vm/` — the flat, heap-framed bytecode interpreter, plus `exceptions.rs`
+  (the built-in exception hierarchy) and `modules.rs` (`sys`/`os`/`os.path`).
 - `src/format.rs` — the f-string format mini-language.
 - `src/bigint.rs` — arbitrary-precision integers for overflow promotion.
 - `src/value.rs` — the runtime `Value` type and its containers.
