@@ -1,0 +1,19 @@
+# String manipulation: methods, slicing, concatenation, f-strings.
+s = "Hello, World"
+print(s.upper())
+print(s.lower())
+print(s.replace("World", "Oro"))
+print(s.split(", "))
+print(s[0:5])
+print(s[-5:])
+print(len(s))
+print(s.startswith("Hello"), s.endswith("World"))
+print(s.find("World"))
+
+parts = ["a", "b", "c"]
+print("-".join(parts))
+
+name = "Oro"
+version = 8
+print(f"{name} v{version}: {2 + 2} == 4")
+print("  trim me  ".strip())

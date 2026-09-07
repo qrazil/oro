@@ -1,0 +1,29 @@
+# Nested functions closing over an outer name. The inner functions read the
+# enclosing `base` (a free variable captured by cell); the shared list shows the
+# capture is by reference, not by copy.
+def make_adders(base):
+    log = []
+    def add(x):
+        log.append(x)
+        return base + x
+    def total_logged():
+        return sum(log)
+    return add, total_logged
+
+add5, logged = make_adders(5)
+print(add5(10))
+print(add5(20))
+print(logged())
+
+# Mutual recursion between two module-level functions defined out of order.
+def is_even(n):
+    if n == 0:
+        return True
+    return is_odd(n - 1)
+
+def is_odd(n):
+    if n == 0:
+        return False
+    return is_even(n - 1)
+
+print(is_even(10), is_odd(10))

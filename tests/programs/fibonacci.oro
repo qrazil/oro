@@ -1,0 +1,11 @@
+# Recursive Fibonacci: exercises def, calls, recursion, if/return, and the
+# forward reference of `fib` to itself.
+def fib(n):
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+i = 0
+while i <= 15:
+    print(fib(i))
+    i = i + 1

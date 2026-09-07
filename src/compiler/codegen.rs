@@ -1,0 +1,839 @@
+//! Codegen: the second pass. Walks the AST alongside the finalized symbol table
+//! (see [`super::symbols`]) and emits [`Op`]s, resolving every name to the slot,
+//! cell, or free index the pre-pass assigned.
+//!
+//! The scope walk here is in lockstep with [`super::symbols::SymTable::resolve_module`]:
+//! each scope's child scopes are consumed in source order via a per-scope
+//! cursor, so a `def`/`if`/`for` here maps to exactly the scope the pre-pass
+//! built for it.
+
+use std::rc::Rc;
+
+use crate::ast::{
+    Arg, BinOp, BoolOp, Expr, Kwarg, Param, ParamKind, Stmt, UnaryOp,
+};
+use crate::bigint::BigInt;
+use crate::lexer::Lexer;
+use crate::parser::Parser;
+use crate::value::Value;
+
+use super::symbols::{Resolution, SymTable};
+use super::{CaptureSource, CodeObject, CompileError, FuncProto, Op, ParamInfo, VarTarget};
+
+type CResult<T> = Result<T, CompileError>;
+
+/// Per-loop bookkeeping so `break`/`continue` can emit patched jumps.
+struct LoopCtx {
+    /// Where `continue` jumps to (loop test, or the `ForIter`).
+    continue_target: usize,
+    /// True inside a `for` loop, where the iterator sits on the stack and must
+    /// be popped before a `break` leaves.
+    iter_on_stack: bool,
+    /// Indices of `break` jumps awaiting the after-loop target.
+    breaks: Vec<usize>,
+}
+
+struct Codegen<'a> {
+    table: &'a SymTable,
+    scope: usize,
+    func: usize,
+    ops: Vec<Op>,
+    spans: Vec<(u32, u32)>,
+    consts: Vec<Value>,
+    protos: Vec<Rc<FuncProto>>,
+    /// Cursor into the current scope's child list.
+    cursor: usize,
+    loops: Vec<LoopCtx>,
+}
+
+/// Compile the module body into its top-level code object.
+pub fn compile_module(table: &SymTable, body: &[Stmt]) -> CResult<Rc<CodeObject>> {
+    let module = table.module;
+    let mut cg = Codegen::new(table, module);
+    cg.emit_body(body)?;
+    cg.emit(Op::LoadNone, 1, 1);
+    cg.emit(Op::Return, 1, 1);
+    Ok(Rc::new(cg.finish("<module>".to_string(), Vec::new())))
+}
+
+impl<'a> Codegen<'a> {
+    fn new(table: &'a SymTable, scope: usize) -> Codegen<'a> {
+        let func = scope; // callers pass a function/module scope
+        Codegen {
+            table,
+            scope,
+            func,
+            ops: Vec::new(),
+            spans: Vec::new(),
+            consts: Vec::new(),
+            protos: Vec::new(),
+            cursor: 0,
+            loops: Vec::new(),
+        }
+    }
+
+    fn finish(self, name: String, params: Vec<ParamInfo>) -> CodeObject {
+        CodeObject {
+            name,
+            ops: self.ops,
+            spans: self.spans,
+            consts: self.consts,
+            protos: self.protos,
+            nlocals: self.table.scopes()[self.func].nlocals as usize,
+            ncells: self.table.ncells(self.func) as usize,
+            nfree: self.table.nfree(self.func) as usize,
+            params,
+        }
+    }
+
+    // --- Emission helpers ----------------------------------------------------
+
+    fn emit(&mut self, op: Op, line: usize, col: usize) -> usize {
+        let idx = self.ops.len();
+        self.ops.push(op);
+        self.spans.push((line as u32, col as u32));
+        idx
+    }
+
+    fn here(&self) -> usize {
+        self.ops.len()
+    }
+
+    fn add_const(&mut self, v: Value) -> usize {
+        let idx = self.consts.len();
+        self.consts.push(v);
+        idx
+    }
+
+    fn set_target(&mut self, idx: usize, target: usize) {
+        match &mut self.ops[idx] {
+            Op::Jump(t)
+            | Op::PopJumpIfFalse(t)
+            | Op::PopJumpIfTrue(t)
+            | Op::JumpIfFalseOrPop(t)
+            | Op::JumpIfTrueOrPop(t)
+            | Op::ForIter(t) => *t = target,
+            _ => unreachable!("set_target on a non-jump op"),
+        }
+    }
+
+    fn next_child(&mut self) -> usize {
+        let child = self.table.children_of(self.scope)[self.cursor];
+        self.cursor += 1;
+        child
+    }
+
+    fn err(&self, msg: impl Into<String>, line: usize, col: usize) -> CompileError {
+        CompileError { message: msg.into(), line, col }
+    }
+
+    // --- Statements ----------------------------------------------------------
+
+    fn emit_body(&mut self, stmts: &[Stmt]) -> CResult<()> {
+        for s in stmts {
+            self.emit_stmt(s)?;
+        }
+        Ok(())
+    }
+
+    fn emit_stmt(&mut self, stmt: &Stmt) -> CResult<()> {
+        match stmt {
+            Stmt::Expr { value, line, col } => {
+                self.emit_expr(value)?;
+                self.emit(Op::Pop, *line, *col);
+            }
+            Stmt::Assign { targets, value, .. } => {
+                self.emit_expr(value)?;
+                for (i, t) in targets.iter().enumerate() {
+                    if i + 1 < targets.len() {
+                        let (l, c) = t.pos();
+                        self.emit(Op::Dup, l, c);
+                    }
+                    self.emit_store(t)?;
+                }
+            }
+            Stmt::AugAssign { target, op, value, line, col } => {
+                self.emit_aug_assign(target, *op, value, *line, *col)?;
+            }
+            Stmt::If { cond, body, elifs, orelse, .. } => {
+                self.emit_if(cond, body, elifs, orelse)?;
+            }
+            Stmt::While { cond, body, .. } => self.emit_while(cond, body)?,
+            Stmt::For { target, iter, body, .. } => self.emit_for(target, iter, body)?,
+            Stmt::Def { name, params, body, line, col, .. } => {
+                self.emit_def(name, params, body, *line, *col)?;
+            }
+            Stmt::Return { value, line, col } => {
+                match value {
+                    Some(v) => self.emit_expr(v)?,
+                    None => {
+                        self.emit(Op::LoadNone, *line, *col);
+                    }
+                }
+                self.emit(Op::Return, *line, *col);
+            }
+            Stmt::Break { line, col } => self.emit_break(*line, *col)?,
+            Stmt::Continue { line, col } => self.emit_continue(*line, *col)?,
+            Stmt::Pass { .. } => {}
+            Stmt::Class { line, col, .. } => {
+                return Err(self.err("classes are not yet implemented in this build", *line, *col))
+            }
+            Stmt::Try { line, col, .. } => {
+                return Err(self.err(
+                    "try/except is not yet implemented in this build",
+                    *line,
+                    *col,
+                ))
+            }
+            Stmt::Raise { line, col, .. } => {
+                return Err(self.err("raise is not yet implemented in this build", *line, *col))
+            }
+            Stmt::Import { line, col, .. } => {
+                return Err(self.err("imports are not yet implemented in this build", *line, *col))
+            }
+            Stmt::Yield { line, col, .. } => {
+                return Err(self.err(
+                    "generators/yield are not yet implemented in this build",
+                    *line,
+                    *col,
+                ))
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_if(
+        &mut self,
+        cond: &Expr,
+        body: &[Stmt],
+        elifs: &[(Expr, Vec<Stmt>)],
+        orelse: &Option<Vec<Stmt>>,
+    ) -> CResult<()> {
+        // Jumps that should land after the whole construct.
+        let mut end_jumps: Vec<usize> = Vec::new();
+
+        // Leading `if`.
+        let (cl, cc) = cond.pos();
+        self.emit_expr(cond)?;
+        let mut skip = self.emit(Op::PopJumpIfFalse(0), cl, cc);
+        self.emit_child_block(body)?;
+        end_jumps.push(self.emit(Op::Jump(0), cl, cc));
+
+        // `elif` chain.
+        for (econd, ebody) in elifs {
+            let here = self.here();
+            self.set_target(skip, here);
+            let (el, ec) = econd.pos();
+            self.emit_expr(econd)?;
+            skip = self.emit(Op::PopJumpIfFalse(0), el, ec);
+            self.emit_child_block(ebody)?;
+            end_jumps.push(self.emit(Op::Jump(0), el, ec));
+        }
+
+        // `else`.
+        let else_here = self.here();
+        self.set_target(skip, else_here);
+        if let Some(ebody) = orelse {
+            self.emit_child_block(ebody)?;
+        }
+
+        let end = self.here();
+        for j in end_jumps {
+            self.set_target(j, end);
+        }
+        Ok(())
+    }
+
+    fn emit_while(&mut self, cond: &Expr, body: &[Stmt]) -> CResult<()> {
+        let top = self.here();
+        let (cl, cc) = cond.pos();
+        self.emit_expr(cond)?;
+        let exit = self.emit(Op::PopJumpIfFalse(0), cl, cc);
+        self.loops.push(LoopCtx { continue_target: top, iter_on_stack: false, breaks: Vec::new() });
+        self.emit_child_block(body)?;
+        self.emit(Op::Jump(top), cl, cc);
+        let after = self.here();
+        self.set_target(exit, after);
+        let ctx = self.loops.pop().unwrap();
+        for b in ctx.breaks {
+            self.set_target(b, after);
+        }
+        Ok(())
+    }
+
+    fn emit_for(&mut self, target: &Expr, iter: &Expr, body: &[Stmt]) -> CResult<()> {
+        let (il, ic) = iter.pos();
+        self.emit_expr(iter)?;
+        self.emit(Op::GetIter, il, ic);
+        let top = self.here();
+        let foriter = self.emit(Op::ForIter(0), il, ic);
+        // The loop target and body live in the child block scope.
+        let child = self.next_child();
+        let saved_scope = self.scope;
+        let saved_cursor = self.cursor;
+        self.scope = child;
+        self.cursor = 0;
+        self.emit_store(target)?;
+        self.loops.push(LoopCtx { continue_target: top, iter_on_stack: true, breaks: Vec::new() });
+        self.emit_body(body)?;
+        self.emit(Op::Jump(top), il, ic);
+        let after = self.here();
+        self.set_target(foriter, after);
+        let ctx = self.loops.pop().unwrap();
+        for b in ctx.breaks {
+            self.set_target(b, after);
+        }
+        self.scope = saved_scope;
+        self.cursor = saved_cursor;
+        Ok(())
+    }
+
+    fn emit_break(&mut self, line: usize, col: usize) -> CResult<()> {
+        let iter_on_stack = match self.loops.last() {
+            Some(l) => l.iter_on_stack,
+            None => return Err(self.err("`break` outside of a loop", line, col)),
+        };
+        if iter_on_stack {
+            self.emit(Op::Pop, line, col);
+        }
+        let j = self.emit(Op::Jump(0), line, col);
+        self.loops.last_mut().unwrap().breaks.push(j);
+        Ok(())
+    }
+
+    fn emit_continue(&mut self, line: usize, col: usize) -> CResult<()> {
+        let target = match self.loops.last() {
+            Some(l) => l.continue_target,
+            None => return Err(self.err("`continue` outside of a loop", line, col)),
+        };
+        self.emit(Op::Jump(target), line, col);
+        Ok(())
+    }
+
+    /// Emit an `if`/`while` body that occupies a fresh child block scope.
+    fn emit_child_block(&mut self, body: &[Stmt]) -> CResult<()> {
+        let child = self.next_child();
+        let saved_scope = self.scope;
+        let saved_cursor = self.cursor;
+        self.scope = child;
+        self.cursor = 0;
+        self.emit_body(body)?;
+        self.scope = saved_scope;
+        self.cursor = saved_cursor;
+        Ok(())
+    }
+
+    fn emit_aug_assign(
+        &mut self,
+        target: &Expr,
+        op: crate::ast::AugOp,
+        value: &Expr,
+        line: usize,
+        col: usize,
+    ) -> CResult<()> {
+        use crate::ast::AugOp;
+        let binop = match op {
+            AugOp::Add => Op::BinAdd,
+            AugOp::Sub => Op::BinSub,
+            AugOp::Mul => Op::BinMul,
+            AugOp::Div => Op::BinDiv,
+        };
+        match target {
+            Expr::Name { .. } => {
+                self.emit_expr(target)?; // load current
+                self.emit_expr(value)?;
+                self.emit(binop, line, col);
+                self.emit_store(target)?;
+            }
+            Expr::Subscript { value: obj, index, .. } => {
+                // Evaluate obj and index exactly once, then reuse both for the
+                // load and the store.
+                self.emit_expr(obj)?; // [obj]
+                self.emit_expr(index)?; // [obj, idx]
+                self.emit(Op::DupTwo, line, col); // [obj, idx, obj, idx]
+                self.emit(Op::LoadSubscript, line, col); // [obj, idx, cur]
+                self.emit_expr(value)?; // [obj, idx, cur, value]
+                self.emit(binop, line, col); // [obj, idx, newval]
+                self.emit(Op::RotThree, line, col); // [newval, obj, idx]
+                self.emit(Op::StoreSubscript, line, col);
+            }
+            _ => {
+                return Err(self.err(
+                    "invalid target for augmented assignment",
+                    line,
+                    col,
+                ))
+            }
+        }
+        Ok(())
+    }
+
+    // --- Function definitions ------------------------------------------------
+
+    fn emit_def(
+        &mut self,
+        name: &str,
+        params: &[Param],
+        body: &[Stmt],
+        line: usize,
+        col: usize,
+    ) -> CResult<()> {
+        let child = self.next_child();
+        let proto = self.compile_function(name, params, body, child)?;
+        let proto_idx = self.protos.len();
+        self.protos.push(Rc::new(proto));
+
+        // Evaluate default values in this (enclosing) scope, in order.
+        for p in params {
+            if let Some(d) = &p.default {
+                self.emit_expr(d)?;
+            }
+        }
+        self.emit(Op::MakeFunction(proto_idx), line, col);
+        self.emit_store(&Expr::Name { name: name.to_string(), line, col })?;
+        Ok(())
+    }
+
+    fn compile_function(
+        &mut self,
+        name: &str,
+        params: &[Param],
+        body: &[Stmt],
+        child: usize,
+    ) -> CResult<FuncProto> {
+        // Build the child function's code object with its own Codegen.
+        let mut inner = Codegen::new(self.table, child);
+        inner.func = child;
+        inner.scope = child;
+        inner.emit_body(body)?;
+        let (ll, cc) = body.last().map(|s| s.pos()).unwrap_or((0, 0));
+        inner.emit(Op::LoadNone, ll, cc);
+        inner.emit(Op::Return, ll, cc);
+
+        // Parameter descriptors, resolved against the child scope.
+        let mut infos = Vec::with_capacity(params.len());
+        for p in params {
+            let target = match self.table.resolve_name(child, &p.name) {
+                Resolution::Local(s) => VarTarget::Local(s),
+                Resolution::Cell(s) => VarTarget::Cell(s),
+                _ => unreachable!("a parameter is always a local of its function"),
+            };
+            infos.push(ParamInfo {
+                name: Rc::from(p.name.as_str()),
+                kind: p.kind,
+                target,
+                has_default: p.default.is_some() && p.kind == ParamKind::Normal,
+            });
+        }
+        let n_defaults = params.iter().filter(|p| p.default.is_some()).count();
+
+        let code = Rc::new(inner.finish(name.to_string(), infos));
+
+        // Capture plan: for each free variable of the child, say where the
+        // enclosing (this) frame keeps its cell.
+        let mut captures = Vec::new();
+        for &sym in &self.table.scopes()[child].freevars {
+            let owner = self.table.symbols()[sym].owner;
+            if owner == self.func {
+                captures.push(CaptureSource::Cell(self.table.symbols()[sym].slot));
+            } else {
+                let idx = self.table.scopes()[self.func]
+                    .freevars
+                    .iter()
+                    .position(|&s| s == sym)
+                    .expect("free variable must be available in the enclosing function")
+                    as u16;
+                captures.push(CaptureSource::Free(idx));
+            }
+        }
+
+        Ok(FuncProto { code, captures, n_defaults })
+    }
+
+    // --- Stores --------------------------------------------------------------
+
+    /// Emit code that stores the value on top of the stack into `target`.
+    fn emit_store(&mut self, target: &Expr) -> CResult<()> {
+        match target {
+            Expr::Name { name, line, col } => {
+                match self.table.resolve_name(self.scope, name) {
+                    Resolution::Local(s) => self.emit(Op::StoreFast(s), *line, *col),
+                    Resolution::Cell(s) => self.emit(Op::StoreCell(s), *line, *col),
+                    Resolution::Free(s) => self.emit(Op::StoreFree(s), *line, *col),
+                    Resolution::Global => {
+                        return Err(self.err(
+                            format!("cannot assign to `{name}`"),
+                            *line,
+                            *col,
+                        ))
+                    }
+                };
+            }
+            Expr::Subscript { value, index, line, col } => {
+                self.emit_expr(value)?;
+                self.emit_expr(index)?;
+                self.emit(Op::StoreSubscript, *line, *col);
+            }
+            Expr::Tuple { elements, line, col } | Expr::List { elements, line, col } => {
+                self.emit(Op::UnpackSequence(elements.len()), *line, *col);
+                for e in elements {
+                    self.emit_store(e)?;
+                }
+            }
+            Expr::Attribute { line, col, .. } => {
+                return Err(self.err(
+                    "attribute assignment is not supported (no classes in this build)",
+                    *line,
+                    *col,
+                ))
+            }
+            other => {
+                let (l, c) = other.pos();
+                return Err(self.err("invalid assignment target", l, c));
+            }
+        }
+        Ok(())
+    }
+
+    // --- Expressions ---------------------------------------------------------
+
+    fn emit_expr(&mut self, expr: &Expr) -> CResult<()> {
+        match expr {
+            Expr::Int { value, line, col } => {
+                let v = parse_int(value);
+                let idx = self.add_const(v);
+                self.emit(Op::LoadConst(idx), *line, *col);
+            }
+            Expr::Float { value, line, col } => {
+                let f: f64 = value.parse().map_err(|_| {
+                    self.err(format!("invalid float literal `{value}`"), *line, *col)
+                })?;
+                let idx = self.add_const(Value::Float(f));
+                self.emit(Op::LoadConst(idx), *line, *col);
+            }
+            Expr::Str { value, line, col } => {
+                let idx = self.add_const(Value::str(value.clone()));
+                self.emit(Op::LoadConst(idx), *line, *col);
+            }
+            Expr::FString { value, line, col } => self.emit_fstring(value, *line, *col)?,
+            Expr::Bool { value, line, col } => {
+                let idx = self.add_const(Value::Bool(*value));
+                self.emit(Op::LoadConst(idx), *line, *col);
+            }
+            Expr::NoneLit { line, col } => {
+                self.emit(Op::LoadNone, *line, *col);
+            }
+            Expr::Name { name, line, col } => {
+                match self.table.resolve_name(self.scope, name) {
+                    Resolution::Local(s) => self.emit(Op::LoadFast(s), *line, *col),
+                    Resolution::Cell(s) => self.emit(Op::LoadCell(s), *line, *col),
+                    Resolution::Free(s) => self.emit(Op::LoadFree(s), *line, *col),
+                    Resolution::Global => {
+                        self.emit(Op::LoadGlobal(Rc::from(name.as_str())), *line, *col)
+                    }
+                };
+            }
+            Expr::Unary { op, operand, line, col } => {
+                self.emit_expr(operand)?;
+                let o = match op {
+                    UnaryOp::Neg => Op::UnaryNeg,
+                    UnaryOp::Pos => Op::UnaryPos,
+                    UnaryOp::Not => Op::UnaryNot,
+                };
+                self.emit(o, *line, *col);
+            }
+            Expr::Binary { op, left, right, line, col } => {
+                self.emit_expr(left)?;
+                self.emit_expr(right)?;
+                let o = match op {
+                    BinOp::Add => Op::BinAdd,
+                    BinOp::Sub => Op::BinSub,
+                    BinOp::Mul => Op::BinMul,
+                    BinOp::Div => Op::BinDiv,
+                    BinOp::FloorDiv => Op::BinFloorDiv,
+                    BinOp::Mod => Op::BinMod,
+                    BinOp::Pow => Op::BinPow,
+                };
+                self.emit(o, *line, *col);
+            }
+            Expr::BoolOp { op, left, right, line, col } => {
+                self.emit_expr(left)?;
+                let jump = match op {
+                    BoolOp::And => self.emit(Op::JumpIfFalseOrPop(0), *line, *col),
+                    BoolOp::Or => self.emit(Op::JumpIfTrueOrPop(0), *line, *col),
+                };
+                self.emit_expr(right)?;
+                let end = self.here();
+                self.set_target(jump, end);
+            }
+            Expr::Compare { first, rest, line, col } => {
+                self.emit_compare(first, rest, *line, *col)?;
+            }
+            Expr::Call { func, args, kwargs, line, col } => {
+                self.emit_call(func, args, kwargs, *line, *col)?;
+            }
+            Expr::Attribute { value, attr, line, col } => {
+                self.emit_expr(value)?;
+                self.emit(Op::LoadAttr(Rc::from(attr.as_str())), *line, *col);
+            }
+            Expr::Subscript { value, index, line, col } => {
+                self.emit_expr(value)?;
+                self.emit_expr(index)?;
+                self.emit(Op::LoadSubscript, *line, *col);
+            }
+            Expr::Slice { value, lower, upper, step, line, col } => {
+                self.emit_expr(value)?;
+                self.emit_slice_part(lower, *line, *col)?;
+                self.emit_slice_part(upper, *line, *col)?;
+                self.emit_slice_part(step, *line, *col)?;
+                self.emit(Op::LoadSlice, *line, *col);
+            }
+            Expr::List { elements, line, col } => {
+                for e in elements {
+                    self.emit_expr(e)?;
+                }
+                self.emit(Op::BuildList(elements.len()), *line, *col);
+            }
+            Expr::Tuple { elements, line, col } => {
+                for e in elements {
+                    self.emit_expr(e)?;
+                }
+                self.emit(Op::BuildTuple(elements.len()), *line, *col);
+            }
+            Expr::Set { elements, line, col } => {
+                for e in elements {
+                    self.emit_expr(e)?;
+                }
+                self.emit(Op::BuildSet(elements.len()), *line, *col);
+            }
+            Expr::Dict { entries, line, col } => {
+                for (k, v) in entries {
+                    self.emit_expr(k)?;
+                    self.emit_expr(v)?;
+                }
+                self.emit(Op::BuildMap(entries.len()), *line, *col);
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_slice_part(&mut self, part: &Option<Box<Expr>>, line: usize, col: usize) -> CResult<()> {
+        match part {
+            Some(e) => self.emit_expr(e)?,
+            None => {
+                self.emit(Op::LoadNone, line, col);
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_compare(
+        &mut self,
+        first: &Expr,
+        rest: &[(crate::ast::CmpOp, Expr)],
+        line: usize,
+        col: usize,
+    ) -> CResult<()> {
+        self.emit_expr(first)?;
+        if rest.len() == 1 {
+            self.emit_expr(&rest[0].1)?;
+            self.emit(Op::Compare(rest[0].0), line, col);
+            return Ok(());
+        }
+        // Chained: keep each middle operand once, short-circuiting on the first
+        // false result.
+        let mut exit_jumps = Vec::new();
+        for (i, (op, operand)) in rest.iter().enumerate() {
+            self.emit_expr(operand)?;
+            if i + 1 < rest.len() {
+                self.emit(Op::Dup, line, col);
+                self.emit(Op::RotThree, line, col);
+                self.emit(Op::Compare(*op), line, col);
+                exit_jumps.push(self.emit(Op::JumpIfFalseOrPop(0), line, col));
+            } else {
+                self.emit(Op::Compare(*op), line, col);
+            }
+        }
+        if exit_jumps.is_empty() {
+            return Ok(());
+        }
+        let done = self.emit(Op::Jump(0), line, col);
+        let cleanup = self.here();
+        for j in exit_jumps {
+            self.set_target(j, cleanup);
+        }
+        // On short-circuit the leftover operand sits under the False result.
+        self.emit(Op::RotTwo, line, col);
+        self.emit(Op::Pop, line, col);
+        let end = self.here();
+        self.set_target(done, end);
+        Ok(())
+    }
+
+    fn emit_call(
+        &mut self,
+        func: &Expr,
+        args: &[Arg],
+        kwargs: &[Kwarg],
+        line: usize,
+        col: usize,
+    ) -> CResult<()> {
+        let simple = args.iter().all(|a| matches!(a, Arg::Positional(_))) && kwargs.is_empty();
+        self.emit_expr(func)?;
+        if simple {
+            for a in args {
+                if let Arg::Positional(e) = a {
+                    self.emit_expr(e)?;
+                }
+            }
+            self.emit(Op::Call(args.len()), line, col);
+            return Ok(());
+        }
+        // General path: assemble a positional list and a keyword dict.
+        self.emit(Op::BuildList(0), line, col);
+        for a in args {
+            match a {
+                Arg::Positional(e) => {
+                    self.emit_expr(e)?;
+                    self.emit(Op::ListAppend, line, col);
+                }
+                Arg::Star(e) => {
+                    self.emit_expr(e)?;
+                    self.emit(Op::ListExtend, line, col);
+                }
+            }
+        }
+        self.emit(Op::BuildMap(0), line, col);
+        for k in kwargs {
+            match k {
+                Kwarg::Keyword(name, e) => {
+                    let idx = self.add_const(Value::str(name.clone()));
+                    self.emit(Op::LoadConst(idx), line, col);
+                    self.emit_expr(e)?;
+                    self.emit(Op::MapSetItem, line, col);
+                }
+                Kwarg::DoubleStar(e) => {
+                    self.emit_expr(e)?;
+                    self.emit(Op::MapMerge, line, col);
+                }
+            }
+        }
+        self.emit(Op::CallEx, line, col);
+        Ok(())
+    }
+
+    // --- f-strings -----------------------------------------------------------
+
+    fn emit_fstring(&mut self, raw: &str, line: usize, col: usize) -> CResult<()> {
+        let chars: Vec<char> = raw.chars().collect();
+        let mut i = 0;
+        let mut literal = String::new();
+        let mut parts = 0usize;
+
+        macro_rules! flush {
+            () => {
+                if !literal.is_empty() {
+                    let idx = self.add_const(Value::str(std::mem::take(&mut literal)));
+                    self.emit(Op::LoadConst(idx), line, col);
+                    parts += 1;
+                }
+            };
+        }
+
+        while i < chars.len() {
+            match chars[i] {
+                '{' if chars.get(i + 1) == Some(&'{') => {
+                    literal.push('{');
+                    i += 2;
+                }
+                '}' if chars.get(i + 1) == Some(&'}') => {
+                    literal.push('}');
+                    i += 2;
+                }
+                '{' => {
+                    flush!();
+                    i += 1;
+                    let mut depth = 1;
+                    let mut src = String::new();
+                    while i < chars.len() && depth > 0 {
+                        match chars[i] {
+                            '{' => {
+                                depth += 1;
+                                src.push('{');
+                            }
+                            '}' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                                src.push('}');
+                            }
+                            c => src.push(c),
+                        }
+                        i += 1;
+                    }
+                    if depth != 0 {
+                        return Err(self.err(
+                            "unterminated `{` in f-string",
+                            line,
+                            col,
+                        ));
+                    }
+                    i += 1; // consume '}'
+                    let expr = self.parse_fstring_expr(&src, line, col)?;
+                    self.emit_expr(&expr)?;
+                    self.emit(Op::FormatValue, line, col);
+                    parts += 1;
+                }
+                '}' => {
+                    return Err(self.err("single `}` in f-string", line, col));
+                }
+                c => {
+                    literal.push(c);
+                    i += 1;
+                }
+            }
+        }
+        flush!();
+
+        match parts {
+            0 => {
+                let idx = self.add_const(Value::str(String::new()));
+                self.emit(Op::LoadConst(idx), line, col);
+            }
+            1 => {}
+            n => {
+                self.emit(Op::BuildString(n), line, col);
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_fstring_expr(&self, src: &str, line: usize, col: usize) -> CResult<Expr> {
+        if src.trim().is_empty() {
+            return Err(self.err("empty expression in f-string", line, col));
+        }
+        let tokens = Lexer::new(src)
+            .tokenize()
+            .map_err(|e| self.err(format!("in f-string: {}", e.message), line, col))?;
+        let prog = Parser::new(tokens)
+            .parse()
+            .map_err(|e| self.err(format!("in f-string: {}", e.message), line, col))?;
+        match prog.as_slice() {
+            [Stmt::Expr { value, .. }] => Ok(value.clone()),
+            _ => Err(self.err("f-string field must be a single expression", line, col)),
+        }
+    }
+}
+
+/// Parse an integer literal, using `i64` when it fits and promoting to `BigInt`
+/// otherwise (architecture point 4 — allocation only on overflow).
+fn parse_int(text: &str) -> Value {
+    match text.parse::<i64>() {
+        Ok(i) => Value::Int(i),
+        Err(_) => match BigInt::parse_decimal(text) {
+            Some(b) => Value::from_bigint(b),
+            None => Value::Int(0), // lexer guarantees digits; unreachable in practice
+        },
+    }
+}

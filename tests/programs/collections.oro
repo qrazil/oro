@@ -1,0 +1,25 @@
+# Building lists and dicts, indexing, iteration, tuple unpacking.
+squares = []
+for i in range(1, 6):
+    squares.append(i * i)
+print(squares)
+
+counts = {}
+for w in ["red", "blue", "red", "green", "blue", "red"]:
+    counts[w] = counts.get(w, 0) + 1
+print(counts)
+
+for key in counts:
+    print(key, counts[key])
+
+pairs = [(1, "one"), (2, "two"), (3, "three")]
+for num, word in pairs:
+    print(num, word)
+
+d = {"a": 1, "b": 2}
+print(d.keys())
+print(d.values())
+print("a" in d, "z" in d)
+
+nums = {1, 2, 2, 3, 3, 3}
+print(len(nums))

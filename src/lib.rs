@@ -8,5 +8,10 @@
 //! intentionally absent.
 
 pub mod ast;
+pub mod bigint;
+pub mod builtins;
+pub mod compiler;
 pub mod lexer;
 pub mod parser;
+pub mod value;
+pub mod vm;
