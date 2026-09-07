@@ -1,0 +1,54 @@
+import os
+
+# os.path string operations (deterministic, identical under CPython on POSIX).
+print(os.path.join("a", "b", "c"))
+print(os.path.join("/etc", "hosts"))
+print(os.path.basename("/usr/local/bin/oro"))
+print(os.path.dirname("/usr/local/bin/oro"))
+print(os.path.splitext("report.tar.gz"))
+print(os.path.splitext("plain"))
+
+# A self-contained write / read / iterate / append / remove cycle.
+tmp = "oro_corpus_scratch.txt"
+
+f = open(tmp, "w")
+f.write("alpha\n")
+f.write("beta\n")
+f.write("gamma\n")
+f.close()
+
+r = open(tmp, "r")
+contents = r.read()
+r.close()
+print(len(contents))
+print(contents.strip())
+
+# Iterate line by line.
+lines = []
+for line in open(tmp, "r"):
+    lines.append(line.strip())
+print(lines)
+
+# readline then readlines.
+r2 = open(tmp, "r")
+print(r2.readline().strip())
+print(r2.readlines())
+r2.close()
+
+# Append and count.
+a = open(tmp, "a")
+a.write("delta\n")
+a.close()
+print(len(open(tmp, "r").readlines()))
+
+# os.path.exists before and after removal.
+print(os.path.exists(tmp))
+os.remove(tmp)
+print(os.path.exists(tmp))
+
+# FileNotFoundError is raised and catchable.
+try:
+    open("oro_no_such_file.txt", "r")
+    print("no error")
+except FileNotFoundError:
+    print("FileNotFoundError caught")

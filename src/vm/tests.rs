@@ -12,28 +12,8 @@ fn run_locals(src: &str) -> Vec<Value> {
     let tokens = Lexer::new(src).tokenize().expect("lex");
     let program = Parser::new(tokens).parse().expect("parse");
     let code = compile(&program).expect("compile");
-    let mut vm = Vm {
-        frames: Vec::new(),
-        line: 0,
-        col: 0,
-        last_locals: Vec::new(),
-        prints: Vec::new(),
-        excs: super::exceptions::build_registry(),
-        handling: Vec::new(),
-        finally_why: Vec::new(),
-    };
-    let frame = Frame {
-        locals: vec![Value::Unbound; code.nlocals],
-        cells: (0..code.ncells).map(|_| Rc::new(RefCell::new(Value::Unbound))).collect(),
-        free: Vec::new(),
-        stack: Vec::new(),
-        pc: 0,
-        code,
-        ret_action: ReturnAction::Normal,
-        super_ctx: None,
-        blocks: Vec::new(),
-    };
-    vm.frames.push(frame);
+    let mut vm = Vm::new(Vec::new());
+    vm.push_module_frame(code);
     vm.run_loop().expect("run");
     vm.last_locals
 }
@@ -532,4 +512,24 @@ fn user_exception_subclass() {
         Value::Str(s) => assert_eq!(s.s, "custom"),
         other => panic!("expected str, got {}", other.repr()),
     }
+}
+
+// --- imports & stdlib -----------------------------------------------------
+
+#[test]
+fn import_binds_last_segment() {
+    // `import os` binds `os` to a module.
+    assert!(matches!(eval("import os\nr = os\n"), Value::Module(_)));
+}
+
+#[test]
+fn os_path_functions() {
+    assert_eq!(fstr("import os\nr = os.path.join(\"a\", \"b\")\n"), "a/b");
+    assert_eq!(fstr("import os\nr = os.path.basename(\"/x/y/z.txt\")\n"), "z.txt");
+}
+
+#[test]
+fn unknown_module_raises_module_not_found() {
+    let err = run_err("import nonexistent_module\n");
+    assert!(err.message.contains("No module named"), "got: {}", err.message);
 }

@@ -30,6 +30,7 @@ pub fn lookup(name: &str) -> Option<Value> {
         "sorted" => bi_sorted,
         "isinstance" => bi_isinstance,
         "repr" => bi_repr,
+        "open" => bi_open,
         _ => return None,
     };
     Some(Value::Builtin(Rc::new(Builtin { name: intern(name), func: f })))
@@ -53,6 +54,7 @@ fn intern(name: &str) -> &'static str {
         "sorted" => "sorted",
         "isinstance" => "isinstance",
         "repr" => "repr",
+        "open" => "open",
         _ => "builtin",
     }
 }
@@ -120,6 +122,38 @@ fn bi_str(args: Vec<Value>) -> VResult<Value> {
 fn bi_repr(args: Vec<Value>) -> VResult<Value> {
     exactly(&args, 1, "repr")?;
     Ok(Value::str(args[0].repr()))
+}
+
+fn bi_open(args: Vec<Value>) -> VResult<Value> {
+    use std::io::{BufReader, BufWriter};
+    let (path, mode) = match args.as_slice() {
+        [Value::Str(p)] => (p.s.clone(), "r".to_string()),
+        [Value::Str(p), Value::Str(m)] => (p.s.clone(), m.s.clone()),
+        [_] | [_, _] => return Err("open() arguments must be strings".to_string()),
+        _ => return Err("open() takes 1 or 2 arguments".to_string()),
+    };
+    let io_err = |e: &std::io::Error| crate::vm::modules::io_err(e, &path);
+    let mut file = crate::value::OroFile { path: path.clone(), reader: None, writer: None, closed: false };
+    match mode.as_str() {
+        "r" => {
+            let f = std::fs::File::open(&path).map_err(|e| io_err(&e))?;
+            file.reader = Some(BufReader::new(f));
+        }
+        "w" => {
+            let f = std::fs::File::create(&path).map_err(|e| io_err(&e))?;
+            file.writer = Some(BufWriter::new(f));
+        }
+        "a" => {
+            let f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .map_err(|e| io_err(&e))?;
+            file.writer = Some(BufWriter::new(f));
+        }
+        other => return Err(format!("invalid file mode '{other}' (use 'r', 'w', or 'a')")),
+    }
+    Ok(Value::File(Rc::new(RefCell::new(file))))
 }
 
 fn bi_int(args: Vec<Value>) -> VResult<Value> {
@@ -348,6 +382,10 @@ pub fn method_exists(recv: &Value, name: &str) -> bool {
         Value::List(_) => matches!(name, "append" | "pop" | "extend" | "sort" | "reverse"),
         Value::Dict(_) => matches!(name, "get" | "keys" | "values" | "items"),
         Value::Set(_) => matches!(name, "add"),
+        Value::File(_) => matches!(
+            name,
+            "read" | "readline" | "readlines" | "write" | "close"
+        ),
         _ => false,
     }
 }
@@ -359,7 +397,64 @@ pub fn call_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value>
         Value::List(l) => list_method(l, name, args),
         Value::Dict(d) => dict_method(d, name, args),
         Value::Set(s) => set_method(s, name, args),
+        Value::File(f) => file_method(f, name, args),
         other => Err(format!("'{}' object has no method '{}'", other.type_name(), name)),
+    }
+}
+
+fn file_method(
+    f: &Rc<RefCell<crate::value::OroFile>>,
+    name: &str,
+    args: Vec<Value>,
+) -> VResult<Value> {
+    use std::io::{BufRead, Read, Write};
+    let mut file = f.borrow_mut();
+    if file.closed && name != "close" {
+        return Err("I/O operation on closed file".to_string());
+    }
+    match name {
+        "read" => {
+            exactly(&args, 0, "read")?;
+            let reader = file.reader.as_mut().ok_or("file not open for reading")?;
+            let mut s = String::new();
+            reader.read_to_string(&mut s).map_err(|e| e.to_string())?;
+            Ok(Value::str(s))
+        }
+        "readline" => {
+            exactly(&args, 0, "readline")?;
+            let reader = file.reader.as_mut().ok_or("file not open for reading")?;
+            let mut s = String::new();
+            reader.read_line(&mut s).map_err(|e| e.to_string())?;
+            Ok(Value::str(s))
+        }
+        "readlines" => {
+            exactly(&args, 0, "readlines")?;
+            let reader = file.reader.as_mut().ok_or("file not open for reading")?;
+            let mut out = Vec::new();
+            loop {
+                let mut s = String::new();
+                if reader.read_line(&mut s).map_err(|e| e.to_string())? == 0 {
+                    break;
+                }
+                out.push(Value::str(s));
+            }
+            Ok(Value::List(Rc::new(RefCell::new(out))))
+        }
+        "write" => {
+            let text = str_arg(&args, 0, "write")?;
+            let writer = file.writer.as_mut().ok_or("file not open for writing")?;
+            writer.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+            Ok(Value::Int(text.chars().count() as i64))
+        }
+        "close" => {
+            exactly(&args, 0, "close")?;
+            // Dropping the buffered handles flushes and closes them.
+            file.reader = None;
+            file.writer = None;
+            file.closed = true;
+            Ok(Value::None)
+        }
+        _ => Err(format!("'file' object has no method '{name}'")),
     }
 }
 

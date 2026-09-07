@@ -132,6 +132,9 @@ pub enum Op {
     BuildClass { name: Rc<str>, members: Vec<Rc<str>>, has_base: bool },
     /// Push a `super()` proxy for the current method's `super_ctx`.
     LoadSuper,
+    /// Import the module named by the dotted path and push it (bound by the
+    /// caller to a name). Only built-in modules resolve in this build.
+    ImportModule(Rc<str>),
     /// Pop an iterable and push `n` elements in reverse (top = first element).
     UnpackSequence(usize),
     /// Format an f-string replacement field: pop the format-spec string (top)

@@ -19,12 +19,19 @@ enum Mode {
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
 
+    // Program arguments after the script populate `sys.argv` (argv[0] is the
+    // script path, Python-style).
+    let mut prog_argv: Vec<String> = Vec::new();
     let (mode, path) = match args.as_slice() {
         [_, flag, path] if flag == "--tokens" => (Mode::Tokens, path),
         [_, flag, path] if flag == "--ast" => (Mode::Ast, path),
-        [_, path] if !path.starts_with('-') => (Mode::Run, path),
+        [_, path, rest @ ..] if !path.starts_with('-') => {
+            prog_argv.push(path.clone());
+            prog_argv.extend(rest.iter().cloned());
+            (Mode::Run, path)
+        }
         _ => {
-            eprintln!("usage: oro [--tokens | --ast] <file.oro>");
+            eprintln!("usage: oro [--tokens | --ast] <file.oro> [args...]");
             return ExitCode::from(64); // EX_USAGE
         }
     };
@@ -75,8 +82,9 @@ fn main() -> ExitCode {
         }
     };
 
-    match vm::run(code) {
-        Ok(_) => ExitCode::SUCCESS,
+    match vm::run_main(code, prog_argv) {
+        Ok(0) => ExitCode::SUCCESS,
+        Ok(code) => ExitCode::from(code as u8),
         Err(e) => {
             eprintln!("{path}:{e}");
             ExitCode::FAILURE

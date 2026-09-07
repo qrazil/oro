@@ -53,6 +53,12 @@ pub enum Value {
     Class(Rc<Class>),
     Instance(Rc<Instance>),
     Super(Rc<SuperProxy>),
+    /// A module namespace (`sys`, `os`, `os.path`) — attribute access reads its
+    /// members.
+    Module(Rc<Module>),
+    /// An open text file, refcounted so it closes deterministically when the
+    /// last reference is dropped (Oro's answer to `with`).
+    File(Rc<RefCell<OroFile>>),
     /// Internal sentinel for a local/cell slot that has not been assigned yet.
     /// Never reachable by user code: reading it raises a clean runtime error.
     Unbound,
@@ -126,6 +132,8 @@ pub enum IterState {
     Str { chars: Vec<String>, idx: usize },
     /// Dict/set iteration works over a snapshot taken at `GetIter` time.
     Snapshot { items: Vec<Value>, idx: usize },
+    /// Line-by-line iteration over an open file (`for line in f`).
+    File { file: Rc<RefCell<OroFile>> },
 }
 
 /// A compiled Oro function together with its captured environment.
@@ -204,6 +212,22 @@ impl Class {
 pub struct Instance {
     pub class: Rc<Class>,
     pub fields: RefCell<HashMap<String, Value>>,
+}
+
+/// A module namespace: a fixed set of named members (functions, sub-modules,
+/// or data like `sys.argv`).
+pub struct Module {
+    pub name: Rc<str>,
+    pub members: RefCell<HashMap<String, Value>>,
+}
+
+/// An open text file. Reading and writing go through buffered handles; dropping
+/// the last `Rc` flushes and closes it (see the `with`-free file lifetime).
+pub struct OroFile {
+    pub path: String,
+    pub reader: Option<std::io::BufReader<std::fs::File>>,
+    pub writer: Option<std::io::BufWriter<std::fs::File>>,
+    pub closed: bool,
 }
 
 /// The proxy returned by `super()`: attribute access searches the method
@@ -387,6 +411,7 @@ impl Value {
             Value::Range(r) => !r.is_empty(),
             Value::Iter(_) | Value::Func(_) | Value::Builtin(_) | Value::Method(_) => true,
             Value::Class(_) | Value::Super(_) => true,
+            Value::Module(_) | Value::File(_) => true,
             // An instance is truthy unless its class defines a falsy __len__;
             // the VM overrides this when a __len__/__bool__ dunder is present.
             Value::Instance(_) => true,
@@ -414,6 +439,8 @@ impl Value {
             Value::Class(_) => "type",
             Value::Instance(_) => "object",
             Value::Super(_) => "super",
+            Value::Module(_) => "module",
+            Value::File(_) => "file",
             Value::Unbound => "unbound",
         }
     }
@@ -521,6 +548,12 @@ impl Value {
             // before this fallback is reached.
             Value::Instance(i) => format!("<{} object>", i.class.name),
             Value::Super(_) => "<super>".to_string(),
+            Value::Module(m) => format!("<module '{}'>", m.name),
+            Value::File(f) => {
+                let f = f.borrow();
+                let mode = if f.writer.is_some() { "w" } else { "r" };
+                format!("<file '{}' mode '{}'>", f.path, mode)
+            }
             Value::Unbound => "<unbound>".to_string(),
         }
     }

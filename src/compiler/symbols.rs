@@ -209,6 +209,13 @@ impl SymTable {
             // A class binds its own name in the enclosing scope; its methods are
             // not names here (they are reached via the class or an instance).
             Stmt::Class { name, .. } => self.maybe_declare(scope_id, name),
+            // `import a.b.c` / `import x as y` binds one name (the alias, else
+            // the last path segment — Go-style).
+            Stmt::Import { path, alias, .. } => {
+                if let Some(bound) = import_bound_name(path, alias) {
+                    self.maybe_declare(scope_id, bound);
+                }
+            }
             // For/While/If bind nothing at this level (targets live in the child
             // block). Import/Class/Try/Raise/Yield are handled — or rejected —
             // by codegen; they introduce no reachable bindings here.
@@ -710,6 +717,11 @@ impl SymTable {
     pub fn symbols(&self) -> &[Symbol] {
         &self.symbols
     }
+}
+
+/// The single name an `import` binds: its alias, or the last path segment.
+pub fn import_bound_name<'a>(path: &'a [String], alias: &'a Option<String>) -> Option<&'a str> {
+    alias.as_deref().or_else(|| path.last().map(|s| s.as_str()))
 }
 
 /// Collect the plain names bound by an assignment/`for` target.

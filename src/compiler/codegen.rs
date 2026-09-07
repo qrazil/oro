@@ -201,8 +201,13 @@ impl<'a> Codegen<'a> {
                     self.emit(Op::Reraise, *line, *col);
                 }
             },
-            Stmt::Import { line, col, .. } => {
-                return Err(self.err("imports are not yet implemented in this build", *line, *col))
+            Stmt::Import { path, alias, line, col } => {
+                let bound = super::symbols::import_bound_name(path, alias)
+                    .ok_or_else(|| self.err("empty import path", *line, *col))?
+                    .to_string();
+                let dotted = path.join(".");
+                self.emit(Op::ImportModule(Rc::from(dotted.as_str())), *line, *col);
+                self.emit_store(&Expr::Name { name: bound, line: *line, col: *col })?;
             }
             Stmt::Yield { line, col, .. } => {
                 return Err(self.err(

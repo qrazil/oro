@@ -1105,3 +1105,23 @@ fn reject_try_except_else() {
     let e = parse_err("try:\n    pass\nexcept E:\n    pass\nelse:\n    pass\n");
     assert!(e.message.contains("try/except/else"), "got: {}", e.message);
 }
+
+// --- imports --------------------------------------------------------------
+
+#[test]
+fn import_parses_dotted_and_alias() {
+    match parse_one("import sys\n") {
+        Stmt::Import { path, alias, .. } => {
+            assert_eq!(path, vec!["sys".to_string()]);
+            assert!(alias.is_none());
+        }
+        other => panic!("expected Import, got {other:?}"),
+    }
+    match parse_one("import a.b.c as z\n") {
+        Stmt::Import { path, alias, .. } => {
+            assert_eq!(path, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+            assert_eq!(alias, Some("z".to_string()));
+        }
+        other => panic!("expected Import, got {other:?}"),
+    }
+}

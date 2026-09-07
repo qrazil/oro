@@ -9,6 +9,7 @@
 
 pub mod arith;
 mod exceptions;
+pub mod modules;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -146,6 +147,10 @@ pub struct Vm {
     /// Why each in-flight `finally` body is running, so `EndFinally` can resume
     /// the exception or `return` that was suspended to run the cleanup.
     finally_why: Vec<Why>,
+    /// Program arguments, exposed as `sys.argv`.
+    argv: Vec<String>,
+    /// Set when `sys.exit(code)` runs; becomes the process exit status.
+    exit_code: Option<i32>,
 }
 
 /// Add two values with the VM's numeric/sequence `+` semantics. Exposed for
@@ -154,31 +159,60 @@ pub fn add_values(a: &Value, b: &Value) -> Result<Value, String> {
     arith::binary(&Op::BinAdd, a, b)
 }
 
-/// Run a compiled module to completion, returning its (ignored) result.
+/// Run a compiled module to completion, returning its (ignored) result. Used by
+/// tests; `sys.argv` is empty.
 pub fn run(code: Rc<CodeObject>) -> Result<Value, RuntimeError> {
-    let mut vm = Vm {
-        frames: Vec::new(),
-        line: 0,
-        col: 0,
-        last_locals: Vec::new(),
-        prints: Vec::new(),
-        excs: exceptions::build_registry(),
-        handling: Vec::new(),
-        finally_why: Vec::new(),
-    };
-    let frame = Frame {
-        locals: vec![Value::Unbound; code.nlocals],
-        cells: (0..code.ncells).map(|_| Rc::new(RefCell::new(Value::Unbound))).collect(),
-        free: Vec::new(),
-        stack: Vec::new(),
-        pc: 0,
-        code,
-        ret_action: ReturnAction::Normal,
-        super_ctx: None,
-        blocks: Vec::new(),
-    };
-    vm.frames.push(frame);
+    let mut vm = Vm::new(Vec::new());
+    vm.push_module_frame(code);
     vm.run_loop()
+}
+
+/// Run a program for the `oro` binary, returning the process exit code (0 on
+/// normal completion, or the argument of `sys.exit`). `argv[0]` is the script.
+pub fn run_main(code: Rc<CodeObject>, argv: Vec<String>) -> Result<i32, RuntimeError> {
+    let mut vm = Vm::new(argv);
+    vm.push_module_frame(code);
+    match vm.run_loop() {
+        Ok(_) => Ok(vm.exit_code.unwrap_or(0)),
+        // A `sys.exit` surfaces as an uncaught SystemExit; honour its code
+        // rather than reporting it as an error.
+        Err(e) => match vm.exit_code {
+            Some(code) => Ok(code),
+            None => Err(e),
+        },
+    }
+}
+
+impl Vm {
+    fn new(argv: Vec<String>) -> Vm {
+        Vm {
+            frames: Vec::new(),
+            line: 0,
+            col: 0,
+            last_locals: Vec::new(),
+            prints: Vec::new(),
+            excs: exceptions::build_registry(),
+            handling: Vec::new(),
+            finally_why: Vec::new(),
+            argv,
+            exit_code: None,
+        }
+    }
+
+    fn push_module_frame(&mut self, code: Rc<CodeObject>) {
+        let frame = Frame {
+            locals: vec![Value::Unbound; code.nlocals],
+            cells: (0..code.ncells).map(|_| Rc::new(RefCell::new(Value::Unbound))).collect(),
+            free: Vec::new(),
+            stack: Vec::new(),
+            pc: 0,
+            code,
+            ret_action: ReturnAction::Normal,
+            super_ctx: None,
+            blocks: Vec::new(),
+        };
+        self.frames.push(frame);
+    }
 }
 
 impl Vm {
@@ -249,7 +283,10 @@ impl Vm {
                 Ok(Step::Next) => continue,
                 Ok(Step::Done(v)) => return Ok(v),
                 Ok(Step::Raise(exc)) => exc,
-                Err(e) => self.error_to_exception(&e),
+                Err(e) => match self.exit_request(&e) {
+                    Some(exc) => exc,
+                    None => self.error_to_exception(&e),
+                },
             };
             if let Some(uncaught) = self.unwind(to_raise) {
                 return Err(uncaught);
@@ -505,6 +542,17 @@ impl Vm {
                 }
                 Op::BuildClass { name, members, has_base } => {
                     self.build_class(name, members, has_base)?;
+                }
+                Op::ImportModule(path) => {
+                    match modules::build(&path, &self.argv) {
+                        Some(m) => self.push(m),
+                        None => {
+                            let class = self.excs["ModuleNotFoundError"].clone();
+                            let msg = Value::str(format!("No module named '{path}'"));
+                            let exc = self.make_exception_instance(class, vec![msg]);
+                            return Ok(Step::Raise(exc));
+                        }
+                    }
                 }
                 Op::LoadSuper => {
                     let sup = match self.top().super_ctx.clone() {
@@ -1085,6 +1133,16 @@ impl Vm {
     /// Convert an internal operation error into a typed exception instance, so
     /// runtime failures (index out of range, division by zero, …) are catchable
     /// with the same type CPython uses.
+    /// Recognise the `sys.exit` sentinel error and turn it into a `SystemExit`
+    /// exception. It unwinds like any exception, so a user `except SystemExit`
+    /// can still cancel the exit; only if uncaught does it set the exit code.
+    fn exit_request(&mut self, e: &RuntimeError) -> Option<Value> {
+        let rest = e.message.strip_prefix("\u{0}exit\u{0}")?;
+        let code: i32 = rest.parse().unwrap_or(0);
+        let class = self.excs["SystemExit"].clone();
+        Some(self.make_exception_instance(class, vec![Value::Int(code as i64)]))
+    }
+
     fn error_to_exception(&self, e: &RuntimeError) -> Value {
         let kind = classify_error(&e.message);
         let class = self.excs[kind].clone();
@@ -1173,6 +1231,16 @@ impl Vm {
                     // No handler in this frame: discard it and try the caller.
                     self.frames.pop();
                     if self.frames.is_empty() {
+                        // An uncaught SystemExit sets the process exit code.
+                        if let Value::Instance(i) = &exc {
+                            if i.class.name.as_ref() == "SystemExit" {
+                                let code = match crate::value::exception_args(i).first() {
+                                    Some(Value::Int(n)) => *n as i32,
+                                    _ => 0,
+                                };
+                                self.exit_code = Some(code);
+                            }
+                        }
                         return Some(self.uncaught_error(&exc));
                     }
                 }
@@ -1320,6 +1388,7 @@ fn get_iter(v: &Value) -> Result<Value, String> {
         }
         Value::Dict(d) => IterState::Snapshot { items: d.borrow().keys(), idx: 0 },
         Value::Set(s) => IterState::Snapshot { items: s.borrow().items().to_vec(), idx: 0 },
+        Value::File(f) => IterState::File { file: f.clone() },
         Value::Iter(_) => return Ok(v.clone()),
         other => return Err(format!("'{}' object is not iterable", other.type_name())),
     };
@@ -1381,6 +1450,20 @@ fn iter_next(it: &Value) -> Result<Option<Value>, String> {
                 Ok(Some(v))
             } else {
                 Ok(None)
+            }
+        }
+        IterState::File { file } => {
+            use std::io::BufRead;
+            let mut f = file.borrow_mut();
+            if f.closed {
+                return Err("I/O operation on closed file".to_string());
+            }
+            let reader = f.reader.as_mut().ok_or("file not open for reading")?;
+            let mut line = String::new();
+            if reader.read_line(&mut line).map_err(|e| e.to_string())? == 0 {
+                Ok(None)
+            } else {
+                Ok(Some(Value::str(line)))
             }
         }
     }
@@ -1562,6 +1645,10 @@ fn get_attr(obj: &Value, name: &str) -> Result<Value, String> {
             Some((member, _)) => Ok(member),
             None => Err(format!("type object '{}' has no attribute '{}'", class.name, name)),
         },
+        Value::Module(m) => match m.members.borrow().get(name) {
+            Some(v) => Ok(v.clone()),
+            None => Err(format!("module '{}' has no attribute '{}'", m.name, name)),
+        },
         Value::Super(sp) => {
             let mut cur = sp.start.clone();
             while let Some(c) = cur {
@@ -1602,7 +1689,13 @@ fn bind_member(member: Value, receiver: Value, defclass: Rc<Class>) -> Value {
 fn classify_error(msg: &str) -> &'static str {
     let m = msg;
     // Order matters: check the more specific substrings first.
-    if m.contains("division by zero")
+    if m.contains("No such file or directory") {
+        "FileNotFoundError"
+    } else if m.contains("Permission denied") {
+        "PermissionError"
+    } else if m.contains("File exists") || m.starts_with("[Errno") {
+        "OSError"
+    } else if m.contains("division by zero")
         || m.contains("modulo by zero")
         || m.contains("division or modulo by zero")
     {

@@ -18,7 +18,10 @@ pub fn build_registry() -> HashMap<&'static str, Rc<Class>> {
     // (name, parent-name) in top-down order so each parent exists first.
     let edges: &[(&str, Option<&str>)] = &[
         ("BaseException", None),
+        ("SystemExit", Some("BaseException")),
         ("Exception", Some("BaseException")),
+        ("ImportError", Some("Exception")),
+        ("ModuleNotFoundError", Some("ImportError")),
         ("ValueError", Some("Exception")),
         ("TypeError", Some("Exception")),
         ("LookupError", Some("Exception")),
