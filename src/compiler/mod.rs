@@ -163,6 +163,30 @@ pub enum Op {
     CallEx,
     /// Return the top of the stack from the current frame.
     Return,
+
+    // Exceptions.
+    /// Push a try/except block; an exception routes to `target` (dispatch).
+    SetupExcept(usize),
+    /// Push a try/finally block; an exception routes to `target` (finally body).
+    SetupFinally(usize),
+    /// Pop the innermost active block (try body finished normally).
+    PopBlock,
+    /// Pop the top value and raise it as an exception.
+    Raise,
+    /// Re-raise the exception currently being handled (bare `raise`, or a
+    /// handler that matched nothing).
+    Reraise,
+    /// Push a copy of the exception currently being handled.
+    LoadHandling,
+    /// Finish handling the current exception (pop it from the handling stack).
+    EndHandler,
+    /// Pop a class then the exception; push whether the exception matches it.
+    ExcMatch,
+    /// Enter a finally body on the normal fall-through path (no suspended
+    /// exception or return).
+    BeginFinally,
+    /// End a finally body: resume the suspended exception/return, or continue.
+    EndFinally,
 }
 
 /// How a parameter is filled at call time.

@@ -725,6 +725,13 @@ impl Parser {
             });
         }
 
+        if self.check(&TokenKind::Else) {
+            return Err(self.error(
+                "try/except/else is not supported in Oro — put the else code after the `try` \
+                 block, or inside the `try`",
+            ));
+        }
+
         let finalbody = if self.eat(&TokenKind::Finally) {
             Some(self.block()?)
         } else {

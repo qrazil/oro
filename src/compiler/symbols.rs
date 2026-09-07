@@ -181,6 +181,15 @@ impl SymTable {
                         self.collect_globals(func, &case.body);
                     }
                 }
+                Stmt::Try { body, handlers, finalbody, .. } => {
+                    self.collect_globals(func, body);
+                    for h in handlers {
+                        self.collect_globals(func, &h.body);
+                    }
+                    if let Some(fb) = finalbody {
+                        self.collect_globals(func, fb);
+                    }
+                }
                 // A `def`/`class` starts a new function scope with its own
                 // `global` declarations — do not descend.
                 _ => {}
@@ -305,6 +314,18 @@ impl SymTable {
                     self.child_block(scope_id, func, &case.body, &[]);
                 }
             }
+            Stmt::Try { body, handlers, finalbody, .. } => {
+                // try body, each handler body (with its `as e` predeclared),
+                // then the finally body — each a block scope, in this order.
+                self.child_block(scope_id, func, body, &[]);
+                for h in handlers {
+                    let pre: Vec<String> = h.name.iter().cloned().collect();
+                    self.child_block(scope_id, func, &h.body, &pre);
+                }
+                if let Some(fb) = finalbody {
+                    self.child_block(scope_id, func, fb, &[]);
+                }
+            }
             _ => {}
         }
     }
@@ -413,6 +434,28 @@ impl SymTable {
                 }
             }
             Stmt::Return { value: Some(v), .. } => self.resolve_expr(scope_id, v),
+            Stmt::Raise { exc: Some(e), .. } => self.resolve_expr(scope_id, e),
+            Stmt::Try { body, handlers, finalbody, .. } => {
+                let child = self.next_child(scope_id, cursor);
+                let mut c = 0;
+                self.resolve_block(child, body, &mut c);
+                for h in handlers {
+                    // The exception type is evaluated in the enclosing scope.
+                    self.resolve_expr(scope_id, &h.exc_type);
+                    let hchild = self.next_child(scope_id, cursor);
+                    // The `as e` binding stores into the handler block scope.
+                    if let Some(name) = &h.name {
+                        self.reference(hchild, name);
+                    }
+                    let mut hc = 0;
+                    self.resolve_block(hchild, &h.body, &mut hc);
+                }
+                if finalbody.is_some() {
+                    let fchild = self.next_child(scope_id, cursor);
+                    let mut fc = 0;
+                    self.resolve_block(fchild, finalbody.as_ref().unwrap(), &mut fc);
+                }
+            }
             Stmt::Match { subject, cases, .. } => {
                 self.resolve_expr(scope_id, subject);
                 for case in cases {

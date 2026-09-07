@@ -11,7 +11,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::ast::{
-    Arg, BinOp, BoolOp, Expr, Kwarg, MatchCase, Param, ParamKind, Pattern, Stmt, UnaryOp,
+    Arg, BinOp, BoolOp, ExceptHandler, Expr, Kwarg, MatchCase, Param, ParamKind, Pattern, Stmt,
+    UnaryOp,
 };
 use crate::bigint::BigInt;
 use crate::lexer::Lexer;
@@ -114,7 +115,9 @@ impl<'a> Codegen<'a> {
             | Op::PopJumpIfTrue(t)
             | Op::JumpIfFalseOrPop(t)
             | Op::JumpIfTrueOrPop(t)
-            | Op::ForIter(t) => *t = target,
+            | Op::ForIter(t)
+            | Op::SetupExcept(t)
+            | Op::SetupFinally(t) => *t = target,
             _ => unreachable!("set_target on a non-jump op"),
         }
     }
@@ -186,16 +189,18 @@ impl<'a> Codegen<'a> {
             Stmt::Class { name, base, body, line, col } => {
                 self.emit_class(name, base, body, *line, *col)?;
             }
-            Stmt::Try { line, col, .. } => {
-                return Err(self.err(
-                    "try/except is not yet implemented in this build",
-                    *line,
-                    *col,
-                ))
+            Stmt::Try { body, handlers, finalbody, line, col } => {
+                self.emit_try(body, handlers, finalbody, *line, *col)?;
             }
-            Stmt::Raise { line, col, .. } => {
-                return Err(self.err("raise is not yet implemented in this build", *line, *col))
-            }
+            Stmt::Raise { exc, line, col } => match exc {
+                Some(e) => {
+                    self.emit_expr(e)?;
+                    self.emit(Op::Raise, *line, *col);
+                }
+                None => {
+                    self.emit(Op::Reraise, *line, *col);
+                }
+            },
             Stmt::Import { line, col, .. } => {
                 return Err(self.err("imports are not yet implemented in this build", *line, *col))
             }
@@ -418,6 +423,102 @@ impl<'a> Codegen<'a> {
             .get(key)
             .map(|hit| hit.is_none())
             .map_err(|e| self.err(e, 0, 0))
+    }
+
+    /// `try` / `except` / `finally`. The try body, each handler body, and the
+    /// finally body are block scopes consumed in that order (in lockstep with
+    /// the symbol pass). See the VM's block/unwind machinery for the runtime
+    /// side.
+    fn emit_try(
+        &mut self,
+        body: &[Stmt],
+        handlers: &[ExceptHandler],
+        finalbody: &Option<Vec<Stmt>>,
+        line: usize,
+        col: usize,
+    ) -> CResult<()> {
+        let has_finally = finalbody.is_some();
+        let has_except = !handlers.is_empty();
+
+        let setup_finally = if has_finally {
+            Some(self.emit(Op::SetupFinally(0), line, col))
+        } else {
+            None
+        };
+        let setup_except = if has_except {
+            Some(self.emit(Op::SetupExcept(0), line, col))
+        } else {
+            None
+        };
+
+        // try body.
+        self.emit_child_block(body)?;
+
+        // Normal completion of the body.
+        let mut to_after: Vec<usize> = Vec::new();
+        if has_except {
+            self.emit(Op::PopBlock, line, col);
+            to_after.push(self.emit(Op::Jump(0), line, col));
+        }
+
+        // Exception dispatch.
+        if let Some(s) = setup_except {
+            let here = self.here();
+            self.set_target(s, here);
+            for h in handlers {
+                self.emit(Op::LoadHandling, h.line, h.col);
+                self.emit_expr(&h.exc_type)?;
+                self.emit(Op::ExcMatch, h.line, h.col);
+                let skip = self.emit(Op::PopJumpIfFalse(0), h.line, h.col);
+                // Matched: bind `as e` (if any) and run the body in its block
+                // scope, then finish handling and jump past the dispatch.
+                self.emit_handler_body(h)?;
+                self.emit(Op::EndHandler, h.line, h.col);
+                to_after.push(self.emit(Op::Jump(0), h.line, h.col));
+                let next = self.here();
+                self.set_target(skip, next);
+            }
+            // No clause matched: re-raise (the finally block, if any, still
+            // catches it on the way out).
+            self.emit(Op::Reraise, line, col);
+        }
+
+        // Normal path lands here (body ok, or a handler ran).
+        let after = self.here();
+        for j in to_after {
+            self.set_target(j, after);
+        }
+
+        if let Some(sf) = setup_finally {
+            // Remove the finally block (we run it inline now) and mark the
+            // normal reason, then fall into the finally body. The unwinder and
+            // `return` path jump straight to the body with their own reason.
+            self.emit(Op::PopBlock, line, col);
+            self.emit(Op::BeginFinally, line, col);
+            let finally_body = self.here();
+            self.set_target(sf, finally_body);
+            self.emit_child_block(finalbody.as_ref().unwrap())?;
+            self.emit(Op::EndFinally, line, col);
+        }
+        Ok(())
+    }
+
+    /// Emit a matched `except` handler: bind `as e` (in the handler's block
+    /// scope) and run its body there.
+    fn emit_handler_body(&mut self, h: &ExceptHandler) -> CResult<()> {
+        let child = self.next_child();
+        let saved_scope = self.scope;
+        let saved_cursor = self.cursor;
+        self.scope = child;
+        self.cursor = 0;
+        if let Some(name) = &h.name {
+            self.emit(Op::LoadHandling, h.line, h.col);
+            self.emit_store(&Expr::Name { name: name.clone(), line: h.line, col: h.col })?;
+        }
+        self.emit_body(&h.body)?;
+        self.scope = saved_scope;
+        self.cursor = saved_cursor;
+        Ok(())
     }
 
     fn emit_while(&mut self, cond: &Expr, body: &[Stmt]) -> CResult<()> {

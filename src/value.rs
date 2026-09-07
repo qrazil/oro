@@ -168,6 +168,9 @@ pub struct Class {
     pub base: Option<Rc<Class>>,
     /// Methods and class-level attributes, by name.
     pub members: RefCell<HashMap<String, Value>>,
+    /// True when this class descends from `BaseException`. Such instances get
+    /// native message storage/rendering and are what `raise`/`except` operate on.
+    pub is_exception: bool,
 }
 
 impl Class {
@@ -431,6 +434,9 @@ impl Value {
     pub fn display(&self) -> String {
         match self {
             Value::Str(s) => s.s.clone(),
+            // An exception's str() is its message (its single arg, or the args
+            // tuple). A custom __str__ is handled by the VM before this point.
+            Value::Instance(i) if i.class.is_exception => exception_message(i),
             _ => self.repr(),
         }
     }
@@ -509,6 +515,8 @@ impl Value {
             Value::Builtin(b) => format!("<builtin {}>", b.name),
             Value::Method(_) => "<bound method>".to_string(),
             Value::Class(c) => format!("<class '{}'>", c.name),
+            // An exception reprs as `Name(arg, ...)`, matching CPython.
+            Value::Instance(i) if i.class.is_exception => exception_repr(i),
             // Default form only; a __repr__/__str__ dunder is applied by the VM
             // before this fallback is reached.
             Value::Instance(i) => format!("<{} object>", i.class.name),
@@ -578,6 +586,35 @@ impl Value {
             _ => None,
         }
     }
+}
+
+/// The constructor arguments stored on an exception instance (empty if none).
+pub fn exception_args(inst: &Instance) -> Vec<Value> {
+    match inst.fields.borrow().get("args") {
+        Some(Value::Tuple(t)) => t.to_vec(),
+        _ => Vec::new(),
+    }
+}
+
+/// An exception's `str()`: no args → ""; one arg → that arg's str; several → the
+/// args tuple's repr. Matches CPython's `BaseException.__str__`.
+pub fn exception_message(inst: &Instance) -> String {
+    let args = exception_args(inst);
+    match args.as_slice() {
+        [] => String::new(),
+        [one] => one.display(),
+        many => {
+            let parts: Vec<String> = many.iter().map(|v| v.repr()).collect();
+            format!("({})", parts.join(", "))
+        }
+    }
+}
+
+/// An exception's `repr()`: `Name(arg_repr, ...)`.
+pub fn exception_repr(inst: &Instance) -> String {
+    let args = exception_args(inst);
+    let parts: Vec<String> = args.iter().map(|v| v.repr()).collect();
+    format!("{}({})", inst.class.name, parts.join(", "))
 }
 
 fn seq_eq(a: &[Value], b: &[Value]) -> bool {

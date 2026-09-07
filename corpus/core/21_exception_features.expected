@@ -1,0 +1,18 @@
+5
+cannot divide by zero
+10
+out of range
+2
+no key 'c'
+caught by Exception
+caught by Exception
+caught by Exception
+no error
+ok
+404: resource missing
+app: server error
+value 5
+handled zero not allowed
+2
+re-raised: original
+got runtime error: []

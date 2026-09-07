@@ -1,0 +1,106 @@
+# Built-in runtime errors are catchable with CPython's exact types.
+def safe_div(a, b):
+    try:
+        return a // b
+    except ZeroDivisionError:
+        return "cannot divide by zero"
+
+print(safe_div(20, 4))
+print(safe_div(20, 0))
+
+def safe_get(xs, i):
+    try:
+        return xs[i]
+    except IndexError:
+        return "out of range"
+
+print(safe_get([10, 20], 0))
+print(safe_get([10, 20], 5))
+
+def lookup(d, k):
+    try:
+        return d[k]
+    except KeyError as e:
+        return "no key " + str(e)
+
+print(lookup({"a": 1, "b": 2}, "b"))
+print(lookup({"a": 1, "b": 2}, "c"))
+
+# A base class catches its subclasses.
+def catch_broadly(kind):
+    try:
+        if kind == "value":
+            raise ValueError("v")
+        elif kind == "index":
+            x = [][0]
+        elif kind == "zero":
+            y = 1 // 0
+        return "no error"
+    except Exception:
+        return "caught by Exception"
+
+print(catch_broadly("value"))
+print(catch_broadly("index"))
+print(catch_broadly("zero"))
+print(catch_broadly("none"))
+
+# User-defined exception hierarchy.
+class AppError(Exception):
+    pass
+
+class NotFoundError(AppError):
+    pass
+
+def handle(code):
+    try:
+        if code == 404:
+            raise NotFoundError("resource missing")
+        if code == 500:
+            raise AppError("server error")
+        return "ok"
+    except NotFoundError as e:
+        return "404: " + str(e)
+    except AppError as e:
+        return "app: " + str(e)
+
+print(handle(200))
+print(handle(404))
+print(handle(500))
+
+# finally runs on normal return, on handled exception, and on propagation.
+log = []
+
+def traced(n):
+    try:
+        if n == 0:
+            raise ValueError("zero not allowed")
+        return "value " + str(n)
+    except ValueError as e:
+        return "handled " + str(e)
+    finally:
+        log.append("cleanup")
+
+print(traced(5))
+print(traced(0))
+print(len(log))
+
+# Bare re-raise from inside an except block.
+def wrap_error():
+    try:
+        try:
+            raise TypeError("original")
+        except TypeError:
+            raise
+    except TypeError as e:
+        return "re-raised: " + str(e)
+
+print(wrap_error())
+
+# raising a bare exception class (no message).
+def bare():
+    try:
+        raise RuntimeError
+    except RuntimeError as e:
+        return "got runtime error: [" + str(e) + "]"
+
+print(bare())

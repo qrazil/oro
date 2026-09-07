@@ -8,6 +8,7 @@
 //! without growing the native stack.
 
 pub mod arith;
+mod exceptions;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -61,6 +62,26 @@ struct Frame {
     /// When this frame is a method body: the class it is defined in and the
     /// receiver, so `super()` can search from the base and rebind to `self`.
     super_ctx: Option<(Rc<Class>, Value)>,
+    /// Active exception-handling blocks (try/except and try/finally), innermost
+    /// on top. Consulted when an exception unwinds through this frame.
+    blocks: Vec<Block>,
+}
+
+/// A try block registered on a frame while its body runs.
+struct Block {
+    kind: BlockKind,
+    /// Where to jump when this block catches an unwinding exception.
+    target: usize,
+    /// Operand-stack depth to restore before handling.
+    stack_len: usize,
+}
+
+enum BlockKind {
+    /// A try...except: routes here with the exception pushed onto `handling`.
+    Except,
+    /// A try...finally: routes here with the exception pushed onto the operand
+    /// stack so `EndFinally` can re-raise it after the finally body runs.
+    Finally,
 }
 
 /// What the VM does with a frame's return value — the mechanism that lets a
@@ -81,6 +102,25 @@ enum ReturnAction {
     FormatSpec(String),
 }
 
+/// Why a `finally` body is running — decides what happens after it (see
+/// `EndFinally`). This is how a `return` or an exception is threaded *through* a
+/// finally so the cleanup still runs.
+enum Why {
+    Normal,
+    Raise(Value),
+    Return(Value),
+}
+
+/// How the interpreter loop should proceed after one instruction.
+enum Step {
+    /// Advance to the next instruction.
+    Next,
+    /// The top-level frame returned; the run is over.
+    Done(Value),
+    /// Raise this exception value (unwind the block/frame stack).
+    Raise(Value),
+}
+
 /// A `print(...)` call in progress: some arguments still need `__str__`.
 struct PrintJob {
     rendered: Vec<String>,
@@ -99,6 +139,13 @@ pub struct Vm {
     /// Stack of in-flight `print` calls whose instance args are being rendered
     /// through `__str__`. A `__str__` that itself prints nests cleanly.
     prints: Vec<PrintJob>,
+    /// The built-in exception classes, by name (shared identity for the run).
+    excs: HashMap<&'static str, Rc<Class>>,
+    /// Exceptions currently being handled (top = innermost), for bare `raise`.
+    handling: Vec<Value>,
+    /// Why each in-flight `finally` body is running, so `EndFinally` can resume
+    /// the exception or `return` that was suspended to run the cleanup.
+    finally_why: Vec<Why>,
 }
 
 /// Add two values with the VM's numeric/sequence `+` semantics. Exposed for
@@ -109,7 +156,16 @@ pub fn add_values(a: &Value, b: &Value) -> Result<Value, String> {
 
 /// Run a compiled module to completion, returning its (ignored) result.
 pub fn run(code: Rc<CodeObject>) -> Result<Value, RuntimeError> {
-    let mut vm = Vm { frames: Vec::new(), line: 0, col: 0, last_locals: Vec::new(), prints: Vec::new() };
+    let mut vm = Vm {
+        frames: Vec::new(),
+        line: 0,
+        col: 0,
+        last_locals: Vec::new(),
+        prints: Vec::new(),
+        excs: exceptions::build_registry(),
+        handling: Vec::new(),
+        finally_why: Vec::new(),
+    };
     let frame = Frame {
         locals: vec![Value::Unbound; code.nlocals],
         cells: (0..code.ncells).map(|_| Rc::new(RefCell::new(Value::Unbound))).collect(),
@@ -119,6 +175,7 @@ pub fn run(code: Rc<CodeObject>) -> Result<Value, RuntimeError> {
         code,
         ret_action: ReturnAction::Normal,
         super_ctx: None,
+        blocks: Vec::new(),
     };
     vm.frames.push(frame);
     vm.run_loop()
@@ -185,6 +242,23 @@ impl Vm {
             };
             self.frames.last_mut().unwrap().pc = pc + 1;
 
+            // Execute one op. A failing operation or a `raise` produces an
+            // exception that unwinds the block/frame stack; if nothing catches
+            // it, the run ends with that error.
+            let to_raise = match self.step(op) {
+                Ok(Step::Next) => continue,
+                Ok(Step::Done(v)) => return Ok(v),
+                Ok(Step::Raise(exc)) => exc,
+                Err(e) => self.error_to_exception(&e),
+            };
+            if let Some(uncaught) = self.unwind(to_raise) {
+                return Err(uncaught);
+            }
+        }
+    }
+
+    /// Execute a single instruction, reporting how the loop should proceed.
+    fn step(&mut self, op: Op) -> Result<Step, RuntimeError> {
             match op {
                 Op::LoadConst(i) => {
                     let v = self.frames.last().unwrap().code.consts[i].clone();
@@ -224,10 +298,15 @@ impl Vm {
                     let v = self.pop();
                     *self.top().free[s as usize].borrow_mut() = v;
                 }
-                Op::LoadGlobal(name) => match crate::builtins::lookup(&name) {
-                    Some(v) => self.push(v),
-                    None => return Err(self.err(format!("name '{name}' is not defined"))),
-                },
+                Op::LoadGlobal(name) => {
+                    // Globals are the builtin functions plus the exception classes.
+                    let v = exceptions::lookup(&self.excs, &name)
+                        .or_else(|| crate::builtins::lookup(&name));
+                    match v {
+                        Some(v) => self.push(v),
+                        None => return Err(self.err(format!("name '{name}' is not defined"))),
+                    }
+                }
                 Op::Pop => {
                     self.pop();
                 }
@@ -491,7 +570,7 @@ impl Vm {
                             }
                         }
                         if dispatched {
-                            continue;
+                            return Ok(Step::Next);
                         }
                     }
                     let out = self.wrap(crate::format::format_value(&value, conv, &spec_str))?;
@@ -540,41 +619,66 @@ impl Vm {
                 Op::CallEx => self.do_call_ex()?,
                 Op::Return => {
                     let value = self.pop();
-                    let frame = self.frames.pop().expect("return with no frame");
-                    if self.frames.is_empty() {
-                        self.last_locals = frame.locals;
-                        return Ok(value);
-                    }
-                    match frame.ret_action {
-                        ReturnAction::Normal => self.push(value),
-                        ReturnAction::DropForInit => {
-                            // __init__ must return None; the instance is already
-                            // on the caller's stack as the constructor result.
-                            if !matches!(value, Value::None) {
-                                return Err(self.err("__init__() should return None".to_string()));
-                            }
-                        }
-                        ReturnAction::DrivePrint => {
-                            let s = match &value {
-                                Value::Str(s) => s.s.clone(),
-                                other => other.display(),
-                            };
-                            self.prints.last_mut().expect("print job").rendered.push(s);
-                            self.drive_print()?;
-                        }
-                        ReturnAction::NegateBool => self.push(Value::Bool(!value.truthy())),
-                        ReturnAction::FormatSpec(spec) => {
-                            let out = self.wrap(crate::format::format_value(
-                                &value,
-                                crate::format::CONV_NONE,
-                                &spec,
-                            ))?;
-                            self.push(Value::str(out));
+                    return self.do_return(value);
+                }
+                Op::SetupExcept(target) => {
+                    let stack_len = self.top().stack.len();
+                    self.top().blocks.push(Block { kind: BlockKind::Except, target, stack_len });
+                }
+                Op::SetupFinally(target) => {
+                    let stack_len = self.top().stack.len();
+                    self.top().blocks.push(Block { kind: BlockKind::Finally, target, stack_len });
+                }
+                Op::PopBlock => {
+                    self.top().blocks.pop();
+                }
+                Op::Raise => {
+                    let v = self.pop();
+                    let exc = self.normalize_raise(v)?;
+                    return Ok(Step::Raise(exc));
+                }
+                Op::Reraise => {
+                    // Bare `raise` / no matching except: re-raise the exception
+                    // currently being handled.
+                    match self.handling.pop() {
+                        Some(exc) => return Ok(Step::Raise(exc)),
+                        None => {
+                            return Err(self.err("No active exception to re-raise".to_string()))
                         }
                     }
                 }
+                Op::LoadHandling => {
+                    let exc = self
+                        .handling
+                        .last()
+                        .cloned()
+                        .expect("LoadHandling with no active exception");
+                    self.push(exc);
+                }
+                Op::EndHandler => {
+                    self.handling.pop();
+                }
+                Op::ExcMatch => {
+                    let class = self.pop();
+                    let exc = self.pop();
+                    let matched = self.exc_matches(&exc, &class)?;
+                    self.push(Value::Bool(matched));
+                }
+                Op::BeginFinally => {
+                    // The normal fall-through into a finally body: nothing was
+                    // suspended.
+                    self.finally_why.push(Why::Normal);
+                }
+                Op::EndFinally => {
+                    // Resume whatever was suspended to run this finally.
+                    match self.finally_why.pop().expect("finally without a reason") {
+                        Why::Normal => {}
+                        Why::Raise(exc) => return Ok(Step::Raise(exc)),
+                        Why::Return(v) => return self.do_return(v),
+                    }
+                }
             }
-        }
+        Ok(Step::Next)
     }
 
     fn unbound_local_msg(&self, slot: u16) -> String {
@@ -766,6 +870,16 @@ impl Vm {
                 self.invoke_user(init, inst, defclass, args, kwargs, ReturnAction::DropForInit)
             }
             Some(_) => Err(self.err(format!("{}.__init__ is not a function", class.name))),
+            // An exception class with no custom __init__ stores its args tuple
+            // natively (BaseException-style), so `ValueError("x")` just works.
+            None if class.is_exception => {
+                if !kwargs.is_empty() {
+                    return Err(self.err(format!("{}() takes no keyword arguments", class.name)));
+                }
+                let exc = self.make_exception_instance(class, args);
+                self.push(exc);
+                Ok(())
+            }
             None => {
                 if !args.is_empty() || !kwargs.is_empty() {
                     return Err(self.err(format!("{}() takes no arguments", class.name)));
@@ -793,7 +907,10 @@ impl Vm {
                 return self.invoke_user(f, value, defclass, Vec::new(), Vec::new(), ReturnAction::Normal);
             }
         }
-        self.push(Value::str(value.repr()));
+        // No dunder: str() uses display() (an exception's message), repr() uses
+        // repr() (its Name(args) form).
+        let out = if want_repr { value.repr() } else { value.display() };
+        self.push(Value::str(out));
         Ok(())
     }
 
@@ -913,9 +1030,166 @@ impl Vm {
         for (n, v) in member_names.into_iter().zip(member_vals) {
             members.insert(n.to_string(), v);
         }
-        let class = Class { name, base, members: RefCell::new(members) };
+        // A class inherits exception-hood from its base, so user exceptions
+        // (`class MyError(Exception)`) render and raise like built-in ones.
+        let is_exception = base.as_ref().is_some_and(|b| b.is_exception);
+        let class = Class { name, base, members: RefCell::new(members), is_exception };
         self.push(Value::Class(Rc::new(class)));
         Ok(())
+    }
+
+    // --- Exceptions ----------------------------------------------------------
+
+    /// Turn a `raise EXPR` operand into the exception instance to propagate:
+    /// a class is instantiated with no args; an existing exception instance is
+    /// raised as-is; anything else is a TypeError.
+    fn normalize_raise(&mut self, v: Value) -> Result<Value, RuntimeError> {
+        match v {
+            Value::Class(c) if c.is_exception => {
+                Ok(self.make_exception_instance(c, Vec::new()))
+            }
+            Value::Instance(ref i) if i.class.is_exception => Ok(v),
+            other => Err(self.err(format!(
+                "exceptions must derive from BaseException, not '{}'",
+                other.type_label()
+            ))),
+        }
+    }
+
+    /// Build an exception instance of `class`, storing its args tuple natively.
+    fn make_exception_instance(&self, class: Rc<Class>, args: Vec<Value>) -> Value {
+        let mut fields = HashMap::new();
+        fields.insert("args".to_string(), Value::Tuple(Rc::new(args)));
+        Value::Instance(Rc::new(Instance { class, fields: RefCell::new(fields) }))
+    }
+
+    /// Whether `exc` is an instance of the exception class `class` (or a
+    /// subclass) — the `except` matching test.
+    fn exc_matches(&self, exc: &Value, class: &Value) -> Result<bool, RuntimeError> {
+        let cls = match class {
+            Value::Class(c) if c.is_exception => c,
+            other => {
+                return Err(self.err(format!(
+                    "catching classes that do not inherit from BaseException is not allowed \
+                     (got '{}')",
+                    other.type_label()
+                )))
+            }
+        };
+        Ok(match exc {
+            Value::Instance(i) => Class::is_subclass(&i.class, cls),
+            _ => false,
+        })
+    }
+
+    /// Convert an internal operation error into a typed exception instance, so
+    /// runtime failures (index out of range, division by zero, …) are catchable
+    /// with the same type CPython uses.
+    fn error_to_exception(&self, e: &RuntimeError) -> Value {
+        let kind = classify_error(&e.message);
+        let class = self.excs[kind].clone();
+        // A KeyError's message is the missing key's repr, not a sentence, so
+        // str(KeyError) matches CPython ("'z'").
+        let msg = match kind {
+            "KeyError" => e.message.strip_prefix("key error: ").unwrap_or(&e.message).to_string(),
+            _ => e.message.clone(),
+        };
+        self.make_exception_instance(class, vec![Value::str(msg)])
+    }
+
+    /// Return `value` from the current frame, but first run any pending
+    /// `finally` blocks in this frame (innermost first) so cleanup happens even
+    /// on an early `return`.
+    fn do_return(&mut self, value: Value) -> Result<Step, RuntimeError> {
+        // Run the innermost enclosing finally, if any, deferring the return.
+        while let Some(b) = self.top().blocks.pop() {
+            if let BlockKind::Finally = b.kind {
+                let frame = self.top();
+                frame.stack.truncate(b.stack_len);
+                frame.pc = b.target;
+                self.finally_why.push(Why::Return(value));
+                return Ok(Step::Next);
+            }
+            // Except blocks are simply discarded on the way out.
+        }
+
+        let frame = self.frames.pop().expect("return with no frame");
+        if self.frames.is_empty() {
+            self.last_locals = frame.locals;
+            return Ok(Step::Done(value));
+        }
+        match frame.ret_action {
+            ReturnAction::Normal => self.push(value),
+            ReturnAction::DropForInit => {
+                // __init__ must return None; the instance is already on the
+                // caller's stack as the constructor result.
+                if !matches!(value, Value::None) {
+                    return Err(self.err("__init__() should return None".to_string()));
+                }
+            }
+            ReturnAction::DrivePrint => {
+                let s = match &value {
+                    Value::Str(s) => s.s.clone(),
+                    other => other.display(),
+                };
+                self.prints.last_mut().expect("print job").rendered.push(s);
+                self.drive_print()?;
+            }
+            ReturnAction::NegateBool => self.push(Value::Bool(!value.truthy())),
+            ReturnAction::FormatSpec(spec) => {
+                let out =
+                    self.wrap(crate::format::format_value(&value, crate::format::CONV_NONE, &spec))?;
+                self.push(Value::str(out));
+            }
+        }
+        Ok(Step::Next)
+    }
+
+    /// Unwind `exc` through the block and frame stacks. On success (a handler or
+    /// finally took over) returns `None` and the loop resumes; if nothing
+    /// catches it, returns the uncaught error to end the run.
+    fn unwind(&mut self, exc: Value) -> Option<RuntimeError> {
+        loop {
+            let block = self.frames.last_mut().and_then(|f| f.blocks.pop());
+            match block {
+                Some(b) => {
+                    let frame = self.frames.last_mut().unwrap();
+                    frame.stack.truncate(b.stack_len);
+                    match b.kind {
+                        BlockKind::Except => {
+                            frame.pc = b.target;
+                            self.handling.push(exc);
+                            return None;
+                        }
+                        BlockKind::Finally => {
+                            frame.pc = b.target;
+                            // Run the finally body; EndFinally re-raises after.
+                            self.finally_why.push(Why::Raise(exc));
+                            return None;
+                        }
+                    }
+                }
+                None => {
+                    // No handler in this frame: discard it and try the caller.
+                    self.frames.pop();
+                    if self.frames.is_empty() {
+                        return Some(self.uncaught_error(&exc));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Format an uncaught exception as `TypeName: message` at the current line.
+    fn uncaught_error(&self, exc: &Value) -> RuntimeError {
+        let (name, msg) = match exc {
+            Value::Instance(i) => {
+                (i.class.name.to_string(), crate::value::exception_message(i))
+            }
+            other => ("Exception".to_string(), other.display()),
+        };
+        let message = if msg.is_empty() { name } else { format!("{name}: {msg}") };
+        RuntimeError { message, line: self.line as usize, col: self.col as usize }
     }
 
     /// Bind arguments to a fresh frame's slots and cells.
@@ -941,6 +1215,7 @@ impl Vm {
             code: code.clone(),
             ret_action: ReturnAction::Normal,
             super_ctx: None,
+        blocks: Vec::new(),
         };
 
         let normal: Vec<&ParamInfo> =
@@ -1319,6 +1594,56 @@ fn bind_member(member: Value, receiver: Value, defclass: Rc<Class>) -> Value {
             kind: MethodKind::User { func: f, defclass },
         })),
         other => other,
+    }
+}
+
+/// Map an internal error message to the CPython exception type it should raise.
+/// Every message here is produced by this crate, so the matching is reliable.
+fn classify_error(msg: &str) -> &'static str {
+    let m = msg;
+    // Order matters: check the more specific substrings first.
+    if m.contains("division by zero")
+        || m.contains("modulo by zero")
+        || m.contains("division or modulo by zero")
+    {
+        "ZeroDivisionError"
+    } else if m.contains("index out of range") || m.contains("pop from empty list") {
+        "IndexError"
+    } else if m.starts_with("key error:") || m.contains("KeyError") {
+        "KeyError"
+    } else if m.contains("is not defined") {
+        "NameError"
+    } else if m.contains("has no attribute") {
+        "AttributeError"
+    } else if m.contains("values to unpack")
+        || m.contains("could not convert string to float")
+        || m.starts_with("invalid literal for int")
+        || m.contains("empty separator")
+        || m.contains("step")
+        || m.contains("arg is an empty sequence")
+        || m.contains("expected at least")
+    {
+        "ValueError"
+    } else if m.contains("unsupported operand")
+        || m.contains("not callable")
+        || m.contains("not iterable")
+        || m.contains("not a mapping")
+        || m.contains("must be a mapping")
+        || m.contains("has no len()")
+        || m.contains("unhashable type")
+        || m.contains("bad operand type")
+        || m.contains("argument must be")
+        || m.contains("must be str")
+        || m.contains("requires string")
+        || m.contains("not supported between")
+        || m.contains("takes")
+        || m.contains("missing a required argument")
+        || m.contains("object is not")
+    {
+        "TypeError"
+    } else {
+        // A genuine internal/uncategorised failure.
+        "RuntimeError"
     }
 }
 

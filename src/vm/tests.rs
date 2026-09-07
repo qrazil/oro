@@ -12,7 +12,16 @@ fn run_locals(src: &str) -> Vec<Value> {
     let tokens = Lexer::new(src).tokenize().expect("lex");
     let program = Parser::new(tokens).parse().expect("parse");
     let code = compile(&program).expect("compile");
-    let mut vm = Vm { frames: Vec::new(), line: 0, col: 0, last_locals: Vec::new(), prints: Vec::new() };
+    let mut vm = Vm {
+        frames: Vec::new(),
+        line: 0,
+        col: 0,
+        last_locals: Vec::new(),
+        prints: Vec::new(),
+        excs: super::exceptions::build_registry(),
+        handling: Vec::new(),
+        finally_why: Vec::new(),
+    };
     let frame = Frame {
         locals: vec![Value::Unbound; code.nlocals],
         cells: (0..code.ncells).map(|_| Rc::new(RefCell::new(Value::Unbound))).collect(),
@@ -22,6 +31,7 @@ fn run_locals(src: &str) -> Vec<Value> {
         code,
         ret_action: ReturnAction::Normal,
         super_ctx: None,
+        blocks: Vec::new(),
     };
     vm.frames.push(frame);
     vm.run_loop().expect("run");
@@ -461,4 +471,65 @@ fn class_arithmetic_dunder() {
 fn unsupported_class_dunder_is_rejected() {
     let err = compile_err("class X:\n    def __getattr__(self, n):\n        return 0\n");
     assert!(err.message.contains("__getattr__"), "got: {}", err.message);
+}
+
+// --- exceptions -----------------------------------------------------------
+
+#[test]
+fn exception_caught_by_type() {
+    let src = "def f():\n    try:\n        raise ValueError(\"x\")\n    except ValueError as e:\n        return str(e)\n\
+               r = f()\n";
+    assert_eq!(fstr("def g():\n    return \"x\"\nr=g()\n"), "x"); // sanity
+    match eval_last(src) {
+        Value::Str(s) => assert_eq!(s.s, "x"),
+        other => panic!("expected str, got {}", other.repr()),
+    }
+}
+
+#[test]
+fn exception_base_catches_subclass() {
+    let src = "def f():\n    try:\n        raise ValueError(\"boom\")\n    except Exception:\n        return 1\n\
+               r = f()\n";
+    assert_eq!(int(&eval_last(src)), 1);
+}
+
+#[test]
+fn runtime_error_is_catchable_with_right_type() {
+    let src = "def f():\n    try:\n        return [][0]\n    except IndexError:\n        return 7\n\
+               r = f()\n";
+    assert_eq!(int(&eval_last(src)), 7);
+    let src2 = "def f():\n    try:\n        return 1 // 0\n    except ZeroDivisionError:\n        return 9\n\
+                r = f()\n";
+    assert_eq!(int(&eval_last(src2)), 9);
+}
+
+#[test]
+fn finally_runs_on_return() {
+    // `log` mutated via global proves finally ran despite the early return.
+    let src = "log = 0\ndef f():\n    global log\n    try:\n        return 1\n    finally:\n        log = 99\n\
+               r = f()\n";
+    let locals = run_locals(src);
+    // log is captured (cell), so read it into a plain local:
+    let src2 = "log = 0\ndef f():\n    global log\n    try:\n        return 1\n    finally:\n        log = 99\n\
+                r = f()\nout = log\n";
+    assert_eq!(int(&eval_last(src2)), 99);
+    let _ = locals;
+}
+
+#[test]
+fn uncaught_exception_names_type_and_message() {
+    let err = run_err("raise ValueError(\"nope\")\n");
+    assert!(err.message.contains("ValueError"), "got: {}", err.message);
+    assert!(err.message.contains("nope"), "got: {}", err.message);
+}
+
+#[test]
+fn user_exception_subclass() {
+    let src = "class MyError(Exception):\n    pass\n\
+               def f():\n    try:\n        raise MyError(\"custom\")\n    except Exception as e:\n        return str(e)\n\
+               r = f()\n";
+    match eval_last(src) {
+        Value::Str(s) => assert_eq!(s.s, "custom"),
+        other => panic!("expected str, got {}", other.repr()),
+    }
 }

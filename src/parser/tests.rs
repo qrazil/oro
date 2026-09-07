@@ -1091,3 +1091,17 @@ fn class_parses_with_single_base() {
         other => panic!("expected a Class, got {other:?}"),
     }
 }
+
+// --- exceptions: cut forms get specific errors ----------------------------
+
+#[test]
+fn reject_bare_except() {
+    let e = parse_err("try:\n    pass\nexcept:\n    pass\n");
+    assert!(e.message.contains("bare `except:`"), "got: {}", e.message);
+}
+
+#[test]
+fn reject_try_except_else() {
+    let e = parse_err("try:\n    pass\nexcept E:\n    pass\nelse:\n    pass\n");
+    assert!(e.message.contains("try/except/else"), "got: {}", e.message);
+}
