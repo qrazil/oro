@@ -1,0 +1,34 @@
+import re
+
+# search returns a match object with groups and positions.
+m = re.search(r"(\w+)@(\w+)\.(\w+)", "contact: alice@example.com !")
+print(m.group(0))
+print(m.group(1), m.group(2), m.group(3))
+print(m.start(), m.end())
+print(m.start(1), m.end(1))
+
+print(re.search(r"zzz", "abc"))
+
+# findall: no groups -> matches; one group -> that group; many -> tuples.
+print(re.findall(r"\d+", "a12b3c456"))
+print(re.findall(r"(\w)=(\d)", "a=1 b=2"))
+
+# sub with replacement backreferences (allowed — replacement, not matching).
+print(re.sub(r"\d+", "N", "a1b22c333"))
+print(re.sub(r"(\w+)@(\w+)", r"\2.\1", "u@h and x@y"))
+
+# split, fullmatch.
+print(re.split(r"\s*,\s*", "a, b ,c,   d"))
+print(re.fullmatch(r"\d+", "12345").group(0))
+print(re.fullmatch(r"\d+", "12x"))
+
+# compile then reuse.
+p = re.compile(r"[A-Z]\w*")
+print(p.findall("Hello World foo Bar"))
+
+# finditer exposes positions — the two-pass primitive. Doubled-word detection:
+# match adjacent word pairs, then compare the two groups in code.
+text = "the the quick brown brown fox"
+for mm in re.finditer(r"(\w+)\s+(\w+)", text):
+    if mm.group(1) == mm.group(2):
+        print("doubled:", mm.group(1), "at", mm.start())

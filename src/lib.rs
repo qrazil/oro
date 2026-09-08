@@ -13,6 +13,7 @@ pub mod builtins;
 pub mod compiler;
 pub mod format;
 pub mod lexer;
+pub mod regexutil;
 pub mod parser;
 pub mod value;
 pub mod vm;

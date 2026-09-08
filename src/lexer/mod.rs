@@ -211,9 +211,14 @@ impl Lexer {
             Ok(())
         } else if (c == 'f' || c == 'F') && matches!(self.peek2(), Some('\'') | Some('"')) {
             self.advance(); // consume the `f`/`F` prefix
-            self.scan_string(true)
+            self.scan_string(true, false)
+        } else if (c == 'r' || c == 'R') && matches!(self.peek2(), Some('\'') | Some('"')) {
+            // A raw string: backslashes are literal (no escape processing) — the
+            // natural way to write regex patterns.
+            self.advance(); // consume the `r`/`R` prefix
+            self.scan_string(false, true)
         } else if c == '\'' || c == '"' {
-            self.scan_string(false)
+            self.scan_string(false, false)
         } else if c == '_' || c.is_ascii_alphabetic() {
             self.scan_ident();
             Ok(())
@@ -266,7 +271,7 @@ impl Lexer {
         self.line_has_tokens = true;
     }
 
-    fn scan_string(&mut self, is_f: bool) -> Result<(), LexError> {
+    fn scan_string(&mut self, is_f: bool, is_raw: bool) -> Result<(), LexError> {
         let (sl, sc) = (self.line, self.col);
         let quote = self.advance().unwrap(); // opening ' or "
         let mut value = String::new();
@@ -288,9 +293,11 @@ impl Lexer {
                         }
                         Some(e) => {
                             self.advance();
-                            if is_f {
-                                // f-strings keep raw text (interpolation is
-                                // parsed later); preserve the escape verbatim.
+                            // f-strings and raw strings keep the backslash
+                            // verbatim (f-strings decode later in codegen; raw
+                            // strings never decode). A backslash still escapes a
+                            // closing quote for termination, but is preserved.
+                            if is_f || is_raw {
                                 value.push('\\');
                                 value.push(e);
                             } else {

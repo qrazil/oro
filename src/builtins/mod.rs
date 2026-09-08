@@ -393,6 +393,11 @@ pub fn method_exists(recv: &Value, name: &str) -> bool {
             name,
             "read" | "readline" | "readlines" | "write" | "close"
         ),
+        Value::Regex(_) => matches!(
+            name,
+            "search" | "findall" | "finditer" | "fullmatch" | "sub" | "split"
+        ),
+        Value::Match(_) => matches!(name, "group" | "start" | "end"),
         _ => false,
     }
 }
@@ -404,7 +409,50 @@ pub fn call_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value>
         Value::List(l) => list_method(l, name, args),
         Value::Dict(d) => dict_method(d, name, args),
         Value::File(f) => file_method(f, name, args),
+        Value::Regex(r) => regex_method(r, name, args),
+        Value::Match(m) => match_method(m, name, args),
         other => Err(format!("'{}' object has no method '{}'", other.type_name(), name)),
+    }
+}
+
+fn regex_method(
+    r: &Rc<crate::value::OroRegex>,
+    name: &str,
+    args: Vec<Value>,
+) -> VResult<Value> {
+    use crate::regexutil as rx;
+    match name {
+        "search" => Ok(rx::search(&r.re, &str_arg(&args, 0, "search")?)),
+        "fullmatch" => Ok(rx::fullmatch(&r.re, &str_arg(&args, 0, "fullmatch")?)),
+        "findall" => Ok(rx::findall(&r.re, &str_arg(&args, 0, "findall")?)),
+        "finditer" => Ok(rx::finditer(&r.re, &str_arg(&args, 0, "finditer")?)),
+        "split" => Ok(rx::split(&r.re, &str_arg(&args, 0, "split")?)),
+        "sub" => {
+            let repl = str_arg(&args, 0, "sub")?;
+            Ok(rx::sub(&r.re, &repl, &str_arg(&args, 1, "sub")?))
+        }
+        _ => Err(format!("'Pattern' object has no method '{name}'")),
+    }
+}
+
+fn match_method(
+    m: &Rc<crate::value::OroMatch>,
+    name: &str,
+    args: Vec<Value>,
+) -> VResult<Value> {
+    use crate::regexutil as rx;
+    // The group index defaults to 0 (the whole match).
+    let n = match args.as_slice() {
+        [] => 0usize,
+        [Value::Int(i)] if *i >= 0 => *i as usize,
+        [Value::Int(_)] => return Err("group index must be non-negative".to_string()),
+        _ => return Err(format!("{name}() takes an optional group index")),
+    };
+    match name {
+        "group" => rx::group(m, n),
+        "start" => rx::start(m, n),
+        "end" => rx::end(m, n),
+        _ => Err(format!("'Match' object has no method '{name}'")),
     }
 }
 

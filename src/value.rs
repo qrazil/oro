@@ -62,6 +62,11 @@ pub enum Value {
     /// concrete state lives in the VM (it holds a `Frame`), so this is an opaque
     /// handle here.
     Generator(Rc<RefCell<GenBox>>),
+    /// A compiled regular expression (`re.compile`), backed by the linear-time
+    /// `regex` engine.
+    Regex(Rc<OroRegex>),
+    /// A regex match, with group texts and their char-offset spans.
+    Match(Rc<OroMatch>),
     /// Internal sentinel for a local/cell slot that has not been assigned yet.
     /// Never reachable by user code: reading it raises a clean runtime error.
     Unbound,
@@ -228,6 +233,19 @@ pub struct GenBox {
     pub frame: Option<Box<dyn std::any::Any>>,
 }
 
+/// A compiled regular expression.
+pub struct OroRegex {
+    pub re: regex::Regex,
+    pub pattern: String,
+}
+
+/// A single regex match. Group 0 is the whole match; the rest are captures.
+/// Each group is `None` if it did not participate, else its `(start, end)` as
+/// character offsets plus the matched text.
+pub struct OroMatch {
+    pub groups: Vec<Option<(usize, usize, String)>>,
+}
+
 /// A module namespace: a fixed set of named members (functions, sub-modules,
 /// or data like `sys.argv`).
 pub struct Module {
@@ -387,6 +405,7 @@ impl Value {
             Value::Iter(_) | Value::Func(_) | Value::Builtin(_) | Value::Method(_) => true,
             Value::Class(_) | Value::Super(_) => true,
             Value::Module(_) | Value::File(_) | Value::Generator(_) => true,
+            Value::Regex(_) | Value::Match(_) => true,
             // An instance is truthy unless its class defines a falsy __len__;
             // the VM overrides this when a __len__/__bool__ dunder is present.
             Value::Instance(_) => true,
@@ -416,6 +435,8 @@ impl Value {
             Value::Module(_) => "module",
             Value::File(_) => "file",
             Value::Generator(_) => "generator",
+            Value::Regex(_) => "Pattern",
+            Value::Match(_) => "Match",
             Value::Unbound => "unbound",
         }
     }
@@ -509,6 +530,16 @@ impl Value {
             Value::Instance(i) => format!("<{} object>", i.class.name),
             Value::Super(_) => "<super>".to_string(),
             Value::Generator(_) => "<generator>".to_string(),
+            Value::Regex(r) => format!("re.compile({})", repr_str(&r.pattern)),
+            Value::Match(m) => {
+                let whole = m.groups.first().and_then(|g| g.as_ref());
+                match whole {
+                    Some((s, e, text)) => {
+                        format!("<re.Match span=({s}, {e}), match={}>", repr_str(text))
+                    }
+                    None => "<re.Match>".to_string(),
+                }
+            }
             Value::Module(m) => format!("<module '{}'>", m.name),
             Value::File(f) => {
                 let f = f.borrow();

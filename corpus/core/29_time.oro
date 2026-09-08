@@ -1,0 +1,20 @@
+import time
+
+# Time is nondeterministic, so assert PROPERTIES (which are deterministic and
+# identical under CPython), never exact values.
+
+# Wall-clock time is a positive epoch value.
+print(time.time() > 0)
+
+# monotonic never decreases, and sleep waits at least the requested time.
+a = time.monotonic()
+b = time.monotonic()
+print(b >= a)
+
+start = time.monotonic()
+time.sleep(0.02)
+elapsed = time.monotonic() - start
+print(elapsed >= 0.02)
+
+# sleep returns None (like CPython).
+print(time.sleep(0) is None)

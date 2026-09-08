@@ -196,6 +196,8 @@ pub struct Vm {
     module_cache: HashMap<String, Value>,
     /// Modules whose bodies are currently running, to detect circular imports.
     importing: std::collections::HashSet<String>,
+    /// The class of `subprocess.run`'s result (a `CompletedProcess`).
+    proc_class: Rc<Class>,
 }
 
 /// Add two values with the VM's numeric/sequence `+` semantics. Exposed for
@@ -254,6 +256,12 @@ impl Vm {
             import_root: std::path::PathBuf::from("."),
             module_cache: HashMap::new(),
             importing: std::collections::HashSet::new(),
+            proc_class: Rc::new(Class {
+                name: Rc::from("CompletedProcess"),
+                base: None,
+                members: RefCell::new(HashMap::new()),
+                is_exception: false,
+            }),
         }
     }
 
@@ -921,6 +929,9 @@ impl Vm {
                 // the VM rather than as pure native functions.
                 match b.name {
                     "print" => return self.do_print(args, kwargs),
+                    // subprocess.run is finished here so it can take keyword args
+                    // (cwd/env/timeout) and build a CompletedProcess instance.
+                    "subprocess.run" => return self.do_subprocess_run(args, kwargs),
                     "str" if matches!(args.first(), Some(Value::Instance(_))) && args.len() == 1 => {
                         return self.stringify_instance(args.into_iter().next().unwrap(), false);
                     }
@@ -1247,6 +1258,130 @@ impl Vm {
         let is_exception = base.as_ref().is_some_and(|b| b.is_exception);
         let class = Class { name, base, members: RefCell::new(members), is_exception };
         self.push(Value::Class(Rc::new(class)));
+        Ok(())
+    }
+
+    // --- subprocess ----------------------------------------------------------
+
+    /// `subprocess.run(args, cwd=…, env=…, timeout=…)`. Args go straight to
+    /// execve (no shell, ever), so shell injection is impossible by construction.
+    fn do_subprocess_run(
+        &mut self,
+        args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
+    ) -> Result<(), RuntimeError> {
+        // The command must be a list of separate strings.
+        let list = match args.first() {
+            Some(Value::List(l)) => l.borrow().clone(),
+            Some(Value::Str(_)) => {
+                return Err(self.err(
+                    "subprocess.run() needs a list of separate string arguments, e.g. \
+                     [\"git\", \"status\"], not a single string — Oro will not split it (that \
+                     would mean reimplementing shell quoting) and there is no shell=True.",
+                ))
+            }
+            _ => return Err(self.err("subprocess.run() takes a list of strings")),
+        };
+        if list.is_empty() {
+            return Err(self.err("subprocess.run() got an empty argument list"));
+        }
+        let mut parts: Vec<String> = Vec::with_capacity(list.len());
+        for v in &list {
+            match v {
+                Value::Str(s) => parts.push(s.s.clone()),
+                other => {
+                    return Err(self.err(format!(
+                        "subprocess.run() arguments must all be strings, got '{}'",
+                        other.type_label()
+                    )))
+                }
+            }
+        }
+        if parts[0].is_empty() || parts[0].contains(char::is_whitespace) {
+            return Err(self.err(format!(
+                "subprocess.run() program '{}' contains whitespace — pass separate arguments \
+                 like [\"git\", \"status\"], not one combined string",
+                parts[0]
+            )));
+        }
+
+        // Keyword args: cwd, env, timeout.
+        let mut cwd: Option<String> = None;
+        let mut env: Option<Vec<(String, String)>> = None;
+        let mut timeout: Option<f64> = None;
+        for (k, v) in &kwargs {
+            match k.as_str() {
+                "cwd" => match v {
+                    Value::Str(s) => cwd = Some(s.s.clone()),
+                    _ => return Err(self.err("subprocess.run() cwd must be a string")),
+                },
+                "env" => match v {
+                    Value::Dict(d) => {
+                        let mut pairs = Vec::new();
+                        for (ek, ev) in d.borrow().items() {
+                            pairs.push((ek.display(), ev.display()));
+                        }
+                        env = Some(pairs);
+                    }
+                    _ => return Err(self.err("subprocess.run() env must be a dict")),
+                },
+                "timeout" => match v {
+                    Value::Int(i) => timeout = Some(*i as f64),
+                    Value::Float(f) => timeout = Some(*f),
+                    _ => return Err(self.err("subprocess.run() timeout must be a number")),
+                },
+                // Oro always captures stdout/stderr as UTF-8 text, so CPython's
+                // `capture_output=True`/`text=True` are accepted (for portable
+                // code and the differential oracle) but have no extra effect.
+                "capture_output" | "text" => {}
+                other => {
+                    return Err(self.err(format!(
+                        "subprocess.run() got an unexpected keyword argument '{other}'"
+                    )))
+                }
+            }
+        }
+
+        let mut cmd = std::process::Command::new(&parts[0]);
+        cmd.args(&parts[1..]);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        if let Some(dir) = &cwd {
+            cmd.current_dir(dir);
+        }
+        if let Some(e) = &env {
+            cmd.env_clear();
+            for (k, val) in e {
+                cmd.env(k, val);
+            }
+        }
+
+        let output = match run_process(cmd, timeout) {
+            Ok(o) => o,
+            // "timed out" is classified into TimeoutError; a missing/inexecutable
+            // program's io error into FileNotFoundError/PermissionError.
+            Err(RunError::Timeout) => {
+                return Err(self.err(format!(
+                    "command timed out after {} seconds",
+                    timeout.unwrap_or(0.0)
+                )))
+            }
+            Err(RunError::Io(e)) => return Err(self.err(modules::io_err(&e, &parts[0]))),
+        };
+
+        let returncode = output.status.code().unwrap_or(-1) as i64;
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+
+        let mut fields = HashMap::new();
+        fields.insert("returncode".to_string(), Value::Int(returncode));
+        fields.insert("stdout".to_string(), Value::str(stdout));
+        fields.insert("stderr".to_string(), Value::str(stderr));
+        fields.insert("args".to_string(), Value::List(Rc::new(RefCell::new(list))));
+        self.push(Value::Instance(Rc::new(Instance {
+            class: self.proc_class.clone(),
+            fields: RefCell::new(fields),
+        })));
         Ok(())
     }
 
@@ -2029,6 +2164,58 @@ fn bind_member(member: Value, receiver: Value, defclass: Rc<Class>) -> Value {
     }
 }
 
+/// A subprocess run failure: an I/O error (e.g. program not found) or a timeout.
+enum RunError {
+    Io(std::io::Error),
+    Timeout,
+}
+
+/// Run a command to completion, optionally with a timeout. Without a timeout,
+/// `Command::output` handles pipe draining and waiting. With one, the child is
+/// spawned, its pipes drained on threads, and it is killed if the deadline
+/// passes.
+fn run_process(mut cmd: std::process::Command, timeout: Option<f64>) -> Result<std::process::Output, RunError> {
+    let Some(secs) = timeout else {
+        return cmd.output().map_err(RunError::Io);
+    };
+    use std::io::Read;
+    let mut child = cmd.spawn().map_err(RunError::Io)?;
+    let mut out_pipe = child.stdout.take();
+    let mut err_pipe = child.stderr.take();
+    let out_handle = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = out_pipe.as_mut() {
+            let _ = p.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let err_handle = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = err_pipe.as_mut() {
+            let _ = p.read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(secs);
+    let status = loop {
+        match child.try_wait().map_err(RunError::Io)? {
+            Some(s) => break s,
+            None => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(RunError::Timeout);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+    };
+    let stdout = out_handle.join().unwrap_or_default();
+    let stderr = err_handle.join().unwrap_or_default();
+    Ok(std::process::Output { status, stdout, stderr })
+}
+
 /// Lex, parse, and compile module source (for `import`). Errors are flattened
 /// to a string for the ImportError message.
 fn compile_source(source: &str) -> Result<Rc<CodeObject>, String> {
@@ -2046,6 +2233,8 @@ fn classify_error(msg: &str) -> &'static str {
         "FileNotFoundError"
     } else if m.contains("Permission denied") {
         "PermissionError"
+    } else if m.contains("timed out") {
+        "TimeoutError"
     } else if m.contains("File exists") || m.starts_with("[Errno") {
         "OSError"
     } else if m.contains("division by zero")

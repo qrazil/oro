@@ -2,8 +2,11 @@
 
 Oro (named for the *ouroboros*) is a small, deliberately frozen subset of
 Python, implemented in Rust and executed on a bytecode virtual machine. It
-compiles to a single self-contained binary with **zero runtime dependencies**
-(std only — the lexer, parser, compiler, and VM are all hand-written).
+compiles to a single self-contained binary. The lexer, parser, compiler, and VM
+are all hand-written with **no dependencies**; the sole exception is the
+[`regex`](https://docs.rs/regex) crate behind the `re` module — a deliberate,
+approved choice for its guaranteed linear-time matching (see [the `re`
+module](#standard-library-surface)).
 
 The point of Oro is not to be a bigger Python. It is to be a *smaller* one that
 never grows: one way to do each thing, a language and API that freeze, and a
@@ -82,8 +85,9 @@ Implemented and working today:
   on exhaustion, and generators consuming generators — all on the heap frame
   stack, so pipelines never grow the native stack.
 - **`global`** for mutating module-level state from a function.
-- **Modules:** `import a.b.c` / `import x as y`, built-in `sys` and `os`, and
-  user modules loaded from the script's directory (run once, cached).
+- **Modules:** `import a.b.c` / `import x as y`, built-in `sys`, `os`, `time`,
+  `re`, and `subprocess`, and user modules loaded from the script's directory
+  (run once, cached).
 - **File I/O:** `open(path, mode)` (`r`/`w`/`a`, UTF-8 text) with
   `read`/`readline`/`readlines`/`write`/`close` and line iteration; files close
   deterministically at end of scope (no `with`).
@@ -133,6 +137,21 @@ Each of these is omitted on purpose. The reason matters more than the list.
   give an error pointing at a dict or a list. **Tuples stay** — they are the
   only hashable composite, so `counts[(host, port)]` has no substitute, and they
   are load-bearing for multiple return, `a, b = b, a`, and `*args`.
+
+- **No `re.match`.** It anchors at the start of the string — almost always not
+  what people mean, and endlessly confused with `re.search`. Use `re.search`, or
+  a leading `^` to anchor on purpose.
+- **No regex backreferences or lookaround.** They require backtracking, which
+  would forfeit the linear-time (ReDoS-free) guarantee. Do it in two passes:
+  match candidates with `re.finditer` (which gives positions), then verify in
+  Oro. Go and Rust made the same call.
+- **No `subprocess` shell (`shell=True`, `os.system`).** Arguments go straight
+  to `execve`, so injection is structurally impossible, not just discouraged.
+- **No `datetime` (yet).** Calendar/formatting/parsing is a large surface that
+  belongs in Oro on top of `time`, modelled on `java.time` — separate
+  `Instant` / `LocalDate` / `ZonedDateTime` types (not one naive-or-aware
+  object), immutable, with `Duration` distinct from `Period` — rather than
+  Python's single overloaded `datetime`.
 
 Also cut: bare `except:`, `try/except/else`, `from x import y`, `import *`,
 `__new__`/`__getattr__`/`__setattr__`/`__slots__`, and class `metaclass=`.
@@ -270,6 +289,40 @@ written on top of it.
   by line. It closes when its last reference drops (see the `with`-free file
   lifetime above). Missing files and permission errors raise `FileNotFoundError`
   / `PermissionError`.
+- **`subprocess`** — exactly one function, `run(args, cwd=…, env=…, timeout=…)`,
+  returning a `CompletedProcess` with `.returncode`, `.stdout`, `.stderr` (the
+  CPython field names). `args` is **always a list of separate strings** that go
+  straight to `execve` — there is **no `shell=True`**, so shell injection is
+  impossible by construction (need a shell? write `["sh", "-c", cmd]` and own
+  it). A bare string, or a list whose program contains whitespace
+  (`["git status"]`), is a designed error rather than a silent misfire — Oro
+  won't reimplement shell quoting to split it. stdout/stderr are always captured
+  as UTF-8 text (CPython's `capture_output=True, text=True` are accepted but are
+  the default here). Missing/inexecutable programs raise `FileNotFoundError` /
+  `PermissionError`; a `timeout` raises `TimeoutError`.
+- **`re`** — `search`, `findall`, `finditer`, `fullmatch`, `sub`, `split`,
+  `compile`. Backed by the `regex` crate's Thompson-NFA engine, so matching is
+  **guaranteed linear-time — no ReDoS**. `finditer` yields match objects with
+  `.start(n)`/`.end(n)` (character offsets) and `.group(n)`; positions are what
+  let you implement backreferences and lookaround in Oro as a two-pass technique
+  (match candidates with `re`, verify in code — see the cut list). `re.match` is
+  cut. **Backreferences (`\1`) and lookaround (`(?=…)`, `(?<=…)`) are not
+  supported** — they force backtracking and destroy the linear-time guarantee,
+  the same trade-off Go and Rust have shipped for a decade. The two-pass
+  workaround, e.g. doubled-word detection:
+
+  ```python
+  import re
+  for m in re.finditer(r"(\w+)\s+(\w+)", text):
+      if m.group(1) == m.group(2):      # the "backreference", checked in code
+          print("doubled:", m.group(1))
+  ```
+- **`time`** — `time()`, `sleep(n)`, `monotonic()`. The naming is genuinely
+  unhelpful, so plainly: `time()` is for **when** (timestamps, logs, file
+  dates) — wall-clock epoch seconds that *can jump or go backwards* (NTP, DST,
+  manual clock changes), so `time.time() - start` can be negative.
+  `monotonic()` is for **how long** (elapsed, timeouts, benchmarks) — it only
+  ever increases. Use the right one. There is **no `datetime`** (see cut list).
 
 ## Known limitations
 

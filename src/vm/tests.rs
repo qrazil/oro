@@ -622,3 +622,57 @@ fn self_referential_list_repr_terminates() {
     let src = "a = [1]\na.append(a)\nout = str(a)\n";
     assert_eq!(fstr(src), "[1, [...]]");
 }
+
+// --- stdlib primitives: re / subprocess / time ----------------------------
+
+#[test]
+fn re_search_and_groups() {
+    let src = "import re\nm = re.search(r\"(\\w+)-(\\d+)\", \"id: abc-42\")\nout = m.group(1) + \"/\" + m.group(2)\n";
+    assert_eq!(fstr(src), "abc/42");
+}
+
+#[test]
+fn re_finditer_positions() {
+    let src = "import re\nspans = []\nfor m in re.finditer(r\"\\w+\", \"aa bb\"):\n    spans.append(m.start())\n    spans.append(m.end())\n";
+    let got: Vec<i64> = run_locals(src)
+        .iter()
+        .find_map(|v| match v {
+            Value::List(l) => {
+                Some(l.borrow().iter().map(|x| match x { Value::Int(i) => *i, _ => -1 }).collect())
+            }
+            _ => None,
+        })
+        .expect("a list local");
+    assert_eq!(got, vec![0, 2, 3, 5]);
+}
+
+#[test]
+fn re_match_is_cut() {
+    let err = run_err("import re\nre.match(r\"x\", \"x\")\n");
+    assert!(err.message.contains("re.match is not supported"), "got: {}", err.message);
+}
+
+#[test]
+fn re_backreference_rejected() {
+    let err = run_err("import re\nre.search(r\"(a)\\1\", \"aa\")\n");
+    assert!(err.message.contains("backreference") || err.message.contains("linear-time"),
+        "got: {}", err.message);
+}
+
+#[test]
+fn subprocess_rejects_bare_string() {
+    let err = run_err("import subprocess\nsubprocess.run(\"echo hi\")\n");
+    assert!(err.message.contains("list of separate string"), "got: {}", err.message);
+}
+
+#[test]
+fn subprocess_runs_and_captures() {
+    let src = "import subprocess\nr = subprocess.run([\"echo\", \"hi\"], capture_output=True, text=True)\nout = str(r.returncode) + \":\" + r.stdout.strip()\n";
+    assert_eq!(fstr(src), "0:hi");
+}
+
+#[test]
+fn time_monotonic_never_decreases() {
+    let src = "import time\na = time.monotonic()\nb = time.monotonic()\nout = b >= a\n";
+    assert!(matches!(eval_last(src), Value::Bool(true)));
+}

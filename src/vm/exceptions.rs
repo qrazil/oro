@@ -37,6 +37,7 @@ pub fn build_registry() -> HashMap<&'static str, Rc<Class>> {
         ("OSError", Some("Exception")),
         ("FileNotFoundError", Some("OSError")),
         ("PermissionError", Some("OSError")),
+        ("TimeoutError", Some("OSError")),
     ];
 
     for (name, parent) in edges {

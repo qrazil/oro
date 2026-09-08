@@ -14,6 +14,9 @@ pub fn build(name: &str, argv: &[String]) -> Option<Value> {
     match name {
         "sys" => Some(build_sys(argv)),
         "os" => Some(build_os()),
+        "time" => Some(build_time()),
+        "re" => Some(build_re()),
+        "subprocess" => Some(build_subprocess()),
         _ => None,
     }
 }
@@ -76,6 +79,140 @@ fn build_os_path() -> Value {
             ("splitext", builtin("os.path.splitext", path_splitext)),
         ],
     )
+}
+
+// --- time --------------------------------------------------------------------
+
+fn build_time() -> Value {
+    module(
+        "time",
+        vec![
+            ("time", builtin("time.time", time_time)),
+            ("sleep", builtin("time.sleep", time_sleep)),
+            ("monotonic", builtin("time.monotonic", time_monotonic)),
+        ],
+    )
+}
+
+/// Wall-clock epoch seconds. Can jump or go backwards (NTP, DST, manual clock
+/// changes), so use it for *when*, never for measuring *how long*.
+fn time_time(args: Vec<Value>) -> Result<Value, String> {
+    if !args.is_empty() {
+        return Err("time() takes no arguments".to_string());
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "system clock is before the epoch".to_string())?;
+    Ok(Value::Float(now.as_secs_f64()))
+}
+
+fn time_sleep(args: Vec<Value>) -> Result<Value, String> {
+    let secs = match args.as_slice() {
+        [Value::Float(f)] => *f,
+        [Value::Int(i)] => *i as f64,
+        [Value::Bool(b)] => *b as i64 as f64,
+        _ => return Err("sleep() takes one number of seconds".to_string()),
+    };
+    if secs < 0.0 {
+        return Err("sleep length must be non-negative".to_string());
+    }
+    std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+    Ok(Value::None)
+}
+
+/// Monotonic seconds from a fixed reference — only ever increases. Use it for
+/// *how long* (elapsed time, timeouts, benchmarks).
+fn time_monotonic(args: Vec<Value>) -> Result<Value, String> {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static BASE: OnceLock<Instant> = OnceLock::new();
+    if !args.is_empty() {
+        return Err("monotonic() takes no arguments".to_string());
+    }
+    let base = BASE.get_or_init(Instant::now);
+    Ok(Value::Float(base.elapsed().as_secs_f64()))
+}
+
+// --- re ----------------------------------------------------------------------
+
+fn build_re() -> Value {
+    module(
+        "re",
+        vec![
+            ("search", builtin("re.search", re_search)),
+            ("findall", builtin("re.findall", re_findall)),
+            ("finditer", builtin("re.finditer", re_finditer)),
+            ("fullmatch", builtin("re.fullmatch", re_fullmatch)),
+            ("sub", builtin("re.sub", re_sub)),
+            ("split", builtin("re.split", re_split)),
+            ("compile", builtin("re.compile", re_compile)),
+            ("match", builtin("re.match", re_match)),
+        ],
+    )
+}
+
+fn str_at(args: &[Value], i: usize, who: &str) -> Result<String, String> {
+    match args.get(i) {
+        Some(Value::Str(s)) => Ok(s.s.clone()),
+        Some(other) => Err(format!("{who}() argument {} must be str, not '{}'", i + 1, other.type_name())),
+        None => Err(format!("{who}() missing a required argument")),
+    }
+}
+
+fn re_search(args: Vec<Value>) -> Result<Value, String> {
+    let re = crate::regexutil::compile(&str_at(&args, 0, "search")?)?;
+    Ok(crate::regexutil::search(&re, &str_at(&args, 1, "search")?))
+}
+
+fn re_findall(args: Vec<Value>) -> Result<Value, String> {
+    let re = crate::regexutil::compile(&str_at(&args, 0, "findall")?)?;
+    Ok(crate::regexutil::findall(&re, &str_at(&args, 1, "findall")?))
+}
+
+fn re_finditer(args: Vec<Value>) -> Result<Value, String> {
+    let re = crate::regexutil::compile(&str_at(&args, 0, "finditer")?)?;
+    Ok(crate::regexutil::finditer(&re, &str_at(&args, 1, "finditer")?))
+}
+
+fn re_fullmatch(args: Vec<Value>) -> Result<Value, String> {
+    let re = crate::regexutil::compile(&str_at(&args, 0, "fullmatch")?)?;
+    Ok(crate::regexutil::fullmatch(&re, &str_at(&args, 1, "fullmatch")?))
+}
+
+fn re_sub(args: Vec<Value>) -> Result<Value, String> {
+    let re = crate::regexutil::compile(&str_at(&args, 0, "sub")?)?;
+    let repl = str_at(&args, 1, "sub")?;
+    Ok(crate::regexutil::sub(&re, &repl, &str_at(&args, 2, "sub")?))
+}
+
+fn re_split(args: Vec<Value>) -> Result<Value, String> {
+    let re = crate::regexutil::compile(&str_at(&args, 0, "split")?)?;
+    Ok(crate::regexutil::split(&re, &str_at(&args, 1, "split")?))
+}
+
+fn re_compile(args: Vec<Value>) -> Result<Value, String> {
+    crate::regexutil::regex_value(&str_at(&args, 0, "compile")?)
+}
+
+/// `re.match` is deliberately cut — it anchors at the start, which is almost
+/// always not what people mean.
+fn re_match(_args: Vec<Value>) -> Result<Value, String> {
+    Err("re.match is not supported in Oro — it anchors at the start of the string, which is \
+         almost always the wrong choice and is constantly confused with re.search. Use re.search \
+         (unanchored), or anchor explicitly with a leading `^`."
+        .to_string())
+}
+
+// --- subprocess --------------------------------------------------------------
+
+fn build_subprocess() -> Value {
+    // `run` is finished in the VM (it accepts cwd/env/timeout keyword args and
+    // builds a CompletedProcess); this stub is never invoked directly.
+    module("subprocess", vec![("run", builtin("subprocess.run", subprocess_run_stub))])
+}
+
+fn subprocess_run_stub(_args: Vec<Value>) -> Result<Value, String> {
+    Err("internal: subprocess.run must be dispatched by the VM".to_string())
 }
 
 // --- sys ---------------------------------------------------------------------

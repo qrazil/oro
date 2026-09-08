@@ -1,0 +1,16 @@
+import subprocess
+
+# capture_output/text make CPython capture as text; Oro always captures, so it
+# accepts these flags for portability. Args are a list — never a shell string.
+r = subprocess.run(["echo", "hello world"], capture_output=True, text=True)
+print(r.returncode)
+print(r.stdout)
+print(r.stderr == "")
+
+# exit codes from portable commands.
+print(subprocess.run(["true"], capture_output=True, text=True).returncode)
+print(subprocess.run(["false"], capture_output=True, text=True).returncode)
+
+# multiple args go straight to the program, no shell splitting.
+r2 = subprocess.run(["echo", "-n", "a", "b", "c"], capture_output=True, text=True)
+print(r2.stdout)

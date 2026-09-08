@@ -16,5 +16,10 @@ path = "src/main.rs"
 name = "oro_lang"
 path = "src/lib.rs"
 
-# No dependencies yet. The lexer is hand-written and depends on nothing but std.
+# The `re` module is backed by the `regex` crate — a deliberate, approved
+# exception to the zero-dependency rule. `regex` is a Thompson-NFA engine with a
+# guaranteed linear-time match (no ReDoS); a correct linear-time engine is a
+# serious project and a hand-rolled backtracker can hang on inputs like (a+)+b,
+# so the dependency budget is well spent here. Everything else is std only.
 [dependencies]
+regex = "1"
