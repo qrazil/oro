@@ -688,6 +688,22 @@ impl<'a> Codegen<'a> {
         Ok(())
     }
 
+    /// Compile a lambda: a function whose whole body is `return <expr>`. Its
+    /// scope was assigned by the resolve pass and is read from the node, rather
+    /// than taken from the `def`/block child cursor.
+    fn emit_lambda(&mut self, data: &crate::ast::LambdaData, line: usize, col: usize) -> CResult<()> {
+        let child = data.scope.get();
+        if child == usize::MAX {
+            return Err(self.err("internal: lambda scope was never assigned", line, col));
+        }
+        let body = vec![Stmt::Return { value: Some((*data.body).clone()), line, col }];
+        let proto = self.compile_function("<lambda>", &data.params, &body, child)?;
+        let proto_idx = self.protos.len();
+        self.protos.push(Rc::new(proto));
+        self.emit(Op::MakeFunction(proto_idx), line, col);
+        Ok(())
+    }
+
     /// Compile a `def`/method body into a function prototype and emit
     /// `MakeFunction`, leaving the resulting function on the stack. Consumes one
     /// child scope (the pre-pass created one per `def`, in source order).
@@ -896,6 +912,7 @@ impl<'a> Codegen<'a> {
 
     fn emit_expr(&mut self, expr: &Expr) -> CResult<()> {
         match expr {
+            Expr::Lambda { data, line, col } => self.emit_lambda(data, *line, *col)?,
             Expr::Int { value, line, col } => {
                 let v = parse_int(value);
                 let idx = self.add_const(v);

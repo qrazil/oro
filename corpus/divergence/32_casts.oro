@@ -1,0 +1,30 @@
+# DIVERGENCE: conversion is a method on the value (`s.to_int()`), not a call on
+# a type name (`int(s)`), so this is not runnable under CPython and cannot be
+# oracled. Reviewed by hand instead.
+#
+# The string-processing half of this test stays in core/ (15_textproc.oro),
+# where CPython still checks it — only the casts had to move.
+lines = ["alice,30,dallas", "bob,25,austin", "carol,35,houston"]
+rows = []
+for line in lines:
+    rows.append(line.split(","))
+
+total = 0
+for r in rows:
+    total = total + r[1].to_int()
+print(total)
+
+oldest = ""
+best = 0
+for r in rows:
+    age = r[1].to_int()
+    if age > best:
+        best = age
+        oldest = r[0]
+print(oldest, best)
+
+print((42).to_str(), "17".to_int(), "1.5".to_float(), (1).to_bool())
+print("ff".to_int(16), "0x1f".to_int(16), "777".to_int(8), "-ff".to_int(16))
+print(range(3).to_list(), "abc".to_list(), (1, 2).to_list())
+print([("a", 1), ("b", 2)].to_dict())
+print([1, 2, 3].to_str(), {"a": 1}.to_str())

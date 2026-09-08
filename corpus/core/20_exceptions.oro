@@ -7,7 +7,7 @@ try:
     print(risky(5))
     print(risky(-1))
 except ValueError as e:
-    print("caught:", str(e))
+    print("caught:", f"{e}")
 finally:
     print("done")
 

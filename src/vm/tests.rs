@@ -91,10 +91,10 @@ fn boolean_short_circuit() {
 
 #[test]
 fn truthiness_matches_python() {
-    assert!(matches!(eval("r = bool([])\n"), Value::Bool(false)));
-    assert!(matches!(eval("r = bool([0])\n"), Value::Bool(true)));
-    assert!(matches!(eval("r = bool(\"\")\n"), Value::Bool(false)));
-    assert!(matches!(eval("r = bool(0.0)\n"), Value::Bool(false)));
+    assert!(matches!(eval("r = [].to_bool()\n"), Value::Bool(false)));
+    assert!(matches!(eval("r = [0].to_bool()\n"), Value::Bool(true)));
+    assert!(matches!(eval("r = \"\".to_bool()\n"), Value::Bool(false)));
+    assert!(matches!(eval("r = (0.0).to_bool()\n"), Value::Bool(false)));
 }
 
 #[test]
@@ -605,15 +605,15 @@ fn continue_runs_enclosing_finally() {
 
 #[test]
 fn container_repr_runs_element_dunders() {
-    let src = "class P:\n    def __init__(self, n):\n        self.n = n\n    def __repr__(self):\n        return \"P(\" + str(self.n) + \")\"\n\
-               out = str([P(1), P(2)])\n";
+    let src = "class P:\n    def __init__(self, n):\n        self.n = n\n    def __repr__(self):\n        return \"P(\" + self.n.to_str() + \")\"\n\
+               out = [P(1), P(2)].to_str()\n";
     assert_eq!(fstr(src), "[P(1), P(2)]");
 }
 
 #[test]
 fn nested_container_repr() {
-    let src = "class P:\n    def __init__(self, n):\n        self.n = n\n    def __repr__(self):\n        return \"P\" + str(self.n)\n\
-               out = str({\"k\": [P(1), P(2)]})\n";
+    let src = "class P:\n    def __init__(self, n):\n        self.n = n\n    def __repr__(self):\n        return \"P\" + self.n.to_str()\n\
+               out = {\"k\": [P(1), P(2)]}.to_str()\n";
     assert_eq!(fstr(src), "{'k': [P1, P2]}");
 }
 
@@ -660,19 +660,93 @@ fn re_backreference_rejected() {
 }
 
 #[test]
-fn subprocess_rejects_bare_string() {
-    let err = run_err("import subprocess\nsubprocess.run(\"echo hi\")\n");
+fn proc_rejects_bare_string() {
+    let err = run_err("import proc\nproc.run(\"echo hi\")\n");
     assert!(err.message.contains("list of separate string"), "got: {}", err.message);
 }
 
 #[test]
-fn subprocess_runs_and_captures() {
-    let src = "import subprocess\nr = subprocess.run([\"echo\", \"hi\"], capture_output=True, text=True)\nout = str(r.returncode) + \":\" + r.stdout.strip()\n";
+fn proc_runs_and_captures() {
+    // quiet=True suppresses the live tee; the capture happens either way.
+    let src = "import proc\nr = proc.run([\"echo\", \"hi\"], quiet=True)\nout = r.returncode.to_str() + \":\" + r.stdout.strip()\n";
     assert_eq!(fstr(src), "0:hi");
+}
+
+#[test]
+fn proc_raises_on_nonzero_exit_by_default() {
+    let err = run_err("import proc\nproc.run([\"sh\", \"-c\", \"exit 4\"], quiet=True)\n");
+    assert!(err.message.contains("command failed"), "got: {}", err.message);
+}
+
+#[test]
+fn proc_check_false_allows_nonzero_exit() {
+    let src = "import proc\nr = proc.run([\"sh\", \"-c\", \"exit 4\"], check=False, quiet=True)\nout = r.returncode.to_str() + \":\" + r.ok.to_str()\n";
+    assert_eq!(fstr(src), "4:False");
+}
+
+#[test]
+fn proc_rejects_cpython_capture_kwargs() {
+    let err = run_err(
+        "import proc\nproc.run([\"echo\", \"hi\"], capture_output=True)\n",
+    );
+    assert!(err.message.contains("always captures"), "got: {}", err.message);
 }
 
 #[test]
 fn time_monotonic_never_decreases() {
     let src = "import time\na = time.monotonic()\nb = time.monotonic()\nout = b >= a\n";
     assert!(matches!(eval_last(src), Value::Bool(true)));
+}
+
+#[test]
+fn exception_in_callback_does_not_leak_jobs() {
+    // Each caught exception abandons a map job; without unwinding the job
+    // stacks those entries would accumulate for the life of the VM.
+    let src = r#"
+def boom(x):
+    raise ValueError("x")
+
+i = 0
+while i < 200:
+    try:
+        [1].map(boom)
+    except ValueError:
+        pass
+    i = i + 1
+out = [1, 2].map(x => x * 3).to_str()
+"#;
+    assert_eq!(fstr(src), "[3, 6]");
+}
+
+#[test]
+fn enclosing_job_survives_inner_handler() {
+    // The outer map is in flight while an inner try/except unwinds: only jobs
+    // started *inside* the block may be discarded, never an enclosing one.
+    let src = r#"
+def risky(x):
+    try:
+        if x == 2:
+            raise ValueError("inner")
+        return x * 10
+    except ValueError:
+        return -1
+
+out = [1, 2, 3].map(risky).to_str()
+"#;
+    assert_eq!(fstr(src), "[10, -1, 30]");
+}
+
+#[test]
+fn exception_escapes_nested_jobs_and_vm_recovers() {
+    let src = r#"
+def boom(x):
+    raise ValueError("deep")
+
+try:
+    [[1]].map(row => row.map(boom))
+except ValueError:
+    pass
+out = [1, 2].map(x => x + 1).to_str()
+"#;
+    assert_eq!(fstr(src), "[2, 3]");
 }

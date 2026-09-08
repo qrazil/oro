@@ -21,7 +21,7 @@ def lookup(d, k):
     try:
         return d[k]
     except KeyError as e:
-        return "no key " + str(e)
+        return "no key " + f"{e}"
 
 print(lookup({"a": 1, "b": 2}, "b"))
 print(lookup({"a": 1, "b": 2}, "c"))
@@ -59,9 +59,9 @@ def handle(code):
             raise AppError("server error")
         return "ok"
     except NotFoundError as e:
-        return "404: " + str(e)
+        return "404: " + f"{e}"
     except AppError as e:
-        return "app: " + str(e)
+        return "app: " + f"{e}"
 
 print(handle(200))
 print(handle(404))
@@ -74,9 +74,9 @@ def traced(n):
     try:
         if n == 0:
             raise ValueError("zero not allowed")
-        return "value " + str(n)
+        return "value " + f"{n}"
     except ValueError as e:
-        return "handled " + str(e)
+        return "handled " + f"{e}"
     finally:
         log.append("cleanup")
 
@@ -92,7 +92,7 @@ def wrap_error():
         except TypeError:
             raise
     except TypeError as e:
-        return "re-raised: " + str(e)
+        return "re-raised: " + f"{e}"
 
 print(wrap_error())
 
@@ -101,6 +101,6 @@ def bare():
     try:
         raise RuntimeError
     except RuntimeError as e:
-        return "got runtime error: [" + str(e) + "]"
+        return "got runtime error: [" + f"{e}" + "]"
 
 print(bare())

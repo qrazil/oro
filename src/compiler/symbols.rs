@@ -523,6 +523,20 @@ impl SymTable {
 
     fn resolve_expr(&mut self, scope_id: usize, expr: &Expr) {
         match expr {
+            // A lambda body is a single expression, so it can bind nothing — no
+            // walrus, no comprehensions. That means its scope needs no build
+            // pass: creating it here, where every expression is already visited,
+            // is both complete and simpler. It is deliberately NOT pushed into
+            // the parent's `children`, so the def/block cursor is unaffected.
+            Expr::Lambda { data, .. } => {
+                let fid = self.new_scope(ScopeKind::Function, Some(scope_id), 0);
+                self.scopes[fid].func = fid;
+                for p in &data.params {
+                    self.declare_here(fid, &p.name);
+                }
+                data.scope.set(fid);
+                self.resolve_expr(fid, &data.body);
+            }
             Expr::Name { name, .. } => self.reference(scope_id, name),
             Expr::Unary { operand, .. } => self.resolve_expr(scope_id, operand),
             Expr::Binary { left, right, .. } | Expr::BoolOp { left, right, .. } => {

@@ -8,7 +8,7 @@ class Shape:
         self.name = name
 
     def describe(self):
-        return self.name + " has " + str(self.sides) + " sides"
+        return self.name + " has " + f"{self.sides}" + " sides"
 
 
 class Square(Shape):
@@ -22,7 +22,7 @@ class Square(Shape):
         return self.size * self.size
 
     def describe(self):
-        return super().describe() + ", area " + str(self.area())
+        return super().describe() + ", area " + f"{self.area()}"
 
 
 sq = Square(3)
@@ -63,23 +63,23 @@ class Money:
         return self.cents
 
     def __str__(self):
-        return "$" + str(self.cents // 100) + "." + str(self.cents % 100)
+        return "$" + f"{self.cents // 100}" + "." + f"{self.cents % 100}"
 
     def __repr__(self):
-        return "Money(" + str(self.cents) + ")"
+        return "Money(" + f"{self.cents}" + ")"
 
 
 a = Money(150)
 b = Money(275)
-print(str(a + b))
-print(str(b - a))
-print(str(a * 3))
+print(f"{a + b}")
+print(f"{b - a}")
+print(f"{a * 3}")
 print(a == Money(150))
 print(a != b)
 print(a < b)
 print(b <= b)
 print(len(a))
-print(str(a))
+print(f"{a}")
 print(repr(b))
 print(f"{a} costs {a.cents} cents, or {a!r}")
 print(a)

@@ -32,6 +32,13 @@ pub fn lookup(name: &str) -> Option<Value> {
         "repr" => bi_repr,
         "open" => bi_open,
         "set" => bi_set,
+        "list" => bi_list,
+        "dict" => bi_dict,
+        "enumerate" => bi_enumerate,
+        "zip" => bi_zip,
+        "any" => bi_any,
+        "all" => bi_all,
+        "round" => bi_round,
         _ => return None,
     };
     Some(Value::Builtin(Rc::new(Builtin { name: intern(name), func: f })))
@@ -57,6 +64,13 @@ fn intern(name: &str) -> &'static str {
         "repr" => "repr",
         "open" => "open",
         "set" => "set",
+        "list" => "list",
+        "dict" => "dict",
+        "enumerate" => "enumerate",
+        "zip" => "zip",
+        "any" => "any",
+        "all" => "all",
+        "round" => "round",
         _ => "builtin",
     }
 }
@@ -112,12 +126,8 @@ fn bi_range(args: Vec<Value>) -> VResult<Value> {
     Ok(Value::Range(Rc::new(RangeVal { start, stop, step })))
 }
 
-fn bi_str(args: Vec<Value>) -> VResult<Value> {
-    match args.as_slice() {
-        [] => Ok(Value::str(String::new())),
-        [v] => Ok(Value::str(v.display())),
-        _ => Err("str() takes at most 1 argument".to_string()),
-    }
+fn bi_str(_args: Vec<Value>) -> VResult<Value> {
+    Err(type_name_is_not_callable("str", "to_str", "\"\""))
 }
 
 fn bi_repr(args: Vec<Value>) -> VResult<Value> {
@@ -164,46 +174,16 @@ fn bi_open(args: Vec<Value>) -> VResult<Value> {
     Ok(Value::File(Rc::new(RefCell::new(file))))
 }
 
-fn bi_int(args: Vec<Value>) -> VResult<Value> {
-    match args.as_slice() {
-        [] => Ok(Value::Int(0)),
-        [v] => match v {
-            Value::Bool(b) => Ok(Value::Int(*b as i64)),
-            Value::Int(_) | Value::Big(_) => Ok(v.clone()),
-            Value::Float(f) => Ok(float_to_int(*f)),
-            Value::Str(s) => parse_int_str(&s.s),
-            other => Err(format!("int() argument must be a number or string, not '{}'", other.type_name())),
-        },
-        _ => Err("int() takes at most 1 argument".to_string()),
-    }
+fn bi_int(_args: Vec<Value>) -> VResult<Value> {
+    Err(type_name_is_not_callable("int", "to_int", "0"))
 }
 
-fn bi_float(args: Vec<Value>) -> VResult<Value> {
-    match args.as_slice() {
-        [] => Ok(Value::Float(0.0)),
-        [v] => match v {
-            Value::Bool(b) => Ok(Value::Float(*b as i64 as f64)),
-            Value::Int(i) => Ok(Value::Float(*i as f64)),
-            Value::Big(b) => Ok(Value::Float(b.to_f64())),
-            Value::Float(_) => Ok(v.clone()),
-            Value::Str(s) => s
-                .s
-                .trim()
-                .parse::<f64>()
-                .map(Value::Float)
-                .map_err(|_| format!("could not convert string to float: '{}'", s.s)),
-            other => Err(format!("float() argument must be a number or string, not '{}'", other.type_name())),
-        },
-        _ => Err("float() takes at most 1 argument".to_string()),
-    }
+fn bi_float(_args: Vec<Value>) -> VResult<Value> {
+    Err(type_name_is_not_callable("float", "to_float", "0.0"))
 }
 
-fn bi_bool(args: Vec<Value>) -> VResult<Value> {
-    match args.as_slice() {
-        [] => Ok(Value::Bool(false)),
-        [v] => Ok(Value::Bool(v.truthy())),
-        _ => Err("bool() takes at most 1 argument".to_string()),
-    }
+fn bi_bool(_args: Vec<Value>) -> VResult<Value> {
+    Err(type_name_is_not_callable("bool", "to_bool", "False"))
 }
 
 fn bi_type(args: Vec<Value>) -> VResult<Value> {
@@ -310,6 +290,34 @@ fn bi_sorted(args: Vec<Value>) -> VResult<Value> {
     Ok(Value::List(Rc::new(RefCell::new(items))))
 }
 
+/// Stable sort of `items` by the matching entry in `keys` (the classic
+/// decorate-sort-undecorate). `reverse` inverts the *comparator* rather than
+/// reversing the result: `sort_by` is stable, so equal keys keep their original
+/// order in both directions — which is what CPython guarantees. Reversing the
+/// sorted output instead would flip ties and break that.
+pub fn sort_by_keys(items: Vec<Value>, keys: &[Value], reverse: bool) -> VResult<Vec<Value>> {
+    let mut idx: Vec<usize> = (0..items.len()).collect();
+    let mut err: Option<String> = None;
+    idx.sort_by(|&a, &b| {
+        if err.is_some() {
+            return std::cmp::Ordering::Equal;
+        }
+        let (lhs, rhs) = if reverse { (b, a) } else { (a, b) };
+        match keys[lhs].compare(&keys[rhs]) {
+            Ok(o) => o,
+            Err(e) => {
+                err = Some(e);
+                std::cmp::Ordering::Equal
+            }
+        }
+    });
+    if let Some(e) = err {
+        return Err(e);
+    }
+    let mut slots: Vec<Option<Value>> = items.into_iter().map(Some).collect();
+    Ok(idx.into_iter().map(|i| slots[i].take().expect("index used once")).collect())
+}
+
 /// Stable sort by Oro's `<` ordering. Because [`Value::compare`] is fallible
 /// (unorderable pairs are a `TypeError`), we capture the first error and, once
 /// tripped, treat every remaining comparison as `Equal` so the sort finishes
@@ -380,15 +388,202 @@ fn parse_int_str(s: &str) -> VResult<Value> {
 // --- Methods ----------------------------------------------------------------
 
 /// Whether `name` is a valid method of `recv`'s type (drives attribute access).
+/// `int(s, base)`. Accepts an optional sign, the `0x`/`0o`/`0b` prefix when it
+/// agrees with `base`, and underscore separators — matching CPython.
+fn parse_int_base(s: &str, base: i64) -> VResult<Value> {
+    if base != 0 && !(2..=36).contains(&base) {
+        return Err("int() base must be >= 2 and <= 36, or 0".to_string());
+    }
+    let t = s.trim();
+    let (neg, t) = match t.strip_prefix('-') {
+        Some(r) => (true, r),
+        None => (false, t.strip_prefix('+').unwrap_or(t)),
+    };
+    let lower = t.to_ascii_lowercase();
+    let (base, digits) = match (base, lower.get(..2)) {
+        (0, Some("0x")) | (16, Some("0x")) => (16, &t[2..]),
+        (0, Some("0o")) | (8, Some("0o")) => (8, &t[2..]),
+        (0, Some("0b")) | (2, Some("0b")) => (2, &t[2..]),
+        (0, _) => (10, t),
+        (b, _) => (b, t),
+    };
+    let cleaned: String = digits.chars().filter(|c| *c != '_').collect();
+    if cleaned.is_empty() {
+        return Err(format!("invalid literal for int() with base {base}: '{s}'"));
+    }
+    match i64::from_str_radix(&cleaned, base as u32) {
+        Ok(n) => Ok(Value::Int(if neg { -n } else { n })),
+        Err(_) => Err(format!("invalid literal for int() with base {base}: '{s}'")),
+    }
+}
+
+/// Type names convert; they do not construct. `list(xs)` casts an iterable to a
+/// list, but `list()` — a second, wordier spelling of `[]` — is an error, and so
+/// is `str()` for `""`, `int()` for `0`, and the rest. One spelling per thing:
+/// literals build, type names convert.
+/// Conversion is spelled as a method on the value being converted —
+/// `xs.to_list()`, `"42".to_int()` — not as a call on a type name. One spelling
+/// per thing, and it chains: `xs.filter(p).map(f).to_list()` reads in the order
+/// it runs, where `list(xs.filter(p).map(f))` makes you read outward again.
+///
+/// It also removes a whole error class by construction: a conversion needs
+/// something to convert, so there is no zero-argument form to confuse with
+/// building an empty collection. For that, write the literal.
+fn type_name_is_not_callable(who: &str, method: &str, literal: &str) -> String {
+    format!(
+        "{who}() is not callable in Oro — write `x.{method}()` to convert a value, or the \
+         literal `{literal}` to build an empty one."
+    )
+}
+
+fn bi_list(_args: Vec<Value>) -> VResult<Value> {
+    Err(type_name_is_not_callable("list", "to_list", "[]"))
+}
+
+fn bi_dict(_args: Vec<Value>) -> VResult<Value> {
+    Err(type_name_is_not_callable("dict", "to_dict", "{}"))
+}
+
+/// `enumerate(it, start=0)`. Eager: returns a list of `(index, value)` tuples
+/// rather than a lazy iterator, the same choice `dict.keys()` already makes.
+fn bi_enumerate(args: Vec<Value>) -> VResult<Value> {
+    let (it, start) = match args.as_slice() {
+        [it] => (it, 0),
+        [it, s] => (it, as_i64(s)?),
+        _ => return Err("enumerate() takes 1 or 2 arguments".to_string()),
+    };
+    let items = crate::vm::iterate_to_vec(it)?;
+    let mut out = Vec::with_capacity(items.len());
+    for (i, v) in items.into_iter().enumerate() {
+        out.push(Value::Tuple(Rc::new(vec![Value::Int(start + i as i64), v])));
+    }
+    Ok(Value::List(Rc::new(RefCell::new(out))))
+}
+
+/// `zip(a, b, ...)`, truncating to the shortest input. Eager, like `enumerate`.
+fn bi_zip(args: Vec<Value>) -> VResult<Value> {
+    if args.is_empty() {
+        return Ok(Value::List(Rc::new(RefCell::new(Vec::new()))));
+    }
+    let mut cols = Vec::with_capacity(args.len());
+    for a in &args {
+        cols.push(crate::vm::iterate_to_vec(a)?);
+    }
+    let n = cols.iter().map(|c| c.len()).min().unwrap_or(0);
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let row: Vec<Value> = cols.iter().map(|c| c[i].clone()).collect();
+        out.push(Value::Tuple(Rc::new(row)));
+    }
+    Ok(Value::List(Rc::new(RefCell::new(out))))
+}
+
+fn bi_any(args: Vec<Value>) -> VResult<Value> {
+    exactly(&args, 1, "any")?;
+    for v in crate::vm::iterate_to_vec(&args[0])? {
+        if v.truthy() {
+            return Ok(Value::Bool(true));
+        }
+    }
+    Ok(Value::Bool(false))
+}
+
+fn bi_all(args: Vec<Value>) -> VResult<Value> {
+    exactly(&args, 1, "all")?;
+    for v in crate::vm::iterate_to_vec(&args[0])? {
+        if !v.truthy() {
+            return Ok(Value::Bool(false));
+        }
+    }
+    Ok(Value::Bool(true))
+}
+
+/// `round(x)` -> int, `round(x, n)` -> float. Uses banker's rounding (ties to
+/// even) exactly as CPython does: `round(0.5)` is 0 and `round(2.5)` is 2.
+fn bi_round(args: Vec<Value>) -> VResult<Value> {
+    let (v, ndigits) = match args.as_slice() {
+        [v] => (v, None),
+        [v, n] => (v, Some(as_i64(n)?)),
+        _ => return Err("round() takes 1 or 2 arguments".to_string()),
+    };
+    let x = match v {
+        Value::Int(n) => {
+            // Rounding an int is the identity at ndigits >= 0; a negative
+            // ndigits rounds to that power of ten and stays an int.
+            match ndigits {
+                Some(d) if d < 0 => {
+                    let factor = 10i64.pow((-d).min(18) as u32);
+                    let scaled = *n as f64 / factor as f64;
+                    return Ok(Value::Int(round_half_even(scaled) as i64 * factor));
+                }
+                _ => return Ok(v.clone()),
+            }
+        }
+        Value::Big(_) => return Ok(v.clone()),
+        Value::Bool(b) => return Ok(Value::Int(*b as i64)),
+        Value::Float(f) => *f,
+        other => {
+            return Err(format!(
+                "type '{}' doesn't define __round__ method",
+                other.type_name()
+            ))
+        }
+    };
+    match ndigits {
+        None => Ok(Value::Int(round_half_even(x) as i64)),
+        // Scaling by 10^n and rounding gives the wrong answer whenever the
+        // scaled product is not exactly representable (the classic
+        // round(2.675, 2) case). Rust's float formatter rounds the *exact*
+        // binary value half-to-even, which is precisely CPython's rule, so
+        // format-and-reparse rather than doing the arithmetic ourselves.
+        Some(n) if n >= 0 => {
+            if !x.is_finite() {
+                return Ok(Value::Float(x));
+            }
+            let digits = n.min(17) as usize;
+            let text = format!("{x:.digits$}");
+            Ok(Value::Float(text.parse::<f64>().unwrap_or(x)))
+        }
+        Some(n) => {
+            // Negative ndigits rounds to a power of ten left of the point.
+            let factor = 10f64.powi((-n) as i32);
+            let scaled = x / factor;
+            if !scaled.is_finite() {
+                return Ok(Value::Float(x));
+            }
+            Ok(Value::Float(round_half_even(scaled) * factor))
+        }
+    }
+}
+
+/// Round to nearest, ties to even — the rule CPython's `round` follows.
+fn round_half_even(x: f64) -> f64 {
+    let r = x.round();
+    if (x - x.trunc()).abs() == 0.5 && r % 2.0 != 0.0 {
+        r - x.signum()
+    } else {
+        r
+    }
+}
+
 pub fn method_exists(recv: &Value, name: &str) -> bool {
+    if is_cast_method(name) {
+        return true;
+    }
     match recv {
         Value::Str(_) => matches!(
             name,
-            "split" | "join" | "strip" | "lstrip" | "rstrip" | "upper" | "lower"
-                | "replace" | "startswith" | "endswith" | "find"
+            "split" | "rsplit" | "join" | "strip" | "lstrip" | "rstrip" | "upper"
+                | "lower" | "replace" | "startswith" | "endswith" | "find" | "zfill"
         ),
-        Value::List(_) => matches!(name, "append" | "pop" | "extend" | "sort" | "reverse"),
-        Value::Dict(_) => matches!(name, "get" | "keys" | "values" | "items"),
+        Value::List(_) => {
+            matches!(name, "append" | "pop" | "extend" | "sort" | "reverse" | "map" | "filter")
+        }
+        // map/filter are type-preserving, so every collection carries them.
+        Value::Tuple(_) | Value::Range(_) | Value::Generator(_) => {
+            matches!(name, "map" | "filter")
+        }
+        Value::Dict(_) => matches!(name, "get" | "keys" | "values" | "items" | "map" | "filter"),
         Value::File(_) => matches!(
             name,
             "read" | "readline" | "readlines" | "write" | "close"
@@ -405,6 +600,7 @@ pub fn method_exists(recv: &Value, name: &str) -> bool {
 /// Dispatch a bound method call.
 pub fn call_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
     match recv {
+        _ if is_cast_method(name) => cast_method(recv, name, args),
         Value::Str(_) => str_method(recv, name, args),
         Value::List(l) => list_method(l, name, args),
         Value::Dict(d) => dict_method(d, name, args),
@@ -512,11 +708,200 @@ fn file_method(
     }
 }
 
+/// Optional integer argument (Python's `maxsplit`, `width`, ... style).
+/// Absent or `None` yields `default`.
+fn opt_int_arg(args: &[Value], i: usize, who: &str, default: i64) -> VResult<i64> {
+    match args.get(i) {
+        None | Some(Value::None) => Ok(default),
+        Some(Value::Int(n)) => Ok(*n),
+        Some(Value::Bool(b)) => Ok(*b as i64),
+        Some(other) => Err(format!(
+            "{who}() argument must be int, not '{}'",
+            other.type_name()
+        )),
+    }
+}
+
 fn str_arg(args: &[Value], i: usize, who: &str) -> VResult<String> {
     match args.get(i) {
         Some(Value::Str(s)) => Ok(s.s.clone()),
         Some(other) => Err(format!("{who}() argument must be str, not '{}'", other.type_name())),
         None => Err(format!("{who}() missing a required argument")),
+    }
+}
+
+/// `str.split`/`rsplit` on an explicit separator, honouring `maxsplit`
+/// (negative = unlimited). `rsplit` consumes separators from the right, so the
+/// *unsplit* remainder ends up in the first element.
+fn split_sep_n(s: &str, sep: &str, maxsplit: i64, from_right: bool) -> Vec<String> {
+    if maxsplit < 0 {
+        return s.split(sep).map(|p| p.to_string()).collect();
+    }
+    // maxsplit splits => maxsplit + 1 pieces.
+    let n = (maxsplit as usize).saturating_add(1);
+    if from_right {
+        let mut parts: Vec<String> = s.rsplitn(n, sep).map(|p| p.to_string()).collect();
+        parts.reverse();
+        parts
+    } else {
+        s.splitn(n, sep).map(|p| p.to_string()).collect()
+    }
+}
+
+/// `str.split(None, maxsplit)`: runs of whitespace separate, leading/trailing
+/// whitespace is discarded, and once `maxsplit` splits are made the remainder is
+/// returned verbatim (interior whitespace and all).
+fn split_whitespace_n(s: &str, maxsplit: i64, from_right: bool) -> Vec<String> {
+    if maxsplit < 0 {
+        return s.split_whitespace().map(|p| p.to_string()).collect();
+    }
+    let limit = maxsplit as usize;
+    let chars: Vec<char> = s.chars().collect();
+    let mut parts: Vec<String> = Vec::new();
+
+    if !from_right {
+        let mut i = 0usize;
+        while parts.len() < limit {
+            while i < chars.len() && chars[i].is_whitespace() {
+                i += 1;
+            }
+            if i >= chars.len() {
+                return parts;
+            }
+            let start = i;
+            while i < chars.len() && !chars[i].is_whitespace() {
+                i += 1;
+            }
+            parts.push(chars[start..i].iter().collect());
+        }
+        // Remainder: drop only the whitespace that separated it from the last field.
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
+        if i < chars.len() {
+            parts.push(chars[i..].iter().collect());
+        }
+        parts
+    } else {
+        let mut i = chars.len();
+        while parts.len() < limit {
+            while i > 0 && chars[i - 1].is_whitespace() {
+                i -= 1;
+            }
+            if i == 0 {
+                parts.reverse();
+                return parts;
+            }
+            let end = i;
+            while i > 0 && !chars[i - 1].is_whitespace() {
+                i -= 1;
+            }
+            parts.push(chars[i..end].iter().collect());
+        }
+        while i > 0 && chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        if i > 0 {
+            parts.push(chars[..i].iter().collect());
+        }
+        parts.reverse();
+        parts
+    }
+}
+
+/// The conversion methods, available on every value: `to_str`, `to_int`,
+/// `to_float`, `to_bool`, `to_list`, `to_dict`. Instances and containers whose
+/// `to_str` must run an Oro dunder are intercepted by the VM before reaching
+/// here, since a native method can never re-enter the interpreter.
+pub fn is_cast_method(name: &str) -> bool {
+    matches!(name, "to_str" | "to_int" | "to_float" | "to_bool" | "to_list" | "to_dict")
+}
+
+fn cast_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
+    match name {
+        "to_str" => {
+            exactly(&args, 0, "to_str")?;
+            Ok(Value::str(recv.display()))
+        }
+        "to_bool" => {
+            exactly(&args, 0, "to_bool")?;
+            Ok(Value::Bool(recv.truthy()))
+        }
+        "to_float" => {
+            exactly(&args, 0, "to_float")?;
+            match recv {
+                Value::Bool(b) => Ok(Value::Float(*b as i64 as f64)),
+                Value::Int(i) => Ok(Value::Float(*i as f64)),
+                Value::Big(b) => Ok(Value::Float(b.to_f64())),
+                Value::Float(_) => Ok(recv.clone()),
+                Value::Str(s) => s
+                    .s
+                    .trim()
+                    .parse::<f64>()
+                    .map(Value::Float)
+                    .map_err(|_| format!("could not convert string to float: '{}'", s.s)),
+                other => Err(format!(
+                    "'{}' object has no conversion to float",
+                    other.type_name()
+                )),
+            }
+        }
+        "to_int" => {
+            // `to_int(base)` for strings, mirroring CPython's int(s, base).
+            let base = opt_int_arg(&args, 0, "to_int", 10)?;
+            match recv {
+                Value::Bool(b) => Ok(Value::Int(*b as i64)),
+                Value::Int(_) | Value::Big(_) => Ok(recv.clone()),
+                Value::Float(f) => Ok(float_to_int(*f)),
+                Value::Str(s) => {
+                    if base == 10 && args.is_empty() {
+                        parse_int_str(&s.s)
+                    } else {
+                        parse_int_base(&s.s, base)
+                    }
+                }
+                other => Err(format!(
+                    "'{}' object has no conversion to int",
+                    other.type_name()
+                )),
+            }
+        }
+        "to_list" => {
+            exactly(&args, 0, "to_list")?;
+            let items = crate::vm::iterate_to_vec(recv)?;
+            Ok(Value::List(Rc::new(RefCell::new(items))))
+        }
+        "to_dict" => {
+            exactly(&args, 0, "to_dict")?;
+            let mut d = OroDict::new();
+            if let Value::Dict(src) = recv {
+                for (k, v) in src.borrow().items() {
+                    d.insert(k.clone(), v.clone())?;
+                }
+                return Ok(Value::Dict(Rc::new(RefCell::new(d))));
+            }
+            for pair in crate::vm::iterate_to_vec(recv)? {
+                let parts = match &pair {
+                    Value::Tuple(t) => t.as_slice().to_vec(),
+                    Value::List(l) => l.borrow().clone(),
+                    other => {
+                        return Err(format!(
+                            "to_dict() requires (key, value) pairs, found '{}'",
+                            other.type_name()
+                        ))
+                    }
+                };
+                if parts.len() != 2 {
+                    return Err(format!(
+                        "to_dict() requires 2-element pairs, found one of length {}",
+                        parts.len()
+                    ));
+                }
+                d.insert(parts[0].clone(), parts[1].clone())?;
+            }
+            Ok(Value::Dict(Rc::new(RefCell::new(d))))
+        }
+        _ => unreachable!("not a cast method"),
     }
 }
 
@@ -545,25 +930,44 @@ fn str_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
             let to = str_arg(&args, 1, "replace")?;
             Ok(Value::str(s.replace(&from, &to)))
         }
-        "split" => {
-            let parts: Vec<Value> = match args.first() {
-                None | Some(Value::None) => {
-                    s.split_whitespace().map(Value::str).collect()
-                }
+        "split" | "rsplit" => {
+            // maxsplit < 0 (the default) means "no limit"; maxsplit == n caps the
+            // number of *splits*, so at most n + 1 pieces come back.
+            let maxsplit = opt_int_arg(&args, 1, name, -1)?;
+            let from_right = name == "rsplit";
+            let parts: Vec<String> = match args.first() {
+                None | Some(Value::None) => split_whitespace_n(&s, maxsplit, from_right),
                 Some(Value::Str(sep)) => {
                     if sep.s.is_empty() {
                         return Err("empty separator".to_string());
                     }
-                    s.split(&sep.s).map(Value::str).collect()
+                    split_sep_n(&s, &sep.s, maxsplit, from_right)
                 }
                 Some(other) => {
                     return Err(format!(
-                        "split() separator must be str, not '{}'",
+                        "{name}() separator must be str, not '{}'",
                         other.type_name()
                     ))
                 }
             };
+            let parts = parts.into_iter().map(Value::str).collect::<Vec<_>>();
             Ok(Value::List(Rc::new(RefCell::new(parts))))
+        }
+        "zfill" => {
+            let width = opt_int_arg(&args, 0, "zfill", 0)?;
+            let len = s.chars().count() as i64;
+            if len >= width {
+                return Ok(Value::str(s));
+            }
+            let pad = "0".repeat((width - len) as usize);
+            // A leading sign stays in front of the padding: "-7".zfill(4) -> "-007".
+            let mut it = s.chars();
+            match it.next() {
+                Some(c) if c == '-' || c == '+' => {
+                    Ok(Value::str(format!("{c}{pad}{}", it.as_str())))
+                }
+                _ => Ok(Value::str(format!("{pad}{s}"))),
+            }
         }
         "join" => {
             let items = crate::vm::iterate_to_vec(args.first().ok_or("join() missing argument")?)?;

@@ -15,6 +15,27 @@ for f in "$DIR"/core/*.oro; do
     diff <(printf '%s\n' "$got") "$exp" | head -12
   fi
 done
+# Divergence: programs that deliberately do NOT match CPython (they may not even
+# run under it), so the oracle cannot generate their .expected. Those files are
+# reviewed by hand — but they are still *checked*, because "intentionally
+# different" must not become "quietly broken".
+if compgen -G "$DIR/divergence/*.oro" > /dev/null; then
+  for f in "$DIR"/divergence/*.oro; do
+    exp="${f%.oro}.expected"
+    [[ -f "$exp" ]] || continue
+    # Diagnostics carry the script path; strip the repo prefix so the reviewed
+    # .expected files stay portable.
+    got=$("$ORO" "$f" 2>&1 | sed "s#$DIR/##g")
+    if [[ "$got" == "$(cat "$exp")" ]]; then
+      pass=$((pass+1))
+    else
+      fail=$((fail+1))
+      echo "FAIL (divergence) $(basename "$f")"
+      diff <(printf '%s\n' "$got") "$exp" | head -12
+    fi
+  done
+fi
+
 echo "----"
 echo "pass $pass  fail $fail"
 

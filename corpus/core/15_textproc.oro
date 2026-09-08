@@ -3,21 +3,13 @@ rows = []
 for line in lines:
     rows.append(line.split(","))
 
-total = 0
-for r in rows:
-    total = total + int(r[1])
-print(total)
-
 names = []
 for r in rows:
     names.append(r[0].upper())
 print(", ".join(names))
 
-oldest = ""
-best = 0
+cities = []
 for r in rows:
-    age = int(r[1])
-    if age > best:
-        best = age
-        oldest = r[0]
-print(oldest, best)
+    cities.append(r[2])
+print(sorted(cities))
+print(rows[0], len(rows), rows[1][0].startswith("b"))

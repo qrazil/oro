@@ -75,6 +75,23 @@ struct Block {
     target: usize,
     /// Operand-stack depth to restore before handling.
     stack_len: usize,
+    /// Depths of the VM's in-flight job stacks when this block was entered.
+    /// An exception abandons any job started *inside* the block, and those have
+    /// to be discarded or they accumulate forever; jobs that were already
+    /// running when the block was entered (an enclosing `map`, say) must
+    /// survive, which is why this is a depth and not a blanket clear.
+    jobs: JobDepths,
+}
+
+/// A snapshot of every in-flight job stack, used to unwind them alongside the
+/// operand stack. See [`Block::jobs`].
+#[derive(Clone, Copy, Default)]
+struct JobDepths {
+    prints: usize,
+    str_jobs: usize,
+    sort_jobs: usize,
+    seq_jobs: usize,
+    mat_jobs: usize,
 }
 
 enum BlockKind {
@@ -107,6 +124,10 @@ enum ReturnAction {
     NegateBool,
     /// Apply an f-string format spec to the returned (string) value, then push.
     FormatSpec(String),
+    /// Feed the returned key into the active sort job and continue it.
+    DriveSort,
+    /// Feed the returned value into the active map/filter job and continue it.
+    DriveSeq,
     /// A module body finished: capture its namespace into a module value, cache
     /// it under the dotted path, and push it as the import result.
     BuildModule(Rc<str>),
@@ -138,6 +159,81 @@ struct PrintJob {
     rendered: Vec<String>,
     remaining: Vec<Value>,
     next: usize,
+    /// `print(sep=…)` — inserted between arguments. Defaults to a space.
+    sep: String,
+    /// `print(end=…)` — written after the last argument. Defaults to a newline.
+    end: String,
+}
+
+/// What is driving a suspended generator frame: a `for` loop (which wants each
+/// value on its stack and a jump target on exhaustion), or a materialisation job
+/// collecting every value into a list for a native builtin.
+#[derive(Clone, Copy)]
+enum GenDriver {
+    ForLoop(usize),
+    Materialize,
+}
+
+/// A native builtin was called with a generator argument. Builtins run in Rust
+/// and can never re-enter the interpreter, so the generator cannot be drained
+/// inside one — it is drained here, a frame at a time, and the call is retried
+/// once every generator argument has become a list.
+struct MatJob {
+    callee: Value,
+    args: Vec<Value>,
+    kwargs: Vec<(String, Value)>,
+    /// Index of the argument currently being drained.
+    idx: usize,
+    items: Vec<Value>,
+    /// When set, `args[0]` is the method receiver rather than an argument, and
+    /// the bound method is rebuilt around the drained value on retry.
+    receiver_in_args: bool,
+}
+
+/// Which sequence adapter is running.
+#[derive(Clone, Copy, PartialEq)]
+enum SeqOp {
+    Map,
+    Filter,
+}
+
+/// The collection an adapter was called on, and therefore the collection it
+/// rebuilds. `map`/`filter` are type-preserving: a tuple stays a tuple and a
+/// dict stays a dict, so a chain never silently changes the shape of the data
+/// running through it.
+#[derive(Clone, Copy)]
+enum SeqShape {
+    List,
+    Tuple,
+    Dict,
+}
+
+/// An in-flight `.map(f)` / `.filter(p)`. Like [`SortJob`], the callback is Oro
+/// code and must run in a frame, so elements are processed one at a time and the
+/// collection is rebuilt once the last result lands.
+struct SeqJob {
+    op: SeqOp,
+    shape: SeqShape,
+    /// For a dict, each item is the `(key, value)` pair.
+    items: Vec<Value>,
+    results: Vec<Value>,
+    next: usize,
+    func: Value,
+}
+
+/// An in-flight `sorted(key=…)` / `list.sort(key=…)`. The key function is Oro
+/// code, which must run in a frame rather than by re-entering the interpreter,
+/// so keys are computed one element at a time and collected here; when the last
+/// one lands the sort runs natively over the finished key vector.
+struct SortJob {
+    items: Vec<Value>,
+    keys: Vec<Value>,
+    next: usize,
+    keyfn: Value,
+    reverse: bool,
+    /// `Some(list)` for `list.sort()`, which sorts in place and yields None;
+    /// `None` for `sorted()`, which pushes a new list.
+    in_place: Option<Rc<RefCell<Vec<Value>>>>,
 }
 
 /// Rendering a container to a string, where some elements are instances whose
@@ -174,6 +270,9 @@ pub struct Vm {
     prints: Vec<PrintJob>,
     /// Stack of in-flight container-stringify jobs (see [`StrJob`]).
     str_jobs: Vec<StrJob>,
+    sort_jobs: Vec<SortJob>,
+    seq_jobs: Vec<SeqJob>,
+    mat_jobs: Vec<MatJob>,
     /// The built-in exception classes, by name (shared identity for the run).
     excs: HashMap<&'static str, Rc<Class>>,
     /// Exceptions currently being handled (top = innermost), for bare `raise`.
@@ -184,7 +283,7 @@ pub struct Vm {
     /// Generators currently being advanced (innermost on top), with the
     /// `ForIter` target to jump to when each is exhausted. Pushed on resume,
     /// popped on `yield`/exhaustion.
-    gen_stack: Vec<(Rc<RefCell<crate::value::GenBox>>, usize)>,
+    gen_stack: Vec<(Rc<RefCell<crate::value::GenBox>>, GenDriver)>,
     /// Program arguments, exposed as `sys.argv`.
     argv: Vec<String>,
     /// Set when `sys.exit(code)` runs; becomes the process exit status.
@@ -196,7 +295,7 @@ pub struct Vm {
     module_cache: HashMap<String, Value>,
     /// Modules whose bodies are currently running, to detect circular imports.
     importing: std::collections::HashSet<String>,
-    /// The class of `subprocess.run`'s result (a `CompletedProcess`).
+    /// The class of `proc.run`'s result (a `Completed`).
     proc_class: Rc<Class>,
 }
 
@@ -247,6 +346,9 @@ impl Vm {
             last_locals: Vec::new(),
             prints: Vec::new(),
             str_jobs: Vec::new(),
+            sort_jobs: Vec::new(),
+            seq_jobs: Vec::new(),
+            mat_jobs: Vec::new(),
             excs: exceptions::build_registry(),
             handling: Vec::new(),
             finally_why: Vec::new(),
@@ -257,7 +359,7 @@ impl Vm {
             module_cache: HashMap::new(),
             importing: std::collections::HashSet::new(),
             proc_class: Rc::new(Class {
-                name: Rc::from("CompletedProcess"),
+                name: Rc::from("Completed"),
                 base: None,
                 members: RefCell::new(HashMap::new()),
                 is_exception: false,
@@ -722,7 +824,7 @@ impl Vm {
                         };
                         match frame {
                             Some(frame) => {
-                                self.gen_stack.push((gen.clone(), target));
+                                self.gen_stack.push((gen.clone(), GenDriver::ForLoop(target)));
                                 self.frames.push(frame);
                             }
                             None => {
@@ -748,7 +850,7 @@ impl Vm {
                     // A generator body reaching return (including the implicit
                     // one at the end) is exhausted: StopIteration for its driver.
                     if self.top().code.is_generator {
-                        return Ok(self.generator_stop());
+                        return self.generator_stop();
                     }
                     let value = self.pop();
                     return self.do_return(value);
@@ -756,29 +858,43 @@ impl Vm {
                 Op::Yield => {
                     let value = self.pop();
                     // Suspend this generator frame back into its GenBox and hand
-                    // the value to the driver (the frame beneath).
+                    // the value to whatever is driving it.
                     let frame = self.frames.pop().expect("yield with no frame");
-                    let (gen, _target) = self.gen_stack.pop().expect("yield outside a generator");
+                    let (gen, driver) = self.gen_stack.pop().expect("yield outside a generator");
                     gen.borrow_mut().frame = Some(Box::new(frame));
-                    self.push(value);
+                    match driver {
+                        GenDriver::ForLoop(_) => self.push(value),
+                        GenDriver::Materialize => {
+                            self.mat_jobs.last_mut().expect("materialise job").items.push(value);
+                            self.drive_materialize()?;
+                        }
+                    }
                 }
                 Op::SetupExcept(target) => {
+                    let jobs = self.job_depths();
                     let stack_len = self.top().stack.len();
-                    self.top().blocks.push(Block { kind: BlockKind::Except, target, stack_len });
+                    self.top()
+                        .blocks
+                        .push(Block { kind: BlockKind::Except, target, stack_len, jobs });
                 }
                 Op::SetupFinally(target) => {
+                    let jobs = self.job_depths();
                     let stack_len = self.top().stack.len();
-                    self.top().blocks.push(Block { kind: BlockKind::Finally, target, stack_len });
+                    self.top()
+                        .blocks
+                        .push(Block { kind: BlockKind::Finally, target, stack_len, jobs });
                 }
                 Op::PopBlock => {
                     self.top().blocks.pop();
                 }
                 Op::SetupLoop { brk, cont } => {
+                    let jobs = self.job_depths();
                     let stack_len = self.top().stack.len();
                     self.top().blocks.push(Block {
                         kind: BlockKind::Loop { cont },
                         target: brk,
                         stack_len,
+                        jobs,
                     });
                 }
                 Op::Break => return Ok(self.do_break()),
@@ -929,9 +1045,12 @@ impl Vm {
                 // the VM rather than as pure native functions.
                 match b.name {
                     "print" => return self.do_print(args, kwargs),
-                    // subprocess.run is finished here so it can take keyword args
-                    // (cwd/env/timeout) and build a CompletedProcess instance.
-                    "subprocess.run" => return self.do_subprocess_run(args, kwargs),
+                    // sorted(key=…) has to call Oro code, so it is driven from
+                    // the VM rather than run as a pure native builtin.
+                    "sorted" if !kwargs.is_empty() => return self.do_sorted(args, kwargs),
+                    // proc.run is finished here so it can take keyword args and
+                    // build a Completed instance.
+                    "proc.run" => return self.do_proc_run(args, kwargs),
                     "str" if matches!(args.first(), Some(Value::Instance(_))) && args.len() == 1 => {
                         return self.stringify_instance(args.into_iter().next().unwrap(), false);
                     }
@@ -948,6 +1067,10 @@ impl Vm {
                     }
                     _ => {}
                 }
+                // A generator argument must be drained through frames first.
+                if self.materialize_generator_args(&Value::Builtin(b.clone()), &args, &kwargs)? {
+                    return Ok(());
+                }
                 if !kwargs.is_empty() {
                     return Err(self.err(format!("{}() takes no keyword arguments", b.name)));
                 }
@@ -957,6 +1080,49 @@ impl Vm {
             }
             Value::Method(m) => match &m.kind {
                 MethodKind::Native(name) => {
+                    // `to_str` may need to run a user `__str__`, or render a
+                    // container's elements through their `__repr__`; both go
+                    // through frames, so they cannot run as native methods.
+                    if &**name == "to_str" && args.is_empty() && kwargs.is_empty() {
+                        if matches!(m.receiver, Value::Instance(_)) {
+                            return self.stringify_instance(m.receiver.clone(), false);
+                        }
+                        if is_container(&m.receiver) {
+                            return self.begin_stringify(m.receiver.clone(), StrCont::Push);
+                        }
+                    }
+                    // map/filter run Oro callbacks, so they are driven from the
+                    // VM rather than executed as native methods.
+                    if &**name == "map" || &**name == "filter" {
+                        let op = if &**name == "map" { SeqOp::Map } else { SeqOp::Filter };
+                        // A generator receiver has to be drained first; the
+                        // retry arrives back here with a list in its place.
+                        if matches!(m.receiver, Value::Generator(_)) {
+                            let callee = Value::Method(m.clone());
+                            let with_recv = std::iter::once(m.receiver.clone())
+                                .chain(args.iter().cloned())
+                                .collect::<Vec<_>>();
+                            if self.materialize_receiver(&callee, with_recv, kwargs.clone())? {
+                                return Ok(());
+                            }
+                        }
+                        return self.do_seq_op(op, &m.receiver, args, kwargs);
+                    }
+                    // list.sort(key=…, reverse=…) shares sorted()'s frame-driven
+                    // key machinery; it just writes back in place.
+                    if &**name == "sort" && !kwargs.is_empty() {
+                        if let Value::List(l) = &m.receiver {
+                            if !args.is_empty() {
+                                return Err(self.err("sort() takes no positional arguments"));
+                            }
+                            let (keyfn, reverse) = self.sort_kwargs("sort", kwargs)?;
+                            let items = l.borrow().clone();
+                            return self.begin_sort(items, keyfn, reverse, Some(l.clone()));
+                        }
+                    }
+                    if self.materialize_generator_args(&Value::Method(m.clone()), &args, &kwargs)? {
+                        return Ok(());
+                    }
                     if !kwargs.is_empty() {
                         return Err(self.err("methods take no keyword arguments in this build"));
                     }
@@ -1095,6 +1261,432 @@ impl Vm {
         }
     }
 
+    /// `xs.map(f)` / `xs.filter(p)`. The collection type is preserved: a list
+    /// yields a list, a tuple a tuple, a dict a dict. A dict's callback is
+    /// called with two arguments (key and value); `map` must return a
+    /// `(key, value)` pair, `filter` keeps the original pair when the predicate
+    /// is truthy. `range` has no literal of its own, so it yields a list.
+    fn do_seq_op(
+        &mut self,
+        op: SeqOp,
+        receiver: &Value,
+        args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
+    ) -> Result<(), RuntimeError> {
+        let who = if op == SeqOp::Map { "map" } else { "filter" };
+        if !kwargs.is_empty() {
+            return Err(self.err(format!("{who}() takes no keyword arguments")));
+        }
+        let func = match args.as_slice() {
+            [f @ (Value::Func(_) | Value::Builtin(_) | Value::Method(_))] => f.clone(),
+            [other] => {
+                return Err(self.err(format!(
+                    "{who}() needs a function, not '{}'",
+                    other.type_name()
+                )))
+            }
+            _ => return Err(self.err(format!("{who}() takes exactly 1 argument"))),
+        };
+        let (shape, items) = match receiver {
+            Value::List(l) => (SeqShape::List, l.borrow().clone()),
+            Value::Tuple(t) => (SeqShape::Tuple, t.as_slice().to_vec()),
+            Value::Dict(d) => {
+                let pairs: Vec<Value> = d
+                    .borrow()
+                    .items()
+                    .iter()
+                    .map(|(k, v)| Value::Tuple(Rc::new(vec![k.clone(), v.clone()])))
+                    .collect();
+                (SeqShape::Dict, pairs)
+            }
+            // A range has no literal to rebuild, so it materialises to a list.
+            Value::Range(_) => (SeqShape::List, self.wrap(iterate_to_vec(receiver))?),
+            other => {
+                return Err(self.err(format!(
+                    "'{}' object has no method '{who}'",
+                    other.type_name()
+                )))
+            }
+        };
+        let n = items.len();
+        self.seq_jobs.push(SeqJob {
+            op,
+            shape,
+            items,
+            results: Vec::with_capacity(n),
+            next: 0,
+            func,
+        });
+        self.drive_seq()
+    }
+
+    fn drive_seq(&mut self) -> Result<(), RuntimeError> {
+        loop {
+            let (item, func, shape) = {
+                let job = self.seq_jobs.last().expect("active seq job");
+                if job.next >= job.items.len() {
+                    let job = self.seq_jobs.pop().unwrap();
+                    return self.finish_seq(job);
+                }
+                (job.items[job.next].clone(), job.func.clone(), job.shape)
+            };
+            self.seq_jobs.last_mut().unwrap().next += 1;
+
+            // A dict callback is spread over two parameters, so `(k, v) => …`
+            // reads naturally instead of forcing the caller to index a pair.
+            let call_args = match shape {
+                SeqShape::Dict => match &item {
+                    Value::Tuple(t) => vec![t[0].clone(), t[1].clone()],
+                    _ => vec![item.clone()],
+                },
+                _ => vec![item.clone()],
+            };
+
+            match func {
+                Value::Func(f) => {
+                    if self.frames.len() >= MAX_FRAMES {
+                        return Err(self.err("maximum recursion depth exceeded"));
+                    }
+                    if f.code.is_generator {
+                        return Err(self.err("map()/filter() callback must not be a generator"));
+                    }
+                    let mut frame = self.bind_call(&f, call_args, Vec::new())?;
+                    frame.ret_action = ReturnAction::DriveSeq;
+                    self.frames.push(frame);
+                    return Ok(());
+                }
+                Value::Builtin(b) => {
+                    let r = self.wrap((b.func)(call_args))?;
+                    self.seq_jobs.last_mut().unwrap().results.push(r);
+                }
+                Value::Method(m) => {
+                    let r = match &m.kind {
+                        MethodKind::Native(name) => {
+                            self.wrap(crate::builtins::call_method(&m.receiver, name, call_args))?
+                        }
+                        MethodKind::User { func, defclass } => {
+                            if self.frames.len() >= MAX_FRAMES {
+                                return Err(self.err("maximum recursion depth exceeded"));
+                            }
+                            return self.invoke_user(
+                                func.clone(),
+                                m.receiver.clone(),
+                                defclass.clone(),
+                                call_args,
+                                Vec::new(),
+                                ReturnAction::DriveSeq,
+                            );
+                        }
+                    };
+                    self.seq_jobs.last_mut().unwrap().results.push(r);
+                }
+                _ => return Err(self.err("map()/filter() callback is not callable")),
+            }
+        }
+    }
+
+    /// Rebuild the collection once every callback result is in.
+    fn finish_seq(&mut self, job: SeqJob) -> Result<(), RuntimeError> {
+        let SeqJob { op, shape, items, results, .. } = job;
+        let kept: Vec<Value> = match op {
+            SeqOp::Map => results,
+            SeqOp::Filter => items
+                .iter()
+                .zip(results.iter())
+                .filter(|(_, keep)| keep.truthy())
+                .map(|(it, _)| it.clone())
+                .collect(),
+        };
+        let out = match shape {
+            SeqShape::List => Value::List(Rc::new(RefCell::new(kept))),
+            SeqShape::Tuple => Value::Tuple(Rc::new(kept)),
+            SeqShape::Dict => {
+                let mut d = crate::value::OroDict::new();
+                for entry in kept {
+                    let pair = match &entry {
+                        Value::Tuple(t) => t.as_slice().to_vec(),
+                        Value::List(l) => l.borrow().clone(),
+                        other => {
+                            return Err(self.err(format!(
+                                "map() over a dict must return a (key, value) pair, not '{}'",
+                                other.type_name()
+                            )))
+                        }
+                    };
+                    if pair.len() != 2 {
+                        return Err(self.err(format!(
+                            "map() over a dict must return a (key, value) pair, got {} elements",
+                            pair.len()
+                        )));
+                    }
+                    self.wrap(d.insert(pair[0].clone(), pair[1].clone()))?;
+                }
+                Value::Dict(Rc::new(RefCell::new(d)))
+            }
+        };
+        self.push(out);
+        Ok(())
+    }
+
+    /// If `args` contains a generator, begin draining it (and any later ones)
+    /// and retry `callee` afterwards. Returns true when a job was started, in
+    /// which case the caller must not proceed with the native call.
+    fn materialize_generator_args(
+        &mut self,
+        callee: &Value,
+        args: &[Value],
+        kwargs: &[(String, Value)],
+    ) -> Result<bool, RuntimeError> {
+        if !args.iter().any(|a| matches!(a, Value::Generator(_))) {
+            return Ok(false);
+        }
+        self.mat_jobs.push(MatJob {
+            callee: callee.clone(),
+            args: args.to_vec(),
+            kwargs: kwargs.to_vec(),
+            idx: 0,
+            items: Vec::new(),
+            receiver_in_args: false,
+        });
+        self.drive_materialize()?;
+        Ok(true)
+    }
+
+    /// Drain a generator that is a method *receiver* (`g().map(f)`), then retry
+    /// the call with the resulting list as the receiver.
+    fn materialize_receiver(
+        &mut self,
+        callee: &Value,
+        args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
+    ) -> Result<bool, RuntimeError> {
+        if !matches!(args.first(), Some(Value::Generator(_))) {
+            return Ok(false);
+        }
+        self.mat_jobs.push(MatJob {
+            callee: callee.clone(),
+            args,
+            kwargs,
+            idx: 0,
+            items: Vec::new(),
+            receiver_in_args: true,
+        });
+        self.drive_materialize()?;
+        Ok(true)
+    }
+
+    /// Advance the active materialisation job: resume the generator being
+    /// drained, move to the next generator argument, or — when none are left —
+    /// pop the job and retry the original call with lists in their place.
+    fn drive_materialize(&mut self) -> Result<(), RuntimeError> {
+        loop {
+            let next_gen = {
+                let job = self.mat_jobs.last_mut().expect("materialise job");
+                let mut found = None;
+                for i in job.idx..job.args.len() {
+                    if let Value::Generator(g) = &job.args[i] {
+                        job.idx = i;
+                        found = Some(g.clone());
+                        break;
+                    }
+                }
+                found
+            };
+            let Some(gen) = next_gen else {
+                let mut job = self.mat_jobs.pop().expect("materialise job");
+                if job.receiver_in_args {
+                    // Rebuild the bound method around the drained receiver.
+                    let recv = job.args.remove(0);
+                    let callee = match &job.callee {
+                        Value::Method(m) => Value::Method(Rc::new(BoundMethod {
+                            receiver: recv,
+                            kind: m.kind.clone(),
+                        })),
+                        other => other.clone(),
+                    };
+                    return self.invoke(callee, job.args, job.kwargs);
+                }
+                return self.invoke(job.callee, job.args, job.kwargs);
+            };
+            // Resume the generator; each Yield lands in this job's `items` and
+            // calls back here, so the drain never grows the native stack.
+            let frame = {
+                let mut g = gen.borrow_mut();
+                if g.done {
+                    None
+                } else {
+                    g.frame.take().map(|b| *b.downcast::<Frame>().expect("gen frame"))
+                }
+            };
+            match frame {
+                Some(frame) => {
+                    if self.frames.len() >= MAX_FRAMES {
+                        return Err(self.err("maximum recursion depth exceeded"));
+                    }
+                    self.gen_stack.push((gen, GenDriver::Materialize));
+                    self.frames.push(frame);
+                    return Ok(());
+                }
+                None => {
+                    // Already exhausted: it contributes whatever was collected.
+                    let job = self.mat_jobs.last_mut().expect("materialise job");
+                    let items = std::mem::take(&mut job.items);
+                    let idx = job.idx;
+                    job.args[idx] = Value::List(Rc::new(RefCell::new(items)));
+                    job.idx += 1;
+                }
+            }
+        }
+    }
+
+    /// `sorted(iterable, key=…, reverse=…)`. Without a key this is the plain
+    /// native sort; with one, every element's key is computed through a frame
+    /// first (see [`SortJob`]).
+    fn do_sorted(
+        &mut self,
+        args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
+    ) -> Result<(), RuntimeError> {
+        // sorted() is intercepted before the generic builtin path, so the
+        // generator drain has to be requested explicitly here too.
+        if let Some(callee) = crate::builtins::lookup("sorted") {
+            if self.materialize_generator_args(&callee, &args, &kwargs)? {
+                return Ok(());
+            }
+        }
+        let iterable = match args.as_slice() {
+            [it] => it.clone(),
+            _ => return Err(self.err("sorted() takes exactly 1 positional argument")),
+        };
+        let (keyfn, reverse) = self.sort_kwargs("sorted", kwargs)?;
+        let items = self.wrap(crate::vm::iterate_to_vec(&iterable))?;
+        self.begin_sort(items, keyfn, reverse, None)
+    }
+
+    /// Shared parsing of the `key=`/`reverse=` pair for `sorted` and `list.sort`.
+    fn sort_kwargs(
+        &mut self,
+        who: &str,
+        kwargs: Vec<(String, Value)>,
+    ) -> Result<(Option<Value>, bool), RuntimeError> {
+        let mut keyfn: Option<Value> = None;
+        let mut reverse = false;
+        for (k, v) in kwargs {
+            match k.as_str() {
+                "key" => match v {
+                    Value::None => {}
+                    f @ (Value::Func(_) | Value::Builtin(_) | Value::Method(_)) => keyfn = Some(f),
+                    other => {
+                        return Err(self.err(format!(
+                            "{who}() key must be callable or None, not '{}'",
+                            other.type_name()
+                        )))
+                    }
+                },
+                "reverse" => reverse = v.truthy(),
+                other => {
+                    return Err(
+                        self.err(format!("{who}() got an unexpected keyword argument '{other}'"))
+                    )
+                }
+            }
+        }
+        Ok((keyfn, reverse))
+    }
+
+    /// Start a sort. With no key function the whole thing is native; otherwise a
+    /// [`SortJob`] computes the keys one frame at a time.
+    fn begin_sort(
+        &mut self,
+        items: Vec<Value>,
+        keyfn: Option<Value>,
+        reverse: bool,
+        in_place: Option<Rc<RefCell<Vec<Value>>>>,
+    ) -> Result<(), RuntimeError> {
+        let keyfn = match keyfn {
+            Some(f) => f,
+            None => {
+                // No key: the elements are their own keys.
+                let keys = items.clone();
+                let sorted = self.wrap(crate::builtins::sort_by_keys(items, &keys, reverse))?;
+                return self.finish_sort(sorted, in_place);
+            }
+        };
+        let n = items.len();
+        self.sort_jobs.push(SortJob {
+            items,
+            keys: Vec::with_capacity(n),
+            next: 0,
+            keyfn,
+            reverse,
+            in_place,
+        });
+        self.drive_sort()
+    }
+
+    fn drive_sort(&mut self) -> Result<(), RuntimeError> {
+        loop {
+            let (item, keyfn) = {
+                let job = self.sort_jobs.last().expect("active sort job");
+                if job.next >= job.items.len() {
+                    let job = self.sort_jobs.pop().unwrap();
+                    let sorted =
+                        self.wrap(crate::builtins::sort_by_keys(job.items, &job.keys, job.reverse))?;
+                    return self.finish_sort(sorted, job.in_place);
+                }
+                (job.items[job.next].clone(), job.keyfn.clone())
+            };
+            self.sort_jobs.last_mut().unwrap().next += 1;
+
+            match keyfn {
+                Value::Func(f) => {
+                    // A plain (non-method) key function: bind it the same way an
+                    // ordinary call does, but route its return into the sort job.
+                    if self.frames.len() >= MAX_FRAMES {
+                        return Err(self.err("maximum recursion depth exceeded"));
+                    }
+                    if f.code.is_generator {
+                        return Err(self.err("sort key must not be a generator function"));
+                    }
+                    let mut frame = self.bind_call(&f, vec![item], Vec::new())?;
+                    frame.ret_action = ReturnAction::DriveSort;
+                    self.frames.push(frame);
+                    return Ok(());
+                }
+                // A native key (len, str, …) cannot re-enter Oro, so it can be
+                // called inline and the loop continues without a frame.
+                Value::Builtin(b) => {
+                    let key = self.wrap((b.func)(vec![item]))?;
+                    self.sort_jobs.last_mut().unwrap().keys.push(key);
+                }
+                Value::Method(m) => {
+                    let key = match &m.kind {
+                        MethodKind::Native(name) => self
+                            .wrap(crate::builtins::call_method(&m.receiver, name, vec![item]))?,
+                        _ => return Err(self.err("sort key must be a plain function")),
+                    };
+                    self.sort_jobs.last_mut().unwrap().keys.push(key);
+                }
+                _ => return Err(self.err("sort key is not callable")),
+            }
+        }
+    }
+
+    fn finish_sort(
+        &mut self,
+        sorted: Vec<Value>,
+        in_place: Option<Rc<RefCell<Vec<Value>>>>,
+    ) -> Result<(), RuntimeError> {
+        match in_place {
+            Some(list) => {
+                *list.borrow_mut() = sorted;
+                self.push(Value::None);
+            }
+            None => self.push(Value::List(Rc::new(RefCell::new(sorted)))),
+        }
+        Ok(())
+    }
+
     /// Drive an in-flight `print`: render remaining args left to right, calling
     /// `__str__` (through a frame) for instances that define one. When the last
     /// argument is rendered, join with spaces, emit, and push `None`.
@@ -1103,10 +1695,33 @@ impl Vm {
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
     ) -> Result<(), RuntimeError> {
-        if !kwargs.is_empty() {
-            return Err(self.err("print() keyword arguments are not supported in this build"));
+        // print() accepts sep= and end=; both must be str or None (None means
+        // "use the default"), matching CPython. `file=` and `flush=` are not
+        // accepted — Oro has no writable stream objects to point them at.
+        let mut sep = " ".to_string();
+        let mut end = "\n".to_string();
+        for (k, v) in kwargs {
+            let slot = match k.as_str() {
+                "sep" => &mut sep,
+                "end" => &mut end,
+                other => {
+                    return Err(
+                        self.err(format!("print() got an unexpected keyword argument '{other}'"))
+                    )
+                }
+            };
+            match v {
+                Value::Str(s) => *slot = s.s.clone(),
+                Value::None => {}
+                other => {
+                    return Err(self.err(format!(
+                        "print() argument '{k}' must be str or None, not '{}'",
+                        other.type_name()
+                    )))
+                }
+            }
         }
-        self.prints.push(PrintJob { rendered: Vec::new(), remaining: args, next: 0 });
+        self.prints.push(PrintJob { rendered: Vec::new(), remaining: args, next: 0, sep, end });
         self.drive_print()
     }
 
@@ -1116,7 +1731,13 @@ impl Vm {
                 let job = self.prints.last().expect("active print job");
                 if job.next >= job.remaining.len() {
                     let job = self.prints.pop().unwrap();
-                    println!("{}", job.rendered.join(" "));
+                    // `end` is written verbatim, so print(end="") emits no
+                    // newline at all — hence write!/flush rather than println!.
+                    use std::io::Write;
+                    let out = std::io::stdout();
+                    let mut out = out.lock();
+                    let _ = write!(out, "{}{}", job.rendered.join(&job.sep), job.end);
+                    let _ = out.flush();
                     self.push(Value::None);
                     return Ok(());
                 }
@@ -1261,11 +1882,16 @@ impl Vm {
         Ok(())
     }
 
-    // --- subprocess ----------------------------------------------------------
+    // --- proc -----------------------------------------------------------------
 
-    /// `subprocess.run(args, cwd=…, env=…, timeout=…)`. Args go straight to
-    /// execve (no shell, ever), so shell injection is impossible by construction.
-    fn do_subprocess_run(
+    /// `proc.run(args, check=…, quiet=…, cwd=…, env=…, timeout=…)`. Args go
+    /// straight to execve (no shell, ever), so shell injection is impossible by
+    /// construction.
+    ///
+    /// The defaults are chosen for orchestration scripts rather than for CPython
+    /// compatibility: output is **both** streamed live and captured, and a
+    /// nonzero exit **raises** `CommandError`.
+    fn do_proc_run(
         &mut self,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
@@ -1275,15 +1901,15 @@ impl Vm {
             Some(Value::List(l)) => l.borrow().clone(),
             Some(Value::Str(_)) => {
                 return Err(self.err(
-                    "subprocess.run() needs a list of separate string arguments, e.g. \
+                    "proc.run() needs a list of separate string arguments, e.g. \
                      [\"git\", \"status\"], not a single string — Oro will not split it (that \
                      would mean reimplementing shell quoting) and there is no shell=True.",
                 ))
             }
-            _ => return Err(self.err("subprocess.run() takes a list of strings")),
+            _ => return Err(self.err("proc.run() takes a list of strings")),
         };
         if list.is_empty() {
-            return Err(self.err("subprocess.run() got an empty argument list"));
+            return Err(self.err("proc.run() got an empty argument list"));
         }
         let mut parts: Vec<String> = Vec::with_capacity(list.len());
         for v in &list {
@@ -1291,7 +1917,7 @@ impl Vm {
                 Value::Str(s) => parts.push(s.s.clone()),
                 other => {
                     return Err(self.err(format!(
-                        "subprocess.run() arguments must all be strings, got '{}'",
+                        "proc.run() arguments must all be strings, got '{}'",
                         other.type_label()
                     )))
                 }
@@ -1299,7 +1925,7 @@ impl Vm {
         }
         if parts[0].is_empty() || parts[0].contains(char::is_whitespace) {
             return Err(self.err(format!(
-                "subprocess.run() program '{}' contains whitespace — pass separate arguments \
+                "proc.run() program '{}' contains whitespace — pass separate arguments \
                  like [\"git\", \"status\"], not one combined string",
                 parts[0]
             )));
@@ -1309,11 +1935,13 @@ impl Vm {
         let mut cwd: Option<String> = None;
         let mut env: Option<Vec<(String, String)>> = None;
         let mut timeout: Option<f64> = None;
+        let mut check = true;
+        let mut quiet = false;
         for (k, v) in &kwargs {
             match k.as_str() {
                 "cwd" => match v {
                     Value::Str(s) => cwd = Some(s.s.clone()),
-                    _ => return Err(self.err("subprocess.run() cwd must be a string")),
+                    _ => return Err(self.err("proc.run() cwd must be a string")),
                 },
                 "env" => match v {
                     Value::Dict(d) => {
@@ -1323,25 +1951,35 @@ impl Vm {
                         }
                         env = Some(pairs);
                     }
-                    _ => return Err(self.err("subprocess.run() env must be a dict")),
+                    _ => return Err(self.err("proc.run() env must be a dict")),
                 },
                 "timeout" => match v {
                     Value::Int(i) => timeout = Some(*i as f64),
                     Value::Float(f) => timeout = Some(*f),
-                    _ => return Err(self.err("subprocess.run() timeout must be a number")),
+                    _ => return Err(self.err("proc.run() timeout must be a number")),
                 },
-                // Oro always captures stdout/stderr as UTF-8 text, so CPython's
-                // `capture_output=True`/`text=True` are accepted (for portable
-                // code and the differential oracle) but have no extra effect.
-                "capture_output" | "text" => {}
+                "check" => check = v.truthy(),
+                "quiet" => quiet = v.truthy(),
+                // CPython's knobs for what Oro now does by default. Name them
+                // explicitly rather than let them silently do nothing.
+                "capture_output" | "text" => {
+                    return Err(self.err(format!(
+                        "proc.run() does not take '{k}' — it always captures stdout/stderr as \
+                         text, and streams them live unless quiet=True."
+                    )))
+                }
                 other => {
                     return Err(self.err(format!(
-                        "subprocess.run() got an unexpected keyword argument '{other}'"
+                        "proc.run() got an unexpected keyword argument '{other}'"
                     )))
                 }
             }
         }
 
+        // Always piped: the reader threads tee each stream onward as it arrives,
+        // so the caller gets live output *and* a captured copy. Making every
+        // script choose between watching a build and grepping its output is the
+        // wart this default exists to remove.
         let mut cmd = std::process::Command::new(&parts[0]);
         cmd.args(&parts[1..]);
         cmd.stdout(std::process::Stdio::piped());
@@ -1356,7 +1994,7 @@ impl Vm {
             }
         }
 
-        let output = match run_process(cmd, timeout) {
+        let output = match run_process(cmd, timeout, !quiet) {
             Ok(o) => o,
             // "timed out" is classified into TimeoutError; a missing/inexecutable
             // program's io error into FileNotFoundError/PermissionError.
@@ -1373,8 +2011,30 @@ impl Vm {
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
+        // A command that fails and is never checked is one of the great sources
+        // of silent breakage in shell scripts, so `check` defaults to on. The
+        // message carries the tail of stderr: by the time you are reading it,
+        // that is what you wanted, and going to fetch it is pure friction.
+        if check && returncode != 0 {
+            let tail: Vec<&str> = stderr.trim_end().lines().rev().take(3).collect();
+            let mut detail = String::new();
+            for line in tail.iter().rev() {
+                detail.push_str("\n  ");
+                detail.push_str(line);
+            }
+            return Err(self.err(format!(
+                "command failed: {} exited with code {returncode}{detail}",
+                parts.join(" "),
+            )));
+        }
+
+        let truncated =
+            output.stdout.len() >= MAX_CAPTURE_BYTES || output.stderr.len() >= MAX_CAPTURE_BYTES;
+
         let mut fields = HashMap::new();
         fields.insert("returncode".to_string(), Value::Int(returncode));
+        fields.insert("ok".to_string(), Value::Bool(returncode == 0));
+        fields.insert("truncated".to_string(), Value::Bool(truncated));
         fields.insert("stdout".to_string(), Value::str(stdout));
         fields.insert("stderr".to_string(), Value::str(stderr));
         fields.insert("args".to_string(), Value::List(Rc::new(RefCell::new(list))));
@@ -1419,7 +2079,15 @@ impl Vm {
             Ok(s) => s,
             Err(_) => {
                 let class = self.excs["ModuleNotFoundError"].clone();
-                let msg = Value::str(format!("No module named '{path}'"));
+                let msg = Value::str(if path == "subprocess" {
+                    "No module named 'subprocess' — Oro's is called `proc`. It differs from \
+                     CPython's on purpose: proc.run() streams the child's output live *and* \
+                     captures it, and raises CommandError on a nonzero exit (pass check=False \
+                     to allow one)."
+                        .to_string()
+                } else {
+                    format!("No module named '{path}'")
+                });
                 return Ok(Step::Raise(self.make_exception_instance(class, vec![msg])));
             }
         };
@@ -1592,6 +2260,14 @@ impl Vm {
                 self.str_jobs.last_mut().expect("str job").results.push(s);
                 self.drive_str()?;
             }
+            ReturnAction::DriveSort => {
+                self.sort_jobs.last_mut().expect("sort job").keys.push(value);
+                self.drive_sort()?;
+            }
+            ReturnAction::DriveSeq => {
+                self.seq_jobs.last_mut().expect("seq job").results.push(value);
+                self.drive_seq()?;
+            }
             ReturnAction::NegateBool => self.push(Value::Bool(!value.truthy())),
             ReturnAction::FormatSpec(spec) => {
                 let out =
@@ -1667,17 +2343,50 @@ impl Vm {
 
     /// A generator frame reached `return` (or fell off the end): mark it done
     /// and route its driver's `for` loop to the exhaustion target.
-    fn generator_stop(&mut self) -> Step {
+    fn generator_stop(&mut self) -> Result<Step, RuntimeError> {
         self.frames.pop();
-        let (gen, target) = self.gen_stack.pop().expect("generator stop outside a driver");
+        let (gen, driver) = self.gen_stack.pop().expect("generator stop outside a driver");
         {
             let mut g = gen.borrow_mut();
             g.done = true;
             g.frame = None;
         }
-        self.pop(); // discard the exhausted generator (the ForIter operand)
-        self.top().pc = target;
-        Step::Next
+        match driver {
+            GenDriver::ForLoop(target) => {
+                self.pop(); // discard the exhausted generator (the ForIter operand)
+                self.top().pc = target;
+            }
+            GenDriver::Materialize => {
+                // This argument is fully drained: swap the list in and move on to
+                // the next generator argument, or retry the call.
+                let job = self.mat_jobs.last_mut().expect("materialise job");
+                let items = std::mem::take(&mut job.items);
+                let idx = job.idx;
+                job.args[idx] = Value::List(Rc::new(RefCell::new(items)));
+                self.drive_materialize()?;
+            }
+        }
+        Ok(Step::Next)
+    }
+
+    fn job_depths(&self) -> JobDepths {
+        JobDepths {
+            prints: self.prints.len(),
+            str_jobs: self.str_jobs.len(),
+            sort_jobs: self.sort_jobs.len(),
+            seq_jobs: self.seq_jobs.len(),
+            mat_jobs: self.mat_jobs.len(),
+        }
+    }
+
+    /// Discard jobs started inside a block that an exception is unwinding out
+    /// of. Their driver frames are gone, so nothing will ever complete them.
+    fn truncate_jobs(&mut self, d: JobDepths) {
+        self.prints.truncate(d.prints);
+        self.str_jobs.truncate(d.str_jobs);
+        self.sort_jobs.truncate(d.sort_jobs);
+        self.seq_jobs.truncate(d.seq_jobs);
+        self.mat_jobs.truncate(d.mat_jobs);
     }
 
     /// Unwind `exc` through the block and frame stacks. On success (a handler or
@@ -1688,6 +2397,10 @@ impl Vm {
             let block = self.frames.last_mut().and_then(|f| f.blocks.pop());
             match block {
                 Some(b) => {
+                    // Jobs started inside this block can never be completed now
+                    // that the exception has blown past their drivers, so they
+                    // are dropped along with the operand stack they belonged to.
+                    self.truncate_jobs(b.jobs);
                     let frame = self.frames.last_mut().unwrap();
                     frame.stack.truncate(b.stack_len);
                     match b.kind {
@@ -2117,6 +2830,11 @@ fn get_attr(obj: &Value, name: &str) -> Result<Value, String> {
             }
             match Class::find(&inst.class, name) {
                 Some((member, defclass)) => Ok(bind_member(member, obj.clone(), defclass)),
+                // The conversion methods exist on every value, instances
+                // included — `to_str` runs the class's `__str__` if it has one.
+                None if crate::builtins::is_cast_method(name) => Ok(Value::Method(Rc::new(
+                    BoundMethod { receiver: obj.clone(), kind: MethodKind::Native(Rc::from(name)) },
+                ))),
                 None => Err(format!("'{}' object has no attribute '{}'", inst.class.name, name)),
             }
         }
@@ -2170,44 +2888,86 @@ enum RunError {
     Timeout,
 }
 
-/// Run a command to completion, optionally with a timeout. Without a timeout,
-/// `Command::output` handles pipe draining and waiting. With one, the child is
-/// spawned, its pipes drained on threads, and it is killed if the deadline
-/// passes.
-fn run_process(mut cmd: std::process::Command, timeout: Option<f64>) -> Result<std::process::Output, RunError> {
-    let Some(secs) = timeout else {
-        return cmd.output().map_err(RunError::Io);
-    };
-    use std::io::Read;
-    let mut child = cmd.spawn().map_err(RunError::Io)?;
-    let mut out_pipe = child.stdout.take();
-    let mut err_pipe = child.stderr.take();
-    let out_handle = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(p) = out_pipe.as_mut() {
-            let _ = p.read_to_end(&mut buf);
-        }
-        buf
-    });
-    let err_handle = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(p) = err_pipe.as_mut() {
-            let _ = p.read_to_end(&mut buf);
-        }
-        buf
-    });
+/// How much of a child's output `proc.run` keeps. Capture is no longer optional
+/// (it comes with streaming), so an unbounded buffer would turn a chatty child
+/// into an out-of-memory kill. Past this the stream still flows to the terminal
+/// in full and only the retained copy stops growing, with `.truncated` on the
+/// result saying so.
+const MAX_CAPTURE_BYTES: usize = 64 * 1024 * 1024;
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(secs);
-    let status = loop {
-        match child.try_wait().map_err(RunError::Io)? {
-            Some(s) => break s,
-            None => {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(RunError::Timeout);
+/// Read a child pipe to EOF, optionally teeing every chunk onward to one of our
+/// own streams as it arrives, and return everything that was read.
+///
+/// Teeing while accumulating is what lets `proc.run` be live *and* capturing at
+/// once. Both pipes are drained on their own threads, which is also what keeps a
+/// child that fills one of them from deadlocking against a parent reading the
+/// other.
+fn drain_pipe<R, W>(mut pipe: Option<R>, mut sink: Option<W>) -> std::thread::JoinHandle<Vec<u8>>
+where
+    R: std::io::Read + Send + 'static,
+    W: std::io::Write + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let mut collected = Vec::new();
+        let Some(p) = pipe.as_mut() else { return collected };
+        let mut buf = [0u8; 8192];
+        loop {
+            match p.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if let Some(w) = sink.as_mut() {
+                        // A failed passthrough (closed terminal, EPIPE) must not
+                        // lose the capture, so the error is deliberately dropped.
+                        let _ = w.write_all(&buf[..n]);
+                        let _ = w.flush();
+                    }
+                    // Keep draining after the cap — the pipe must not fill, or
+                    // the child blocks forever — but stop retaining.
+                    if collected.len() < MAX_CAPTURE_BYTES {
+                        let room = MAX_CAPTURE_BYTES - collected.len();
+                        collected.extend_from_slice(&buf[..n.min(room)]);
+                    }
                 }
-                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        collected
+    })
+}
+
+/// Run a command to completion, optionally with a timeout. `stream` tees the
+/// child's stdout/stderr onto ours as they arrive; the output is captured either
+/// way.
+fn run_process(
+    mut cmd: std::process::Command,
+    timeout: Option<f64>,
+    stream: bool,
+) -> Result<std::process::Output, RunError> {
+    let mut child = cmd.spawn().map_err(RunError::Io)?;
+    let out_handle = drain_pipe(
+        child.stdout.take(),
+        if stream { Some(std::io::stdout()) } else { None },
+    );
+    let err_handle = drain_pipe(
+        child.stderr.take(),
+        if stream { Some(std::io::stderr()) } else { None },
+    );
+
+    let status = match timeout {
+        None => child.wait().map_err(RunError::Io)?,
+        Some(secs) => {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(secs);
+            loop {
+                match child.try_wait().map_err(RunError::Io)? {
+                    Some(s) => break s,
+                    None => {
+                        if std::time::Instant::now() >= deadline {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            return Err(RunError::Timeout);
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                }
             }
         }
     };
@@ -2229,7 +2989,9 @@ fn compile_source(source: &str) -> Result<Rc<CodeObject>, String> {
 fn classify_error(msg: &str) -> &'static str {
     let m = msg;
     // Order matters: check the more specific substrings first.
-    if m.contains("No such file or directory") {
+    if m.starts_with("command failed:") {
+        "CommandError"
+    } else if m.contains("No such file or directory") {
         "FileNotFoundError"
     } else if m.contains("Permission denied") {
         "PermissionError"

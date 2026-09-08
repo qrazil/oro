@@ -1,0 +1,10 @@
+# print(sep=…, end=…).
+print("a", end="")
+print("b")
+print("x", "y", sep="-")
+print("p", "q", sep="", end="!\n")
+print()
+print("multi", "arg", sep=" | ", end=" <END>\n")
+print(1, 2, 3, sep=", ")
+print("trailing", end="\n\n")
+print("done")

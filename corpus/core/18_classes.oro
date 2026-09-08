@@ -4,7 +4,7 @@ class Point:
         self.y = y
 
     def __str__(self):
-        return "Point(" + str(self.x) + ", " + str(self.y) + ")"
+        return "Point(" + f"{self.x}" + ", " + f"{self.y}" + ")"
 
     def __eq__(self, other):
         return self.x == other.x and self.y == other.y
@@ -19,13 +19,13 @@ class Point3(Point):
         self.z = z
 
     def __str__(self):
-        return "Point3(" + str(self.x) + ", " + str(self.y) + ", " + str(self.z) + ")"
+        return "Point3(" + f"{self.x}" + ", " + f"{self.y}" + ", " + f"{self.z}" + ")"
 
 p = Point(1, 2)
-print(str(p))
-print(str(p.shift(3, 4)))
+print(f"{p}")
+print(f"{p.shift(3, 4)}")
 print(p == Point(1, 2))
 print(p == Point(9, 9))
 q = Point3(1, 2, 3)
-print(str(q))
-print(str(q.shift(1, 1)))
+print(f"{q}")
+print(f"{q.shift(1, 1)}")

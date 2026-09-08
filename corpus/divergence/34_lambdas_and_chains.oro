@@ -1,0 +1,53 @@
+# DIVERGENCE: `=>` lambdas and the `.map`/`.filter` chain are Oro-only spellings,
+# so CPython cannot run this. Reviewed by hand.
+#
+# map/filter are type-preserving: a list stays a list, a tuple a tuple, a dict a
+# dict. That is what lets a chain be read without tracking what shape the data
+# has turned into.
+
+# lambda forms
+double = x => x * 2
+add = (a, b) => a + b
+answer = () => 42
+print(double(21), add(2, 3), answer())
+
+# body precedence: through a full expression, but stopping at a comma
+print([1, 2, 3].map(x => x * 2 + 1))
+pair = (x => x + 1, 9)
+print(pair[0](3), pair[1])
+
+# curried, and immediately invoked
+adder = a => b => a + b
+print(adder(3)(4), (x => x * x)(5))
+
+# chains stay flat past three steps, and read in the order they run
+xs = [1, 2, 3, 4, 5, 6]
+print(xs.filter(x => x > 1).map(x => x * x).filter(x => x < 30).map(x => x.to_str()))
+
+# type preserved
+print((1, 2, 3).map(x => x * 2))
+print((1, 2, 3).filter(x => x > 1))
+print({"a": 1, "b": 2, "c": 3}.filter((k, v) => v > 1))
+print({"a": 1, "b": 2}.map((k, v) => (k.upper(), v * 10)))
+
+# range and generators have no literal to rebuild, so they yield a list
+print(range(5).map(x => x * x))
+
+def nums(n):
+    i = 0
+    while i < n:
+        yield i
+        i = i + 1
+
+print(nums(10).filter(x => x % 3 == 0))
+print(sum(nums(100)))
+
+# a named function works as a callback too
+def triple(n):
+    return n * 3
+
+print(xs.map(triple))
+
+# closures capture by read
+factor = 10
+print(xs.map(x => x * factor))

@@ -43,6 +43,10 @@ fn parse_err(src: &str) -> ParseError {
 /// assertions.
 fn sexp(e: &Expr) -> String {
     match e {
+        Expr::Lambda { data, .. } => {
+            let ps: Vec<String> = data.params.iter().map(|p| p.name.clone()).collect();
+            format!("(lambda ({}) {})", ps.join(" "), sexp(&data.body))
+        }
         Expr::Int { value, .. } => value.clone(),
         Expr::Float { value, .. } => value.clone(),
         Expr::Str { value, .. } => format!("\"{value}\""),
@@ -911,7 +915,7 @@ fn cut_multiple_inheritance() {
 
 #[test]
 fn cut_lambda() {
-    assert_cut("f = lambda x: x", "lambda expressions are not supported");
+    assert_cut("f = lambda x: x", "Oro spells a lambda");
 }
 
 #[test]
@@ -1162,4 +1166,34 @@ fn reject_from_import() {
 fn reject_import_star() {
     let e = parse_err("import os.*\n");
     assert!(e.message.contains("import *"), "got: {}", e.message);
+}
+
+#[test]
+fn lambda_body_precedence() {
+    // The body extends through a full expression...
+    assert_eq!(sexp(&parse_expr("x => x * 2 + 1")), "(lambda (x) (+ (* x 2) 1))");
+    // ...but stops at a comma, so a lambda in an argument list or a tuple does
+    // not swallow what follows it.
+    assert_eq!(
+        sexp(&parse_expr("(x => x + 1, 9)")),
+        "(tuple (lambda (x) (+ x 1)) 9)"
+    );
+    // Lambdas curry right-associatively.
+    assert_eq!(sexp(&parse_expr("a => b => a + b")), "(lambda (a) (lambda (b) (+ a b)))");
+}
+
+#[test]
+fn lambda_forms_parse() {
+    assert_eq!(sexp(&parse_expr("x => x * 2")), "(lambda (x) (* x 2))");
+    assert_eq!(sexp(&parse_expr("(a, b) => a + b")), "(lambda (a b) (+ a b))");
+    assert_eq!(sexp(&parse_expr("() => 1")), "(lambda () 1)");
+    // The body extends as far as it can, so a lambda in an argument list ends
+    // at the comma rather than swallowing the rest of the call.
+    assert_eq!(sexp(&parse_expr("f => f")), "(lambda (f) f)");
+}
+
+#[test]
+fn lambda_rejects_non_name_params() {
+    let e = parse_err("f = 1 => 2\n");
+    assert!(e.message.contains("parameter name"), "got: {}", e.message);
 }

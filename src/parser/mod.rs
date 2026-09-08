@@ -271,9 +271,10 @@ impl Parser {
         };
         // A bare multi-segment import would bind the last segment (Go-style),
         // which is NOT what Python does — Python binds the first. Requiring `as`
-        // makes the binding explicit and keeps `import a.b.c as c` meaning the
-        // same in both, so the "every Oro program is valid Python" invariant
-        // has no exceptions.
+        // makes the binding explicit, so `import a.b.c as c` means the same
+        // thing to both readers and to CPython. Oro no longer promises full
+        // semantic parity, but a silently *different* binding for identical
+        // syntax is still the worst of both worlds.
         if path.len() > 1 && alias.is_none() {
             return Err(self.error(format!(
                 "a multi-segment import must use `as` to name the binding: write \
@@ -820,6 +821,31 @@ impl Parser {
     fn parse_expr(&mut self, min_bp: u8) -> PResult<Expr> {
         let mut left = self.parse_prefix(min_bp)?;
 
+        // `x => body` / `(a, b) => body`. The parameter list is only recognised
+        // as one once `=>` is seen, so it arrives here already parsed as an
+        // expression and is converted back. This keeps the atom grammar
+        // unchanged and needs no lookahead.
+        if matches!(self.cur_kind(), TokenKind::FatArrow) {
+            let (line, col) = left.pos();
+            self.advance();
+            let params = lambda_params(&left).ok_or_else(|| {
+                self.error(
+                    "the left of `=>` must be a parameter name or a parenthesised list of them, \
+                     e.g. `x => x * 2` or `(a, b) => a + b`",
+                )
+            })?;
+            let body = self.parse_expr(min_bp)?;
+            return Ok(Expr::Lambda {
+                data: Box::new(crate::ast::LambdaData {
+                    params,
+                    body: Box::new(body),
+                    scope: std::cell::Cell::new(usize::MAX),
+                }),
+                line,
+                col,
+            });
+        }
+
         loop {
             // Comparison operators chain, so they are handled as a group rather
             // than as ordinary left-associative infix operators.
@@ -1302,6 +1328,31 @@ fn build_infix(op: &TokenKind, left: Expr, right: Expr, line: usize, col: usize)
     }
 }
 
+/// Reinterpret an already-parsed expression as a lambda parameter list. Only
+/// plain names are accepted — no defaults, annotations, or `*args`; a lambda
+/// that needs those is a `def`.
+fn lambda_params(left: &Expr) -> Option<Vec<crate::ast::Param>> {
+    fn one(e: &Expr) -> Option<crate::ast::Param> {
+        match e {
+            Expr::Name { name, line, col } => Some(crate::ast::Param {
+                name: name.clone(),
+                annotation: None,
+                default: None,
+                kind: crate::ast::ParamKind::Normal,
+                line: *line,
+                col: *col,
+            }),
+            _ => None,
+        }
+    }
+    match left {
+        Expr::Name { .. } => one(left).map(|p| vec![p]),
+        // `()` parses as an empty tuple, `(a, b)` as a tuple: both are lists.
+        Expr::Tuple { elements, .. } => elements.iter().map(one).collect(),
+        _ => None,
+    }
+}
+
 /// If `name` is an identifier standing in for a deliberately cut feature, return
 /// the specific diagnostic explaining the design decision.
 fn cut_keyword_message(name: &str) -> Option<String> {
@@ -1310,7 +1361,7 @@ fn cut_keyword_message(name: &str) -> Option<String> {
             "the `with` statement is not supported in Oro — files close automatically at end of block"
         }
         "from" => "`from X import Y` is not supported in Oro — use `import X`",
-        "lambda" => "lambda expressions are not supported in Oro — use a `def` function",
+        "lambda" => "Oro spells a lambda `x => x * 2` (or `(a, b) => a + b`); the `lambda` keyword is not used",
         "global" => "the `global` statement is not supported in Oro",
         "nonlocal" => "the `nonlocal` statement is not supported in Oro",
         "async" | "await" => "async/await is not supported in Oro",
@@ -1355,6 +1406,7 @@ fn describe(kind: &TokenKind) -> String {
         Or => "keyword `or`".to_string(),
         Not => "keyword `not`".to_string(),
         Is => "keyword `is`".to_string(),
+        FatArrow => "`=>`".to_string(),
         Pass => "keyword `pass`".to_string(),
         Plus => "`+`".to_string(),
         Minus => "`-`".to_string(),

@@ -1,16 +1,30 @@
 # INTENTIONAL DIVERGENCE.
 # Oro has no `with`. Refcounting plus block scope closes the file at the
 # end of the block. Returning a file keeps it alive via the refcount.
+#
+# Self-contained: the sample is written first, so the test does not depend on
+# the working directory it is run from.
+import os
 
-def read_it(path):
-    f = open(path)
+path = os.path.join(os.environ.get("TMPDIR", "/tmp"), "oro_file_scope_sample.txt")
+w = open(path, "w")
+w.write("hello\nworld\n")
+w.close()
+
+
+def read_it(p):
+    f = open(p)
     text = f.read()
     return text
 
-def hand_back(path):
-    f = open(path)
+
+def hand_back(p):
+    f = open(p)
     return f
 
-print(len(read_it("sample.txt")) > 0)
-h = hand_back("sample.txt")
+
+print(len(read_it(path)) > 0)
+h = hand_back(path)
 print(len(h.read()) >= 0)
+os.remove(path)
+print("cleaned up:", os.path.exists(path) == False)

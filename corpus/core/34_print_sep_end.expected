@@ -1,0 +1,9 @@
+ab
+x-y
+pq!
+
+multi | arg <END>
+1, 2, 3
+trailing
+
+done

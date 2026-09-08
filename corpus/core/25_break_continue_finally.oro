@@ -9,7 +9,7 @@ def break_runs_finally():
                 break
             log.append(i)
         finally:
-            log.append("f" + str(i))
+            log.append("f" + f"{i}")
     return log
 
 print(break_runs_finally())
@@ -22,7 +22,7 @@ def continue_runs_finally():
                 continue
             log.append(i)
         finally:
-            log.append("c" + str(i))
+            log.append("c" + f"{i}")
     return log
 
 print(continue_runs_finally())
@@ -35,11 +35,11 @@ def nested():
             try:
                 if i == 1:
                     break
-                log.append("body" + str(i))
+                log.append("body" + f"{i}")
             finally:
-                log.append("inner" + str(i))
+                log.append("inner" + f"{i}")
         finally:
-            log.append("outer" + str(i))
+            log.append("outer" + f"{i}")
     return log
 
 print(nested())
@@ -70,7 +70,7 @@ def while_continue():
                 continue
             log.append(n)
         finally:
-            log.append("done" + str(n))
+            log.append("done" + f"{n}")
     return log
 
 print(while_continue())

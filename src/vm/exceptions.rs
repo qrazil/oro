@@ -34,6 +34,7 @@ pub fn build_registry() -> HashMap<&'static str, Rc<Class>> {
         ("RuntimeError", Some("Exception")),
         ("NotImplementedError", Some("RuntimeError")),
         ("StopIteration", Some("Exception")),
+        ("CommandError", Some("Exception")),
         ("OSError", Some("Exception")),
         ("FileNotFoundError", Some("OSError")),
         ("PermissionError", Some("OSError")),

@@ -1,0 +1,15 @@
+# DIVERGENCE: `list(x)`/`dict(x)` are spelled `x.to_list()`/`x.to_dict()`, so
+# this cannot be oracled against CPython. Reviewed by hand.
+print([], range(3).to_list(), "abc".to_list())
+print({}, [("a", 1), ("b", 2)].to_dict())
+print(enumerate(["a", "b"]))
+print(enumerate(["a", "b"], 1))
+print(zip([1, 2, 3], [4, 5]))
+print(zip([], [1]))
+print(any([False, True]), any([]), all([True, True]), all([True, False]), all([]))
+print("ff".to_int(16), "0x1f".to_int(16), "777".to_int(8), "1010".to_int(2))
+print("-ff".to_int(16), "+10".to_int(10), "1_0".to_int(10), "z".to_int(36))
+for i, x in enumerate(["p", "q"]):
+    print(i, x)
+for a, b in zip([1, 2], ["x", "y"]):
+    print(a, b)

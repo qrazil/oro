@@ -10,7 +10,7 @@ def describe(name, *tags, **opts):
         parts.append(t)
     keys = sorted(opts.keys())
     for k in keys:
-        parts.append(k + "=" + str(opts[k]))
+        parts.append(k + "=" + f"{opts[k]}")
     return " ".join(parts)
 
 def forward(*args, **kwargs):

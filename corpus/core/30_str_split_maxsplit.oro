@@ -1,0 +1,13 @@
+# str.split/rsplit honour maxsplit; zfill pads (keeping any sign in front).
+print("a=b=c".split("=", 1))
+print("a=b=c".rsplit("=", 1))
+print("a=b=c".split("="))
+print("a=b=c".rsplit("="))
+print("a b c".split(" ", 2))
+print("x:y".split(":", 0))
+print("x:y".rsplit(":", 0))
+print(" a  b  c ".split(None, 1))
+print(" a  b  c ".rsplit(None, 1))
+print(" a  b  c ".split(None))
+print("one".split(",", 5))
+print("7".zfill(3), "-7".zfill(4), "+7".zfill(4), "12345".zfill(3), "".zfill(2))

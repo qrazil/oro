@@ -1,0 +1,9 @@
+# round() is ties-to-even and correctly rounded; float repr uses exponent form
+# outside 1e-4 .. 1e16, exactly as CPython does.
+print(round(1.567, 2), round(2.675, 2), round(-2.675, 2), round(1.005, 2))
+print(round(0.5), round(1.5), round(2.5), round(-0.5), round(-1.5))
+print(round(7), round(3.14159, 4), round(0.125, 2))
+print(round(1234.5678, -2), round(1250, -2), round(1350, -2))
+print(1e16, 1e17, 1e100)
+print(0.0001, 0.00001, 1.5e-7)
+print(1e15, 0.1 + 0.2, 1.0, -0.0)

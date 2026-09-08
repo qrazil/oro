@@ -169,6 +169,7 @@ pub struct BoundMethod {
     pub kind: MethodKind,
 }
 
+#[derive(Clone)]
 pub enum MethodKind {
     /// A builtin method, dispatched by name.
     Native(Rc<str>),
@@ -709,7 +710,23 @@ fn format_float(f: f64) -> String {
     if f.is_infinite() {
         return if f < 0.0 { "-inf" } else { "inf" }.to_string();
     }
-    if f.fract() == 0.0 && f.abs() < 1e16 {
+    if f == 0.0 {
+        // Preserves the sign of negative zero, as CPython's repr does.
+        return format!("{f:.1}");
+    }
+    // CPython switches to exponent form when the decimal exponent is < -4 or
+    // >= 16; Rust's `{}` never does, so drive the choice off `{:e}`, which
+    // already gives the shortest round-tripping digits.
+    let sci = format!("{f:e}");
+    let (mantissa, exp) = match sci.split_once('e') {
+        Some((m, e)) => (m, e.parse::<i32>().unwrap_or(0)),
+        None => (sci.as_str(), 0),
+    };
+    if !(-4..16).contains(&exp) {
+        let sign = if exp < 0 { '-' } else { '+' };
+        return format!("{mantissa}e{sign}{:02}", exp.abs());
+    }
+    if f.fract() == 0.0 {
         format!("{f:.1}")
     } else {
         format!("{f}")

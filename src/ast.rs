@@ -124,6 +124,19 @@ pub struct Param {
     pub col: usize,
 }
 
+/// A lambda: `x => expr`, `(a, b) => expr`, `() => expr`. The body is a single
+/// expression — a lambda that needs statements is a `def`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LambdaData {
+    pub params: Vec<Param>,
+    pub body: Box<Expr>,
+    /// Scope id assigned by the symbol pass and read back by the resolve pass
+    /// and codegen. Lambdas are *not* added to their parent's `children`, so the
+    /// cursor that walks `def`/block scopes in source order is unaffected — this
+    /// id is how a lambda finds its scope instead.
+    pub scope: std::cell::Cell<usize>,
+}
+
 /// A single positional-side argument at a call site. Keyword-side arguments are
 /// [`Kwarg`]. Kept as an ordered list so unpacking position is preserved
 /// (`f(a, *b, c)` differs from `f(a, c, *b)`).
@@ -311,6 +324,8 @@ pub enum Expr {
     Bool { value: bool, line: usize, col: usize },
     /// `None`.
     NoneLit { line: usize, col: usize },
+    /// `x => expr` — an anonymous single-expression function.
+    Lambda { data: Box<LambdaData>, line: usize, col: usize },
     /// A bare identifier used as a value.
     Name { name: String, line: usize, col: usize },
     /// A unary prefix operation.
@@ -398,6 +413,7 @@ impl Expr {
             | Expr::FString { line, col, .. }
             | Expr::Bool { line, col, .. }
             | Expr::NoneLit { line, col, .. }
+            | Expr::Lambda { line, col, .. }
             | Expr::Name { line, col, .. }
             | Expr::Unary { line, col, .. }
             | Expr::Binary { line, col, .. }

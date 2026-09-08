@@ -64,6 +64,7 @@ pub enum TokenKind {
     StarEq,      // *=
     SlashEq,     // /=
     EqEq,        // ==
+    FatArrow,    // => (lambda)
     NotEq,       // !=
     Lt,          // <
     Gt,          // >

@@ -16,7 +16,7 @@ pub fn build(name: &str, argv: &[String]) -> Option<Value> {
         "os" => Some(build_os()),
         "time" => Some(build_time()),
         "re" => Some(build_re()),
-        "subprocess" => Some(build_subprocess()),
+        "proc" => Some(build_proc()),
         _ => None,
     }
 }
@@ -203,16 +203,16 @@ fn re_match(_args: Vec<Value>) -> Result<Value, String> {
         .to_string())
 }
 
-// --- subprocess --------------------------------------------------------------
+// --- proc ---------------------------------------------------------------------
 
-fn build_subprocess() -> Value {
-    // `run` is finished in the VM (it accepts cwd/env/timeout keyword args and
-    // builds a CompletedProcess); this stub is never invoked directly.
-    module("subprocess", vec![("run", builtin("subprocess.run", subprocess_run_stub))])
+fn build_proc() -> Value {
+    // `run` is finished in the VM (it takes keyword args and builds a Completed);
+    // this stub is never invoked directly.
+    module("proc", vec![("run", builtin("proc.run", proc_run_stub))])
 }
 
-fn subprocess_run_stub(_args: Vec<Value>) -> Result<Value, String> {
-    Err("internal: subprocess.run must be dispatched by the VM".to_string())
+fn proc_run_stub(_args: Vec<Value>) -> Result<Value, String> {
+    Err("internal: proc.run must be dispatched by the VM".to_string())
 }
 
 // --- sys ---------------------------------------------------------------------

@@ -1,0 +1,1 @@
+divergence/30_block_scope.oro:9:7: NameError: name 'leaked' is not defined
