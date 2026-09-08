@@ -1,0 +1,383 @@
+# json.oro — a JSON encoder/decoder, written entirely in Oro on top of the
+# frozen core. This is what the README asks the standard library to look
+# like: a module shipped as Oro source baked into the binary, not a Rust
+# builtin.
+#
+# API
+# ---
+#   json.parse(text)                   -> dict | list | str | int | float | bool | None
+#   json.stringify(value, indent=None) -> str
+#
+# `stringify` takes one optional `indent` rather than shipping a second
+# `stringify_pretty` (or `dumps`/`dumps_pretty`) function: pretty-printing is
+# a formatting *detail* of the single operation "turn a value into JSON
+# text", not a second operation, the same way `sorted(key=, reverse=)` stays
+# one function instead of growing a `sorted_by`. `indent=None` (the default)
+# is the compact form — no incidental whitespace at all, not even the
+# `", "`/`": "` CPython's `json.dumps()` inserts by default — because
+# "compact" was asked for directly and a genuinely minimal wire format is a
+# real, distinct use case from CPython's default. Passing an int number of
+# spaces switches to one-value-per-line pretty output. That covers both real
+# needs (wire format, readable output) with one name.
+#
+# Numbers: any literal containing `.`, `e`, or `E` decodes to a float;
+# everything else decodes to an int (arbitrary precision, exactly like the
+# rest of Oro — `to_int()` promotes to bignum on overflow). Malformed input
+# raises ValueError naming the character offset, e.g.
+# `unexpected '}' at position 14`.
+#
+# Dict keys: `stringify` requires str keys and raises TypeError otherwise,
+# rather than silently stringifying an int/bool/float key the way CPython's
+# `json.dumps` does — guessing a conversion is exactly the kind of second
+# spelling the language avoids elsewhere (see the `to_` casts).
+
+# --- shared escape / codepoint tables ------------------------------------
+# Oro has no `chr`/`ord` builtins. The `{n:c}` int->char format spec (used by
+# f-strings) already exists, so codepoint -> single-char string goes through
+# that; this table then gives the inverse (char -> its codepoint, as a
+# lookup) for the 32 C0 control characters JSON cares about — enough for
+# both directions without ever needing a real `ord`.
+
+_BACKSPACE = f"{8:c}"
+_FORMFEED = f"{12:c}"
+
+_NAMED_ESCAPES = {
+    "\"": "\\\"",
+    "\\": "\\\\",
+    "\n": "\\n",
+    "\r": "\\r",
+    "\t": "\\t",
+    _BACKSPACE: "\\b",
+    _FORMFEED: "\\f",
+}
+
+_SIMPLE_UNESCAPES = {
+    "\"": "\"",
+    "\\": "\\",
+    "/": "/",
+    "b": _BACKSPACE,
+    "f": _FORMFEED,
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+}
+
+# char -> its zero-padded 4-digit lowercase hex codepoint, for the 32 C0
+# control characters (0..31). Doubles as the "is this an unescaped control
+# character" test during parsing.
+_CONTROL_HEX = {}
+_cc = 0
+while _cc < 32:
+    _CONTROL_HEX[f"{_cc:c}"] = f"{_cc:04x}"
+    _cc = _cc + 1
+
+_DIGITS = "0123456789"
+_HEX_DIGITS = "0123456789abcdefABCDEF"
+_WHITESPACE = " \t\n\r"
+
+# UTF-16 surrogate range boundaries (decimal, since Oro has no hex literals):
+# 0xD800, 0xDBFF, 0xDC00, 0xDFFF, 0x10000, 0x400.
+_SURR_HIGH_LO = 55296
+_SURR_HIGH_HI = 56319
+_SURR_LOW_LO = 56320
+_SURR_LOW_HI = 57343
+_SURR_BASE = 65536
+_SURR_SHIFT = 1024
+
+_INF = "inf".to_float()
+_NEG_INF = "-inf".to_float()
+
+# --- parsing --------------------------------------------------------------
+# A class holding `text`/`pos` is the natural shape here: Oro cannot rebind a
+# captured variable from a nested function, so a set of free functions
+# threading `pos` through return values would be far messier than mutating
+# `self.pos` from methods.
+
+class _Parser:
+    def __init__(self, text):
+        self.text = text
+        self.pos = 0
+        self.len = len(text)
+
+    def fail(self, msg):
+        raise ValueError(f"{msg} at position {self.pos}")
+
+    def skip_ws(self):
+        while self.pos < self.len and self.text[self.pos] in _WHITESPACE:
+            self.pos = self.pos + 1
+
+    def peek(self):
+        if self.pos >= self.len:
+            self.fail("unexpected end of input")
+        return self.text[self.pos]
+
+    def parse_value(self):
+        self.skip_ws()
+        c = self.peek()
+        if c == "{":
+            return self.parse_object()
+        if c == "[":
+            return self.parse_array()
+        if c == "\"":
+            return self.parse_string()
+        if c == "-" or c in _DIGITS:
+            return self.parse_number()
+        if self.text[self.pos:self.pos + 4] == "true":
+            self.pos = self.pos + 4
+            return True
+        if self.text[self.pos:self.pos + 5] == "false":
+            self.pos = self.pos + 5
+            return False
+        if self.text[self.pos:self.pos + 4] == "null":
+            self.pos = self.pos + 4
+            return None
+        self.fail(f"unexpected '{c}'")
+
+    def parse_object(self):
+        self.pos = self.pos + 1
+        result = {}
+        self.skip_ws()
+        if self.pos < self.len and self.text[self.pos] == "}":
+            self.pos = self.pos + 1
+            return result
+        while True:
+            self.skip_ws()
+            if self.pos >= self.len or self.text[self.pos] != "\"":
+                self.fail("expected a string key")
+            key = self.parse_string()
+            self.skip_ws()
+            if self.pos >= self.len or self.text[self.pos] != ":":
+                self.fail("expected ':'")
+            self.pos = self.pos + 1
+            self.skip_ws()
+            result[key] = self.parse_value()
+            self.skip_ws()
+            if self.pos >= self.len:
+                self.fail("unterminated object")
+            c = self.text[self.pos]
+            if c == ",":
+                self.pos = self.pos + 1
+            elif c == "}":
+                self.pos = self.pos + 1
+                return result
+            else:
+                self.fail(f"unexpected '{c}'")
+
+    def parse_array(self):
+        self.pos = self.pos + 1
+        result = []
+        self.skip_ws()
+        if self.pos < self.len and self.text[self.pos] == "]":
+            self.pos = self.pos + 1
+            return result
+        while True:
+            self.skip_ws()
+            result.append(self.parse_value())
+            self.skip_ws()
+            if self.pos >= self.len:
+                self.fail("unterminated array")
+            c = self.text[self.pos]
+            if c == ",":
+                self.pos = self.pos + 1
+            elif c == "]":
+                self.pos = self.pos + 1
+                return result
+            else:
+                self.fail(f"unexpected '{c}'")
+
+    def parse_string(self):
+        self.pos = self.pos + 1
+        out = []
+        while True:
+            if self.pos >= self.len:
+                self.fail("unterminated string")
+            c = self.text[self.pos]
+            if c == "\"":
+                self.pos = self.pos + 1
+                return out.join("")
+            elif c == "\\":
+                out.append(self.parse_escape())
+            elif c in _CONTROL_HEX:
+                self.fail("invalid control character in string")
+            else:
+                out.append(c)
+                self.pos = self.pos + 1
+
+    def parse_escape(self):
+        self.pos = self.pos + 1
+        if self.pos >= self.len:
+            self.fail("unterminated escape")
+        e = self.text[self.pos]
+        if e == "u":
+            return self.parse_unicode_escape()
+        simple = _SIMPLE_UNESCAPES.get(e)
+        if simple == None:
+            self.fail(f"invalid escape '\\{e}'")
+        self.pos = self.pos + 1
+        return simple
+
+    def read_hex4(self):
+        self.pos = self.pos + 1
+        if self.pos + 4 > self.len:
+            self.fail("incomplete \\u escape")
+        digits = self.text[self.pos:self.pos + 4]
+        for ch in digits:
+            if ch not in _HEX_DIGITS:
+                self.fail(f"invalid \\u escape '{digits}'")
+        self.pos = self.pos + 4
+        return digits.to_int(16)
+
+    def parse_unicode_escape(self):
+        cp = self.read_hex4()
+        if cp >= _SURR_HIGH_LO and cp <= _SURR_HIGH_HI:
+            if self.pos + 1 < self.len and self.text[self.pos] == "\\" and self.text[self.pos + 1] == "u":
+                save = self.pos
+                self.pos = self.pos + 1
+                low = self.read_hex4()
+                if low >= _SURR_LOW_LO and low <= _SURR_LOW_HI:
+                    combined = _SURR_BASE + (cp - _SURR_HIGH_LO) * _SURR_SHIFT + (low - _SURR_LOW_LO)
+                    return f"{combined:c}"
+                self.pos = save
+            self.fail("unpaired UTF-16 surrogate in \\u escape")
+        if cp >= _SURR_LOW_LO and cp <= _SURR_LOW_HI:
+            self.fail("unpaired UTF-16 surrogate in \\u escape")
+        return f"{cp:c}"
+
+    def parse_number(self):
+        start = self.pos
+        if self.text[self.pos] == "-":
+            self.pos = self.pos + 1
+        if self.pos >= self.len or self.text[self.pos] not in _DIGITS:
+            self.fail("invalid number")
+        if self.text[self.pos] == "0":
+            self.pos = self.pos + 1
+            if self.pos < self.len and self.text[self.pos] in _DIGITS:
+                self.fail("invalid number: a leading zero cannot be followed by more digits")
+        else:
+            while self.pos < self.len and self.text[self.pos] in _DIGITS:
+                self.pos = self.pos + 1
+        is_float = False
+        if self.pos < self.len and self.text[self.pos] == ".":
+            is_float = True
+            self.pos = self.pos + 1
+            if self.pos >= self.len or self.text[self.pos] not in _DIGITS:
+                self.fail("invalid number: expected a digit after '.'")
+            while self.pos < self.len and self.text[self.pos] in _DIGITS:
+                self.pos = self.pos + 1
+        if self.pos < self.len and (self.text[self.pos] == "e" or self.text[self.pos] == "E"):
+            is_float = True
+            self.pos = self.pos + 1
+            if self.pos < self.len and (self.text[self.pos] == "+" or self.text[self.pos] == "-"):
+                self.pos = self.pos + 1
+            if self.pos >= self.len or self.text[self.pos] not in _DIGITS:
+                self.fail("invalid number: expected a digit in the exponent")
+            while self.pos < self.len and self.text[self.pos] in _DIGITS:
+                self.pos = self.pos + 1
+        literal = self.text[start:self.pos]
+        if is_float:
+            return literal.to_float()
+        return literal.to_int()
+
+
+def parse(text):
+    p = _Parser(text)
+    p.skip_ws()
+    value = p.parse_value()
+    p.skip_ws()
+    if p.pos < p.len:
+        p.fail(f"unexpected '{p.text[p.pos]}'")
+    return value
+
+
+# --- stringify --------------------------------------------------------
+
+def stringify(value, indent=None):
+    return _stringify_value(value, indent, 0)
+
+
+def _bool_word(v):
+    if v:
+        return "true"
+    return "false"
+
+
+def _colon_sep(indent):
+    if indent == None:
+        return ":"
+    return ": "
+
+
+def _escape_string(s):
+    out = ["\""]
+    i = 0
+    n = len(s)
+    while i < n:
+        c = s[i]
+        esc = _NAMED_ESCAPES.get(c)
+        if esc != None:
+            out.append(esc)
+        else:
+            hexcode = _CONTROL_HEX.get(c)
+            if hexcode != None:
+                out.append(f"\u{hexcode}")
+            else:
+                out.append(c)
+        i = i + 1
+    out.append("\"")
+    return out.join("")
+
+
+def _stringify_float(x):
+    if x != x:
+        raise ValueError("nan is not JSON serializable")
+    if x == _INF or x == _NEG_INF:
+        raise ValueError("Infinity is not JSON serializable")
+    return f"{x}"
+
+
+def _wrap(open_ch, close_ch, parts, indent, level):
+    if len(parts) == 0:
+        return open_ch + close_ch
+    if indent == None:
+        return open_ch + parts.join(",") + close_ch
+    pad_in = " " * (indent * (level + 1))
+    pad_out = " " * (indent * level)
+    return open_ch + "\n" + pad_in + parts.join(",\n" + pad_in) + "\n" + pad_out + close_ch
+
+
+def _stringify_array(xs, indent, level):
+    parts = xs.map(v => _stringify_value(v, indent, level + 1))
+    return _wrap("[", "]", parts, indent, level)
+
+
+def _stringify_entry(k, v, indent, level):
+    if type(k) != "<class 'str'>":
+        raise TypeError(f"keys must be str, not {type(k)}")
+    return _escape_string(k) + _colon_sep(indent) + _stringify_value(v, indent, level + 1)
+
+
+def _stringify_object(d, indent, level):
+    keys = d.keys()
+    if len(keys) == 0:
+        return "{}"
+    parts = keys.map(k => _stringify_entry(k, d[k], indent, level))
+    return _wrap("{", "}", parts, indent, level)
+
+
+def _stringify_value(v, indent, level):
+    t = type(v)
+    if t == "<class 'NoneType'>":
+        return "null"
+    if t == "<class 'bool'>":
+        return _bool_word(v)
+    if t == "<class 'int'>":
+        return f"{v}"
+    if t == "<class 'float'>":
+        return _stringify_float(v)
+    if t == "<class 'str'>":
+        return _escape_string(v)
+    if t == "<class 'list'>" or t == "<class 'tuple'>":
+        return _stringify_array(v, indent, level)
+    if t == "<class 'dict'>":
+        return _stringify_object(v, indent, level)
+    raise TypeError(f"object of type {t} is not JSON serializable")

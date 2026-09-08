@@ -10,6 +10,7 @@
 pub mod arith;
 mod exceptions;
 pub mod modules;
+mod stdlib;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -2371,27 +2372,34 @@ impl Vm {
             return Ok(Step::Raise(self.make_exception_instance(class, vec![msg])));
         }
 
-        // Resolve `a.b.c` to `<root>/a/b/c.oro`.
-        let mut file = self.import_root.clone();
-        for seg in path.split('.') {
-            file.push(seg);
-        }
-        file.set_extension("oro");
+        // Embedded stdlib modules (written in Oro, baked into the binary)
+        // resolve next; a same-named user file is never consulted, so a user
+        // file can never shadow a stdlib name.
+        let source = if let Some(src) = stdlib::source_for(path) {
+            src.to_string()
+        } else {
+            // Resolve `a.b.c` to `<root>/a/b/c.oro`.
+            let mut file = self.import_root.clone();
+            for seg in path.split('.') {
+                file.push(seg);
+            }
+            file.set_extension("oro");
 
-        let source = match std::fs::read_to_string(&file) {
-            Ok(s) => s,
-            Err(_) => {
-                let class = self.excs["ModuleNotFoundError"].clone();
-                let msg = Value::str(if path == "subprocess" {
-                    "No module named 'subprocess' — Oro's is called `proc`. It differs from \
-                     CPython's on purpose: proc.run() streams the child's output live *and* \
-                     captures it, and raises CommandError on a nonzero exit (pass check=False \
-                     to allow one)."
-                        .to_string()
-                } else {
-                    format!("No module named '{path}'")
-                });
-                return Ok(Step::Raise(self.make_exception_instance(class, vec![msg])));
+            match std::fs::read_to_string(&file) {
+                Ok(s) => s,
+                Err(_) => {
+                    let class = self.excs["ModuleNotFoundError"].clone();
+                    let msg = Value::str(if path == "subprocess" {
+                        "No module named 'subprocess' — Oro's is called `proc`. It differs from \
+                         CPython's on purpose: proc.run() streams the child's output live *and* \
+                         captures it, and raises CommandError on a nonzero exit (pass check=False \
+                         to allow one)."
+                            .to_string()
+                    } else {
+                        format!("No module named '{path}'")
+                    });
+                    return Ok(Step::Raise(self.make_exception_instance(class, vec![msg])));
+                }
             }
         };
         let code = match compile_source(&source) {

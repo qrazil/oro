@@ -835,3 +835,76 @@ fn lambda_in_fstring_is_rejected_clearly() {
     let e = compile_err("out = f\"{[1].map(x => x)}\"\n");
     assert!(e.message.contains("cannot appear inside an f-string"), "got: {}", e.message);
 }
+
+// --- json: the embedded-Oro-stdlib module (src/vm/stdlib.rs) --------------
+
+#[test]
+fn json_is_an_embedded_stdlib_module_not_a_rust_builtin() {
+    // Unlike `os`/`sys` (native `modules::build`), `json` resolves through
+    // the embedded-Oro-stdlib branch of `import_module` — it is a real
+    // module value all the same.
+    assert!(matches!(eval("import json\nr = json\n"), Value::Module(_)));
+}
+
+#[test]
+fn json_parse_distinguishes_ints_from_floats_and_decodes_literals() {
+    let src = r#"
+import json
+a = json.parse('{"n": 3, "f": 2.5, "s": "hi", "b": true, "z": null, "xs": [1, 2, 3]}')
+out = f"{a['n']} {type(a['n'])} {a['f']} {type(a['f'])} {a['s']} {a['b']} {a['z']} {a['xs']}"
+"#;
+    assert_eq!(fstr(src), "3 <class 'int'> 2.5 <class 'float'> hi True None [1, 2, 3]");
+}
+
+#[test]
+fn json_parse_decodes_unicode_escapes_and_surrogate_pairs() {
+    // A and é are plain BMP escapes; the grinning-face emoji is a UTF-16
+    // surrogate pair that must combine into one non-BMP scalar (U+1F600),
+    // so `len` counts it as a single character.
+    let src = r#"
+import json
+s = json.parse('"Aé 😀"')
+out = f"{s} {len(s)}"
+"#;
+    assert_eq!(fstr(src), "Aé 😀 4");
+}
+
+#[test]
+fn json_stringify_round_trips_through_parse() {
+    let src = r#"
+import json
+data = {"a": 1, "b": [1, 2.5, "x", True, False, None]}
+out = f"{json.parse(json.stringify(data)) == data}"
+"#;
+    assert_eq!(fstr(src), "True");
+}
+
+#[test]
+fn json_stringify_default_is_compact_with_no_incidental_whitespace() {
+    let src = "import json\nout = json.stringify({\"a\": 1, \"b\": [1, 2]})\n";
+    assert_eq!(fstr(src), "{\"a\":1,\"b\":[1,2]}");
+}
+
+#[test]
+fn json_stringify_indent_pretty_prints() {
+    let src = "import json\nout = json.stringify({\"a\": 1}, indent=2)\n";
+    assert_eq!(fstr(src), "{\n  \"a\": 1\n}");
+}
+
+#[test]
+fn json_stringify_rejects_non_str_keys_and_non_finite_floats() {
+    let err1 = run_err("import json\njson.stringify({1: \"a\"})\n");
+    assert!(err1.message.contains("TypeError"), "got: {}", err1.message);
+    assert!(err1.message.contains("keys must be str"), "got: {}", err1.message);
+
+    let err2 = run_err("import json\njson.stringify(\"nan\".to_float())\n");
+    assert!(err2.message.contains("ValueError"), "got: {}", err2.message);
+}
+
+#[test]
+fn json_parse_malformed_input_names_the_offset() {
+    // Mirrors the README's own example shape: "unexpected 'X' at position N".
+    let err = run_err("import json\njson.parse('{\"a\": 1,}')\n");
+    assert!(err.message.contains("ValueError"), "got: {}", err.message);
+    assert!(err.message.contains("at position 8"), "got: {}", err.message);
+}

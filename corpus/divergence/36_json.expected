@@ -1,0 +1,89 @@
+None
+True
+False
+[1, 2, 3]
+{}
+[]
+{'a': {'b': [1, [2, 3], {}]}}
+0
+0
+42
+-17
+3.5
+-3.5
+10000000000.0
+10000000000.0
+1500.0
+0.0015
+-0.0025
+123456789012345678901234567890
+<class 'int'> <class 'float'>
+plain
+quote:" backslash:\ slash:/
+line:
+break
+tab:	end
+cr:end
+bs:[]ff:[]
+Aé中
+😀
+1
+True
+True
+True
+True
+{"a":1,"b":[1,2,3]}
+["x","y","z"]
+"a\"b\\c/d\bE\fF\nG\rH\tI"
+True
+0
+0
+3.0
+3.5
+{
+  "a": 1,
+  "b": [
+    1,
+    2
+  ]
+}
+[
+    1,
+    [
+        2,
+        3
+    ],
+    {
+        "x": 1
+    }
+]
+{}
+[]
+TypeError: keys must be str, not <class 'int'>
+ValueError: nan is not JSON serializable
+ValueError: Infinity is not JSON serializable
+ValueError: Infinity is not JSON serializable
+unexpected end of input at position 0
+unexpected end of input at position 3
+expected a string key at position 8
+unexpected ']' at position 6
+expected ':' at position 5
+expected a string key at position 1
+unexpected '2' at position 3
+unexpected 'n' at position 0
+unexpected 't' at position 0
+invalid number: a leading zero cannot be followed by more digits at position 1
+invalid number: a leading zero cannot be followed by more digits at position 2
+invalid number: expected a digit after '.' at position 2
+unexpected '.' at position 0
+invalid number: expected a digit in the exponent at position 2
+invalid number: expected a digit in the exponent at position 3
+unterminated string at position 4
+invalid escape '\x' at position 3
+incomplete \u escape at position 4
+unexpected 'e' at position 9
+unterminated object at position 7
+unexpected '}' at position 16
+unpaired UTF-16 surrogate in \u escape at position 7
+unpaired UTF-16 surrogate in \u escape at position 7
+True

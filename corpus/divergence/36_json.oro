@@ -1,0 +1,147 @@
+# INTENTIONAL DIVERGENCE.
+# `json` is a stdlib module written entirely in Oro (src/vm/stdlib.rs embeds
+# std/json.oro into the binary) — it does not exist in CPython's stdlib in
+# this form and uses Oro-only syntax (`=>`, `.map`, the `to_` casts), so
+# CPython cannot run it and the oracle cannot generate this baseline.
+# Reviewed by hand.
+
+import json
+
+# --- decode: literals, nesting, whitespace ---------------------------
+
+print(json.parse("null"))
+print(json.parse("true"))
+print(json.parse("false"))
+print(json.parse("  \n\t [ 1 , 2 ,3]\r\n "))
+print(json.parse("{}"))
+print(json.parse("[]"))
+print(json.parse("{\"a\": {\"b\": [1, [2, 3], {}]}}"))
+
+# --- decode: numbers ---------------------------------------------------
+
+print(json.parse("0"))
+print(json.parse("-0"))
+print(json.parse("42"))
+print(json.parse("-17"))
+print(json.parse("3.5"))
+print(json.parse("-3.5"))
+print(json.parse("1e10"))
+print(json.parse("1E10"))
+print(json.parse("1.5e+3"))
+print(json.parse("1.5e-3"))
+print(json.parse("-2.5e-3"))
+print(json.parse("123456789012345678901234567890"))
+n = json.parse("3")
+f = json.parse("3.0")
+print(type(n), type(f))
+
+# --- decode: string escapes, both named and \u, incl. surrogate pairs -
+
+print(json.parse("\"plain\""))
+print(json.parse("\"quote:\\\" backslash:\\\\ slash:\\/\""))
+print(json.parse("\"line:\\nbreak\""))
+print(json.parse("\"tab:\\tend\""))
+print(json.parse("\"cr:\\rend\""))
+print(json.parse("\"bs:[\\b]ff:[\\f]\""))
+print(json.parse("\"\\u0041\\u00e9\\u4e2d\""))
+print(json.parse("\"\\ud83d\\ude00\""))
+print(len(json.parse("\"\\ud83d\\ude00\"")))
+
+# --- round trip through stringify + parse ------------------------------
+
+sample = {
+    "name": "Oro",
+    "stable": True,
+    "cut": False,
+    "extra": None,
+    "count": 7,
+    "big": 123456789012345678901234567890,
+    "ratio": 0.5,
+    "tags": ["json", "stdlib", "oro"],
+    "nested": {"a": [1, 2, {"b": 3}]},
+    "unicode": "café 中文 😀",
+    "escapes": "line\nbreak\ttab\"quote\\back",
+}
+encoded = json.stringify(sample)
+decoded = json.parse(encoded)
+print(decoded == sample)
+print(json.parse(json.stringify([])) == [])
+print(json.parse(json.stringify({})) == {})
+print(json.parse(json.stringify(-0.0)) == 0.0)
+
+# --- stringify: compact form has no incidental whitespace --------------
+
+print(json.stringify({"a": 1, "b": [1, 2, 3]}))
+print(json.stringify(["x", "y", "z"]))
+# Oro string literals have no `\b`/`\f` escape (only \n \t \r \\ \" \0
+# decode); build real backspace/form-feed characters via the same
+# codepoint->char format-spec trick the module itself uses.
+bs = f"{8:c}"
+ff = f"{12:c}"
+special = "a\"b\\c/d" + bs + "E" + ff + "F\nG\rH\tI"
+print(json.stringify(special))
+print(json.parse(json.stringify(special)) == special)
+print(json.stringify(0))
+print(json.stringify(-0))
+print(json.stringify(3.0))
+print(json.stringify(3.5))
+
+# --- stringify: pretty form via indent= ---------------------------------
+
+print(json.stringify({"a": 1, "b": [1, 2]}, indent=2))
+print(json.stringify([1, [2, 3], {"x": 1}], indent=4))
+print(json.stringify({}, indent=2))
+print(json.stringify([], indent=2))
+
+# --- stringify: TypeError on non-str keys, ValueError on nan/inf -------
+
+def try_stringify(v):
+    try:
+        print(json.stringify(v))
+    except ValueError as e:
+        print("ValueError:", e)
+    except TypeError as e:
+        print("TypeError:", e)
+
+try_stringify({1: "a"})
+try_stringify("nan".to_float())
+try_stringify("inf".to_float())
+try_stringify("-inf".to_float())
+
+# --- malformed input: assert the exact message, including position -----
+
+def try_parse(s):
+    try:
+        json.parse(s)
+        print("no error:", repr(s))
+    except ValueError as e:
+        print(e)
+
+try_parse("")
+try_parse("   ")
+try_parse("{\"a\": 1,}")
+try_parse("[1, 2,]")
+try_parse("{\"a\" 1}")
+try_parse("{a: 1}")
+try_parse("[1 2]")
+try_parse("nul")
+try_parse("tru")
+try_parse("01")
+try_parse("-01")
+try_parse("1.")
+try_parse(".1")
+try_parse("1e")
+try_parse("1e+")
+try_parse("\"abc")
+try_parse("\"a\\x\"")
+try_parse("\"a\\u12\"")
+try_parse("{\"a\": 1} extra")
+try_parse("{\"a\": 1")
+try_parse("{\"a\": 1, \"b\": 2}}")
+try_parse("\"\\ud83d\"")
+try_parse("\"\\ud83dxx\"")
+
+# --- a same-named user file can never shadow the stdlib module ---------
+# (there is no corpus/divergence/json.oro; if there were, this import would
+# still resolve to the embedded stdlib module, never that file.)
+print(type(json.parse) == type(json.stringify))
