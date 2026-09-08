@@ -14,7 +14,10 @@ pub enum TokenKind {
     /// Floating-point literal, raw text (e.g. `"3.14"`, `"1e9"`).
     Float(String),
     /// String literal with escape sequences already decoded.
-    Str(String),
+    /// A string literal, plus whether it was written as `r"..."`. The flag
+    /// carries no semantics — a raw string has already been decoded — but the
+    /// formatter needs it to reprint `r"\d+"` instead of `"\\d+"`.
+    Str(String, bool),
     /// f-string literal. A single token for now: the raw inner text is kept
     /// verbatim (no escape processing, no interpolation parsing).
     FString(String),
@@ -105,4 +108,25 @@ impl Token {
     pub fn new(kind: TokenKind, line: usize, col: usize) -> Self {
         Token { kind, line, col }
     }
+}
+
+/// A `#`-to-end-of-line comment, captured on the side (never inserted into the
+/// main [`Token`] stream, so the parser is unaffected). Consumed by `src/fmt.rs`
+/// to reproduce comments in formatted output.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Comment {
+    /// 1-based line number of the leading `#`.
+    pub line: usize,
+    /// 1-based column of the leading `#`.
+    pub col: usize,
+    /// The raw comment text, `#` through end of line, unmodified.
+    pub text: String,
+    /// True if this comment sits inside an open `(`/`[`/`{` — i.e. inside a
+    /// multi-line bracketed expression, where a formatter cannot safely
+    /// reattach it to a specific sub-expression.
+    pub in_brackets: bool,
+    /// True if a content token already appeared earlier on this same source
+    /// line (a trailing/inline comment), as opposed to a comment alone on its
+    /// own line.
+    pub inline: bool,
 }

@@ -11,6 +11,7 @@ pub mod ast;
 pub mod bigint;
 pub mod builtins;
 pub mod compiler;
+pub mod fmt;
 pub mod format;
 pub mod lexer;
 pub mod regexutil;

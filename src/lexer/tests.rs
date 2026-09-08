@@ -101,15 +101,28 @@ fn multichar_operators() {
     );
 }
 
+/// A trailing-dot float (`1.`) is deliberately not a literal: the `.` after an
+/// integer belongs to method access, so `42.to_str()` lexes as intended. Write
+/// `1.0`. Python has the same ambiguity and resolves it the other way, which is
+/// why `42 .bit_length()` needs that odd space there.
+#[test]
+fn trailing_dot_is_method_access_not_a_float() {
+    assert_eq!(
+        kinds("42.to_str()\n"),
+        vec![Int("42".into()), Dot, ident("to_str"), LParen, RParen, Newline, Eof]
+    );
+    // A leading-dot float still lexes as one.
+    assert_eq!(kinds(".5\n"), vec![Float(".5".into()), Newline, Eof]);
+}
+
 #[test]
 fn numbers_int_and_float() {
     assert_eq!(
-        kinds("1 2.5 .5 1. 1e9 2.5e-3 6E+2\n"),
+        kinds("1 2.5 .5 1e9 2.5e-3 6E+2\n"),
         vec![
             Int("1".into()),
             Float("2.5".into()),
             Float(".5".into()),
-            Float("1.".into()),
             Float("1e9".into()),
             Float("2.5e-3".into()),
             Float("6E+2".into()),
@@ -123,7 +136,7 @@ fn numbers_int_and_float() {
 fn string_escapes_are_decoded() {
     assert_eq!(
         kinds(r#""a\tb\nc\"d""#),
-        vec![Str("a\tb\nc\"d".into()), Newline, Eof]
+        vec![Str("a\tb\nc\"d".into(), false), Newline, Eof]
     );
 }
 
@@ -415,4 +428,19 @@ fn at_sign_tokenizes() {
     // `@` is no longer a lex error: it becomes an `At` token so the parser can
     // emit a designed "decorators are not supported" message.
     assert_eq!(kinds("@f\n"), vec![At, ident("f"), Newline, Eof]);
+}
+
+/// A raw string decodes to the same value as its escaped form, and the token
+/// records which spelling was used so the formatter can reprint `r"\d+"`
+/// instead of `"\\d+"`.
+#[test]
+fn raw_strings_record_their_spelling() {
+    assert_eq!(
+        kinds("r\"\\d+\"\n"),
+        vec![Str("\\d+".to_string(), true), Newline, Eof]
+    );
+    assert_eq!(
+        kinds("\"\\\\d+\"\n"),
+        vec![Str("\\d+".to_string(), false), Newline, Eof]
+    );
 }

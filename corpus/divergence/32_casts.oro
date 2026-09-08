@@ -23,7 +23,7 @@ for r in rows:
         oldest = r[0]
 print(oldest, best)
 
-print((42).to_str(), "17".to_int(), "1.5".to_float(), (1).to_bool())
+print(42.to_str(), "17".to_int(), "1.5".to_float(), 1.to_bool())
 print("ff".to_int(16), "0x1f".to_int(16), "777".to_int(8), "-ff".to_int(16))
 print(range(3).to_list(), "abc".to_list(), (1, 2).to_list())
 print([("a", 1), ("b", 2)].to_dict())

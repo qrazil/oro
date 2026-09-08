@@ -127,7 +127,7 @@ impl Parser {
             self.peek_kind(),
             TokenKind::Int(_)
                 | TokenKind::Float(_)
-                | TokenKind::Str(_)
+                | TokenKind::Str(..)
                 | TokenKind::FString(_)
                 | TokenKind::True
                 | TokenKind::False
@@ -441,7 +441,7 @@ impl Parser {
             )),
             TokenKind::Int(_)
             | TokenKind::Float(_)
-            | TokenKind::Str(_)
+            | TokenKind::Str(..)
             | TokenKind::True
             | TokenKind::False
             | TokenKind::None
@@ -1029,9 +1029,9 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Float { value, line, col })
             }
-            TokenKind::Str(value) => {
+            TokenKind::Str(value, raw) => {
                 self.advance();
-                Ok(Expr::Str { value, line, col })
+                Ok(Expr::Str { value, raw, line, col })
             }
             TokenKind::FString(value) => {
                 self.advance();
@@ -1274,7 +1274,7 @@ impl Parser {
             self.cur_kind(),
             TokenKind::Int(_)
                 | TokenKind::Float(_)
-                | TokenKind::Str(_)
+                | TokenKind::Str(..)
                 | TokenKind::FString(_)
                 | TokenKind::True
                 | TokenKind::False
@@ -1378,7 +1378,7 @@ fn describe(kind: &TokenKind) -> String {
     match kind {
         Int(s) => format!("integer `{s}`"),
         Float(s) => format!("float `{s}`"),
-        Str(_) => "a string literal".to_string(),
+        Str(..) => "a string literal".to_string(),
         FString(_) => "an f-string literal".to_string(),
         Ident(s) => format!("identifier `{s}`"),
         True => "keyword `True`".to_string(),

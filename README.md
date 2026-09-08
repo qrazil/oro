@@ -558,6 +558,30 @@ environment-dependent (`sys.argv`, `sys.exit`, `os.getcwd`, `os.environ`,
 script), and user-module imports (the helper's extension is `.oro` vs CPython's
 `.py`, and CPython searches the working directory rather than the script's).
 
+## Formatting
+
+Oro ships its own canonical formatter, `gofmt`-style: no options, one output.
+
+```sh
+oro fmt file.oro            # print the formatted source
+oro fmt --write file.oro    # rewrite in place
+oro fmt --check file.oro    # exit 1 if it is not already formatted
+```
+
+It exists because Oro is no longer parseable by Python's tools — `x => x * 2` is
+a Python `SyntaxError`, so `black` and `ruff` cannot read an Oro file that uses a
+lambda. (The `to_` casts and `proc` still *parse* as Python; only `=>` breaks it.)
+
+Comments are preserved. A comment the formatter cannot place unambiguously —
+inside a multi-line bracketed expression, or trailing a line it did not start —
+makes `oro fmt` refuse to run and name the line, rather than move or drop it.
+`r"..."` strings keep their raw form, so regexes do not reformat into
+backslash-doubled soup.
+
+One known gap: a collection literal the author spread over several lines is
+currently collapsed onto one. `gofmt` keeps the author's line breaks in
+composite literals and Oro should too.
+
 ## Building and running
 
 ```sh

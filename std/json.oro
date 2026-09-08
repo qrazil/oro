@@ -319,7 +319,7 @@ def _escape_string(s):
         else:
             hexcode = _CONTROL_HEX.get(c)
             if hexcode != None:
-                out.append(f"\u{hexcode}")
+                out.append(f"\\u{hexcode}")
             else:
                 out.append(c)
         i = i + 1

@@ -15,7 +15,7 @@
 
 mod token;
 
-pub use token::{Token, TokenKind};
+pub use token::{Comment, Token, TokenKind};
 
 use std::fmt;
 
@@ -66,6 +66,9 @@ pub struct Lexer {
     /// Whether any content token has been emitted since the last `Newline`.
     line_has_tokens: bool,
     tokens: Vec<Token>,
+    /// Comments captured on the side; see [`Comment`]. Never affects the token
+    /// stream the parser sees.
+    comments: Vec<Comment>,
 }
 
 impl Lexer {
@@ -80,12 +83,27 @@ impl Lexer {
             line_start: true,
             line_has_tokens: false,
             tokens: Vec::new(),
+            comments: Vec::new(),
         }
     }
 
     /// Tokenize the entire input, returning the token stream (always terminated
-    /// by a single `Eof`) or the first [`LexError`].
-    pub fn tokenize(mut self) -> Result<Vec<Token>, LexError> {
+    /// by a single `Eof`) or the first [`LexError`]. Comments are discarded;
+    /// use [`Lexer::tokenize_with_comments`] to keep them.
+    pub fn tokenize(self) -> Result<Vec<Token>, LexError> {
+        self.tokenize_with_comments().map(|(tokens, _)| tokens)
+    }
+
+    /// Tokenize the entire input, returning the token stream (always terminated
+    /// by a single `Eof`) together with every `#`-comment encountered, or the
+    /// first [`LexError`]. The token stream is identical to [`Lexer::tokenize`]
+    /// — comments are never inserted into it.
+    pub fn tokenize_with_comments(mut self) -> Result<(Vec<Token>, Vec<Comment>), LexError> {
+        self.run()?;
+        Ok((self.tokens, self.comments))
+    }
+
+    fn run(&mut self) -> Result<(), LexError> {
         loop {
             if self.bracket_depth == 0 && self.line_start {
                 self.handle_indentation()?;
@@ -118,7 +136,7 @@ impl Lexer {
                 Some(_) => self.scan_token()?,
             }
         }
-        Ok(self.tokens)
+        Ok(())
     }
 
     // --- Indentation handling ------------------------------------------------
@@ -236,7 +254,11 @@ impl Lexer {
             s.push(self.advance().unwrap());
         }
 
-        if self.peek() == Some('.') {
+        // A `.` only starts a fractional part when a digit follows it. Without
+        // that lookahead `42.to_str()` lexes as the float `42.` followed by a
+        // stray name — which matters a great deal now that conversion is spelled
+        // as a method on the value.
+        if self.peek() == Some('.') && matches!(self.peek2(), Some(c) if c.is_ascii_digit()) {
             is_float = true;
             s.push(self.advance().unwrap());
             while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
@@ -300,21 +322,24 @@ impl Lexer {
                             if is_f || is_raw {
                                 value.push('\\');
                                 value.push(e);
-                            } else {
-                                match e {
-                                    'n' => value.push('\n'),
-                                    't' => value.push('\t'),
-                                    'r' => value.push('\r'),
-                                    '\\' => value.push('\\'),
-                                    '\'' => value.push('\''),
-                                    '"' => value.push('"'),
-                                    '0' => value.push('\0'),
-                                    other => {
-                                        // Unknown escape: keep both characters.
-                                        value.push('\\');
-                                        value.push(other);
+                            } else if let Some(c) = simple_escape(e) {
+                                value.push(c);
+                            } else if let Some(width) = hex_escape_width(e) {
+                                let mut digits = String::new();
+                                for _ in 0..width {
+                                    match self.peek() {
+                                        Some(d) if d.is_ascii_hexdigit() => {
+                                            digits.push(self.advance().unwrap())
+                                        }
+                                        _ => break,
                                     }
                                 }
+                                match decode_hex_escape(e, &digits) {
+                                    Ok(c) => value.push(c),
+                                    Err(msg) => return Err(LexError::new(msg, sl, sc)),
+                                }
+                            } else {
+                                return Err(LexError::new(unknown_escape_message(e), sl, sc));
                             }
                         }
                     }
@@ -329,7 +354,7 @@ impl Lexer {
         let kind = if is_f {
             TokenKind::FString(value)
         } else {
-            TokenKind::Str(value)
+            TokenKind::Str(value, is_raw)
         };
         self.push_at(kind, sl, sc);
         self.line_has_tokens = true;
@@ -465,12 +490,18 @@ impl Lexer {
     }
 
     fn skip_comment(&mut self) {
+        let (sl, sc) = (self.line, self.col);
+        let in_brackets = self.bracket_depth > 0;
+        let inline = self.line_has_tokens;
+        let mut text = String::new();
         while let Some(c) = self.peek() {
             if c == '\n' {
                 break;
             }
+            text.push(c);
             self.advance();
         }
+        self.comments.push(Comment { line: sl, col: sc, text, in_brackets, inline });
     }
 
     // --- Low-level cursor helpers -------------------------------------------
@@ -563,3 +594,57 @@ fn keyword_kind(s: &str) -> Option<TokenKind> {
 
 #[cfg(test)]
 mod tests;
+
+/// The single-character escapes. Shared with the f-string decoder in codegen so
+/// the two can never disagree about what `"\t"` means.
+pub fn simple_escape(e: char) -> Option<char> {
+    Some(match e {
+        'n' => '\n',
+        't' => '\t',
+        'r' => '\r',
+        '\\' => '\\',
+        '\'' => '\'',
+        '"' => '"',
+        '0' => '\0',
+        'a' => '\u{7}',
+        'b' => '\u{8}',
+        'f' => '\u{c}',
+        'v' => '\u{b}',
+        _ => return None,
+    })
+}
+
+/// How many hex digits `\x`, `\u` and `\U` take.
+pub fn hex_escape_width(e: char) -> Option<usize> {
+    Some(match e {
+        'x' => 2,
+        'u' => 4,
+        'U' => 8,
+        _ => return None,
+    })
+}
+
+/// Decode `\xNN` / `\uNNNN` / `\UNNNNNNNN` given exactly its digits.
+pub fn decode_hex_escape(kind: char, digits: &str) -> Result<char, String> {
+    let width = hex_escape_width(kind).expect("not a hex escape");
+    if digits.len() != width || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!(
+            "`\\{kind}` needs exactly {width} hex digits, found `{digits}`"
+        ));
+    }
+    let n = u32::from_str_radix(digits, 16).map_err(|e| e.to_string())?;
+    char::from_u32(n).ok_or_else(|| {
+        format!("`\\{kind}{digits}` is not a valid character (out of range, or a surrogate)")
+    })
+}
+
+/// The message for an escape Oro does not recognise. Unknown escapes used to
+/// decode to backslash-plus-letter, which meant `"a\bb"` was four characters in
+/// Oro and three in Python — the same syntax quietly meaning different things.
+/// Rejecting is the only option that does not silently corrupt data.
+pub fn unknown_escape_message(e: char) -> String {
+    format!(
+        "unknown escape `\\{e}` — Oro's escapes are \\n \\t \\r \\a \\b \\f \\v \\0 \\\\ \\' \\\" \\xNN \\uNNNN \\UNNNNNNNN; \
+         write `\\\\{e}` for a literal backslash, or use a raw string r\"...\""
+    )
+}

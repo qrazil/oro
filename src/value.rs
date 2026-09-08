@@ -744,6 +744,12 @@ fn repr_str(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\t' => out.push_str("\\t"),
             '\r' => out.push_str("\\r"),
+            // Control characters must not be emitted raw: a repr is meant to be
+            // readable and round-trippable, and printing a literal backspace is
+            // neither. CPython shows these as \xNN.
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                out.push_str(&format!("\\x{:02x}", c as u32));
+            }
             _ => out.push(c),
         }
     }

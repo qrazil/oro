@@ -30,6 +30,10 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    if args.get(1).map(String::as_str) == Some("fmt") {
+        return run_fmt(&args[2..]);
+    }
+
     let (mode, path) = match args.as_slice() {
         [_, flag, path] if flag == "--tokens" => (Mode::Tokens, path),
         [_, flag, path] if flag == "--ast" => (Mode::Ast, path),
@@ -96,6 +100,77 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("{path}:{e}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+/// `oro fmt [--write|-w | --check] <file.oro>` — see `src/fmt.rs`.
+enum FmtMode {
+    /// Print the formatted source to stdout.
+    Print,
+    /// Rewrite the file in place.
+    Write,
+    /// Exit 1 if the file is not already canonically formatted; silent on
+    /// success, otherwise silent too (no diff printed, matching `gofmt -l`
+    /// minus the filename — the exit code is the signal).
+    Check,
+}
+
+fn run_fmt(args: &[String]) -> ExitCode {
+    let mut mode = FmtMode::Print;
+    let mut path: Option<&str> = None;
+    for a in args {
+        match a.as_str() {
+            "--write" | "-w" => mode = FmtMode::Write,
+            "--check" => mode = FmtMode::Check,
+            other if path.is_none() && !other.starts_with('-') => path = Some(other),
+            other => {
+                eprintln!("oro fmt: unrecognized argument '{other}'");
+                return ExitCode::from(64); // EX_USAGE
+            }
+        }
+    }
+    let Some(path) = path else {
+        eprintln!("usage: oro fmt [--write | --check] <file.oro>");
+        return ExitCode::from(64); // EX_USAGE
+    };
+
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("oro: cannot read {path}: {e}");
+            return ExitCode::from(66); // EX_NOINPUT
+        }
+    };
+
+    let formatted = match oro_lang::fmt::format_source(&source) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{path}:{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match mode {
+        FmtMode::Print => {
+            print!("{formatted}");
+            ExitCode::SUCCESS
+        }
+        FmtMode::Write => {
+            if formatted != source {
+                if let Err(e) = std::fs::write(path, &formatted) {
+                    eprintln!("oro: cannot write {path}: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        FmtMode::Check => {
+            if formatted == source {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
         }
     }
 }

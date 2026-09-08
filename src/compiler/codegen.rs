@@ -934,7 +934,7 @@ impl<'a> Codegen<'a> {
                 let idx = self.add_const(Value::Float(f));
                 self.emit(Op::LoadConst(idx), *line, *col);
             }
-            Expr::Str { value, line, col } => {
+            Expr::Str { value, line, col, .. } => {
                 let idx = self.add_const(Value::str(value.clone()));
                 self.emit(Op::LoadConst(idx), *line, *col);
             }
@@ -1184,7 +1184,8 @@ impl<'a> Codegen<'a> {
                 // keeps f-string text raw so interpolation can be parsed here).
                 '\\' => {
                     i += 1;
-                    let decoded = decode_escape(&chars, &mut i);
+                    let decoded = decode_escape(&chars, &mut i)
+                        .map_err(|m| self.err(format!("in f-string: {m}"), line, col))?;
                     literal.push_str(&decoded);
                 }
                 '{' => {
@@ -1456,21 +1457,32 @@ fn split_field(src: &str) -> Field {
 /// Decode one escape sequence in f-string literal text. `i` points at the
 /// character after the backslash; it is advanced past the consumed char(s).
 /// Unknown escapes keep the backslash verbatim (matching the string lexer).
-fn decode_escape(chars: &[char], i: &mut usize) -> String {
+/// Decode one escape inside an f-string's literal text. Shares its tables with
+/// the lexer (see `crate::lexer::simple_escape`) so the two can never disagree
+/// about what an escape means.
+fn decode_escape(chars: &[char], i: &mut usize) -> Result<String, String> {
+    use crate::lexer::{decode_hex_escape, hex_escape_width, simple_escape, unknown_escape_message};
     let Some(&e) = chars.get(*i) else {
-        return "\\".to_string();
+        return Err("a string may not end with a lone backslash".to_string());
     };
     *i += 1;
-    match e {
-        'n' => "\n".to_string(),
-        't' => "\t".to_string(),
-        'r' => "\r".to_string(),
-        '\\' => "\\".to_string(),
-        '\'' => "'".to_string(),
-        '"' => "\"".to_string(),
-        '0' => "\0".to_string(),
-        other => format!("\\{other}"),
+    if let Some(c) = simple_escape(e) {
+        return Ok(c.to_string());
     }
+    if let Some(width) = hex_escape_width(e) {
+        let mut digits = String::new();
+        while digits.len() < width {
+            match chars.get(*i) {
+                Some(&d) if d.is_ascii_hexdigit() => {
+                    digits.push(d);
+                    *i += 1;
+                }
+                _ => break,
+            }
+        }
+        return decode_hex_escape(e, &digits).map(|c| c.to_string());
+    }
+    Err(unknown_escape_message(e))
 }
 
 /// Whether `stmts` contain a `yield` (searching nested blocks but not nested

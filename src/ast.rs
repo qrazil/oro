@@ -317,7 +317,10 @@ pub enum Expr {
     /// Float literal, raw source text (e.g. `"3.14"`).
     Float { value: String, line: usize, col: usize },
     /// String literal (escapes already decoded by the lexer).
-    Str { value: String, line: usize, col: usize },
+    /// String literal (escapes already decoded). `raw` records whether the
+    /// source wrote `r"..."`; it does not affect the value, only how the
+    /// formatter reprints it.
+    Str { value: String, raw: bool, line: usize, col: usize },
     /// f-string literal (raw inner text; interpolation parsed later).
     FString { value: String, line: usize, col: usize },
     /// `True` / `False`.
