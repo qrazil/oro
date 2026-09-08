@@ -566,8 +566,22 @@ fn round_half_even(x: f64) -> f64 {
     }
 }
 
+/// The types the collection protocol applies to.
+pub fn is_collection(v: &Value) -> bool {
+    matches!(
+        v,
+        Value::List(_) | Value::Tuple(_) | Value::Dict(_) | Value::Range(_) | Value::Generator(_)
+    )
+}
+
 pub fn method_exists(recv: &Value, name: &str) -> bool {
     if is_cast_method(name) {
+        return true;
+    }
+    // The collection protocol is uniform across every collection type. Names in
+    // it can collide with a per-type method (`str.find`, `str.join`), so this
+    // only claims them for collections and otherwise falls through.
+    if is_collection(recv) && (is_seq_native(name) || crate::vm::is_seq_op(name)) {
         return true;
     }
     match recv {
@@ -601,6 +615,7 @@ pub fn method_exists(recv: &Value, name: &str) -> bool {
 pub fn call_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
     match recv {
         _ if is_cast_method(name) => cast_method(recv, name, args),
+        _ if is_collection(recv) && is_seq_native(name) => seq_native_method(recv, name, args),
         Value::Str(_) => str_method(recv, name, args),
         Value::List(l) => list_method(l, name, args),
         Value::Dict(d) => dict_method(d, name, args),
@@ -902,6 +917,216 @@ fn cast_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
             Ok(Value::Dict(Rc::new(RefCell::new(d))))
         }
         _ => unreachable!("not a cast method"),
+    }
+}
+
+/// Collection methods that need no callback, so they can run natively. The
+/// callback-taking half (`map`, `filter`, `reduce`, `group_by`, …) is driven by
+/// the VM instead, since those run Oro code per element.
+pub fn is_seq_native(name: &str) -> bool {
+    matches!(
+        name,
+        "sum" | "min" | "max" | "unique" | "take" | "drop" | "first" | "last"
+            | "flatten" | "chunk" | "zip" | "join" | "reversed" | "sorted" | "enumerate" | "len"
+    )
+}
+
+/// The elements of a collection, plus how to put one back together. A dict's
+/// elements are its `(key, value)` pairs, so selecting and reordering a dict
+/// gives back a dict.
+fn seq_parts(recv: &Value, who: &str) -> VResult<(Shape, Vec<Value>)> {
+    Ok(match recv {
+        Value::List(l) => (Shape::List, l.borrow().clone()),
+        Value::Tuple(t) => (Shape::Tuple, t.as_slice().to_vec()),
+        Value::Dict(d) => (
+            Shape::Dict,
+            d.borrow()
+                .items()
+                .iter()
+                .map(|(k, v)| Value::Tuple(Rc::new(vec![k.clone(), v.clone()])))
+                .collect(),
+        ),
+        Value::Range(_) => (Shape::List, crate::vm::iterate_to_vec(recv)?),
+        other => {
+            return Err(format!(
+                "'{}' object has no method '{who}'",
+                other.type_name()
+            ))
+        }
+    })
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Shape {
+    List,
+    Tuple,
+    Dict,
+}
+
+fn rebuild(shape: Shape, items: Vec<Value>) -> VResult<Value> {
+    Ok(match shape {
+        Shape::List => Value::List(Rc::new(RefCell::new(items))),
+        Shape::Tuple => Value::Tuple(Rc::new(items)),
+        Shape::Dict => {
+            let mut d = OroDict::new();
+            for entry in items {
+                let pair = match &entry {
+                    Value::Tuple(t) => t.as_slice().to_vec(),
+                    Value::List(l) => l.borrow().clone(),
+                    other => {
+                        return Err(format!(
+                            "rebuilding a dict needs (key, value) pairs, not '{}'",
+                            other.type_name()
+                        ))
+                    }
+                };
+                if pair.len() != 2 {
+                    return Err(format!(
+                        "rebuilding a dict needs 2-element pairs, got {}",
+                        pair.len()
+                    ));
+                }
+                d.insert(pair[0].clone(), pair[1].clone())?;
+            }
+            Value::Dict(Rc::new(RefCell::new(d)))
+        }
+    })
+}
+
+fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
+    let (shape, items) = seq_parts(recv, name)?;
+    match name {
+        "len" => {
+            exactly(&args, 0, "len")?;
+            Ok(Value::Int(items.len() as i64))
+        }
+        "first" | "last" => {
+            exactly(&args, 0, name)?;
+            let pick = if name == "first" { items.first() } else { items.last() };
+            match pick {
+                Some(v) => Ok(v.clone()),
+                None => Err(format!("{name}() on an empty sequence")),
+            }
+        }
+        "sum" => {
+            exactly(&args, 0, "sum")?;
+            bi_sum(vec![rebuild(Shape::List, items)?])
+        }
+        "min" | "max" => {
+            exactly(&args, 0, name)?;
+            if items.is_empty() {
+                return Err(format!("{name}() arg is an empty sequence"));
+            }
+            let mut best = items[0].clone();
+            for v in &items[1..] {
+                let ord = v.compare(&best)?;
+                let take = if name == "min" {
+                    ord == std::cmp::Ordering::Less
+                } else {
+                    ord == std::cmp::Ordering::Greater
+                };
+                if take {
+                    best = v.clone();
+                }
+            }
+            Ok(best)
+        }
+        "sorted" => {
+            exactly(&args, 0, "sorted")?;
+            let mut out = items;
+            sort_values(&mut out)?;
+            rebuild(shape, out)
+        }
+        "reversed" => {
+            exactly(&args, 0, "reversed")?;
+            let mut out = items;
+            out.reverse();
+            rebuild(shape, out)
+        }
+        "unique" => {
+            exactly(&args, 0, "unique")?;
+            let mut seen = OroDict::new();
+            let mut out = Vec::new();
+            for v in items {
+                if !seen.contains(&v)? {
+                    seen.insert(v.clone(), Value::Bool(true))?;
+                    out.push(v);
+                }
+            }
+            rebuild(shape, out)
+        }
+        "take" | "drop" => {
+            let n = opt_int_arg(&args, 0, name, -1)?;
+            if n < 0 {
+                return Err(format!("{name}() needs a count >= 0"));
+            }
+            let n = (n as usize).min(items.len());
+            let out = if name == "take" {
+                items[..n].to_vec()
+            } else {
+                items[n..].to_vec()
+            };
+            rebuild(shape, out)
+        }
+        "flatten" => {
+            exactly(&args, 0, "flatten")?;
+            let mut out = Vec::new();
+            for v in &items {
+                out.extend(crate::vm::iterate_to_vec(v)?);
+            }
+            Ok(Value::List(Rc::new(RefCell::new(out))))
+        }
+        "chunk" => {
+            let n = opt_int_arg(&args, 0, "chunk", 0)?;
+            if n <= 0 {
+                return Err("chunk() needs a size >= 1".to_string());
+            }
+            let out: Vec<Value> = items
+                .chunks(n as usize)
+                .map(|c| Value::List(Rc::new(RefCell::new(c.to_vec()))))
+                .collect();
+            Ok(Value::List(Rc::new(RefCell::new(out))))
+        }
+        "zip" => {
+            let other = crate::vm::iterate_to_vec(
+                args.first().ok_or("zip() missing its second sequence")?,
+            )?;
+            let out: Vec<Value> = items
+                .iter()
+                .zip(other.iter())
+                .map(|(a, b)| Value::Tuple(Rc::new(vec![a.clone(), b.clone()])))
+                .collect();
+            Ok(Value::List(Rc::new(RefCell::new(out))))
+        }
+        "enumerate" => {
+            let start = opt_int_arg(&args, 0, "enumerate", 0)?;
+            let out: Vec<Value> = items
+                .into_iter()
+                .enumerate()
+                .map(|(i, v)| Value::Tuple(Rc::new(vec![Value::Int(start + i as i64), v])))
+                .collect();
+            Ok(Value::List(Rc::new(RefCell::new(out))))
+        }
+        "join" => {
+            // `xs.join(", ")` rather than `", ".join(xs)`: the separator is the
+            // detail, the sequence is the subject, and this way it ends a chain
+            // instead of forcing the reader back to the front of the line.
+            let sep = str_arg(&args, 0, "join")?;
+            let mut pieces = Vec::with_capacity(items.len());
+            for it in items {
+                match it {
+                    Value::Str(p) => pieces.push(p.s.clone()),
+                    other => {
+                        return Err(format!(
+                            "join() requires str elements, found '{}'",
+                            other.type_name()
+                        ))
+                    }
+                }
+            }
+            Ok(Value::str(pieces.join(&sep)))
+        }
+        _ => unreachable!("not a native sequence method"),
     }
 }
 

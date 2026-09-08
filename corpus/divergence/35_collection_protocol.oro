@@ -1,0 +1,67 @@
+# DIVERGENCE: the collection protocol is Oro-only, so this cannot be oracled
+# against CPython. Reviewed by hand.
+#
+# The protocol is the answer to "chains replaced comprehensions but not loops".
+# Operations that select or reorder preserve the receiver's type; operations
+# that reshape the data return a list.
+xs = [5, 3, 8, 1, 9, 2]
+
+# native (no callback)
+print(xs.sum(), xs.min(), xs.max(), xs.len(), xs.first(), xs.last())
+print(xs.sorted(), xs.reversed(), xs.unique())
+print(xs.take(2), xs.drop(4), xs.chunk(2))
+print(["a", "b", "c"].join(", "))
+print([[1, 2], [3], [4, 5]].flatten())
+print([1, 2, 3].zip(["a", "b"]))
+print(["x", "y"].enumerate())
+
+# callback-taking
+print(xs.sort_by(x => -x))
+print(xs.min_by(x => -x), xs.max_by(x => -x))
+print(xs.find(x => x > 7), xs.find(x => x > 100))
+print(xs.any(x => x > 8), xs.all(x => x > 0), xs.count(x => x % 2 == 0))
+print(xs.partition(x => x % 2 == 0))
+print(xs.reduce(0, (acc, x) => acc + x))
+print(xs.take_while(x => x > 2), xs.drop_while(x => x > 2))
+print(xs.flat_map(x => [x, x]))
+print([1, 1, 2, 2, 3].unique_by(x => x))
+
+# predicate-less any/all/count use the element's own truthiness
+print([1, 0, 2].any(), [1, 2].all(), [0, 0].any(), [1, 0].count())
+
+# group_by replaces the loop-and-dict pattern outright
+orders = [
+    {"region": "eu", "total": 30},
+    {"region": "us", "total": 50},
+    {"region": "eu", "total": 20},
+]
+by_region = orders.group_by(o => o["region"])
+for region, rows in by_region.items():
+    print(region, rows.map(r => r["total"]).sum())
+print(orders.max_by(o => o["total"])["region"])
+
+# type preservation: a tuple stays a tuple, a dict stays a dict
+t = (5, 1, 3)
+print(t.sorted(), t.take(2), t.reversed(), t.sort_by(x => -x))
+d = {"a": 3, "b": 1, "c": 2}
+print(d.sort_by((k, v) => v))
+print(d.take(2), d.find((k, v) => v == 2))
+print(d.count((k, v) => v > 1), d.any((k, v) => v > 2))
+
+# generators can start a chain
+def nums(n):
+    i = 0
+    while i < n:
+        yield i
+        i = i + 1
+
+print(nums(10).filter(x => x % 2 == 0).sum())
+print(nums(5).reduce(1, (acc, x) => acc + x))
+
+# find/any/all short-circuit: the predicate stops being called once settled
+seen = []
+def watch(x):
+    seen.append(x)
+    return x > 1
+
+print([1, 2, 3, 4].find(watch), seen)

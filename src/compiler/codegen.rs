@@ -694,7 +694,16 @@ impl<'a> Codegen<'a> {
     fn emit_lambda(&mut self, data: &crate::ast::LambdaData, line: usize, col: usize) -> CResult<()> {
         let child = data.scope.get();
         if child == usize::MAX {
-            return Err(self.err("internal: lambda scope was never assigned", line, col));
+            // f-string fields are parsed here at codegen time rather than by the
+            // parser, so the symbol pass never walks them and never assigns a
+            // scope to a lambda inside one. Rejecting is loud and correct;
+            // the real fix is to parse f-string fields into the AST so there is
+            // one tree for every pass to see.
+            return Err(self.err(
+                "a lambda cannot appear inside an f-string field — assign it to a name first,                  e.g. `doubled = xs.map(x => x * 2)` then `f\"{doubled}\"`",
+                line,
+                col,
+            ));
         }
         let body = vec![Stmt::Return { value: Some((*data.body).clone()), line, col }];
         let proto = self.compile_function("<lambda>", &data.params, &body, child)?;

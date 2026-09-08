@@ -750,3 +750,88 @@ out = [1, 2].map(x => x + 1).to_str()
 "#;
     assert_eq!(fstr(src), "[2, 3]");
 }
+
+#[test]
+fn collection_protocol_natives() {
+    let src = r#"
+xs = [5, 3, 8, 1]
+letters = ["a", "b"]
+joined = letters.join("-")
+out = f"{xs.sum()} {xs.min()} {xs.max()} {xs.len()} {xs.first()} {xs.last()} {xs.sorted()} {xs.take(2)} {joined}"
+"#;
+    assert_eq!(fstr(src), "17 1 8 4 5 1 [1, 3, 5, 8] [5, 3] a-b");
+}
+
+#[test]
+fn collection_protocol_callbacks() {
+    let src = r#"
+xs = [5, 3, 8, 1]
+a = xs.sort_by(x => -x)
+b = xs.max_by(x => -x)
+c = xs.find(x => x > 4)
+d = xs.count(x => x > 2)
+e = xs.reduce(0, (acc, x) => acc + x)
+g = xs.partition(x => x > 4)
+out = f"{a} {b} {c} {d} {e} {g}"
+"#;
+    assert_eq!(fstr(src), "[8, 5, 3, 1] 1 5 3 17 ([5, 8], [3, 1])");
+}
+
+#[test]
+fn group_by_buckets_into_a_dict() {
+    let src = r#"
+out = [1, 2, 3, 4, 5].group_by(x => x % 2).to_str()
+"#;
+    assert_eq!(fstr(src), "{1: [1, 3, 5], 0: [2, 4]}");
+}
+
+#[test]
+fn seq_ops_preserve_the_receiver_type() {
+    // Selecting and reordering keep the shape; reshaping returns a list.
+    let src = r#"
+t = (3, 1, 2)
+d = {"a": 2, "b": 1}
+sorted_d = d.sort_by((k, v) => v)
+flat = t.flat_map(x => [x])
+out = f"{t.sorted()} {t.take(2)} {sorted_d} {flat}"
+"#;
+    assert_eq!(fstr(src), "(1, 2, 3) (3, 1) {'b': 1, 'a': 2} [3, 1, 2]");
+}
+
+#[test]
+fn find_and_any_short_circuit() {
+    // The predicate must stop being called once the answer is settled.
+    let src = r#"
+seen = []
+def watch(x):
+    seen.append(x)
+    return x > 1
+
+hit = [1, 2, 3, 4].find(watch)
+out = f"{hit} {seen}"
+"#;
+    assert_eq!(fstr(src), "2 [1, 2]");
+}
+
+#[test]
+fn protocol_names_do_not_steal_string_methods() {
+    // `find` and `join` exist on both str and collections; each keeps its own
+    // meaning, chosen by the receiver's type.
+    let src = r#"
+letters = ["a", "b"]
+a = "abcb".find("b")
+b = ", ".join(letters)
+c = letters.join("-")
+d = [1, 2, 3].find(x => x > 1)
+out = f"{a} {b} {c} {d}"
+"#;
+    assert_eq!(fstr(src), "1 a, b a-b 2");
+}
+
+#[test]
+fn lambda_in_fstring_is_rejected_clearly() {
+    // f-string fields are parsed at codegen time, so the symbol pass never
+    // assigns the lambda a scope. That must be a clear error, not an internal one.
+    let e = compile_err("out = f\"{[1].map(x => x)}\"\n");
+    assert!(e.message.contains("cannot appear inside an f-string"), "got: {}", e.message);
+}

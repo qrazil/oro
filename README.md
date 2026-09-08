@@ -145,7 +145,31 @@ Implemented and working today:
   choice `dict.keys()` already makes. Type names (`str`, `int`, `list`, …) are
   deliberately *not* callable; see the `to_` casts below.
 - **Methods:** the common `str`/`list`/`dict` methods, the `to_` conversions on
-  every value, and `map`/`filter` on every collection.
+  every value, and the collection protocol below.
+- **The collection protocol**, on lists, tuples, dicts, ranges and generators.
+  Chains replaced comprehensions; this is what lets them replace *loops* too.
+
+  *Without a callback:* `sum` `min` `max` `len` `first` `last` `sorted`
+  `reversed` `unique` `take(n)` `drop(n)` `chunk(n)` `flatten` `zip(other)`
+  `enumerate` `join(sep)`.
+
+  *With one:* `map` `filter` `flat_map` `sort_by` `group_by` `partition` `find`
+  `any` `all` `count` `min_by` `max_by` `unique_by` `take_while` `drop_while`
+  `reduce(init, f)`. `any`, `all` and `count` also work with no callback, using
+  each element's own truthiness. `find`, `any` and `all` short-circuit.
+
+  Two rules govern the whole set. **Operations that select or reorder preserve
+  the receiver's type** (a tuple stays a tuple, a dict stays a dict); operations
+  that reshape the data return a list. And **a dict's callback takes two
+  arguments**, key and value, so `d.filter((k, v) => v > 1)` reads directly.
+
+  ```python
+  orders.filter(o => o.paid).group_by(o => o.region)
+  ```
+
+  Note `xs.join(", ")` rather than `", ".join(xs)`: the sequence is the subject
+  and the separator the detail, and this way it ends a chain instead of sending
+  the reader back to the front of the line.
 - **Lambdas:** `x => x * 2`, `(a, b) => a + b`, `() => 0`.
 - **Generators work everywhere.** A generator can be passed to any builtin that
   consumes an iterable (`sum`, `sorted`, `join`, …) and can start a chain
@@ -464,6 +488,12 @@ Stated plainly:
 - **`map`/`filter` are eager.** Each step allocates a new collection, so a long
   chain over a large list allocates once per step. Generators remain the lazy
   escape hatch.
+- **A lambda cannot appear inside an f-string field.** `f"{xs.map(x => x)}"` is
+  rejected with a message telling you to bind it to a name first. f-string
+  fields are parsed at code-generation time rather than by the parser, so the
+  symbol pass never walks them and cannot give the lambda a scope. The real fix
+  is to parse f-string fields into the AST like any other expression, which is
+  also what CPython moved to in 3.12.
 - **Lambda parameters are plain names only** — no defaults, `*args`, `**kwargs`,
   or annotations, and the body is a single expression. Anything more is a `def`.
 - **`sys.stdout` / `sys.stderr` / `sys.stdin` are name placeholders, not stream

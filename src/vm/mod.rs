@@ -193,8 +193,91 @@ struct MatJob {
 /// Which sequence adapter is running.
 #[derive(Clone, Copy, PartialEq)]
 enum SeqOp {
+    /// Rebuild the collection from each callback result.
     Map,
+    /// Keep the elements whose callback result is truthy.
     Filter,
+    /// Like `Map`, but each result must itself be a sequence, concatenated.
+    FlatMap,
+    /// Reorder by the callback's value (stable).
+    SortBy,
+    /// Bucket elements into a dict keyed by the callback's value.
+    GroupBy,
+    /// Split into `(matching, rest)`.
+    Partition,
+    /// Keep the first element whose callback is truthy, else None. Short-circuits.
+    Find,
+    /// Whether any / every callback result is truthy. Both short-circuit.
+    Any,
+    All,
+    /// How many callback results are truthy.
+    Count,
+    /// The element with the smallest / largest callback value.
+    MinBy,
+    MaxBy,
+    /// Drop elements whose callback value has already been seen.
+    UniqueBy,
+    /// Longest leading run whose callback is truthy, and its complement.
+    TakeWhile,
+    DropWhile,
+    /// Thread an accumulator through: `f(acc, item)`. Sequential, so it cannot
+    /// batch its callbacks like the others.
+    Reduce,
+}
+
+impl SeqOp {
+    fn name(self) -> &'static str {
+        match self {
+            SeqOp::Map => "map",
+            SeqOp::Filter => "filter",
+            SeqOp::FlatMap => "flat_map",
+            SeqOp::SortBy => "sort_by",
+            SeqOp::GroupBy => "group_by",
+            SeqOp::Partition => "partition",
+            SeqOp::Find => "find",
+            SeqOp::Any => "any",
+            SeqOp::All => "all",
+            SeqOp::Count => "count",
+            SeqOp::MinBy => "min_by",
+            SeqOp::MaxBy => "max_by",
+            SeqOp::UniqueBy => "unique_by",
+            SeqOp::TakeWhile => "take_while",
+            SeqOp::DropWhile => "drop_while",
+            SeqOp::Reduce => "reduce",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<SeqOp> {
+        Some(match name {
+            "map" => SeqOp::Map,
+            "filter" => SeqOp::Filter,
+            "flat_map" => SeqOp::FlatMap,
+            "sort_by" => SeqOp::SortBy,
+            "group_by" => SeqOp::GroupBy,
+            "partition" => SeqOp::Partition,
+            "find" => SeqOp::Find,
+            "any" => SeqOp::Any,
+            "all" => SeqOp::All,
+            "count" => SeqOp::Count,
+            "min_by" => SeqOp::MinBy,
+            "max_by" => SeqOp::MaxBy,
+            "unique_by" => SeqOp::UniqueBy,
+            "take_while" => SeqOp::TakeWhile,
+            "drop_while" => SeqOp::DropWhile,
+            "reduce" => SeqOp::Reduce,
+            _ => return None,
+        })
+    }
+
+    /// Operations that select or reorder existing elements keep the receiver's
+    /// type; ones that change the shape of the data produce a list.
+    fn preserves_shape(self) -> bool {
+        matches!(
+            self,
+            SeqOp::Map | SeqOp::Filter | SeqOp::SortBy | SeqOp::UniqueBy
+                | SeqOp::TakeWhile | SeqOp::DropWhile
+        )
+    }
 }
 
 /// The collection an adapter was called on, and therefore the collection it
@@ -218,7 +301,9 @@ struct SeqJob {
     items: Vec<Value>,
     results: Vec<Value>,
     next: usize,
-    func: Value,
+    /// `None` for the predicate-less forms (`any()`, `all()`, `count()`), where
+    /// each element stands in for its own callback result.
+    func: Option<Value>,
 }
 
 /// An in-flight `sorted(key=…)` / `list.sort(key=…)`. The key function is Oro
@@ -1093,8 +1178,9 @@ impl Vm {
                     }
                     // map/filter run Oro callbacks, so they are driven from the
                     // VM rather than executed as native methods.
-                    if &**name == "map" || &**name == "filter" {
-                        let op = if &**name == "map" { SeqOp::Map } else { SeqOp::Filter };
+                    if let Some(op) = SeqOp::from_name(name)
+                        .filter(|_| crate::builtins::is_collection(&m.receiver))
+                    {
                         // A generator receiver has to be drained first; the
                         // retry arrives back here with a list in its place.
                         if matches!(m.receiver, Value::Generator(_)) {
@@ -1261,11 +1347,14 @@ impl Vm {
         }
     }
 
-    /// `xs.map(f)` / `xs.filter(p)`. The collection type is preserved: a list
-    /// yields a list, a tuple a tuple, a dict a dict. A dict's callback is
-    /// called with two arguments (key and value); `map` must return a
-    /// `(key, value)` pair, `filter` keeps the original pair when the predicate
-    /// is truthy. `range` has no literal of its own, so it yields a list.
+    /// The callback-taking half of the collection protocol. Every one of these
+    /// runs Oro code per element, so they are driven from the VM a frame at a
+    /// time rather than executed as native methods.
+    ///
+    /// Which collection comes back is governed by [`SeqOp::preserves_shape`].
+    /// A dict's callback is called with two arguments (key and value), so
+    /// `d.filter((k, v) => v > 1)` reads naturally instead of forcing the caller
+    /// to index a pair.
     fn do_seq_op(
         &mut self,
         op: SeqOp,
@@ -1273,21 +1362,74 @@ impl Vm {
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
     ) -> Result<(), RuntimeError> {
-        let who = if op == SeqOp::Map { "map" } else { "filter" };
+        let who = op.name();
         if !kwargs.is_empty() {
             return Err(self.err(format!("{who}() takes no keyword arguments")));
         }
-        let func = match args.as_slice() {
-            [f @ (Value::Func(_) | Value::Builtin(_) | Value::Method(_))] => f.clone(),
-            [other] => {
-                return Err(self.err(format!(
-                    "{who}() needs a function, not '{}'",
-                    other.type_name()
-                )))
-            }
-            _ => return Err(self.err(format!("{who}() takes exactly 1 argument"))),
+        let callable = |v: &Value| {
+            matches!(v, Value::Func(_) | Value::Builtin(_) | Value::Method(_))
         };
-        let (shape, items) = match receiver {
+        // Arity: reduce takes (initial, f); any/all/count take an optional
+        // predicate; everything else takes exactly one function.
+        let (func, seed) = match op {
+            SeqOp::Reduce => match args.as_slice() {
+                [init, f] if callable(f) => (Some(f.clone()), Some(init.clone())),
+                [_, other] => {
+                    return Err(self.err(format!(
+                        "reduce() needs a function as its second argument, not '{}'",
+                        other.type_name()
+                    )))
+                }
+                _ => {
+                    return Err(self.err(
+                        "reduce() takes an initial value and a function, e.g. \
+                         xs.reduce(0, (acc, x) => acc + x)",
+                    ))
+                }
+            },
+            SeqOp::Any | SeqOp::All | SeqOp::Count => match args.as_slice() {
+                [] => (None, None),
+                [f] if callable(f) => (Some(f.clone()), None),
+                [other] => {
+                    return Err(self.err(format!(
+                        "{who}() needs a function, not '{}'",
+                        other.type_name()
+                    )))
+                }
+                _ => return Err(self.err(format!("{who}() takes at most 1 argument"))),
+            },
+            _ => match args.as_slice() {
+                [f] if callable(f) => (Some(f.clone()), None),
+                [other] => {
+                    return Err(self.err(format!(
+                        "{who}() needs a function, not '{}'",
+                        other.type_name()
+                    )))
+                }
+                _ => return Err(self.err(format!("{who}() takes exactly 1 argument"))),
+            },
+        };
+
+        let (shape, items) = self.seq_receiver(who, receiver)?;
+        self.seq_jobs.push(SeqJob {
+            op,
+            shape,
+            items,
+            // Reduce seeds its accumulator here; the others accumulate results.
+            results: seed.into_iter().collect(),
+            next: 0,
+            func,
+        });
+        self.drive_seq()
+    }
+
+    /// The elements a collection operation walks, and the shape to rebuild.
+    fn seq_receiver(
+        &mut self,
+        who: &str,
+        receiver: &Value,
+    ) -> Result<(SeqShape, Vec<Value>), RuntimeError> {
+        Ok(match receiver {
             Value::List(l) => (SeqShape::List, l.borrow().clone()),
             Value::Tuple(t) => (SeqShape::Tuple, t.as_slice().to_vec()),
             Value::Dict(d) => {
@@ -1307,40 +1449,52 @@ impl Vm {
                     other.type_name()
                 )))
             }
-        };
-        let n = items.len();
-        self.seq_jobs.push(SeqJob {
-            op,
-            shape,
-            items,
-            results: Vec::with_capacity(n),
-            next: 0,
-            func,
-        });
-        self.drive_seq()
+        })
     }
 
     fn drive_seq(&mut self) -> Result<(), RuntimeError> {
         loop {
-            let (item, func, shape) = {
+            let (item, func, shape, op) = {
                 let job = self.seq_jobs.last().expect("active seq job");
-                if job.next >= job.items.len() {
+                // `find`, `any` and `all` stop as soon as the answer is settled,
+                // so a predicate is never called more often than it must be.
+                let settled = match job.op {
+                    SeqOp::Find | SeqOp::Any => job.results.iter().any(|r| r.truthy()),
+                    SeqOp::All => job.results.iter().any(|r| !r.truthy()),
+                    _ => false,
+                };
+                if settled || job.next >= job.items.len() {
                     let job = self.seq_jobs.pop().unwrap();
                     return self.finish_seq(job);
                 }
-                (job.items[job.next].clone(), job.func.clone(), job.shape)
+                (job.items[job.next].clone(), job.func.clone(), job.shape, job.op)
             };
             self.seq_jobs.last_mut().unwrap().next += 1;
 
-            // A dict callback is spread over two parameters, so `(k, v) => …`
-            // reads naturally instead of forcing the caller to index a pair.
-            let call_args = match shape {
+            // No predicate (`any()`, `all()`, `count()`): the element is its own
+            // result, so no frame is needed at all.
+            let Some(func) = func else {
+                self.seq_jobs.last_mut().unwrap().results.push(item);
+                continue;
+            };
+
+            // A dict callback is spread over two parameters; reduce prepends the
+            // accumulator.
+            let mut call_args = match shape {
                 SeqShape::Dict => match &item {
                     Value::Tuple(t) => vec![t[0].clone(), t[1].clone()],
                     _ => vec![item.clone()],
                 },
                 _ => vec![item.clone()],
             };
+            if op == SeqOp::Reduce {
+                let acc = self
+                    .seq_jobs
+                    .last()
+                    .and_then(|j| j.results.last().cloned())
+                    .unwrap_or(Value::None);
+                call_args.insert(0, acc);
+            }
 
             match func {
                 Value::Func(f) => {
@@ -1348,7 +1502,10 @@ impl Vm {
                         return Err(self.err("maximum recursion depth exceeded"));
                     }
                     if f.code.is_generator {
-                        return Err(self.err("map()/filter() callback must not be a generator"));
+                        return Err(self.err(format!(
+                            "{}() callback must not be a generator function",
+                            op.name()
+                        )));
                     }
                     let mut frame = self.bind_call(&f, call_args, Vec::new())?;
                     frame.ret_action = ReturnAction::DriveSeq;
@@ -1357,7 +1514,7 @@ impl Vm {
                 }
                 Value::Builtin(b) => {
                     let r = self.wrap((b.func)(call_args))?;
-                    self.seq_jobs.last_mut().unwrap().results.push(r);
+                    self.record_seq_result(r);
                 }
                 Value::Method(m) => {
                     let r = match &m.kind {
@@ -1378,16 +1535,122 @@ impl Vm {
                             );
                         }
                     };
-                    self.seq_jobs.last_mut().unwrap().results.push(r);
+                    self.record_seq_result(r);
                 }
-                _ => return Err(self.err("map()/filter() callback is not callable")),
+                _ => return Err(self.err(format!("{}() callback is not callable", op.name()))),
             }
         }
     }
 
-    /// Rebuild the collection once every callback result is in.
+    /// Record one callback result. `reduce` threads a single accumulator rather
+    /// than collecting per-element results, so it replaces instead of appending.
+    fn record_seq_result(&mut self, value: Value) {
+        let job = self.seq_jobs.last_mut().expect("seq job");
+        if job.op == SeqOp::Reduce {
+            job.results.clear();
+        }
+        job.results.push(value);
+    }
+
+    /// Rebuild the result once every callback result is in. Which collection
+    /// comes back is governed by [`SeqOp::preserves_shape`]: operations that
+    /// select or reorder keep the receiver's type, operations that reshape the
+    /// data return a list.
     fn finish_seq(&mut self, job: SeqJob) -> Result<(), RuntimeError> {
         let SeqJob { op, shape, items, results, .. } = job;
+
+        // Scalar answers first — these do not rebuild a collection at all.
+        match op {
+            SeqOp::Reduce => {
+                // `results` carries the accumulator, seeded with the initial value.
+                let acc = results.into_iter().next_back().unwrap_or(Value::None);
+                self.push(acc);
+                return Ok(());
+            }
+            SeqOp::Find => {
+                let found = items
+                    .iter()
+                    .zip(results.iter())
+                    .find(|(_, hit)| hit.truthy())
+                    .map(|(it, _)| it.clone());
+                self.push(found.unwrap_or(Value::None));
+                return Ok(());
+            }
+            SeqOp::Any => {
+                self.push(Value::Bool(results.iter().any(|r| r.truthy())));
+                return Ok(());
+            }
+            SeqOp::All => {
+                self.push(Value::Bool(results.iter().all(|r| r.truthy())));
+                return Ok(());
+            }
+            SeqOp::Count => {
+                self.push(Value::Int(results.iter().filter(|r| r.truthy()).count() as i64));
+                return Ok(());
+            }
+            SeqOp::MinBy | SeqOp::MaxBy => {
+                let want_min = op == SeqOp::MinBy;
+                let mut best: Option<(usize, &Value)> = None;
+                for (i, key) in results.iter().enumerate() {
+                    match best {
+                        None => best = Some((i, key)),
+                        Some((_, bk)) => {
+                            let ord = self.wrap(key.compare(bk))?;
+                            let take = if want_min {
+                                ord == std::cmp::Ordering::Less
+                            } else {
+                                ord == std::cmp::Ordering::Greater
+                            };
+                            if take {
+                                best = Some((i, key));
+                            }
+                        }
+                    }
+                }
+                let out = match best {
+                    Some((i, _)) => items[i].clone(),
+                    None => {
+                        return Err(self.err(format!("{}() arg is an empty sequence", op.name())))
+                    }
+                };
+                self.push(out);
+                return Ok(());
+            }
+            SeqOp::GroupBy => {
+                let mut d = crate::value::OroDict::new();
+                for (item, key) in items.iter().zip(results.iter()) {
+                    let bucket = match self.wrap(d.get(key))? {
+                        Some(Value::List(l)) => l,
+                        _ => {
+                            let l = Rc::new(RefCell::new(Vec::new()));
+                            self.wrap(d.insert(key.clone(), Value::List(l.clone())))?;
+                            l
+                        }
+                    };
+                    bucket.borrow_mut().push(item.clone());
+                }
+                self.push(Value::Dict(Rc::new(RefCell::new(d))));
+                return Ok(());
+            }
+            SeqOp::Partition => {
+                let mut yes = Vec::new();
+                let mut no = Vec::new();
+                for (item, hit) in items.iter().zip(results.iter()) {
+                    if hit.truthy() {
+                        yes.push(item.clone());
+                    } else {
+                        no.push(item.clone());
+                    }
+                }
+                let rebuild = |v: Vec<Value>| Self::rebuild_shape(shape, v);
+                let pair = vec![self.wrap(rebuild(yes))?, self.wrap(rebuild(no))?];
+                self.push(Value::Tuple(Rc::new(pair)));
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        // Collection answers.
         let kept: Vec<Value> = match op {
             SeqOp::Map => results,
             SeqOp::Filter => items
@@ -1396,36 +1659,76 @@ impl Vm {
                 .filter(|(_, keep)| keep.truthy())
                 .map(|(it, _)| it.clone())
                 .collect(),
+            SeqOp::FlatMap => {
+                let mut out = Vec::new();
+                for r in &results {
+                    out.extend(self.wrap(iterate_to_vec(r))?);
+                }
+                out
+            }
+            SeqOp::SortBy => self.wrap(crate::builtins::sort_by_keys(items, &results, false))?,
+            SeqOp::UniqueBy => {
+                let mut seen = crate::value::OroDict::new();
+                let mut out = Vec::new();
+                for (item, key) in items.iter().zip(results.iter()) {
+                    if !self.wrap(seen.contains(key))? {
+                        self.wrap(seen.insert(key.clone(), Value::Bool(true)))?;
+                        out.push(item.clone());
+                    }
+                }
+                out
+            }
+            SeqOp::TakeWhile => items
+                .iter()
+                .zip(results.iter())
+                .take_while(|(_, hit)| hit.truthy())
+                .map(|(it, _)| it.clone())
+                .collect(),
+            SeqOp::DropWhile => items
+                .iter()
+                .zip(results.iter())
+                .skip_while(|(_, hit)| hit.truthy())
+                .map(|(it, _)| it.clone())
+                .collect(),
+            other => unreachable!("scalar op {} handled above", other.name()),
         };
-        let out = match shape {
-            SeqShape::List => Value::List(Rc::new(RefCell::new(kept))),
-            SeqShape::Tuple => Value::Tuple(Rc::new(kept)),
+
+        let shape = if op.preserves_shape() { shape } else { SeqShape::List };
+        let out = self.wrap(Self::rebuild_shape(shape, kept))?;
+        self.push(out);
+        Ok(())
+    }
+
+    /// Turn a vector of elements back into the collection type `shape`. For a
+    /// dict the elements are `(key, value)` pairs.
+    fn rebuild_shape(shape: SeqShape, items: Vec<Value>) -> Result<Value, String> {
+        Ok(match shape {
+            SeqShape::List => Value::List(Rc::new(RefCell::new(items))),
+            SeqShape::Tuple => Value::Tuple(Rc::new(items)),
             SeqShape::Dict => {
                 let mut d = crate::value::OroDict::new();
-                for entry in kept {
+                for entry in items {
                     let pair = match &entry {
                         Value::Tuple(t) => t.as_slice().to_vec(),
                         Value::List(l) => l.borrow().clone(),
                         other => {
-                            return Err(self.err(format!(
-                                "map() over a dict must return a (key, value) pair, not '{}'",
+                            return Err(format!(
+                                "rebuilding a dict needs (key, value) pairs, not '{}'",
                                 other.type_name()
-                            )))
+                            ))
                         }
                     };
                     if pair.len() != 2 {
-                        return Err(self.err(format!(
-                            "map() over a dict must return a (key, value) pair, got {} elements",
+                        return Err(format!(
+                            "rebuilding a dict needs 2-element pairs, got {} elements",
                             pair.len()
-                        )));
+                        ));
                     }
-                    self.wrap(d.insert(pair[0].clone(), pair[1].clone()))?;
+                    d.insert(pair[0].clone(), pair[1].clone())?;
                 }
                 Value::Dict(Rc::new(RefCell::new(d)))
             }
-        };
-        self.push(out);
-        Ok(())
+        })
     }
 
     /// If `args` contains a generator, begin draining it (and any later ones)
@@ -2265,7 +2568,7 @@ impl Vm {
                 self.drive_sort()?;
             }
             ReturnAction::DriveSeq => {
-                self.seq_jobs.last_mut().expect("seq job").results.push(value);
+                self.record_seq_result(value);
                 self.drive_seq()?;
             }
             ReturnAction::NegateBool => self.push(Value::Bool(!value.truthy())),
@@ -3042,6 +3345,11 @@ fn classify_error(msg: &str) -> &'static str {
         // A genuine internal/uncategorised failure.
         "RuntimeError"
     }
+}
+
+/// Whether `name` is a callback-taking collection operation (driven by the VM).
+pub fn is_seq_op(name: &str) -> bool {
+    SeqOp::from_name(name).is_some()
 }
 
 /// Whether `v` is a container whose stringification must render element
