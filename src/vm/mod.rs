@@ -3323,7 +3323,8 @@ fn classify_error(msg: &str) -> &'static str {
         "NameError"
     } else if m.contains("has no attribute") {
         "AttributeError"
-    } else if m.contains("values to unpack")
+    } else if m.contains("arg not in range")
+        || m.contains("values to unpack")
         || m.contains("could not convert string to float")
         || m.starts_with("invalid literal for int")
         || m.contains("empty separator")
@@ -3332,7 +3333,8 @@ fn classify_error(msg: &str) -> &'static str {
         || m.contains("expected at least")
     {
         "ValueError"
-    } else if m.contains("unsupported operand")
+    } else if m.contains("expected a character")
+        || m.contains("unsupported operand")
         || m.contains("not callable")
         || m.contains("not iterable")
         || m.contains("not a mapping")

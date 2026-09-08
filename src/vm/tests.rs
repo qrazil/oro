@@ -908,3 +908,19 @@ fn json_parse_malformed_input_names_the_offset() {
     assert!(err.message.contains("ValueError"), "got: {}", err.message);
     assert!(err.message.contains("at position 8"), "got: {}", err.message);
 }
+
+#[test]
+fn chr_and_ord_round_trip() {
+    let src = "out = f\"{chr(65)} {ord('A')} {chr(128512)} {ord('\u{1F600}')}\"\n";
+    assert_eq!(fstr(src), "A 65 \u{1F600} 128512");
+}
+
+#[test]
+fn ord_raises_type_error_and_chr_raises_value_error() {
+    // CPython's exception types, not just its messages: ord() on the wrong
+    // shape of value is a TypeError, chr() out of range is a ValueError.
+    let e = run_err("ord(\"ab\")\n");
+    assert!(e.message.contains("expected a character"), "got: {}", e.message);
+    let e2 = run_err("chr(1114112)\n");
+    assert!(e2.message.contains("arg not in range"), "got: {}", e2.message);
+}

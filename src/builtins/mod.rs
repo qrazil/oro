@@ -39,6 +39,8 @@ pub fn lookup(name: &str) -> Option<Value> {
         "any" => bi_any,
         "all" => bi_all,
         "round" => bi_round,
+        "chr" => bi_chr,
+        "ord" => bi_ord,
         _ => return None,
     };
     Some(Value::Builtin(Rc::new(Builtin { name: intern(name), func: f })))
@@ -71,6 +73,8 @@ fn intern(name: &str) -> &'static str {
         "any" => "any",
         "all" => "all",
         "round" => "round",
+        "chr" => "chr",
+        "ord" => "ord",
         _ => "builtin",
     }
 }
@@ -553,6 +557,40 @@ fn bi_round(args: Vec<Value>) -> VResult<Value> {
             }
             Ok(Value::Float(round_half_even(scaled) * factor))
         }
+    }
+}
+
+/// `chr(n)` / `ord(c)` — the codepoint pair. Until now the only way across this
+/// boundary was the f-string `{n:c}` spec, which goes one way only; writing the
+/// `json` module in Oro made the gap obvious.
+fn bi_chr(args: Vec<Value>) -> VResult<Value> {
+    exactly(&args, 1, "chr")?;
+    let n = as_i64(&args[0])?;
+    let cp = u32::try_from(n)
+        .ok()
+        .and_then(char::from_u32)
+        .ok_or_else(|| "chr() arg not in range(0x110000)".to_string())?;
+    Ok(Value::str(cp.to_string()))
+}
+
+fn bi_ord(args: Vec<Value>) -> VResult<Value> {
+    exactly(&args, 1, "ord")?;
+    let s = match &args[0] {
+        Value::Str(s) => s.s.clone(),
+        other => {
+            return Err(format!(
+                "ord() expected a character, but got '{}'",
+                other.type_name()
+            ))
+        }
+    };
+    let mut it = s.chars();
+    match (it.next(), it.next()) {
+        (Some(c), None) => Ok(Value::Int(c as i64)),
+        _ => Err(format!(
+            "ord() expected a character, but string of length {} found",
+            s.chars().count()
+        )),
     }
 }
 
