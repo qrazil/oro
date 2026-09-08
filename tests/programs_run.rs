@@ -74,3 +74,15 @@ fn runtime_error_reports_position_without_panicking() {
     assert!(stderr.contains(":2:"), "error should carry a line number: {stderr}");
     let _ = std::fs::remove_file(&script);
 }
+
+#[test]
+fn version_flag_prints_version() {
+    let bin = env!("CARGO_BIN_EXE_oro");
+    let out = std::process::Command::new(bin).arg("--version").output().expect("run");
+    assert!(out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.starts_with("oro "), "got: {s}");
+    // The short flag works too.
+    let out2 = std::process::Command::new(bin).arg("-V").output().expect("run");
+    assert_eq!(String::from_utf8_lossy(&out2.stdout), s);
+}

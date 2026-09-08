@@ -1,0 +1,125 @@
+# Release workflow: cross-compiles the `oro` binary for Linux (musl, fully
+# static) and macOS (x86_64 + arm64), then attaches the archives and a combined
+# SHA256SUMS to the GitHub release for the pushed tag.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# SUBSTITUTIONS: none. This file uses the ${{ github.* }} context, so it works
+# unchanged in whatever repo it lives in. The only knob is BIN_NAME below.
+# ─────────────────────────────────────────────────────────────────────────────
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # needed to create the release and upload assets
+
+env:
+  BIN_NAME: oro
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux is musl, not glibc: a fully static binary with no libc
+          # dependency, so it runs on Alpine and old distros alike. This is only
+          # possible because the whole dependency tree (regex + aho-corasick +
+          # memchr + regex-automata + regex-syntax) is pure Rust — no C, no -sys
+          # crates, no build scripts.
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+          # macOS builds natively (Apple's linker handles either arch); no cross.
+          - target: x86_64-apple-darwin
+            os: macos-13 # Intel runner
+            cross: false
+          - target: aarch64-apple-darwin
+            os: macos-14 # Apple-silicon runner
+            cross: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add ${{ matrix.target }}
+
+      # `cross` builds the musl targets in a container with the right linker,
+      # which "just works" for a pure-Rust crate on both x86_64 and aarch64.
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Build (cross, musl)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Build (native, macOS)
+        if: ${{ !matrix.cross }}
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # The release profile already sets strip = true; this is a belt-and-braces
+      # check that the artifact is stripped and reports its size.
+      - name: Package
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME}"
+          bin="target/${{ matrix.target }}/release/${BIN_NAME}"
+          ls -l "$bin"
+          echo "size: $(wc -c < "$bin") bytes"
+          stage="${BIN_NAME}-${version}-${{ matrix.target }}"
+          mkdir "$stage"
+          cp "$bin" "$stage/${BIN_NAME}"
+          tar -czf "${stage}.tar.gz" "$stage"
+          # Portable sha256 (Linux: sha256sum, macOS: shasum -a 256).
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${stage}.tar.gz" > "${stage}.tar.gz.sha256"
+          else
+            shasum -a 256 "${stage}.tar.gz" > "${stage}.tar.gz.sha256"
+          fi
+          cat "${stage}.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            ${{ env.BIN_NAME }}-*.tar.gz
+            ${{ env.BIN_NAME }}-*.tar.gz.sha256
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Assemble SHA256SUMS
+        working-directory: dist
+        run: |
+          # One combined checksum file over every archive.
+          cat ./*.tar.gz.sha256 | sed 's# .*/# #' > SHA256SUMS
+          echo "---- SHA256SUMS ----"
+          cat SHA256SUMS
+
+      - name: Create GitHub release
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            ./*.tar.gz SHA256SUMS

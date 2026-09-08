@@ -22,6 +22,14 @@ fn main() -> ExitCode {
     // Program arguments after the script populate `sys.argv` (argv[0] is the
     // script path, Python-style).
     let mut prog_argv: Vec<String> = Vec::new();
+    // `--version`/`-V` as the first argument short-circuits before any file
+    // handling. Only the first arg: `oro script.oro -V` passes `-V` to the
+    // script (in sys.argv), matching CPython.
+    if matches!(args.get(1).map(String::as_str), Some("--version") | Some("-V")) {
+        println!("oro {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
+
     let (mode, path) = match args.as_slice() {
         [_, flag, path] if flag == "--tokens" => (Mode::Tokens, path),
         [_, flag, path] if flag == "--ast" => (Mode::Ast, path),

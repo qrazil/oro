@@ -23,3 +23,16 @@ path = "src/lib.rs"
 # so the dependency budget is well spent here. Everything else is std only.
 [dependencies]
 regex = "1"
+
+# Size-optimized release build for the distributed single binary.
+# panic = "abort" is safe here: Oro's exceptions are VM-level values, not Rust
+# panics, and nothing in the crate relies on unwinding (no catch_unwind, no
+# should_panic). It shaves the unwind tables. (Note: this means
+# `cargo test --release` is unsupported — the test harness needs unwinding — but
+# the gates use the default dev profile for tests, which is unaffected.)
+[profile.release]
+opt-level = "s"      # optimize for size, keeping the interpreter reasonably fast
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
