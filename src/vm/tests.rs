@@ -7,13 +7,17 @@ use crate::compiler::compile;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 
-/// Run `src` and return the module's local slots.
-fn run_locals(src: &str) -> Vec<Value> {
+/// Compile `src` as a module body.
+fn compile_module(src: &str) -> Rc<CodeObject> {
     let tokens = Lexer::new(src).tokenize().expect("lex");
     let program = Parser::new(tokens).parse().expect("parse");
-    let code = compile(&program).expect("compile");
+    compile(&program).expect("compile")
+}
+
+/// Run `src` and return the module's local slots.
+fn run_locals(src: &str) -> Vec<Value> {
     let mut vm = Vm::new(Vec::new());
-    vm.push_module_frame(code);
+    vm.push_module_frame(compile_module(src));
     vm.run_loop().expect("run");
     vm.task.last_locals
 }
@@ -1107,4 +1111,71 @@ fn a_list_of_ints_converts_to_bytes() {
         let e = run_err(src);
         assert!(e.message.contains("ValueError"), "{src}: got {}", e.message);
     }
+}
+
+// --- The Task split ----------------------------------------------------------
+
+/// Two `Task`s coexist in one `Vm` — the whole point of the M2 refactor.
+///
+/// Nothing in the language spawns a task yet, so this is the *structural*
+/// claim under test: a live stack segment can be parked in an ordinary local
+/// (exactly where a scheduler's ready queue would hold it), a different
+/// execution can run to completion in the same VM meanwhile, and the parked
+/// segment can be made current again and resumed to the right answer — while
+/// everything process-wide stays shared between the two.
+#[test]
+fn two_tasks_coexist_in_one_vm() {
+    let mut vm = Vm::new(Vec::new());
+
+    // Task A: a live frame stack, parked before executing a single instruction.
+    vm.push_module_frame(compile_module("import json\na = 6\nb = a * 7\n"));
+    assert_eq!(vm.task.frames.len(), 1);
+    let parked = std::mem::replace(&mut vm.task, Task::new());
+
+    // Task B runs to completion in the same VM, with its own everything.
+    assert!(vm.task.frames.is_empty(), "a fresh task starts with no stack segment");
+    vm.push_module_frame(compile_module("import json\nc = 40 + 2\n"));
+    vm.run_loop().expect("task B runs");
+    assert_eq!(int(&vm.task.last_locals[1]), 42);
+
+    // A's segment survived B's entire execution untouched.
+    assert_eq!(parked.frames.len(), 1);
+    assert_eq!(parked.frames[0].pc, 0);
+    assert!(parked.last_locals.is_empty());
+
+    // Make A current again and resume it.
+    let finished_b = std::mem::replace(&mut vm.task, parked);
+    vm.run_loop().expect("task A resumes");
+    assert_eq!(int(&vm.task.last_locals[2]), 42);
+
+    // B's result was not clobbered by A finishing. This is the assertion that
+    // fails if `last_locals` is left on `Vm`: A's outermost `return` sees an
+    // empty frame stack and overwrites it.
+    assert_eq!(int(&finished_b.last_locals[1]), 42);
+
+    // Process-wide state is genuinely shared, not duplicated: `import json`
+    // ran once and the second task's import was a cache hit.
+    assert_eq!(vm.module_cache.len(), 1, "the module cache is per-VM, not per-task");
+    assert!(!vm.frame_pool.is_empty(), "retired frames are pooled across tasks");
+}
+
+/// Per-execution state really is per-execution: a task parked mid-`finally`,
+/// mid-`except` and mid-`print` keeps its own copy of each.
+#[test]
+fn task_state_is_not_shared_between_tasks() {
+    let mut vm = Vm::new(Vec::new());
+    vm.task.handling.push(Value::Int(1));
+    vm.task.finally_why.push(Why::Normal);
+    vm.task.line = 17;
+    vm.task.col = 5;
+
+    let parked = std::mem::replace(&mut vm.task, Task::new());
+    assert!(vm.task.handling.is_empty());
+    assert!(vm.task.finally_why.is_empty());
+    assert_eq!((vm.task.line, vm.task.col), (0, 0));
+
+    vm.task = parked;
+    assert_eq!(vm.task.handling.len(), 1);
+    assert_eq!(vm.task.finally_why.len(), 1);
+    assert_eq!((vm.task.line, vm.task.col), (17, 5));
 }
