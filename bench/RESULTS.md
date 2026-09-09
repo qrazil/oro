@@ -65,3 +65,27 @@ Binary 2.12 MB → 2.58 MB (+464 KB). `size_of::<Op>()` unchanged at 48.
 | chain | 0.220s | 0.180s | **-18%** |
 
 The single cheapest change in the whole list: one word of TOML for 10-23%.
+
+### 2. `Op` 48 → 24 bytes (box the `BuildClass` payload)
+
+`BuildClass` carried an inline `Vec<Rc<str>>`, which alone set `size_of::<Op>()`
+to 48. Boxing it into `Rc<ClassSpec>` drops that to **24** — not 16: the
+remaining 16-byte payloads are the `Rc<str>` names (`LoadGlobal`, `LoadAttr`,
+`StoreAttr`, `ImportModule`) and the two-`usize` variants (`MatchDispatch`,
+`SetupLoop`), so 24 is the floor until names are interned (step 3).
+
+| bench | before | after | delta |
+|---|---|---|---|
+| fib | 0.235s | 0.230s | -2% |
+| loop | 0.749s | 0.727s | -3% |
+| strjoin | 0.130s | 0.125s | -4% |
+| dictops | 0.386s | 0.373s | -3% |
+| oo | 0.408s | 0.404s | -1% |
+| genpipe | 0.184s | 0.176s | -4% |
+| exc | 0.158s | 0.159s | +1% (noise) |
+| listbuild | 0.332s | 0.316s | **-5%** |
+| chain | 0.180s | 0.178s | -1% |
+
+Small but uniformly in the right direction, which is what halving the width of
+the per-dispatch `clone` and doubling instruction-cache density should look
+like. The real payoff is step 3, which this unblocks.

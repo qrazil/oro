@@ -89,3 +89,20 @@ fn integer_literal_promotes_to_bigint_when_too_large() {
         "an over-large literal must be stored as a BigInt constant"
     );
 }
+
+/// `Op` is the unit the dispatch loop streams through, so its width *is* the
+/// instruction-cache density of the interpreter. It was 48 bytes because
+/// `BuildClass` carried an inline `Vec<Rc<str>>` — one variant, compiled and
+/// executed once per program, taxing every instruction in every program.
+/// Boxing that payload was the fix; this assertion is what keeps it fixed.
+///
+/// If a new variant widens `Op`, box its payload (see `ClassSpec`) rather than
+/// raising this number.
+#[test]
+fn op_stays_narrow() {
+    assert_eq!(
+        std::mem::size_of::<Op>(),
+        24,
+        "Op grew — box the offending variant's payload instead of widening every instruction"
+    );
+}

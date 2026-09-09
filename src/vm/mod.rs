@@ -16,7 +16,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::ast::CmpOp;
-use crate::compiler::{CaptureSource, CodeObject, Op, ParamInfo, VarTarget};
+use crate::compiler::{CaptureSource, ClassSpec, CodeObject, Op, ParamInfo, VarTarget};
 use crate::value::{
     BoundMethod, Class, Function, Instance, IterState, MethodKind, OroDict, RangeVal,
     SuperProxy, Value,
@@ -786,8 +786,8 @@ impl Vm {
                         }
                     }
                 }
-                Op::BuildClass { name, members, has_base } => {
-                    self.build_class(name, members, has_base)?;
+                Op::BuildClass(spec) => {
+                    self.build_class(&spec)?;
                 }
                 Op::ImportModule(path) => {
                     return self.import_module(&path);
@@ -2153,20 +2153,15 @@ impl Vm {
 
     /// Assemble a class from the member values on the stack (see
     /// [`Op::BuildClass`]) and push it.
-    fn build_class(
-        &mut self,
-        name: Rc<str>,
-        member_names: Vec<Rc<str>>,
-        has_base: bool,
-    ) -> Result<(), RuntimeError> {
-        let member_vals = self.popn(member_names.len());
-        let base = if has_base {
+    fn build_class(&mut self, spec: &ClassSpec) -> Result<(), RuntimeError> {
+        let member_vals = self.popn(spec.members.len());
+        let base = if spec.has_base {
             match self.pop() {
                 Value::Class(c) => Some(c),
                 other => {
                     return Err(self.err(format!(
                         "base of class '{}' must be a class, not '{}'",
-                        name,
+                        spec.name,
                         other.type_label()
                     )))
                 }
@@ -2174,14 +2169,19 @@ impl Vm {
         } else {
             None
         };
-        let mut members = HashMap::with_capacity(member_names.len());
-        for (n, v) in member_names.into_iter().zip(member_vals) {
+        let mut members = HashMap::with_capacity(spec.members.len());
+        for (n, v) in spec.members.iter().zip(member_vals) {
             members.insert(n.to_string(), v);
         }
         // A class inherits exception-hood from its base, so user exceptions
         // (`class MyError(Exception)`) render and raise like built-in ones.
         let is_exception = base.as_ref().is_some_and(|b| b.is_exception);
-        let class = Class { name, base, members: RefCell::new(members), is_exception };
+        let class = Class {
+            name: spec.name.clone(),
+            base,
+            members: RefCell::new(members),
+            is_exception,
+        };
         self.push(Value::Class(Rc::new(class)));
         Ok(())
     }

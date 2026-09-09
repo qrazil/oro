@@ -20,7 +20,9 @@ use crate::parser::Parser;
 use crate::value::{OroDict, Value};
 
 use super::symbols::{Resolution, SymTable};
-use super::{CaptureSource, CodeObject, CompileError, FuncProto, Op, ParamInfo, VarTarget};
+use super::{
+    CaptureSource, ClassSpec, CodeObject, CompileError, FuncProto, Op, ParamInfo, VarTarget,
+};
 
 type CResult<T> = Result<T, CompileError>;
 
@@ -810,7 +812,8 @@ impl<'a> Codegen<'a> {
             }
         }
 
-        self.emit(Op::BuildClass { name: Rc::from(name), members, has_base }, line, col);
+        let spec = ClassSpec { name: Rc::from(name), members, has_base };
+        self.emit(Op::BuildClass(Rc::new(spec)), line, col);
         self.emit_store(&Expr::Name { name: name.to_string(), line, col })?;
         Ok(())
     }

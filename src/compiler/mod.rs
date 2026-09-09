@@ -50,7 +50,26 @@ pub enum VarTarget {
     Cell(u16),
 }
 
+/// The static description of one `class` statement: the class's name, its
+/// members in stack order, and whether a base class was pushed beneath them.
+///
+/// This lives behind an `Rc` in [`Op::BuildClass`] rather than inline. Inline,
+/// its `Vec<Rc<str>>` alone made *every* `Op` 48 bytes wide — a `class`
+/// statement, compiled once per program and executed once, was setting the
+/// cache density of the entire instruction stream.
+#[derive(Debug)]
+pub struct ClassSpec {
+    pub name: Rc<str>,
+    pub members: Vec<Rc<str>>,
+    pub has_base: bool,
+}
+
 /// A single instruction. Jump targets are absolute instruction indices.
+///
+/// Kept deliberately narrow: the dispatch loop streams through `ops` linearly,
+/// so every byte of `Op` is a byte of instruction cache. No variant may carry
+/// an inline `Vec` or `String` — box it (see [`ClassSpec`]). `compiler::tests`
+/// asserts the size so a careless variant cannot quietly widen it again.
 #[derive(Debug, Clone)]
 pub enum Op {
     /// Push a constant from the pool.
@@ -125,10 +144,13 @@ pub enum Op {
     /// Pop the object (top) then the value; set `obj.<name> = value`. Only
     /// user-class instances have settable attributes.
     StoreAttr(Rc<str>),
-    /// Build a class from the base (if `has_base`, below the members) and the
-    /// `members.len()` member values above it (in `members` order), then push
-    /// the resulting class. Members are methods and class-level attributes.
-    BuildClass { name: Rc<str>, members: Vec<Rc<str>>, has_base: bool },
+    /// Build a class from the base (if `spec.has_base`, below the members) and
+    /// the `spec.members.len()` member values above it (in `spec.members`
+    /// order), then push the resulting class. Members are methods and
+    /// class-level attributes.
+    ///
+    /// The payload sits behind an `Rc` on purpose — see [`ClassSpec`].
+    BuildClass(Rc<ClassSpec>),
     /// Push a `super()` proxy for the current method's `super_ctx`.
     LoadSuper,
     /// Import the module named by the dotted path and push it (bound by the
