@@ -23,6 +23,17 @@
 //! it changes are marked "where the green-thread swap lands" in
 //! `crate::stream` — nothing outside those three lines needs to know.
 //!
+//! **One thing the swap must do that is not visible today**, recorded here so
+//! it is not rediscovered as a panic: all three of those calls currently hold a
+//! `RefCell` borrow of the stream's interior *across* the blocking syscall.
+//! That is harmless while blocking means the whole VM is stopped — nothing else
+//! can run to observe the borrow. It stops being harmless the moment a parked
+//! task can be suspended there, because a second task calling `close()` on the
+//! same stream would hit `BorrowMutError` and panic the interpreter. Parking
+//! therefore has to release the borrow before it yields and re-take it on
+//! resume, which is a constraint on the shape of `Step::Park`, not on this
+//! module.
+//!
 //! Not here, on purpose: UDP (not a stream, so it cannot satisfy the io
 //! protocol), Unix domain sockets, TLS, and `SO_REUSEPORT` scale-out.
 
