@@ -115,3 +115,49 @@ being a refcount bump.
 Biggest single win on the dispatch-bound benchmark, exactly where a denser
 instruction stream should show up. `fib` barely moves — its cost is not fetch,
 it is the two heap allocations per call (Tier 2).
+
+### 4. One borrow for fetch + pc advance
+
+The fetch borrowed the frame stack immutably to read the instruction, dropped
+the borrow, then took a second mutable borrow purely to write `pc + 1`. Now
+that `Op` is `Copy`, the read ends its own borrow and both fit in one
+`last_mut()`.
+
+| bench | before | after | delta |
+|---|---|---|---|
+| fib | 0.226s | 0.220s | -3% |
+| loop | 0.620s | 0.610s | -2% |
+| strjoin | 0.122s | 0.119s | -2% |
+| dictops | 0.363s | 0.353s | -3% |
+| oo | 0.379s | 0.384s | +1% (noise) |
+| genpipe | 0.161s | 0.157s | -2% |
+| exc | 0.154s | 0.141s | **-8%** |
+| listbuild | 0.308s | 0.298s | -3% |
+| chain | 0.175s | 0.167s | **-5%** |
+
+### 5. REVERTED — lazy error spans
+
+**Tried and rejected.** The loop reads `frame.code.spans[pc]` and stores
+`self.line`/`self.col` on every instruction, purely so a diagnostic can name a
+position. Replacing that with a lazily-resolved `(err_code, err_pc)` pair —
+storing only the pc per instruction and refreshing the cached code object with
+an `Rc::ptr_eq` check when the fetch crosses into a different one — measured as
+a **regression**, and not a small one:
+
+| bench | before | after | delta |
+|---|---|---|---|
+| fib | 0.220s | 0.222s | +1% |
+| loop | 0.610s | 0.685s | **+12%** |
+| genpipe | 0.157s | 0.170s | **+8%** |
+
+The premise was wrong. `spans` is walked in lockstep with `ops`, so the load is
+prefetched and effectively free, and the two adjacent `u32` stores fold into
+one. The replacement swapped that for a dependent load of `Option<Rc<…>>`, a
+pointer compare and a branch — strictly more work on the hot path to save
+something that was not costing anything.
+
+(Correctness of the reverted version was verified first: byte-identical
+diagnostics across eight targeted error programs — including the ones where the
+faulting frame is popped before the error is built, such as `__init__() should
+return None` and an f-string format spec applied after `__str__` returns — plus
+all 65 corpus programs. It was reverted purely on the numbers.)
