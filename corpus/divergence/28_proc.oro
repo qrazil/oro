@@ -1,7 +1,9 @@
 # DIVERGENCE: Oro's process module is `proc`, not `subprocess`, and its defaults
-# differ from CPython's on purpose — output is streamed live *and* captured, and
-# a nonzero exit raises CommandError. Not runnable under CPython, so this is
-# checked against a reviewed .expected rather than against the oracle.
+# differ from CPython's on purpose — output is streamed live *and* captured, a
+# nonzero exit raises CommandError, and `.stdout`/`.stderr` are `bytes` (a child
+# emits octets; decode with `.to_str()` where the program knows it is text). Not
+# runnable under CPython, so this is checked against a reviewed .expected rather
+# than against the oracle.
 #
 # Every run here passes quiet=True. Streaming is what the default does, but the
 # order in which a *streamed* child's output interleaves with this script's own
@@ -12,9 +14,21 @@ import proc
 r = proc.run(["echo", "hello world"], quiet=True)
 print("rc", r.returncode, "ok", r.ok, "truncated", r.truncated)
 print("captured", repr(r.stdout))
+print("decoded", repr(r.stdout.strip().to_str()))
+print("split", r.stdout.strip().split(b" "))
 
 f = proc.run(["sh", "-c", "echo oops >&2; exit 3"], check=False, quiet=True)
 print("rc", f.returncode, "ok", f.ok, "stderr", repr(f.stderr))
+
+# A child is free to emit octets that are not text at all. They arrive intact
+# rather than mangled into replacement characters, which is the whole reason
+# the streams are bytes.
+raw = proc.run(["printf", "\\377\\376"], quiet=True)
+print("raw", repr(raw.stdout), len(raw.stdout))
+try:
+    raw.stdout.to_str()
+except ValueError as e:
+    print("undecodable:", e)
 
 try:
     proc.run(["sh", "-c", "exit 9"], quiet=True)

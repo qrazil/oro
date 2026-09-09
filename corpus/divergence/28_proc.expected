@@ -1,6 +1,10 @@
 rc 0 ok True truncated False
-captured 'hello world\n'
-rc 3 ok False stderr 'oops\n'
+captured b'hello world\n'
+decoded 'hello world'
+split [b'hello', b'world']
+rc 3 ok False stderr b'oops\n'
+raw b'\xff\xfe' 2
+undecodable: bytes could not be decoded as UTF-8: invalid byte 0xff at position 0
 raised: command failed: sh -c exit 9 exited with code 9
 missing program raises FileNotFoundError
 cpython-era kwarg rejected

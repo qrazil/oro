@@ -397,23 +397,27 @@ written on top of it.
   by line. It closes when its last reference drops (see the `with`-free file
   lifetime above). Missing files and permission errors raise `FileNotFoundError`
   / `PermissionError`.
-- **`subprocess`** — exactly one function, `run(args, cwd=…, env=…, timeout=…)`,
-  returning a `CompletedProcess` with `.returncode`, `.stdout`, `.stderr` (the
-  CPython field names). `args` is **always a list of separate strings** that go
-  straight to `execve` — there is **no `shell=True`**, so shell injection is
-  impossible by construction (need a shell? write `["sh", "-c", cmd]` and own
-  it). A bare string, or a list whose program contains whitespace
-  (`["git status"]`), is a designed error rather than a silent misfire — Oro
-  won't reimplement shell quoting to split it.
+- **`proc`** — exactly one function,
+  `run(args, check=…, quiet=…, cwd=…, env=…, timeout=…)`, returning a
+  `CompletedProcess` with `.returncode`, `.ok`, `.truncated`, `.stdout`,
+  `.stderr`. `args` is **always a list of separate strings** that go straight to
+  `execve` — there is **no `shell=True`**, so shell injection is impossible by
+  construction (need a shell? write `["sh", "-c", cmd]` and own it). A bare
+  string, or a list whose program contains whitespace (`["git status"]`), is a
+  designed error rather than a silent misfire — Oro won't reimplement shell
+  quoting to split it.
 
-  **Capture follows CPython exactly**, because getting this wrong would break the
-  subset guarantee silently rather than loudly. By default the child *inherits*
-  this process's stdout/stderr — its output streams out live, and `.stdout` /
-  `.stderr` are `None`. Pass `capture_output=True, text=True` to capture them as
-  UTF-8 text instead. `capture_output=True` *without* `text=True` is rejected:
-  CPython would hand back `bytes` there, Oro has no bytes type, and rejecting
-  what Python accepts is safe where quietly returning a `str` instead would not
-  be. Missing/inexecutable programs raise `FileNotFoundError` /
+  The defaults are for orchestration scripts, not for CPython parity — which is
+  why the module has a different name (see [Migrating](#migrating-from-01)).
+  Output is **both** streamed live and captured, so no script has to choose
+  between watching a build and grepping its output; `quiet=True` drops the live
+  tee. A nonzero exit **raises** `CommandError` with the tail of stderr in the
+  message, because a failed command nobody checked is one of the great sources
+  of silent breakage; `check=False` allows one.
+
+  `.stdout` and `.stderr` are **`bytes`**: a child emits octets, and it may well
+  emit a JPEG. Decode with `.to_str()` at the point your program knows it is
+  text. Missing/inexecutable programs raise `FileNotFoundError` /
   `PermissionError`; a `timeout` raises `TimeoutError`.
 - **`re`** — `search`, `findall`, `finditer`, `fullmatch`, `sub`, `split`,
   `compile`. Backed by the `regex` crate's Thompson-NFA engine, so matching is

@@ -2347,7 +2347,8 @@ impl Vm {
     ///
     /// The defaults are chosen for orchestration scripts rather than for CPython
     /// compatibility: output is **both** streamed live and captured, and a
-    /// nonzero exit **raises** `CommandError`.
+    /// nonzero exit **raises** `CommandError`. The captured streams are `bytes`,
+    /// since a child emits octets and nothing here knows whether they are text.
     fn do_proc_run(
         &mut self,
         args: Vec<Value>,
@@ -2422,7 +2423,8 @@ impl Vm {
                 "capture_output" | "text" => {
                     return Err(self.err(format!(
                         "proc.run() does not take '{k}' — it always captures stdout/stderr as \
-                         text, and streams them live unless quiet=True."
+                         bytes, and streams them live unless quiet=True. Call `.to_str()` on \
+                         one to decode it."
                     )))
                 }
                 other => {
@@ -2465,14 +2467,15 @@ impl Vm {
         };
 
         let returncode = output.status.code().unwrap_or(-1) as i64;
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
         // A command that fails and is never checked is one of the great sources
         // of silent breakage in shell scripts, so `check` defaults to on. The
         // message carries the tail of stderr: by the time you are reading it,
         // that is what you wanted, and going to fetch it is pure friction.
         if check && returncode != 0 {
+            // The message is for a human, so it is the one place the captured
+            // octets are decoded lossily rather than handed back as bytes.
+            let stderr = String::from_utf8_lossy(&output.stderr);
             let tail: Vec<&str> = stderr.trim_end().lines().rev().take(3).collect();
             let mut detail = String::new();
             for line in tail.iter().rev() {
@@ -2492,8 +2495,12 @@ impl Vm {
         fields.insert(Rc::from("returncode"), Value::Int(returncode));
         fields.insert(Rc::from("ok"), Value::Bool(returncode == 0));
         fields.insert(Rc::from("truncated"), Value::Bool(truncated));
-        fields.insert(Rc::from("stdout"), Value::str(stdout));
-        fields.insert(Rc::from("stderr"), Value::str(stderr));
+        // A child's streams are octets. It may emit a JPEG, or a UTF-8
+        // sequence cut in half by the capture limit, and decoding either
+        // lossily is how a pipeline quietly corrupts data. Decode with
+        // `.to_str()` at the point the program knows it is text.
+        fields.insert(Rc::from("stdout"), Value::bytes(output.stdout));
+        fields.insert(Rc::from("stderr"), Value::bytes(output.stderr));
         fields.insert(Rc::from("args"), Value::List(Rc::new(RefCell::new(list))));
         self.push(Value::Instance(Rc::new(Instance {
             class: self.proc_class.clone(),

@@ -667,8 +667,9 @@ fn proc_rejects_bare_string() {
 
 #[test]
 fn proc_runs_and_captures() {
-    // quiet=True suppresses the live tee; the capture happens either way.
-    let src = "import proc\nr = proc.run([\"echo\", \"hi\"], quiet=True)\nout = r.returncode.to_str() + \":\" + r.stdout.strip()\n";
+    // quiet=True suppresses the live tee; the capture happens either way. The
+    // captured streams are octets, so decoding is explicit.
+    let src = "import proc\nr = proc.run([\"echo\", \"hi\"], quiet=True)\nout = r.returncode.to_str() + \":\" + r.stdout.strip().to_str()\n";
     assert_eq!(fstr(src), "0:hi");
 }
 
