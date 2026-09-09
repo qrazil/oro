@@ -351,9 +351,40 @@ enum StrCont {
     FormatSpec(String),
 }
 
+/// One unit of execution: everything that describes *what is running right
+/// now*, as opposed to what is true of the whole process.
+///
+/// The split exists so that a second execution is structurally expressible.
+/// A generator suspends a single [`Frame`]; a green thread has to suspend a
+/// whole *stack segment* — the frame stack plus every piece of interpreter
+/// state that hangs off it (the source position a diagnostic will name, the
+/// in-flight `print`/stringify/sort/sequence/materialise jobs, the exception
+/// being handled, why each `finally` is running, which generators are being
+/// driven). All of that lived directly on [`Vm`], which is exactly what made
+/// "one execution per VM" a structural property rather than a choice.
+///
+/// The VM owns its current task **by value** (`Vm::task`), not behind a
+/// pointer. Reaching a per-execution field is still one constant offset from
+/// `self` — the offsets simply moved — so the hot dispatch path pays nothing.
+/// Switching tasks is a `std::mem::swap` of this struct with a parked one; a
+/// `Box<Task>` would have put a dependent load on every frame access instead.
+struct Task {
+    /// The frame stack. Never the Rust call stack — see the module docs.
+    frames: Vec<Frame>,
+}
+
+impl Task {
+    /// A task with nothing running in it yet. Every field is an empty `Vec`,
+    /// which does not allocate, so a task costs one struct until it runs.
+    fn new() -> Task {
+        Task { frames: Vec::new() }
+    }
+}
+
 /// The virtual machine.
 pub struct Vm {
-    frames: Vec<Frame>,
+    /// The execution currently in flight. See [`Task`].
+    task: Task,
     /// Retired frames, kept for their buffer capacity. See [`Vm::take_frame`].
     frame_pool: Vec<Frame>,
     line: u32,
@@ -436,7 +467,7 @@ pub fn run_main(code: Rc<CodeObject>, argv: Vec<String>) -> Result<i32, RuntimeE
 impl Vm {
     fn new(argv: Vec<String>) -> Vm {
         Vm {
-            frames: Vec::new(),
+            task: Task::new(),
             frame_pool: Vec::new(),
             line: 0,
             col: 0,
@@ -531,7 +562,7 @@ impl Vm {
             super_ctx: None,
             blocks: Vec::new(),
         };
-        self.frames.push(frame);
+        self.task.frames.push(frame);
     }
 }
 
@@ -539,7 +570,7 @@ impl Vm {
     // --- Operand-stack helpers (always the top frame) ------------------------
 
     fn top(&mut self) -> &mut Frame {
-        self.frames.last_mut().expect("no active frame")
+        self.task.frames.last_mut().expect("no active frame")
     }
 
     fn push(&mut self, v: Value) {
@@ -588,7 +619,7 @@ impl Vm {
             // register move, and the borrow can end before `step` runs (which
             // it must: executing a call or a return restructures `frames`).
             let op = {
-                let frame = self.frames.last_mut().expect("no active frame");
+                let frame = self.task.frames.last_mut().expect("no active frame");
                 let pc = frame.pc;
                 frame.pc = pc + 1;
                 let (l, c) = frame.code.spans[pc];
@@ -619,7 +650,7 @@ impl Vm {
     fn step(&mut self, op: Op) -> Result<Step, RuntimeError> {
             match op {
                 Op::LoadConst(i) => {
-                    let v = self.frames.last().unwrap().code.consts[i as usize].clone();
+                    let v = self.task.frames.last().unwrap().code.consts[i as usize].clone();
                     self.push(v);
                 }
                 Op::LoadNone => self.push(Value::None),
@@ -662,7 +693,7 @@ impl Vm {
                     // cache; see `CodeObject::builtin_cache` for why they are
                     // the only half that is cached.
                     let idx = n as usize;
-                    let frame = self.frames.last().expect("no active frame");
+                    let frame = self.task.frames.last().expect("no active frame");
                     let hit = frame.code.builtin_cache.borrow()[idx].clone();
                     match hit {
                         Some(v) => self.push(v),
@@ -854,13 +885,13 @@ impl Vm {
                     self.push(r);
                 }
                 Op::LoadAttr(n) => {
-                    let name = self.frames.last().unwrap().code.names[n as usize].clone();
+                    let name = self.task.frames.last().unwrap().code.names[n as usize].clone();
                     let obj = self.pop();
                     let r = self.wrap(get_attr(&obj, &name))?;
                     self.push(r);
                 }
                 Op::StoreAttr(n) => {
-                    let name = self.frames.last().unwrap().code.names[n as usize].clone();
+                    let name = self.task.frames.last().unwrap().code.names[n as usize].clone();
                     let obj = self.pop();
                     let value = self.pop();
                     match &obj {
@@ -878,11 +909,11 @@ impl Vm {
                     }
                 }
                 Op::BuildClass(i) => {
-                    let spec = self.frames.last().unwrap().code.classes[i as usize].clone();
+                    let spec = self.task.frames.last().unwrap().code.classes[i as usize].clone();
                     self.build_class(&spec)?;
                 }
                 Op::ImportModule(n) => {
-                    let path = self.frames.last().unwrap().code.names[n as usize].clone();
+                    let path = self.task.frames.last().unwrap().code.names[n as usize].clone();
                     return self.import_module(&path);
                 }
                 Op::LoadSuper => {
@@ -1007,7 +1038,7 @@ impl Vm {
                         match frame {
                             Some(frame) => {
                                 self.gen_stack.push((gen.clone(), GenDriver::ForLoop(target)));
-                                self.frames.push(frame);
+                                self.task.frames.push(frame);
                             }
                             None => {
                                 self.pop();
@@ -1041,7 +1072,7 @@ impl Vm {
                     let value = self.pop();
                     // Suspend this generator frame back into its GenBox and hand
                     // the value to whatever is driving it.
-                    let frame = self.frames.pop().expect("yield with no frame");
+                    let frame = self.task.frames.pop().expect("yield with no frame");
                     let (gen, driver) = self.gen_stack.pop().expect("yield outside a generator");
                     gen.borrow_mut().frame = Some(Box::new(frame));
                     match driver {
@@ -1136,7 +1167,7 @@ impl Vm {
     }
 
     fn unbound_local_msg(&self, slot: u16) -> String {
-        let code = &self.frames.last().unwrap().code;
+        let code = &self.task.frames.last().unwrap().code;
         // A name that also exists at module scope but was made local by an
         // assignment (no `global`) is the classic footgun — teach the fix.
         for (s, name) in &code.shadow_hints {
@@ -1165,9 +1196,9 @@ impl Vm {
     // --- Closures ------------------------------------------------------------
 
     fn make_function(&mut self, idx: usize) -> Result<(), RuntimeError> {
-        let proto = self.frames.last().unwrap().code.protos[idx].clone();
+        let proto = self.task.frames.last().unwrap().code.protos[idx].clone();
         let defaults = self.popn(proto.n_defaults);
-        let frame = self.frames.last().unwrap();
+        let frame = self.task.frames.last().unwrap();
         let freevars: Vec<Rc<RefCell<Value>>> = proto
             .captures
             .iter()
@@ -1204,7 +1235,7 @@ impl Vm {
     /// Everything else — builtins, methods, classes, `*args`, keywords, a
     /// wrong arity that owes a diagnostic — falls through to the general path.
     fn fast_call_target(&self, n: usize) -> Option<Rc<Function>> {
-        let stack = &self.frames.last()?.stack;
+        let stack = &self.task.frames.last()?.stack;
         let callee = stack.get(stack.len().checked_sub(n + 1)?)?;
         let f = match callee {
             Value::Func(f) => f,
@@ -1224,13 +1255,13 @@ impl Vm {
     /// Move `n` arguments from the caller's operand stack straight into a fresh
     /// frame's slots. No argument vector, no re-copy — the values are moved once.
     fn call_fast(&mut self, func: Rc<Function>, n: usize) -> Result<(), RuntimeError> {
-        if self.frames.len() >= MAX_FRAMES {
+        if self.task.frames.len() >= MAX_FRAMES {
             return Err(self.err("maximum recursion depth exceeded"));
         }
         let mut frame = self.take_frame(func.code.clone(), &func.freevars);
         let params = &func.code.params;
         {
-            let caller = self.frames.last_mut().expect("no active frame");
+            let caller = self.task.frames.last_mut().expect("no active frame");
             let base = caller.stack.len() - n;
             for (p, v) in params.iter().zip(caller.stack.drain(base..)) {
                 store_param(&mut frame, p.target, v);
@@ -1242,7 +1273,7 @@ impl Vm {
         for (i, p) in params.iter().enumerate().skip(n) {
             store_param(&mut frame, p.target, func.defaults[i - first_defaulted].clone());
         }
-        self.frames.push(frame);
+        self.task.frames.push(frame);
         Ok(())
     }
 
@@ -1383,7 +1414,7 @@ impl Vm {
                 ),
             },
             Value::Func(f) => {
-                if self.frames.len() >= MAX_FRAMES {
+                if self.task.frames.len() >= MAX_FRAMES {
                     return Err(self.err("maximum recursion depth exceeded"));
                 }
                 let frame = self.bind_call(&f, None, args, kwargs)?;
@@ -1393,7 +1424,7 @@ impl Vm {
                     let gen = crate::value::GenBox { done: false, frame: Some(Box::new(frame)) };
                     self.push(Value::Generator(Rc::new(RefCell::new(gen))));
                 } else {
-                    self.frames.push(frame);
+                    self.task.frames.push(frame);
                 }
                 Ok(())
             }
@@ -1414,13 +1445,13 @@ impl Vm {
         kwargs: Vec<(String, Value)>,
         action: ReturnAction,
     ) -> Result<(), RuntimeError> {
-        if self.frames.len() >= MAX_FRAMES {
+        if self.task.frames.len() >= MAX_FRAMES {
             return Err(self.err("maximum recursion depth exceeded"));
         }
         let mut frame = self.bind_call(&func, Some(receiver.clone()), args, kwargs)?;
         frame.ret_action = action;
         frame.super_ctx = Some((defclass, receiver));
-        self.frames.push(frame);
+        self.task.frames.push(frame);
         Ok(())
     }
 
@@ -1652,7 +1683,7 @@ impl Vm {
 
             match func {
                 Value::Func(f) => {
-                    if self.frames.len() >= MAX_FRAMES {
+                    if self.task.frames.len() >= MAX_FRAMES {
                         return Err(self.err("maximum recursion depth exceeded"));
                     }
                     if f.code.is_generator {
@@ -1663,7 +1694,7 @@ impl Vm {
                     }
                     let mut frame = self.bind_call(&f, None, call_args, Vec::new())?;
                     frame.ret_action = ReturnAction::DriveSeq;
-                    self.frames.push(frame);
+                    self.task.frames.push(frame);
                     return Ok(());
                 }
                 Value::Builtin(b) => {
@@ -1676,7 +1707,7 @@ impl Vm {
                             self.wrap(crate::builtins::call_method(&m.receiver, name, call_args))?
                         }
                         MethodKind::User { func, defclass } => {
-                            if self.frames.len() >= MAX_FRAMES {
+                            if self.task.frames.len() >= MAX_FRAMES {
                                 return Err(self.err("maximum recursion depth exceeded"));
                             }
                             return self.invoke_user(
@@ -1977,11 +2008,11 @@ impl Vm {
             };
             match frame {
                 Some(frame) => {
-                    if self.frames.len() >= MAX_FRAMES {
+                    if self.task.frames.len() >= MAX_FRAMES {
                         return Err(self.err("maximum recursion depth exceeded"));
                     }
                     self.gen_stack.push((gen, GenDriver::Materialize));
-                    self.frames.push(frame);
+                    self.task.frames.push(frame);
                     return Ok(());
                 }
                 None => {
@@ -2099,7 +2130,7 @@ impl Vm {
                 Value::Func(f) => {
                     // A plain (non-method) key function: bind it the same way an
                     // ordinary call does, but route its return into the sort job.
-                    if self.frames.len() >= MAX_FRAMES {
+                    if self.task.frames.len() >= MAX_FRAMES {
                         return Err(self.err("maximum recursion depth exceeded"));
                     }
                     if f.code.is_generator {
@@ -2107,7 +2138,7 @@ impl Vm {
                     }
                     let mut frame = self.bind_call(&f, None, vec![item], Vec::new())?;
                     frame.ret_action = ReturnAction::DriveSort;
-                    self.frames.push(frame);
+                    self.task.frames.push(frame);
                     return Ok(());
                 }
                 // A native key (len, str, …) cannot re-enter Oro, so it can be
@@ -2591,14 +2622,14 @@ impl Vm {
             blocks: Vec::new(),
         };
         frame.pc = 0;
-        self.frames.push(frame);
+        self.task.frames.push(frame);
         Ok(Step::Next)
     }
 
     /// Whether the running frame is the body of a stdlib module shipped inside
     /// the binary.
     fn in_stdlib_module(&self) -> bool {
-        match self.frames.last().map(|f| &f.ret_action) {
+        match self.task.frames.last().map(|f| &f.ret_action) {
             Some(ReturnAction::BuildModule(p)) => stdlib::source_for(p).is_some(),
             _ => false,
         }
@@ -2712,8 +2743,8 @@ impl Vm {
             // Except blocks are simply discarded on the way out.
         }
 
-        let mut frame = self.frames.pop().expect("return with no frame");
-        if self.frames.is_empty() {
+        let mut frame = self.task.frames.pop().expect("return with no frame");
+        if self.task.frames.is_empty() {
             self.last_locals = frame.locals;
             return Ok(Step::Done(value));
         }
@@ -2837,7 +2868,7 @@ impl Vm {
     /// A generator frame reached `return` (or fell off the end): mark it done
     /// and route its driver's `for` loop to the exhaustion target.
     fn generator_stop(&mut self) -> Result<Step, RuntimeError> {
-        if let Some(frame) = self.frames.pop() {
+        if let Some(frame) = self.task.frames.pop() {
             self.recycle(frame);
         }
         let (gen, driver) = self.gen_stack.pop().expect("generator stop outside a driver");
@@ -2889,14 +2920,14 @@ impl Vm {
     /// catches it, returns the uncaught error to end the run.
     fn unwind(&mut self, exc: Value) -> Option<RuntimeError> {
         loop {
-            let block = self.frames.last_mut().and_then(|f| f.blocks.pop());
+            let block = self.task.frames.last_mut().and_then(|f| f.blocks.pop());
             match block {
                 Some(b) => {
                     // Jobs started inside this block can never be completed now
                     // that the exception has blown past their drivers, so they
                     // are dropped along with the operand stack they belonged to.
                     self.truncate_jobs(b.jobs);
-                    let frame = self.frames.last_mut().unwrap();
+                    let frame = self.task.frames.last_mut().unwrap();
                     frame.stack.truncate(b.stack_len);
                     match b.kind {
                         BlockKind::Except => {
@@ -2916,10 +2947,10 @@ impl Vm {
                 }
                 None => {
                     // No handler in this frame: discard it and try the caller.
-                    if let Some(frame) = self.frames.pop() {
+                    if let Some(frame) = self.task.frames.pop() {
                         self.recycle(frame);
                     }
-                    if self.frames.is_empty() {
+                    if self.task.frames.is_empty() {
                         // An uncaught SystemExit sets the process exit code.
                         if let Value::Instance(i) = &exc {
                             if i.class.name.as_ref() == "SystemExit" {
