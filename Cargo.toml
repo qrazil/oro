@@ -24,14 +24,21 @@ path = "src/lib.rs"
 [dependencies]
 regex = "1"
 
-# Size-optimized release build for the distributed single binary.
+# Release build for the distributed single binary.
+#
+# opt-level = 3, not "s". This was `"s"`, on the theory that size optimisation
+# "keeps the interpreter reasonably fast". Measured, it does not: an interpreter
+# is one enormous dispatch loop, and `"s"` is exactly the setting that declines
+# to inline the operand-stack helpers into it. Level 3 is worth 15-25% across
+# the benchmark suite (see bench/RESULTS.md) for ~470 KB of binary — a trade a
+# language runtime should take every time.
+#
 # panic = "abort" is safe here: Oro's exceptions are VM-level values, not Rust
 # panics, and nothing in the crate relies on unwinding (no catch_unwind, no
-# should_panic). It shaves the unwind tables. (Note: this means
-# `cargo test --release` is unsupported — the test harness needs unwinding — but
-# the gates use the default dev profile for tests, which is unaffected.)
+# should_panic). It shaves the unwind tables. Cargo ignores the `panic` setting
+# when it builds test harnesses, so `cargo test --release` works normally.
 [profile.release]
-opt-level = "s"      # optimize for size, keeping the interpreter reasonably fast
+opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"

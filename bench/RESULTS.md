@@ -45,7 +45,23 @@ harness checks oro and CPython agree before reporting a time.
 
 ## Per-optimization log
 
-Each row is best-of-3 against the row above it. Regressions and no-ops are kept
-in the table on purpose.
+Each step is best-of-3, compared against the step above it. Regressions and
+no-ops are kept in the log on purpose.
 
-_(appended as work lands)_
+### 1. `opt-level = "s"` → `3`
+
+Binary 2.12 MB → 2.58 MB (+464 KB). `size_of::<Op>()` unchanged at 48.
+
+| bench | before | after | delta |
+|---|---|---|---|
+| fib | 0.295s | 0.235s | **-20%** |
+| loop | 0.897s | 0.749s | **-17%** |
+| strjoin | 0.144s | 0.130s | -10% |
+| dictops | 0.430s | 0.386s | -10% |
+| oo | 0.482s | 0.408s | **-15%** |
+| genpipe | 0.215s | 0.184s | **-14%** |
+| exc | 0.204s | 0.158s | **-23%** |
+| listbuild | 0.416s | 0.332s | **-20%** |
+| chain | 0.220s | 0.180s | **-18%** |
+
+The single cheapest change in the whole list: one word of TOML for 10-23%.
