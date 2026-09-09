@@ -40,6 +40,11 @@ pub enum Value {
     Big(Rc<BigInt>),
     Float(f64),
     Str(Rc<OroStr>),
+    /// An immutable string of octets (`b"..."`). A second type rather than a
+    /// reinterpretation of `Str`: `str` is a sequence of characters, `bytes` a
+    /// sequence of numbers, and each tells the truth about what it holds (see
+    /// `docs/stdlib-server-design.md` §1).
+    Bytes(Rc<Vec<u8>>),
     List(Rc<RefCell<Vec<Value>>>),
     Tuple(Rc<Vec<Value>>),
     Dict(Rc<RefCell<OroDict>>),
@@ -354,6 +359,7 @@ enum HKey {
     /// Only non-integral floats reach here (integral ones normalise to `Int`).
     Float(u64),
     Str(String),
+    Bytes(Vec<u8>),
     Tuple(Vec<HKey>),
 }
 
@@ -373,6 +379,7 @@ impl HKey {
                 }
             }
             Value::Str(s) => HKey::Str(s.s.clone()),
+            Value::Bytes(b) => HKey::Bytes((**b).clone()),
             Value::Tuple(items) => {
                 let mut parts = Vec::with_capacity(items.len());
                 for it in items.iter() {
@@ -391,6 +398,11 @@ impl Value {
     /// Build a string value, computing the ASCII flag once.
     pub fn str(s: impl Into<String>) -> Value {
         Value::Str(OroStr::new(s.into()))
+    }
+
+    /// Build a byte-string value.
+    pub fn bytes(b: impl Into<Vec<u8>>) -> Value {
+        Value::Bytes(Rc::new(b.into()))
     }
 
     /// Build an integer value from a `BigInt`, demoting to inline `Int` when it
@@ -412,6 +424,7 @@ impl Value {
             Value::Big(_) => true, // never zero by invariant
             Value::Float(f) => *f != 0.0,
             Value::Str(s) => !s.s.is_empty(),
+            Value::Bytes(b) => !b.is_empty(),
             Value::List(l) => !l.borrow().is_empty(),
             Value::Tuple(t) => !t.is_empty(),
             Value::Dict(d) => !d.borrow().is_empty(),
@@ -435,6 +448,7 @@ impl Value {
             Value::Int(_) | Value::Big(_) => "int",
             Value::Float(_) => "float",
             Value::Str(_) => "str",
+            Value::Bytes(_) => "bytes",
             Value::List(_) => "list",
             Value::Tuple(_) => "tuple",
             Value::Dict(_) => "dict",
@@ -487,6 +501,7 @@ impl Value {
             Value::Big(b) => b.to_string(),
             Value::Float(f) => format_float(*f),
             Value::Str(s) => repr_str(&s.s),
+            Value::Bytes(b) => repr_bytes(b),
             Value::List(l) => {
                 let mut out = String::from("[");
                 for (i, v) in l.borrow().iter().enumerate() {
@@ -573,6 +588,7 @@ impl Value {
         match (self, other) {
             (Value::None, Value::None) => true,
             (Value::Str(a), Value::Str(b)) => a.s == b.s,
+            (Value::Bytes(a), Value::Bytes(b)) => a == b,
             (Value::List(a), Value::List(b)) => seq_eq(&a.borrow(), &b.borrow()),
             (Value::Tuple(a), Value::Tuple(b)) => seq_eq(a, b),
             (Value::Dict(a), Value::Dict(b)) => {
@@ -599,6 +615,7 @@ impl Value {
         }
         match (self, other) {
             (Value::Str(a), Value::Str(b)) => Ok(a.s.cmp(&b.s)),
+            (Value::Bytes(a), Value::Bytes(b)) => Ok(a.cmp(b)),
             (Value::List(a), Value::List(b)) => seq_cmp(&a.borrow(), &b.borrow()),
             (Value::Tuple(a), Value::Tuple(b)) => seq_cmp(a, b),
             _ => Err(format!(
@@ -769,3 +786,36 @@ fn repr_str(s: &str) -> String {
     out.push('\'');
     out
 }
+
+/// Produce a single-quoted Python-style repr of a byte string, `b'...'`. Only
+/// printable ASCII is emitted literally; every other octet becomes `\xNN`,
+/// because a byte is a number and there is no character to show for it. The
+/// quote flips to `"` when the data holds a `'` and no `"`, so the common case
+/// never needs an escaped quote — the rule CPython uses.
+fn repr_bytes(b: &[u8]) -> String {
+    let quote = if b.contains(&b'\'') && !b.contains(&b'"') { '"' } else { '\'' };
+    let mut out = String::with_capacity(b.len() + 3);
+    out.push('b');
+    out.push(quote);
+    for &x in b {
+        match x {
+            b'\\' => out.push_str("\\\\"),
+            b'\n' => out.push_str("\\n"),
+            b'\t' => out.push_str("\\t"),
+            b'\r' => out.push_str("\\r"),
+            x if x == quote as u8 => {
+                out.push('\\');
+                out.push(quote);
+            }
+            0x20..=0x7e => out.push(x as char),
+            _ => {
+                let _ = write!(out, "\\x{x:02x}");
+            }
+        }
+    }
+    out.push(quote);
+    out
+}
+
+#[cfg(test)]
+mod tests;
