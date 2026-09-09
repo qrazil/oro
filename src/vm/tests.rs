@@ -966,3 +966,31 @@ fn bytes_index_out_of_range_is_an_index_error() {
     let e = run_err("r = b\"ab\"[5]\n");
     assert!(e.message.contains("IndexError"), "got: {}", e.message);
 }
+
+/// The `bytes` method set — the same names `str` carries, each matching
+/// CPython byte for byte (the corpus checks the same ground against the
+/// oracle). Case folding is ASCII-only, which is why `\xff` survives `lower`.
+#[test]
+fn bytes_methods_mirror_the_str_set() {
+    assert_eq!(eval("r = b\"AbC\\xff\".lower()\n").repr(), "b'abc\\xff'");
+    assert_eq!(eval("r = b\"AbC\".upper()\n").repr(), "b'ABC'");
+    // Vertical tab and form feed count as whitespace, as they do in CPython.
+    assert_eq!(eval("r = b\" \\x0b a b \\t\\n\".strip()\n").repr(), "b'a b'");
+    assert_eq!(eval("r = b\"  ab  \".lstrip()\n").repr(), "b'ab  '");
+    assert_eq!(eval("r = b\"  ab  \".rstrip()\n").repr(), "b'  ab'");
+    assert_eq!(eval("r = b\"a,b,,c\".split(b\",\")\n").repr(), "[b'a', b'b', b'', b'c']");
+    assert_eq!(eval("r = b\"a,b,c\".split(b\",\", 1)\n").repr(), "[b'a', b'b,c']");
+    assert_eq!(eval("r = b\"a,b,c\".rsplit(b\",\", 1)\n").repr(), "[b'a,b', b'c']");
+    assert_eq!(eval("r = b\"a b\\x0bc\".split()\n").repr(), "[b'a', b'b', b'c']");
+    assert_eq!(eval("r = [b\"a\", b\"b\"].join(b\"-\")\n").repr(), "b'a-b'");
+    assert_eq!(eval("r = b\"-\".join([b\"a\", b\"b\"])\n").repr(), "b'a-b'");
+    assert_eq!(int(&eval("r = b\"abc\".find(b\"b\")\n")), 1);
+    assert_eq!(int(&eval("r = b\"abc\".find(b\"z\")\n")), -1);
+    // The empty needle is found at 0, as it is for `str`.
+    assert_eq!(int(&eval("r = b\"abc\".find(b\"\")\n")), 0);
+    assert_eq!(eval("r = b\"abc\".replace(b\"b\", b\"XY\")\n").repr(), "b'aXYc'");
+    assert!(eval("r = b\"abc\".startswith(b\"ab\")\n").truthy());
+    assert!(eval("r = b\"abc\".endswith(b\"bc\")\n").truthy());
+    assert_eq!(eval("r = b\"-7\".zfill(4)\n").repr(), "b'-007'");
+    assert_eq!(eval("r = b\"\\xff\\x00A\".hex()\n").repr(), "'ff0041'");
+}

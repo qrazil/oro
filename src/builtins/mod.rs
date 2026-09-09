@@ -7,6 +7,7 @@
 //! by name through [`call_method`].
 
 use std::cell::RefCell;
+use std::fmt::Write as _;
 use std::rc::Rc;
 
 use crate::bigint::BigInt;
@@ -636,6 +637,14 @@ pub fn method_exists(recv: &Value, name: &str) -> bool {
             "split" | "rsplit" | "join" | "strip" | "lstrip" | "rstrip" | "upper"
                 | "lower" | "replace" | "startswith" | "endswith" | "find" | "zfill"
         ),
+        // The same names `str` carries — every one of them exists on CPython's
+        // `bytes` with the same meaning — plus `hex`, which only bytes needs.
+        Value::Bytes(_) => matches!(
+            name,
+            "split" | "rsplit" | "join" | "strip" | "lstrip" | "rstrip" | "upper"
+                | "lower" | "replace" | "startswith" | "endswith" | "find" | "zfill"
+                | "hex"
+        ),
         Value::List(_) => {
             matches!(name, "append" | "pop" | "extend" | "sort" | "reverse" | "map" | "filter")
         }
@@ -663,6 +672,7 @@ pub fn call_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value>
         _ if is_cast_method(name) => cast_method(recv, name, args),
         _ if is_collection(recv) && is_seq_native(name) => seq_native_method(recv, name, args),
         Value::Str(_) => str_method(recv, name, args),
+        Value::Bytes(b) => bytes_method(b, name, args),
         Value::List(l) => list_method(l, name, args),
         Value::Dict(d) => dict_method(d, name, args),
         Value::File(f) => file_method(f, name, args),
@@ -1157,6 +1167,27 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
             // `xs.join(", ")` rather than `", ".join(xs)`: the separator is the
             // detail, the sequence is the subject, and this way it ends a chain
             // instead of forcing the reader back to the front of the line.
+            // The separator's type decides the result's, and the elements
+            // must match it: `join` never guesses a conversion, the same rule
+            // `json.stringify` applies to dict keys.
+            if let Some(Value::Bytes(sep)) = args.first() {
+                let mut out: Vec<u8> = Vec::new();
+                for (i, it) in items.iter().enumerate() {
+                    if i > 0 {
+                        out.extend_from_slice(sep);
+                    }
+                    match it {
+                        Value::Bytes(p) => out.extend_from_slice(p),
+                        other => {
+                            return Err(format!(
+                                "join() requires bytes elements, found '{}'",
+                                other.type_name()
+                            ))
+                        }
+                    }
+                }
+                return Ok(Value::bytes(out));
+            }
             let sep = str_arg(&args, 0, "join")?;
             let mut pieces = Vec::with_capacity(items.len());
             for it in items {
@@ -1257,6 +1288,262 @@ fn str_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
             Ok(Value::str(pieces.join(&s)))
         }
         _ => Err(format!("'str' object has no method '{name}'")),
+    }
+}
+
+fn bytes_arg(args: &[Value], i: usize, who: &str) -> VResult<Rc<Vec<u8>>> {
+    match args.get(i) {
+        Some(Value::Bytes(b)) => Ok(b.clone()),
+        Some(other) => Err(format!("{who}() argument must be bytes, not '{}'", other.type_name())),
+        None => Err(format!("{who}() missing a required argument")),
+    }
+}
+
+/// The whitespace `bytes` recognises: space, tab, newline, vertical tab, form
+/// feed and carriage return. Rust's `is_ascii_whitespace` leaves out the
+/// vertical tab; CPython includes it, and this is oracle-checked.
+fn is_bytes_space(x: u8) -> bool {
+    matches!(x, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
+}
+
+/// The offset of `needle` in `hay`, or `None`. The empty needle is at 0, as it
+/// is for `str`.
+fn bytes_find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    if needle.len() > hay.len() {
+        return None;
+    }
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
+/// `bytes.replace`. An empty `from` inserts `to` between every pair of octets
+/// and at both ends, which is what `str.replace` does with an empty pattern.
+fn bytes_replace(hay: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(hay.len());
+    if from.is_empty() {
+        for &x in hay {
+            out.extend_from_slice(to);
+            out.push(x);
+        }
+        out.extend_from_slice(to);
+        return out;
+    }
+    let mut i = 0;
+    while i < hay.len() {
+        if hay[i..].starts_with(from) {
+            out.extend_from_slice(to);
+            i += from.len();
+        } else {
+            out.push(hay[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// `bytes.split`/`rsplit` on an explicit separator — the byte-level twin of
+/// [`split_sep_n`], with the same `maxsplit` rule (negative = unlimited).
+fn split_sep_bytes(s: &[u8], sep: &[u8], maxsplit: i64, from_right: bool) -> Vec<Vec<u8>> {
+    let limit = if maxsplit < 0 { usize::MAX } else { maxsplit as usize };
+    let mut parts: Vec<Vec<u8>> = Vec::new();
+    if !from_right {
+        let (mut start, mut i) = (0usize, 0usize);
+        while parts.len() < limit && i + sep.len() <= s.len() {
+            if s[i..i + sep.len()] == *sep {
+                parts.push(s[start..i].to_vec());
+                i += sep.len();
+                start = i;
+            } else {
+                i += 1;
+            }
+        }
+        parts.push(s[start..].to_vec());
+    } else {
+        let (mut end, mut i) = (s.len(), s.len());
+        while parts.len() < limit && i >= sep.len() {
+            let j = i - sep.len();
+            if s[j..i] == *sep {
+                parts.push(s[i..end].to_vec());
+                end = j;
+                i = j;
+            } else {
+                i -= 1;
+            }
+        }
+        parts.push(s[..end].to_vec());
+        parts.reverse();
+    }
+    parts
+}
+
+/// `bytes.split(None, maxsplit)` — the byte-level twin of
+/// [`split_whitespace_n`]: runs of whitespace separate, leading and trailing
+/// whitespace is discarded, and the remainder after `maxsplit` splits comes
+/// back verbatim.
+fn split_space_bytes(s: &[u8], maxsplit: i64, from_right: bool) -> Vec<Vec<u8>> {
+    let limit = if maxsplit < 0 { usize::MAX } else { maxsplit as usize };
+    let mut parts: Vec<Vec<u8>> = Vec::new();
+    if !from_right {
+        let mut i = 0usize;
+        while parts.len() < limit {
+            while i < s.len() && is_bytes_space(s[i]) {
+                i += 1;
+            }
+            if i >= s.len() {
+                return parts;
+            }
+            let start = i;
+            while i < s.len() && !is_bytes_space(s[i]) {
+                i += 1;
+            }
+            parts.push(s[start..i].to_vec());
+        }
+        while i < s.len() && is_bytes_space(s[i]) {
+            i += 1;
+        }
+        if i < s.len() {
+            parts.push(s[i..].to_vec());
+        }
+        parts
+    } else {
+        let mut i = s.len();
+        while parts.len() < limit {
+            while i > 0 && is_bytes_space(s[i - 1]) {
+                i -= 1;
+            }
+            if i == 0 {
+                parts.reverse();
+                return parts;
+            }
+            let end = i;
+            while i > 0 && !is_bytes_space(s[i - 1]) {
+                i -= 1;
+            }
+            parts.push(s[i..end].to_vec());
+        }
+        while i > 0 && is_bytes_space(s[i - 1]) {
+            i -= 1;
+        }
+        if i > 0 {
+            parts.push(s[..i].to_vec());
+        }
+        parts.reverse();
+        parts
+    }
+}
+
+/// The `bytes` methods. Deliberately the same names `str` carries — every one
+/// exists on CPython's `bytes` with the same meaning, so the oracle covers the
+/// whole set — plus `hex`, which has no `str` counterpart. Case folding is
+/// ASCII-only: an octet is not a character, and there is no encoding here to
+/// case a non-ASCII one under.
+fn bytes_method(b: &Rc<Vec<u8>>, name: &str, args: Vec<Value>) -> VResult<Value> {
+    match name {
+        "upper" => Ok(Value::bytes(b.to_ascii_uppercase())),
+        "lower" => Ok(Value::bytes(b.to_ascii_lowercase())),
+        "strip" => {
+            let start = b.iter().take_while(|&&x| is_bytes_space(x)).count();
+            let end = b.iter().rev().take_while(|&&x| is_bytes_space(x)).count();
+            Ok(Value::bytes(if start + end >= b.len() {
+                Vec::new()
+            } else {
+                b[start..b.len() - end].to_vec()
+            }))
+        }
+        "lstrip" => {
+            let start = b.iter().take_while(|&&x| is_bytes_space(x)).count();
+            Ok(Value::bytes(b[start..].to_vec()))
+        }
+        "rstrip" => {
+            let end = b.iter().rev().take_while(|&&x| is_bytes_space(x)).count();
+            Ok(Value::bytes(b[..b.len() - end].to_vec()))
+        }
+        "startswith" => Ok(Value::Bool(b.starts_with(&bytes_arg(&args, 0, "startswith")?))),
+        "endswith" => Ok(Value::Bool(b.ends_with(&bytes_arg(&args, 0, "endswith")?))),
+        "find" => {
+            let needle = bytes_arg(&args, 0, "find")?;
+            Ok(Value::Int(match bytes_find(b, &needle) {
+                Some(i) => i as i64,
+                None => -1,
+            }))
+        }
+        "replace" => {
+            let from = bytes_arg(&args, 0, "replace")?;
+            let to = bytes_arg(&args, 1, "replace")?;
+            Ok(Value::bytes(bytes_replace(b, &from, &to)))
+        }
+        "split" | "rsplit" => {
+            let maxsplit = opt_int_arg(&args, 1, name, -1)?;
+            let from_right = name == "rsplit";
+            let parts: Vec<Vec<u8>> = match args.first() {
+                None | Some(Value::None) => split_space_bytes(b, maxsplit, from_right),
+                Some(Value::Bytes(sep)) => {
+                    if sep.is_empty() {
+                        return Err("empty separator".to_string());
+                    }
+                    split_sep_bytes(b, sep, maxsplit, from_right)
+                }
+                Some(other) => {
+                    return Err(format!(
+                        "{name}() separator must be bytes, not '{}'",
+                        other.type_name()
+                    ))
+                }
+            };
+            let parts = parts.into_iter().map(Value::bytes).collect::<Vec<_>>();
+            Ok(Value::List(Rc::new(RefCell::new(parts))))
+        }
+        "zfill" => {
+            let width = opt_int_arg(&args, 0, "zfill", 0)?;
+            let len = b.len() as i64;
+            if len >= width {
+                return Ok(Value::Bytes(b.clone()));
+            }
+            let pad = (width - len) as usize;
+            let mut out = Vec::with_capacity(width as usize);
+            // A leading sign stays in front of the padding: b"-7".zfill(4) is
+            // b"-007".
+            let rest = match b.first() {
+                Some(&c) if c == b'-' || c == b'+' => {
+                    out.push(c);
+                    &b[1..]
+                }
+                _ => &b[..],
+            };
+            out.extend(std::iter::repeat_n(b'0', pad));
+            out.extend_from_slice(rest);
+            Ok(Value::bytes(out))
+        }
+        "join" => {
+            let items = crate::vm::iterate_to_vec(args.first().ok_or("join() missing argument")?)?;
+            let mut out: Vec<u8> = Vec::new();
+            for (i, it) in items.iter().enumerate() {
+                if i > 0 {
+                    out.extend_from_slice(b);
+                }
+                match it {
+                    Value::Bytes(p) => out.extend_from_slice(p),
+                    other => {
+                        return Err(format!(
+                            "join() requires bytes elements, found '{}'",
+                            other.type_name()
+                        ))
+                    }
+                }
+            }
+            Ok(Value::bytes(out))
+        }
+        "hex" => {
+            exactly(&args, 0, "hex")?;
+            let mut out = String::with_capacity(b.len() * 2);
+            for &x in b.iter() {
+                let _ = write!(out, "{x:02x}");
+            }
+            Ok(Value::str(out))
+        }
+        _ => Err(format!("'bytes' object has no method '{name}'")),
     }
 }
 

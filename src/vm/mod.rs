@@ -3564,7 +3564,7 @@ fn classify_error(msg: &str) -> &'static str {
         || m.contains("argument must be")
         || m.contains("must be str")
         || m.contains("requires string")
-        || m.contains("requires bytes")
+        || m.contains("as left operand")
         || m.contains("not supported between")
         || m.contains("takes")
         || m.contains("missing a required argument")
