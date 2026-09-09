@@ -885,14 +885,48 @@ fn split_whitespace_n(s: &str, maxsplit: i64, from_right: bool) -> Vec<String> {
 /// `to_str` must run an Oro dunder are intercepted by the VM before reaching
 /// here, since a native method can never re-enter the interpreter.
 pub fn is_cast_method(name: &str) -> bool {
-    matches!(name, "to_str" | "to_int" | "to_float" | "to_bool" | "to_list" | "to_dict")
+    matches!(
+        name,
+        "to_str" | "to_bytes" | "to_int" | "to_float" | "to_bool" | "to_list" | "to_dict"
+    )
 }
 
 fn cast_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
     match name {
         "to_str" => {
             exactly(&args, 0, "to_str")?;
+            // Decoding is the whole point of the boundary, so `bytes` decodes
+            // rather than showing its repr: strict UTF-8, no replacement
+            // characters, because silently corrupting a body is worse than
+            // refusing it. CPython raises `UnicodeDecodeError`, a `ValueError`
+            // subclass, so `except ValueError` catches this the same way.
+            if let Value::Bytes(b) = recv {
+                return match String::from_utf8((**b).clone()) {
+                    Ok(s) => Ok(Value::str(s)),
+                    Err(e) => {
+                        let pos = e.utf8_error().valid_up_to();
+                        Err(format!(
+                            "bytes could not be decoded as UTF-8: invalid byte 0x{:02x} at \
+                             position {pos}",
+                            b[pos]
+                        ))
+                    }
+                };
+            }
             Ok(Value::str(recv.display()))
+        }
+        "to_bytes" => {
+            exactly(&args, 0, "to_bytes")?;
+            match recv {
+                // UTF-8 is the one encoding, so this cannot fail and takes no
+                // `encoding=` argument. Others are a library, written in Oro.
+                Value::Str(s) => Ok(Value::bytes(s.s.as_bytes())),
+                Value::Bytes(_) => Ok(recv.clone()),
+                other => Err(format!(
+                    "'{}' object has no conversion to bytes",
+                    other.type_name()
+                )),
+            }
         }
         "to_bool" => {
             exactly(&args, 0, "to_bool")?;

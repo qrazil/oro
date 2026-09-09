@@ -994,3 +994,24 @@ fn bytes_methods_mirror_the_str_set() {
     assert_eq!(eval("r = b\"-7\".zfill(4)\n").repr(), "b'-007'");
     assert_eq!(eval("r = b\"\\xff\\x00A\".hex()\n").repr(), "'ff0041'");
 }
+
+/// The two conversions at the wire/program boundary. `to_bytes` cannot fail
+/// (UTF-8 is the one encoding); `to_str` is strict, because silently
+/// substituting replacement characters corrupts a body rather than reporting
+/// it. CPython's `UnicodeDecodeError` is a `ValueError` subclass, so raising
+/// `ValueError` is caught by the same `except`.
+#[test]
+fn bytes_and_str_convert_explicitly() {
+    assert_eq!(eval("r = \"h\u{e9}llo\".to_bytes()\n").repr(), "b'h\\xc3\\xa9llo'");
+    // A character is one `str` element and two octets — the whole reason these
+    // are two types.
+    assert_eq!(int(&eval("r = len(\"h\u{e9}llo\".to_bytes())\n")), 6);
+    assert_eq!(int(&eval("r = len(\"h\u{e9}llo\")\n")), 5);
+    assert_eq!(eval("r = \"h\u{e9}\".to_bytes().to_str()\n").repr(), "'h\u{e9}'");
+    // Each conversion is a no-op on its own type.
+    assert_eq!(eval("r = b\"ab\".to_bytes()\n").repr(), "b'ab'");
+
+    let e = run_err("r = b\"\\xff\".to_str()\n");
+    assert!(e.message.contains("ValueError"), "got: {}", e.message);
+    assert!(e.message.contains("invalid byte 0xff at position 0"), "got: {}", e.message);
+}

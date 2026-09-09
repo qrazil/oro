@@ -3545,6 +3545,7 @@ fn classify_error(msg: &str) -> &'static str {
     } else if m.contains("arg not in range")
         || m.contains("values to unpack")
         || m.contains("could not convert string to float")
+        || m.contains("could not be decoded as UTF-8")
         || m.starts_with("invalid literal for int")
         || m.contains("empty separator")
         || m.contains("step")
