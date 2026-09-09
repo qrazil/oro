@@ -517,19 +517,19 @@ impl Vm {
 
     fn run_loop(&mut self) -> Result<Value, RuntimeError> {
         loop {
-            // Fetch. A short borrow reads the instruction and its span, then we
-            // release it so call/return can restructure `frames`. `Op` is a
-            // `Copy` word, so reading it out costs a register move.
-            let (op, pc) = {
-                let frame = self.frames.last().expect("no active frame");
+            // Fetch, advance, release — in a single borrow of the frame stack.
+            // `Op` is a `Copy` word, so reading the instruction out costs a
+            // register move, and the borrow can end before `step` runs (which
+            // it must: executing a call or a return restructures `frames`).
+            let op = {
+                let frame = self.frames.last_mut().expect("no active frame");
                 let pc = frame.pc;
-                let op = frame.code.ops[pc];
+                frame.pc = pc + 1;
                 let (l, c) = frame.code.spans[pc];
                 self.line = l;
                 self.col = c;
-                (op, pc)
+                frame.code.ops[pc]
             };
-            self.frames.last_mut().unwrap().pc = pc + 1;
 
             // Execute one op. A failing operation or a `raise` produces an
             // exception that unwinds the block/frame stack; if nothing catches
