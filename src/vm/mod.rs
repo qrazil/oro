@@ -389,6 +389,10 @@ struct Task {
     /// Why each in-flight `finally` body is running, so `EndFinally` can resume
     /// the exception or `return` that was suspended to run the cleanup.
     finally_why: Vec<Why>,
+    /// Generators currently being advanced (innermost on top), with the
+    /// `ForIter` target to jump to when each is exhausted. Pushed on resume,
+    /// popped on `yield`/exhaustion.
+    gen_stack: Vec<(Rc<RefCell<crate::value::GenBox>>, GenDriver)>,
 }
 
 impl Task {
@@ -406,6 +410,7 @@ impl Task {
             mat_jobs: Vec::new(),
             handling: Vec::new(),
             finally_why: Vec::new(),
+            gen_stack: Vec::new(),
         }
     }
 }
@@ -425,10 +430,6 @@ pub struct Vm {
     last_locals: Vec<Value>,
     /// The built-in exception classes, by name (shared identity for the run).
     excs: HashMap<&'static str, Rc<Class>>,
-    /// Generators currently being advanced (innermost on top), with the
-    /// `ForIter` target to jump to when each is exhausted. Pushed on resume,
-    /// popped on `yield`/exhaustion.
-    gen_stack: Vec<(Rc<RefCell<crate::value::GenBox>>, GenDriver)>,
     /// Program arguments, exposed as `sys.argv`.
     argv: Vec<String>,
     /// Set when `sys.exit(code)` runs; becomes the process exit status.
@@ -489,7 +490,6 @@ impl Vm {
             frame_pool: Vec::new(),
             last_locals: Vec::new(),
             excs: exceptions::build_registry(),
-            gen_stack: Vec::new(),
             argv,
             exit_code: None,
             import_root: std::path::PathBuf::from("."),
@@ -1047,7 +1047,7 @@ impl Vm {
                         };
                         match frame {
                             Some(frame) => {
-                                self.gen_stack.push((gen.clone(), GenDriver::ForLoop(target)));
+                                self.task.gen_stack.push((gen.clone(), GenDriver::ForLoop(target)));
                                 self.task.frames.push(frame);
                             }
                             None => {
@@ -1083,7 +1083,7 @@ impl Vm {
                     // Suspend this generator frame back into its GenBox and hand
                     // the value to whatever is driving it.
                     let frame = self.task.frames.pop().expect("yield with no frame");
-                    let (gen, driver) = self.gen_stack.pop().expect("yield outside a generator");
+                    let (gen, driver) = self.task.gen_stack.pop().expect("yield outside a generator");
                     gen.borrow_mut().frame = Some(Box::new(frame));
                     match driver {
                         GenDriver::ForLoop(_) => self.push(value),
@@ -2023,7 +2023,7 @@ impl Vm {
                     if self.task.frames.len() >= MAX_FRAMES {
                         return Err(self.err("maximum recursion depth exceeded"));
                     }
-                    self.gen_stack.push((gen, GenDriver::Materialize));
+                    self.task.gen_stack.push((gen, GenDriver::Materialize));
                     self.task.frames.push(frame);
                     return Ok(());
                 }
@@ -2883,7 +2883,7 @@ impl Vm {
         if let Some(frame) = self.task.frames.pop() {
             self.recycle(frame);
         }
-        let (gen, driver) = self.gen_stack.pop().expect("generator stop outside a driver");
+        let (gen, driver) = self.task.gen_stack.pop().expect("generator stop outside a driver");
         {
             let mut g = gen.borrow_mut();
             g.done = true;
