@@ -40,6 +40,14 @@ pub fn build_registry() -> HashMap<&'static str, Rc<Class>> {
         ("FileNotFoundError", Some("OSError")),
         ("PermissionError", Some("OSError")),
         ("TimeoutError", Some("OSError")),
+        // CPython's exact shape, so `except ConnectionError` catches all four
+        // and `except OSError` catches those plus everything above. `net` is
+        // the only thing that raises them (`docs/stdlib-server-design.md` §4).
+        ("ConnectionError", Some("OSError")),
+        ("ConnectionRefusedError", Some("ConnectionError")),
+        ("ConnectionResetError", Some("ConnectionError")),
+        ("ConnectionAbortedError", Some("ConnectionError")),
+        ("BrokenPipeError", Some("ConnectionError")),
     ];
 
     for (name, parent) in edges {

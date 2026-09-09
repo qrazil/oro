@@ -17,6 +17,7 @@ pub fn build(name: &str, argv: &[String]) -> Option<Value> {
         "time" => Some(build_time()),
         "re" => Some(build_re()),
         "proc" => Some(build_proc()),
+        "net" => Some(build_net()),
         "_io" => Some(build_native_io()),
         _ => None,
     }
@@ -226,6 +227,51 @@ fn re_match(_args: Vec<Value>) -> Result<Value, String> {
          almost always the wrong choice and is constantly confused with re.search. Use re.search \
          (unanchored), or anchor explicitly with a leading `^`."
         .to_string())
+}
+
+// --- net ---------------------------------------------------------------------
+
+/// Two constructors and two objects, and that is the whole module
+/// (`docs/stdlib-server-design.md` §4). Everything else a socket can do is a
+/// method on the stream it hands back, because a `TcpStream` is a Reader and a
+/// Writer like every other stream in the language.
+///
+/// `net` is Rust rather than Oro because every line of it is a syscall — the
+/// §5 rule, "anything that touches every byte goes in Rust". There is no
+/// `_net` half and no `std/net.oro`: nothing here is policy.
+fn build_net() -> Value {
+    module(
+        "net",
+        vec![
+            ("listen", builtin("net.listen", net_listen)),
+            ("dial", builtin("net.dial", net_dial)),
+        ],
+    )
+}
+
+fn net_listen(args: Vec<Value>) -> Result<Value, String> {
+    // `reuseport=True` is in §4's sketch and is not here: sharing one port
+    // across N VMs is the scale-out story, and there is one VM.
+    let addr = one_addr(&args, "listen")?;
+    Ok(Value::Stream(Rc::new(crate::net::listen(&addr)?)))
+}
+
+fn net_dial(args: Vec<Value>) -> Result<Value, String> {
+    let addr = one_addr(&args, "dial")?;
+    Ok(Value::Stream(Rc::new(crate::net::dial(&addr)?)))
+}
+
+/// The one argument both constructors take: an address, as a string. No
+/// `Address` type — see §4.
+fn one_addr(args: &[Value], who: &str) -> Result<String, String> {
+    match args {
+        [Value::Str(s)] => Ok(s.s.clone()),
+        [other] => Err(format!(
+            "{who}() address must be str, not '{}' — addresses are strings like \"127.0.0.1:8080\"",
+            other.type_name()
+        )),
+        _ => Err(format!("{who}() takes exactly one address")),
+    }
 }
 
 // --- _io ----------------------------------------------------------------------

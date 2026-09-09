@@ -500,6 +500,52 @@ growth path for the standard library, not a temporary arrangement.
   a second spelling for it. The asymmetry is real, and it is the two directions
   being genuinely different — reading everything requires a loop, writing
   everything does not.
+- **`net`** — TCP, and the payoff of the io protocol: two constructors and two
+  objects, and nothing else.
+
+  ```python
+  import net
+
+  ln = net.listen("127.0.0.1:0")        # SO_REUSEADDR; ":0" = any free port
+  print(ln.local)                       # "127.0.0.1:41337" — ask what you got
+  conn = ln.accept()                    # -> TcpStream
+
+  head = conn.read_until(b"\r\n\r\n", 65536)
+  conn.write(b"HTTP/1.1 204 No Content\r\n\r\n")
+  conn.close()
+  ```
+
+  A `TcpStream` **is** a Reader and a Writer — the same `read(n)`, `write(b)`,
+  `read_until(delim, limit)` and `close()` a file has, with the same meanings —
+  so `io.read`, `io.copy` and `io.buffer` work on a socket having never heard of
+  one, and `io.copy(out, inp)` is a working TCP proxy. That is not a
+  convenience; it is the reason the protocol was fixed before the stdlib
+  existed. On top of the four it adds `shutdown_write()` (a half-close: send
+  FIN, keep reading — not `close()`, which would drop the answer with it),
+  `set_timeout(seconds)` (one deadline for both directions, `None` to clear;
+  expiry raises `TimeoutError`), `set_nodelay(on)`, and `peer` / `local` as
+  plain address strings.
+
+  **Addresses are strings**, `"host:port"`, with Go's bracket form for IPv6
+  (`"[::1]:8080"`). There is no `Address` type: it would buy parsing that is
+  rarely wanted, and `addr.rsplit(":", 1)` covers it when it is. A listener has
+  `accept()`, `close()` and `local`, and deliberately no `read` — it is not a
+  stream of bytes, so it does not pretend to be one.
+
+  Failures use CPython's classes, so the hierarchy stays one hierarchy: a
+  refused connect is `ConnectionRefusedError`, a reset peer
+  `ConnectionResetError`, a write to a departed one `BrokenPipeError`, a local
+  abort `ConnectionAbortedError` — all four under a new `ConnectionError` under
+  `OSError` — a deadline `TimeoutError`, and a bind to a port already in use a
+  plain `OSError`. Catch at whichever width you mean.
+
+  **Everything blocks, for now.** `accept`, `read` and `write` stop the whole
+  interpreter until the kernel answers, which is one connection at a time and is
+  no way to run a server. Green threads are the next milestone and change those
+  three syscalls and nothing above them — a parked task instead of a parked
+  process, with not one line of Oro different. Also absent on purpose: UDP (not
+  a stream, so it cannot satisfy the protocol), Unix domain sockets, TLS, and
+  `SO_REUSEPORT`. The reasoning is `docs/stdlib-server-design.md` §4.
 - **`json`** — also written in Oro: `json.parse(text)` and
   `json.stringify(value, indent=None)`. `stringify` requires `str` dict keys
   rather than silently stringifying an int one.

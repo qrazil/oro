@@ -660,6 +660,21 @@ pub fn method_exists(recv: &Value, name: &str) -> bool {
             crate::stream::StreamKind::File { .. } => {
                 matches!(name, "read" | "write" | "read_until" | "close")
             }
+            // A socket is a Reader and a Writer with the same four methods a
+            // file has — that is the io protocol doing its job — plus the
+            // three things only a socket can do.
+            crate::stream::StreamKind::TcpStream { .. } => matches!(
+                name,
+                "read"
+                    | "write"
+                    | "read_until"
+                    | "close"
+                    | "shutdown_write"
+                    | "set_timeout"
+                    | "set_nodelay"
+            ),
+            // A listener is not a stream of bytes: no `read`, no `write`.
+            crate::stream::StreamKind::TcpListener { .. } => matches!(name, "accept" | "close"),
         },
         Value::Regex(_) => matches!(
             name,
@@ -784,6 +799,48 @@ fn stream_method(
         "close" => {
             exactly(&args, 0, "close")?;
             s.close()?;
+            Ok(Value::None)
+        }
+        "accept" => {
+            exactly(&args, 0, "accept")?;
+            Ok(Value::Stream(Rc::new(s.accept()?)))
+        }
+        // A half-close, and not the same thing as `close()`: it sends FIN and
+        // keeps the read side, which is how a client says "that is the whole
+        // request" on a connection it still expects an answer on.
+        "shutdown_write" => {
+            exactly(&args, 0, "shutdown_write")?;
+            s.shutdown_write()?;
+            Ok(Value::None)
+        }
+        "set_timeout" => {
+            let secs = match args.as_slice() {
+                [Value::None] => None,
+                [Value::Int(n)] => Some(*n as f64),
+                [Value::Float(f)] => Some(*f),
+                [other] => {
+                    return Err(format!(
+                        "set_timeout() argument must be a number of seconds or None, not '{}'",
+                        other.type_name()
+                    ))
+                }
+                _ => return Err("set_timeout() takes one argument".to_string()),
+            };
+            s.set_timeout(secs)?;
+            Ok(Value::None)
+        }
+        "set_nodelay" => {
+            let on = match args.as_slice() {
+                [Value::Bool(b)] => *b,
+                [other] => {
+                    return Err(format!(
+                        "set_nodelay() argument must be bool, not '{}'",
+                        other.type_name()
+                    ))
+                }
+                _ => return Err("set_nodelay() takes one argument".to_string()),
+            };
+            s.set_nodelay(on)?;
             Ok(Value::None)
         }
         _ => Err(format!("'{}' object has no method '{name}'", s.kind.type_name())),

@@ -26,8 +26,9 @@
 //! observe whether it has been allocated. Exposing any of that would be
 //! reintroducing `BufReader` under a new name.
 
-use std::cell::{RefCell, RefMut};
+use std::cell::{Ref, RefCell, RefMut};
 use std::io::{Read, Write};
+use std::net::{Shutdown, TcpListener, TcpStream};
 
 use crate::value::VResult;
 
@@ -47,6 +48,16 @@ pub enum StreamKind {
     /// only way to get a Reader you can feed literal bytes to, which is what
     /// lets a protocol be tested before a socket exists.
     Buffer,
+    /// A connected TCP socket, from `net.dial` or `listener.accept`. It is a
+    /// `StreamKind` rather than a type of its own precisely so that it inherits
+    /// the read buffer, `read`'s short-read rule and `read_until`'s scan
+    /// unchanged — the io protocol is one convention, so a socket must be one
+    /// implementation of it (`docs/stdlib-server-design.md` §4).
+    TcpStream { peer: String, local: String },
+    /// A listening TCP socket, from `net.listen`. Not a Reader and not a
+    /// Writer: it has `accept()`, `close()` and a `local` address, and reading
+    /// it is a `ValueError` like reading any stream with no read side.
+    TcpListener { local: String },
 }
 
 impl StreamKind {
@@ -54,6 +65,8 @@ impl StreamKind {
         match self {
             StreamKind::File { .. } => "File",
             StreamKind::Buffer => "Buffer",
+            StreamKind::TcpStream { .. } => "TcpStream",
+            StreamKind::TcpListener { .. } => "TcpListener",
         }
     }
 }
@@ -68,6 +81,13 @@ enum Backing {
     Stdin,
     Stdout,
     Stderr,
+    /// A connected socket. Reads and writes are **blocking**, which is correct
+    /// for this milestone: one VM, one OS thread, one connection at a time.
+    /// When green threads arrive this is the variant that learns to park —
+    /// see the note on [`Inner::read_source`].
+    Socket(TcpStream),
+    /// A listening socket. It has no read or write side at all.
+    Listener(TcpListener),
 }
 
 /// The mutable half of a stream.
@@ -145,6 +165,130 @@ impl OroStream {
         OroStream::new(StreamKind::File { path: which.to_string(), mode }, back)
     }
 
+    /// A connected TCP socket — `net.dial`'s result, and `accept`'s.
+    ///
+    /// The addresses are read once, here, rather than on every attribute
+    /// access: `getpeername(2)` on a socket the peer has already closed fails,
+    /// and `conn.peer` going from a string to an exception halfway through a
+    /// connection would be a worse answer than the address it was opened with.
+    pub fn socket(sock: TcpStream) -> std::io::Result<OroStream> {
+        let peer = sock.peer_addr()?.to_string();
+        let local = sock.local_addr()?.to_string();
+        Ok(OroStream::new(StreamKind::TcpStream { peer, local }, Backing::Socket(sock)))
+    }
+
+    /// A listening TCP socket — `net.listen`'s result.
+    pub fn listener(ln: TcpListener) -> std::io::Result<OroStream> {
+        let local = ln.local_addr()?.to_string();
+        Ok(OroStream::new(StreamKind::TcpListener { local }, Backing::Listener(ln)))
+    }
+
+    /// `listener.accept()`: block until a client connects, then hand back a
+    /// stream that satisfies the io protocol exactly like a file does.
+    ///
+    /// **Where the green-thread swap lands (1 of 3).** This is one of the three
+    /// blocking syscalls in the language. Under green threads it becomes
+    /// "register interest in readability, park the task, retry" — the shape of
+    /// the code around it does not change, because `accept` is already a
+    /// method that returns a stream or raises.
+    pub fn accept(&self) -> VResult<OroStream> {
+        let inner = self.borrow_open("accept")?;
+        let ln = match &inner.back {
+            Backing::Listener(ln) => ln,
+            _ => {
+                return Err(format!(
+                    "accept() on a '{}', which is not a listener",
+                    self.kind.type_name()
+                ))
+            }
+        };
+        let (sock, _) = ln.accept().map_err(|e| crate::net::err_msg(&e))?;
+        OroStream::socket(sock).map_err(|e| crate::net::err_msg(&e))
+    }
+
+    /// `conn.shutdown_write()`: send FIN, keep reading.
+    ///
+    /// The half-close is the only way to say "that is the whole request" on a
+    /// connection the peer is still allowed to answer on, and it is not
+    /// `close()` — closing drops the read side with it, so the reply is lost.
+    pub fn shutdown_write(&self) -> VResult<()> {
+        let inner = self.borrow_open("shutdown_write")?;
+        match &inner.back {
+            Backing::Socket(s) => s.shutdown(Shutdown::Write).map_err(|e| crate::net::err_msg(&e)),
+            _ => Err(format!(
+                "shutdown_write() on a '{}', which is not a socket",
+                self.kind.type_name()
+            )),
+        }
+    }
+
+    /// `conn.set_timeout(seconds)` — one deadline for both directions, or
+    /// `None` to clear it. Expiry raises `TimeoutError`.
+    ///
+    /// One knob rather than two: separate read and write deadlines are two
+    /// numbers that servers set to the same value (§4).
+    pub fn set_timeout(&self, secs: Option<f64>) -> VResult<()> {
+        let d = match secs {
+            None => None,
+            Some(s) if s > 0.0 && s.is_finite() => Some(std::time::Duration::from_secs_f64(s)),
+            Some(s) => {
+                return Err(format!("set_timeout() seconds must be positive, not {s}"));
+            }
+        };
+        let inner = self.borrow_open("set_timeout")?;
+        match &inner.back {
+            Backing::Socket(s) => {
+                s.set_read_timeout(d).map_err(|e| crate::net::err_msg(&e))?;
+                s.set_write_timeout(d).map_err(|e| crate::net::err_msg(&e))
+            }
+            // A listener has no timeout on purpose: an `accept` that gives up
+            // after n seconds is a loop condition dressed as an error. Shutdown
+            // is a flag and a `close()` (§3).
+            _ => Err(format!(
+                "set_timeout() on a '{}', which is not a socket",
+                self.kind.type_name()
+            )),
+        }
+    }
+
+    /// `conn.set_nodelay(True)` — disable Nagle's algorithm.
+    pub fn set_nodelay(&self, on: bool) -> VResult<()> {
+        let inner = self.borrow_open("set_nodelay")?;
+        match &inner.back {
+            Backing::Socket(s) => s.set_nodelay(on).map_err(|e| crate::net::err_msg(&e)),
+            _ => Err(format!(
+                "set_nodelay() on a '{}', which is not a socket",
+                self.kind.type_name()
+            )),
+        }
+    }
+
+    /// Whether `name` is one of this stream's data attributes (`peer`,
+    /// `local`). Only sockets and listeners have any; everything else falls
+    /// through to method binding and then to `AttributeError`.
+    pub fn has_addr_attr(&self, name: &str) -> bool {
+        match self.kind {
+            StreamKind::TcpStream { .. } => name == "peer" || name == "local",
+            StreamKind::TcpListener { .. } => name == "local",
+            _ => false,
+        }
+    }
+
+    /// The value of a data attribute admitted by
+    /// [`has_addr_attr`](Self::has_addr_attr).
+    ///
+    /// These are plain strings, not an `Address` type: `"127.0.0.1:8080"`, with
+    /// Go's bracket form for IPv6 (`"[::1]:8080"`). A type would buy parsing
+    /// that is rarely wanted, and `addr.rsplit(":", 1)` covers it when it is.
+    pub fn addr_attr(&self, name: &str) -> VResult<String> {
+        match (&self.kind, name) {
+            (StreamKind::TcpStream { peer, .. }, "peer") => Ok(peer.clone()),
+            (StreamKind::TcpStream { local, .. }, "local") => Ok(local.clone()),
+            (StreamKind::TcpListener { local }, "local") => Ok(local.clone()),
+            _ => Err(format!("'{}' object has no attribute '{name}'", self.kind.type_name())),
+        }
+    }
+
     /// `<File 'x.bin' mode 'r'>` / `<Buffer 12 bytes>`. CPython spells these
     /// `<_io.BufferedReader …>`; naming Oro's own type is more use than
     /// mirroring a wrapper Oro does not have.
@@ -155,10 +299,21 @@ impl OroStream {
                 let inner = self.inner.borrow();
                 format!("<Buffer {} bytes>", inner.end - inner.pos)
             }
+            StreamKind::TcpStream { peer, local } => format!("<TcpStream {local} -> {peer}>"),
+            StreamKind::TcpListener { local } => format!("<TcpListener {local}>"),
         }
     }
 
-    fn borrow_open(&self, who: &str) -> VResult<RefMut<'_, Inner>> {
+    fn borrow_open(&self, who: &str) -> VResult<Ref<'_, Inner>> {
+        let inner = self.inner.borrow();
+        if inner.closed {
+            return Err(format!("{who}() on a closed {}", self.kind.type_name()));
+        }
+        Ok(inner)
+    }
+
+    /// [`borrow_open`](Self::borrow_open), for the operations that mutate.
+    fn borrow_open_mut(&self, who: &str) -> VResult<RefMut<'_, Inner>> {
         let inner = self.inner.borrow_mut();
         if inner.closed {
             return Err(format!("{who}() on a closed {}", self.kind.type_name()));
@@ -169,8 +324,11 @@ impl OroStream {
     /// Like [`borrow_open`](Self::borrow_open), and refuses a stream that has
     /// no read side at all — reading a writer is a mistake, not an EOF.
     fn borrow_readable(&self, who: &str) -> VResult<RefMut<'_, Inner>> {
-        let inner = self.borrow_open(who)?;
+        let inner = self.borrow_open_mut(who)?;
         if !inner.can_read() {
+            if let StreamKind::TcpListener { .. } = self.kind {
+                return Err(format!("{who}() on a TcpListener, which is not a stream of bytes"));
+            }
             return Err(format!("{who}() on a stream open for writing (mode 'w')"));
         }
         Ok(inner)
@@ -206,7 +364,7 @@ impl OroStream {
     /// threads a short write is the runtime's problem, not the caller's, so
     /// there is no branch here for every call site to get wrong.
     pub fn write(&self, b: &[u8]) -> VResult<()> {
-        let mut inner = self.borrow_open("write")?;
+        let mut inner = self.borrow_open_mut("write")?;
         inner.write_source(b)
     }
 
@@ -354,22 +512,37 @@ impl Inner {
     /// Whether this stream has a read side. A `Buffer` does, and serves it
     /// from `buf` alone.
     fn can_read(&self) -> bool {
-        matches!(self.back, Backing::Read(_) | Backing::Stdin | Backing::Mem)
+        matches!(self.back, Backing::Read(_) | Backing::Stdin | Backing::Mem | Backing::Socket(_))
     }
 
     /// Whether an exhausted buffer can be refilled from a source.
     fn refills(&self) -> bool {
-        matches!(self.back, Backing::Read(_) | Backing::Stdin)
+        matches!(self.back, Backing::Read(_) | Backing::Stdin | Backing::Socket(_))
     }
 
+    /// One `read(2)` into `out`, from whatever this stream is over.
+    ///
+    /// **Where the green-thread swap lands (2 of 3).** The socket arm is the
+    /// only blocking read in the language, and it is one line. Under green
+    /// threads it becomes: attempt the read; on `EWOULDBLOCK`, register the fd
+    /// for readability and park the task; resume and retry. Everything above
+    /// this function — `read`, `read_until`, the buffer, `io.read`,
+    /// `io.copy` — is unchanged by that, because the only thing that changes
+    /// is how long this call takes to answer.
     fn read_source(&mut self, out: &mut [u8]) -> VResult<usize> {
+        match &mut self.back {
+            Backing::Socket(s) => return s.read(out).map_err(|e| crate::net::err_msg(&e)),
+            // A Buffer's bytes are all in `buf`, and a writer never reads.
+            Backing::Mem | Backing::Write(_) | Backing::Stdout | Backing::Stderr
+            | Backing::Listener(_) => {
+                return Err("internal: read from a stream with no source".to_string())
+            }
+            _ => {}
+        }
         let r = match &mut self.back {
             Backing::Read(f) => f.read(out),
             Backing::Stdin => std::io::stdin().read(out),
-            // A Buffer's bytes are all in `buf`, and a writer never reads.
-            Backing::Mem | Backing::Write(_) | Backing::Stdout | Backing::Stderr => {
-                return Err("internal: read from a stream with no source".to_string())
-            }
+            _ => unreachable!("every other backing answered above"),
         };
         r.map_err(|e| e.to_string())
     }
@@ -378,9 +551,14 @@ impl Inner {
         let r = match &mut self.back {
             Backing::Read(f) => f.read_to_end(out).map(|_| ()),
             Backing::Stdin => std::io::stdin().read_to_end(out).map(|_| ()),
+            // A socket has no size to `stat`, so this is the chunked path
+            // either way; `read_to_end` stops at the peer's FIN.
+            Backing::Socket(s) => {
+                return s.read_to_end(out).map(|_| ()).map_err(|e| crate::net::err_msg(&e))
+            }
             // A Buffer is already whole; `read_all` took its remainder above.
             Backing::Mem => Ok(()),
-            Backing::Write(_) | Backing::Stdout | Backing::Stderr => {
+            Backing::Write(_) | Backing::Stdout | Backing::Stderr | Backing::Listener(_) => {
                 return Err("internal: read from a stream with no source".to_string())
             }
         };
@@ -412,6 +590,15 @@ impl Inner {
                 self.buf.extend_from_slice(b);
                 self.end = self.buf.len();
                 Ok(())
+            }
+            // **Where the green-thread swap lands (3 of 3).** `write_all`
+            // loops until every byte is gone, which is exactly the contract
+            // §2 gives `write`; under green threads the loop's `EWOULDBLOCK`
+            // arm parks the task instead of blocking the VM, and no caller
+            // learns about it because `write` has no return value to change.
+            Backing::Socket(s) => return s.write_all(b).map_err(|e| crate::net::err_msg(&e)),
+            Backing::Listener(_) => {
+                return Err("write() on a TcpListener, which is not a stream of bytes".to_string())
             }
             Backing::Read(_) | Backing::Stdin => {
                 return Err("write() on a stream open for reading (mode 'r')".to_string())

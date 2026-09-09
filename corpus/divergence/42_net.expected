@@ -1,0 +1,19 @@
+<class 'TcpListener'> True True
+<class 'TcpStream'> <class 'TcpStream'>
+True True True
+b'GET / HTTP/1.1\r\nHost: example\r\n\r\n'
+b'0123' b'456789'
+23 b'HTTP/1.1 200 OK\r\n\r\nbody'
+b'' True
+read(0): read() size must be at least 1, not 0
+limit: read_until() found no delimiter in the first 4 bytes
+address in use: <class 'OSError'>
+refused: <class 'ConnectionRefusedError'>
+also a ConnectionError: <class 'ConnectionRefusedError'>
+also an OSError: <class 'ConnectionRefusedError'>
+deadline: <class 'TimeoutError'> timed out
+no port: dial() address must be 'host:port', not '127.0.0.1' — a port is required (use ':0' for any free port, and brackets for IPv6, as in '[::1]:8080')
+listener read: 'TcpListener' object has no attribute 'read'
+listener write: 'TcpListener' object has no attribute 'write'
+closed listener: accept() on a closed TcpListener
+socket bytes(): 'TcpStream' object has no attribute 'bytes'

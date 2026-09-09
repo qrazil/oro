@@ -1,0 +1,128 @@
+# INTENTIONAL DIVERGENCE.
+# `net` has no CPython counterpart to be diffed against: CPython's `socket` is
+# a thin `libc` wrapper with `send`/`recv`/`sendall`/`makefile`, where Oro's
+# sockets are ordinary streams — a `TcpStream` is a Reader and a Writer with
+# the same `read`/`write`/`read_until`/`close` a file has, and nothing else.
+# Nothing here runs under CPython, so the baseline is reviewed by hand.
+#
+# Networking is also the one area the corpus cannot cover on its own: a socket
+# test is timing- and kernel-dependent, and the oracle cannot be asked. So this
+# file is deliberately narrow — every line of it is deterministic on any host,
+# and the mechanics (short reads, a delimiter split across two packets, a peer
+# that vanishes) are Rust integration tests in `src/net/tests.rs` instead.
+#
+# Two rules keep it honest: **ephemeral ports only** (`:0`, and read the port
+# back), and **a timeout on everything that blocks**, so a bug here fails the
+# run in a tenth of a second rather than hanging it.
+import net
+import io
+
+# --- A listener, and the port the kernel picked -----------------------------
+ln = net.listen("127.0.0.1:0")
+addr = ln.local
+print(type(ln), addr.startswith("127.0.0.1:"), addr.rsplit(":", 1)[1] != "0")
+
+# `dial` completes into the listen backlog, so it returns before anything has
+# accepted it — which is why this whole file works on one thread, with no
+# `spawn` in the language yet.
+conn = net.dial(addr)
+srv = ln.accept()
+print(type(conn), type(srv))
+conn.set_timeout(5)
+srv.set_timeout(5)
+# Addresses are strings, not an `Address` type: `addr.rsplit(":", 1)` is the
+# parsing, with methods that already exist.
+print(conn.peer == addr, srv.local == addr, srv.peer == conn.local)
+
+# --- The io protocol, with no special-casing --------------------------------
+# This is the acceptance criterion for the whole design: `read_until`, `io.read`
+# and `io.copy` were written against `read(n)`/`write(b)` and know nothing about
+# sockets, and a socket satisfies them because it is the same stream type.
+conn.write(b"GET / HTTP/1.1\r\n")
+conn.write(b"Host: example\r\n")
+conn.write(b"\r\n")
+print(srv.read_until(b"\r\n\r\n", 65536))
+
+conn.write(b"0123456789")
+# `io.read(r, n)` loops until it has exactly n bytes; `r.read(n)` is one
+# syscall's worth and may legally come up short, which is why a socket test
+# never asserts on the raw form.
+print(io.read(srv, 4), io.read(srv, 6))
+
+# A half-close: FIN one way, and the answer still comes back the other.
+srv.write(b"HTTP/1.1 200 OK\r\n\r\nbody")
+srv.shutdown_write()
+sink = io.buffer()
+print(io.copy(sink, conn), sink.bytes())
+# EOF is an empty return, not an exception, and it stays empty.
+print(conn.read(16), conn.read(16) == b"")
+
+# --- Errors, and the classes in `docs/stdlib-server-design.md` §4 -----------
+# The messages of the errno-bearing ones are not printed: `[Errno 111]` on
+# Linux is `[Errno 61]` on macOS, and the *type* is the part that is frozen.
+try:
+    srv.read(0)
+except ValueError as e:
+    print("read(0):", e)
+
+conn.write(b"aaaaaaaaaaaaaaaa")
+try:
+    srv.read_until(b"\r\n", 4)
+except ValueError as e:
+    print("limit:", e)
+
+try:
+    net.listen(addr)
+except OSError as e:
+    print("address in use:", type(e))
+
+ln.close()
+try:
+    net.dial(addr)
+except ConnectionRefusedError as e:
+    print("refused:", type(e))
+# CPython's exact hierarchy: ConnectionRefusedError -> ConnectionError ->
+# OSError -> Exception, so a server can catch at whichever width it means.
+try:
+    net.dial(addr)
+except ConnectionError as e:
+    print("also a ConnectionError:", type(e))
+try:
+    net.dial(addr)
+except OSError as e:
+    print("also an OSError:", type(e))
+
+srv.set_timeout(0.05)
+try:
+    srv.read(4)
+except TimeoutError as e:
+    print("deadline:", type(e), e)
+
+try:
+    net.dial("127.0.0.1")
+except ValueError as e:
+    print("no port:", e)
+
+# A listener is not a Reader and not a Writer, and it does not merely refuse at
+# the call: it has no `read` and no `write` at all. The io protocol is a naming
+# convention, so "is this a Reader?" is answered by whether the method is there.
+ln2 = net.listen("127.0.0.1:0")
+try:
+    ln2.read(1)
+except AttributeError as e:
+    print("listener read:", e)
+try:
+    ln2.write(b"x")
+except AttributeError as e:
+    print("listener write:", e)
+ln2.close()
+try:
+    ln2.accept()
+except ValueError as e:
+    print("closed listener:", e)
+# A socket has the four stream methods and the three only a socket can do, and
+# `bytes()` — which belongs to a Buffer — is not among them.
+try:
+    conn.bytes()
+except AttributeError as e:
+    print("socket bytes():", e)

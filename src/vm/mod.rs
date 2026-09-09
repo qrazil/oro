@@ -3393,6 +3393,9 @@ fn get_attr(obj: &Value, name: &str) -> Result<Value, String> {
             }
             Err(format!("'super' object has no attribute '{name}'"))
         }
+        // A socket's `peer` and `local` are data attributes, not methods
+        // (§4): they are strings read once when the socket was opened.
+        Value::Stream(s) if s.has_addr_attr(name) => Ok(Value::str(s.addr_attr(name)?)),
         _ => {
             if crate::builtins::method_exists(obj, name) {
                 Ok(Value::Method(Rc::new(BoundMethod {
@@ -3524,6 +3527,11 @@ fn compile_source(source: &str) -> Result<Rc<CodeObject>, String> {
 /// Every message here is produced by this crate, so the matching is reliable.
 fn classify_error(msg: &str) -> &'static str {
     let m = msg;
+    // Socket errors carry an errno and map to CPython's `ConnectionError`
+    // subclasses; `crate::net` owns that table because it owns the messages.
+    if let Some(kind) = crate::net::classify(m) {
+        return kind;
+    }
     // Order matters: check the more specific substrings first.
     if m.starts_with("command failed:") {
         "CommandError"
