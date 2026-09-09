@@ -19,6 +19,7 @@ pub fn lookup(name: &str) -> Option<Value> {
         "len" => bi_len,
         "range" => bi_range,
         "str" => bi_str,
+        "bytes" => bi_bytes,
         "int" => bi_int,
         "float" => bi_float,
         "bool" => bi_bool,
@@ -53,6 +54,7 @@ fn intern(name: &str) -> &'static str {
         "len" => "len",
         "range" => "range",
         "str" => "str",
+        "bytes" => "bytes",
         "int" => "int",
         "float" => "float",
         "bool" => "bool",
@@ -107,6 +109,7 @@ fn bi_len(args: Vec<Value>) -> VResult<Value> {
     exactly(&args, 1, "len")?;
     let n = match &args[0] {
         Value::Str(s) => s.char_len(),
+        Value::Bytes(b) => b.len(),
         Value::List(l) => l.borrow().len(),
         Value::Tuple(t) => t.len(),
         Value::Dict(d) => d.borrow().len(),
@@ -132,6 +135,10 @@ fn bi_range(args: Vec<Value>) -> VResult<Value> {
 
 fn bi_str(_args: Vec<Value>) -> VResult<Value> {
     Err(type_name_is_not_callable("str", "to_str", "\"\""))
+}
+
+fn bi_bytes(_args: Vec<Value>) -> VResult<Value> {
+    Err(type_name_is_not_callable("bytes", "to_bytes", "b\"\""))
 }
 
 fn bi_repr(args: Vec<Value>) -> VResult<Value> {
@@ -227,6 +234,7 @@ fn builtin_type_matches(name: &str, obj: &Value) -> bool {
         "float" => matches!(obj, Value::Float(_)),
         "bool" => matches!(obj, Value::Bool(_)),
         "str" => matches!(obj, Value::Str(_)),
+        "bytes" => matches!(obj, Value::Bytes(_)),
         _ => false,
     }
 }

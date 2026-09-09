@@ -143,6 +143,9 @@ pub enum IterState {
     List { list: Rc<RefCell<Vec<Value>>>, idx: usize, orig_len: usize },
     Tuple { tuple: Rc<Vec<Value>>, idx: usize },
     Str { chars: Vec<String>, idx: usize },
+    /// Iterating `bytes` yields the octets as `int`s, so no per-element
+    /// allocation is needed — the source `Rc` is simply held and indexed.
+    Bytes { bytes: Rc<Vec<u8>>, idx: usize },
     /// Dict/set iteration works over a snapshot taken at `GetIter` time.
     Snapshot { items: Vec<Value>, idx: usize },
     /// Line-by-line iteration over an open file (`for line in f`).

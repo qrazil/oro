@@ -71,6 +71,12 @@ fn add(a: &Value, b: &Value) -> Result<Value, String> {
     }
     match (a, b) {
         (Value::Str(x), Value::Str(y)) => Ok(Value::str(format!("{}{}", x.s, y.s))),
+        (Value::Bytes(x), Value::Bytes(y)) => {
+            let mut v = Vec::with_capacity(x.len() + y.len());
+            v.extend_from_slice(x);
+            v.extend_from_slice(y);
+            Ok(Value::bytes(v))
+        }
         (Value::List(x), Value::List(y)) => {
             let mut v = x.borrow().clone();
             v.extend(y.borrow().iter().cloned());
@@ -101,6 +107,7 @@ fn mul(a: &Value, b: &Value) -> Result<Value, String> {
     let count = count.max(0) as usize;
     match seq {
         Value::Str(s) => Ok(Value::str(s.s.repeat(count))),
+        Value::Bytes(b) => Ok(Value::bytes(b.repeat(count))),
         Value::List(l) => {
             let base = l.borrow();
             let mut out = Vec::with_capacity(base.len() * count);

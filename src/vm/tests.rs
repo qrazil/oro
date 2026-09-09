@@ -924,3 +924,45 @@ fn ord_raises_type_error_and_chr_raises_value_error() {
     let e2 = run_err("chr(1114112)\n");
     assert!(e2.message.contains("arg not in range"), "got: {}", e2.message);
 }
+
+/// The sequence protocol on `bytes`, all of it matching CPython (the corpus
+/// oracle checks the same ground). The one asymmetry with `str` is deliberate:
+/// indexing yields the octet as an `int`, slicing yields `bytes`.
+#[test]
+fn bytes_sequence_protocol() {
+    assert_eq!(int(&eval("r = len(b\"hello\")\n")), 5);
+    assert_eq!(int(&eval("r = b\"hello\"[0]\n")), 104);
+    assert_eq!(int(&eval("r = b\"hello\"[-1]\n")), 111);
+    assert_eq!(eval("r = b\"hello\"[1:3]\n").repr(), "b'el'");
+    // Slice bounds clamp rather than raise, as everywhere else.
+    assert_eq!(eval("r = b\"hi\"[10:20]\n").repr(), "b''");
+    assert_eq!(eval("r = b\"hi\"[::-1]\n").repr(), "b'ih'");
+    assert_eq!(eval("r = b\"ab\" + b\"cd\"\n").repr(), "b'abcd'");
+    assert_eq!(eval("r = b\"ab\" * 3\n").repr(), "b'ababab'");
+    assert_eq!(eval("r = b\"ab\" * -1\n").repr(), "b''");
+    // Iteration yields ints, so a sum over bytes is a sum of octets.
+    assert_eq!(int(&eval("r = 0\nfor x in b\"abc\":\n    r = r + x\n")), 294);
+}
+
+#[test]
+fn bytes_membership_ordering_and_hashing() {
+    assert!(eval("r = b\"ab\" in b\"xaby\"\n").truthy());
+    assert!(eval("r = b\"\" in b\"x\"\n").truthy());
+    assert!(!eval("r = b\"ba\" in b\"xaby\"\n").truthy());
+    assert!(eval("r = b\"abc\" < b\"abd\"\n").truthy());
+    // A byte string never equals the str that would decode to it, and the two
+    // are distinct dict keys.
+    assert!(!eval("r = b\"abc\" == \"abc\"\n").truthy());
+    assert_eq!(eval_last("d = {b\"k\": 1, \"k\": 2}\nr = len(d)\n").repr(), "2");
+    assert_eq!(eval_last("d = {b\"k\": 1, \"k\": 2}\nr = d[b\"k\"]\n").repr(), "1");
+    // `in` on bytes means subsequence; an int asks a different question, so it
+    // is refused rather than silently answered.
+    let e = run_err("r = 97 in b\"abc\"\n");
+    assert!(e.message.contains("TypeError"), "got: {}", e.message);
+}
+
+#[test]
+fn bytes_index_out_of_range_is_an_index_error() {
+    let e = run_err("r = b\"ab\"[5]\n");
+    assert!(e.message.contains("IndexError"), "got: {}", e.message);
+}

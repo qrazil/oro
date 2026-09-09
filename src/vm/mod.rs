@@ -3086,6 +3086,7 @@ fn get_iter(v: &Value) -> Result<Value, String> {
             let chars = s.s.chars().map(|c| c.to_string()).collect();
             IterState::Str { chars, idx: 0 }
         }
+        Value::Bytes(b) => IterState::Bytes { bytes: b.clone(), idx: 0 },
         Value::Dict(d) => IterState::Snapshot { items: d.borrow().keys(), idx: 0 },
         Value::File(f) => IterState::File { file: f.clone() },
         // A generator is its own iterator; ForIter resumes it directly.
@@ -3140,6 +3141,15 @@ fn iter_next(it: &Value) -> Result<Option<Value>, String> {
                 let v = Value::str(chars[*idx].clone());
                 *idx += 1;
                 Ok(Some(v))
+            } else {
+                Ok(None)
+            }
+        }
+        IterState::Bytes { bytes, idx } => {
+            if *idx < bytes.len() {
+                let v = bytes[*idx];
+                *idx += 1;
+                Ok(Some(Value::Int(v as i64)))
             } else {
                 Ok(None)
             }
@@ -3225,6 +3235,14 @@ fn subscript_get(obj: &Value, index: &Value) -> Result<Value, String> {
             let i = resolve_index(as_index(index)?, n, "string")?;
             Ok(Value::str(s.char_at(i).expect("index checked in range")))
         }
+        // `bytes` is a sequence of numbers, so one element is a number. The
+        // asymmetry with `str` (where `s[i]` is a one-character `str`, since
+        // Oro has no character type) is the two types telling the truth about
+        // what they contain.
+        Value::Bytes(b) => {
+            let i = resolve_index(as_index(index)?, b.len(), "bytes")?;
+            Ok(Value::Int(b[i] as i64))
+        }
         Value::Dict(d) => match d.borrow().get(index)? {
             Some(v) => Ok(v),
             None => Err(format!("key error: {}", index.repr())),
@@ -3272,6 +3290,10 @@ fn slice_get(
             let idxs = slice_indices(chars.len(), lo, hi, step);
             let out: String = idxs.into_iter().map(|i| chars[i]).collect();
             Ok(Value::str(out))
+        }
+        Value::Bytes(b) => {
+            let idxs = slice_indices(b.len(), lo, hi, step);
+            Ok(Value::bytes(idxs.into_iter().map(|i| b[i]).collect::<Vec<u8>>()))
         }
         Value::List(l) => {
             let l = l.borrow();
@@ -3542,6 +3564,7 @@ fn classify_error(msg: &str) -> &'static str {
         || m.contains("argument must be")
         || m.contains("must be str")
         || m.contains("requires string")
+        || m.contains("requires bytes")
         || m.contains("not supported between")
         || m.contains("takes")
         || m.contains("missing a required argument")
@@ -3736,6 +3759,7 @@ fn value_is(a: &Value, b: &Value) -> bool {
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Int(x), Value::Int(y)) => x == y,
         (Value::Str(x), Value::Str(y)) => Rc::ptr_eq(x, y),
+        (Value::Bytes(x), Value::Bytes(y)) => Rc::ptr_eq(x, y),
         (Value::List(x), Value::List(y)) => Rc::ptr_eq(x, y),
         (Value::Tuple(x), Value::Tuple(y)) => Rc::ptr_eq(x, y),
         (Value::Dict(x), Value::Dict(y)) => Rc::ptr_eq(x, y),
@@ -3750,12 +3774,28 @@ fn contains(container: &Value, item: &Value) -> Result<bool, String> {
             Value::Str(needle) => Ok(hay.s.contains(&needle.s)),
             _ => Err("'in <string>' requires string as left operand".to_string()),
         },
+        // Subsequence, like `str`. CPython also lets an `int` on the left ask
+        // whether one octet is present; that is a second meaning for one
+        // spelling, so Oro says what it wants instead of guessing.
+        Value::Bytes(hay) => match item {
+            Value::Bytes(needle) => Ok(subsequence(hay, needle)),
+            _ => Err("'in <bytes>' requires bytes as left operand".to_string()),
+        },
         Value::List(l) => Ok(l.borrow().iter().any(|v| v.equals(item))),
         Value::Tuple(t) => Ok(t.iter().any(|v| v.equals(item))),
         Value::Dict(d) => d.borrow().contains(item),
         Value::Range(r) => Ok(range_contains(r, item)),
         other => Err(format!("argument of type '{}' is not iterable", other.type_name())),
     }
+}
+
+/// Whether `needle` appears contiguously in `hay`. The empty needle is present
+/// in everything, as it is for `str`.
+fn subsequence(hay: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    hay.windows(needle.len()).any(|w| w == needle)
 }
 
 fn range_contains(r: &RangeVal, item: &Value) -> bool {
