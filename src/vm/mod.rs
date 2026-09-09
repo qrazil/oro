@@ -2515,10 +2515,15 @@ impl Vm {
     /// module, or a freshly loaded one whose body runs once (as a frame) before
     /// its namespace is captured. Pushes the module value (or raises).
     fn import_module(&mut self, path: &str) -> Result<Step, RuntimeError> {
-        // Built-in modules first.
-        if let Some(m) = modules::build(path, &self.argv) {
-            self.push(m);
-            return Ok(Step::Next);
+        // Built-in modules first — except the underscored ones, which exist
+        // only to hand an Oro-written stdlib module the two or three things
+        // that must be Rust. They are not language surface, so they resolve
+        // from inside `std/` and nowhere else.
+        if !path.starts_with('_') || self.in_stdlib_module() {
+            if let Some(m) = modules::build(path, &self.argv) {
+                self.push(m);
+                return Ok(Step::Next);
+            }
         }
         // Already imported? Reuse the cached namespace (import runs once).
         if let Some(m) = self.module_cache.get(path) {
@@ -2588,6 +2593,15 @@ impl Vm {
         frame.pc = 0;
         self.frames.push(frame);
         Ok(Step::Next)
+    }
+
+    /// Whether the running frame is the body of a stdlib module shipped inside
+    /// the binary.
+    fn in_stdlib_module(&self) -> bool {
+        match self.frames.last().map(|f| &f.ret_action) {
+            Some(ReturnAction::BuildModule(p)) => stdlib::source_for(p).is_some(),
+            _ => false,
+        }
     }
 
     /// Build a module value from a finished module-body `frame`, cache it, and

@@ -1016,3 +1016,74 @@ fn bytes_and_str_convert_explicitly() {
     assert!(e.message.contains("ValueError"), "got: {}", e.message);
     assert!(e.message.contains("invalid byte 0xff at position 0"), "got: {}", e.message);
 }
+
+// --- the io protocol ---------------------------------------------------------
+
+/// The whole point of the naming convention: `io.read` and `io.copy` are
+/// written against `read(n)` and `write(b)` alone, so an Oro class with a
+/// `read` method is a Reader on exactly the same terms as a `File`.
+#[test]
+fn io_read_works_on_an_oro_class_that_only_has_read() {
+    let src = "import io\n\
+               class Dribble:\n\
+               \x20   def __init__(self, data):\n\
+               \x20       self.data = data\n\
+               \x20   def read(self, n):\n\
+               \x20       out = self.data[0:1]\n\
+               \x20       self.data = self.data[1:]\n\
+               \x20       return out\n\
+               r = io.read(Dribble(b\"drip\"))\n";
+    assert_eq!(eval_last(src).repr(), "b'drip'");
+}
+
+/// A Reader may legally return fewer bytes than asked for without being at
+/// EOF. `io.read(r, n)` is the function that hides that; `r.read(n)` is the
+/// primitive that does not.
+#[test]
+fn io_read_with_a_count_loops_over_short_reads() {
+    let src = "import io\n\
+               class Dribble:\n\
+               \x20   def __init__(self, data):\n\
+               \x20       self.data = data\n\
+               \x20   def read(self, n):\n\
+               \x20       out = self.data[0:1]\n\
+               \x20       self.data = self.data[1:]\n\
+               \x20       return out\n\
+               r = io.read(Dribble(b\"drip\"), 3)\n";
+    assert_eq!(eval_last(src).repr(), "b'dri'");
+
+    // A stream that ends short of `n` is an EOFError — the case a hand-rolled
+    // read loop gets wrong when a request spans two packets.
+    let e = run_err(
+        "import io\nr = io.read(io.buffer(b\"ab\"), 5)\n",
+    );
+    assert!(e.message.contains("EOFError"), "got: {}", e.message);
+    assert!(e.message.contains("stream ended after 2 bytes"), "got: {}", e.message);
+}
+
+#[test]
+fn io_copy_moves_bytes_between_any_two_streams() {
+    let src = "import io\n\
+               dst = io.buffer()\n\
+               n = io.copy(dst, io.buffer(b\"payload\"))\n\
+               r = f\"{n}:{dst.bytes().to_str()}\"\n";
+    assert_eq!(fstr(src), "7:payload");
+}
+
+/// `io.buffer` is a Reader and a Writer at once, and a queue between them.
+#[test]
+fn a_buffer_reads_what_was_written_to_it() {
+    let src = "import io\n\
+               b = io.buffer(b\"one \")\n\
+               b.write(b\"two\")\n\
+               r = b.read(4).to_str() + \"|\" + b.bytes().to_str()\n";
+    assert_eq!(fstr(src), "one |two");
+}
+
+/// The underscored built-in modules are the stdlib's Rust primitives, not
+/// language surface: `std/io.oro` can reach `_io` and a user program cannot.
+#[test]
+fn private_native_modules_resolve_only_inside_the_stdlib() {
+    let e = run_err("import _io\n");
+    assert!(e.message.contains("No module named '_io'"), "got: {}", e.message);
+}

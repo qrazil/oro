@@ -1,0 +1,129 @@
+# io.oro — the three free functions of the io protocol, written in Oro on top
+# of the frozen core. The protocol itself is two methods and a naming
+# convention, not a declared type:
+#
+#     read(n)   -> bytes     # 1..n bytes; b"" at EOF; MAY return fewer than n
+#     write(b)  -> None      # writes all of b, or raises
+#
+# There is no `class Reader`, nothing to inherit from and no registration. Any
+# object with a `read` method of that shape is a Reader, whether it is a `File`
+# from `open()`, a `Buffer` from `io.buffer()`, `sys.stdin`, or a class someone
+# wrote this afternoon — which is why every function here is written against
+# `read(n)` and `write(b)` alone, and learned about none of them.
+#
+# API
+# ---
+#   io.read(r, n=None)   -> bytes   everything until EOF, or exactly n
+#   io.copy(dst, src)    -> int     bytes copied, until src is at EOF
+#   io.buffer(b=b"")     -> Buffer  an in-memory Reader + Writer
+#
+# That is the entire module, and the asymmetry in it is deliberate: there is no
+# `io.write`, because `w.write(b)` already writes all of `b` or raises. There is
+# no partial-write case for a free function to paper over. Reading everything
+# requires a loop; writing everything does not.
+#
+# The mental model, which the whole short-read hazard reduces to:
+#
+#   r.read(n) is the raw primitive — one syscall's worth, "what has arrived".
+#   io.read(...) does the whole job, and always returns what was asked for.
+#
+# There is no `io.lines`, no `io.read_text` and no `io.write_text`. Each is a
+# compose of things that already exist, and Oro programmers write `.to_str()`
+# and `.to_bytes()` at every other boundary in the language:
+#
+#   s = io.read(f).to_str()                          # a whole file, as text
+#   f.write(s.to_bytes())                            # text, written
+#   lines = io.read(f).to_str().rstrip("\n").split("\n")
+
+# The two things in this module that cannot be written in Oro: a `Buffer` is a
+# Rust type, and a whole-stream read must `stat` and allocate once (below).
+import _io
+
+# Bytes per read in the chunked loops. Comfortably above the readers' internal
+# buffer, so a copy of a large file is one syscall per chunk rather than one
+# per buffer-full.
+_CHUNK = 65536
+
+# The Rust-backed stream types, which is what `read` routes to its fast path.
+# A type check in a language that avoids them is a small smell; three lines of
+# dispatch is the honest price of the whole-file case being fast and the
+# general case — an Oro class with a `read` method — still being possible.
+_FILE = "<class 'File'>"
+_BUFFER = "<class 'Buffer'>"
+
+
+# Everything until EOF, or exactly `n` bytes.
+#
+# With no count, reads until EOF. *This holds the entire stream in memory*, and
+# there is no size cap: a whole-stream read takes a path the programmer named,
+# so the unbounded-input risk is not here — it is on sockets, which read with an
+# `n` the server chose, or with `read_until(delim, limit)`. A surprising default
+# limit would fire on the 200 MB log file you meant to read and never on the
+# dangerous case.
+#
+# With a count, returns exactly `n` bytes or raises EOFError if the stream ends
+# first. That is the form an HTTP body on a keep-alive connection needs: reading
+# to EOF is not available (the connection does not close, that is the point of
+# keep-alive) and `r.read(n)` may legally return fewer. Without it every body
+# read hand-rolls a loop, and a hand-rolled read loop is the bug that works
+# against localhost and fails under load when a request spans two packets.
+def read(r, n=None):
+    if n == None:
+        # `stat` and allocate once, in Rust, for the streams whose size is
+        # knowable. Growing a buffer chunk by chunk holds the old and the new
+        # allocation at the moment of the last doubling — a transient peak of
+        # 1.5-2x the result, which is what actually kills the process on a
+        # large file. This is a 2x reduction in peak memory, not immunity from
+        # running out of it: a 10 GB file still does not fit in 8 GB.
+        t = type(r)
+        if t == _FILE or t == _BUFFER:
+            return _io.read_all(r)
+        # Anything else — an Oro class implementing the protocol — takes the
+        # chunk loop, and the transient comes back with it.
+        parts = []
+        chunk = r.read(_CHUNK)
+        while chunk != b"":
+            parts.append(chunk)
+            chunk = r.read(_CHUNK)
+        return parts.join(b"")
+    if n < 0:
+        raise ValueError(f"io.read() count must not be negative, got {n}")
+    parts = []
+    got = 0
+    while got < n:
+        chunk = r.read(n - got)
+        if chunk == b"":
+            raise EOFError(f"stream ended after {got} bytes, expected {n}")
+        parts.append(chunk)
+        got = got + len(chunk)
+    # Everything arrived in one read, which is the usual case for a body that
+    # fits in one packet. Joining a one-element list would copy it again.
+    if len(parts) == 1:
+        return parts[0]
+    return parts.join(b"")
+
+
+# Copy `src` to `dst` until `src` is at EOF; return the number of bytes copied.
+#
+# The payoff of the naming convention: this works on a file, a Buffer,
+# sys.stdin, or a class someone wrote this afternoon, and it never learned about
+# any of them.
+def copy(dst, src):
+    total = 0
+    chunk = src.read(_CHUNK)
+    while chunk != b"":
+        dst.write(chunk)
+        total = total + len(chunk)
+        chunk = src.read(_CHUNK)
+    return total
+
+
+# An in-memory Reader and Writer over `b`.
+#
+# The load-bearing one of the stream types, not the convenient one: it is the
+# only way to get a Reader you can feed literal bytes to, which is what lets a
+# protocol be written, tested and fed adversarial input before a socket exists.
+# `write` appends, `read` consumes from the front, and `bytes()` is what has
+# been written and not yet read.
+def buffer(b=b""):
+    return _io.buffer(b)

@@ -11,7 +11,10 @@
 //! shipped in the binary or lives next to the user's script.
 
 /// Name -> embedded Oro source, for modules that ship inside the binary.
-const MODULES: &[(&str, &str)] = &[("json", include_str!("../../std/json.oro"))];
+const MODULES: &[(&str, &str)] = &[
+    ("io", include_str!("../../std/io.oro")),
+    ("json", include_str!("../../std/json.oro")),
+];
 
 /// Look up the embedded source for stdlib module `path`, or `None` if `path`
 /// does not name one. A user file can never shadow one of these names —

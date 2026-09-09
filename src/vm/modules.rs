@@ -17,6 +17,7 @@ pub fn build(name: &str, argv: &[String]) -> Option<Value> {
         "time" => Some(build_time()),
         "re" => Some(build_re()),
         "proc" => Some(build_proc()),
+        "_io" => Some(build_native_io()),
         _ => None,
     }
 }
@@ -225,6 +226,46 @@ fn re_match(_args: Vec<Value>) -> Result<Value, String> {
          almost always the wrong choice and is constantly confused with re.search. Use re.search \
          (unanchored), or anchor explicitly with a leading `^`."
         .to_string())
+}
+
+// --- _io ----------------------------------------------------------------------
+
+/// The Rust primitives behind `std/io.oro`, and nothing else.
+///
+/// Two things in the `io` module cannot be written in Oro: the `Buffer`
+/// constructor (it is a Rust type) and the whole-stream read (it `stat`s and
+/// allocates once, and `bytes` is immutable so the Oro spelling would hold the
+/// chunks and the joined result at the same time — the 2× transient the
+/// optimisation exists to avoid). Everything else in `io` is Oro.
+///
+/// The leading underscore is enforced, not a convention: [`super::Vm`] resolves
+/// an underscored built-in module only from inside a stdlib module body, so
+/// this is not part of the language's surface and is not frozen at 1.0.
+fn build_native_io() -> Value {
+    module(
+        "_io",
+        vec![
+            ("buffer", builtin("_io.buffer", io_buffer)),
+            ("read_all", builtin("_io.read_all", io_read_all)),
+        ],
+    )
+}
+
+fn io_buffer(args: Vec<Value>) -> Result<Value, String> {
+    match args.as_slice() {
+        [Value::Bytes(b)] => Ok(Value::Stream(Rc::new(crate::stream::OroStream::buffer(
+            (**b).clone(),
+        )))),
+        [other] => Err(format!("buffer() argument must be bytes, not '{}'", other.type_name())),
+        _ => Err("buffer() takes 1 argument".to_string()),
+    }
+}
+
+fn io_read_all(args: Vec<Value>) -> Result<Value, String> {
+    match args.as_slice() {
+        [Value::Stream(s)] => Ok(Value::bytes(s.read_all()?)),
+        _ => Err("internal: _io.read_all takes one Rust stream".to_string()),
+    }
 }
 
 // --- proc ---------------------------------------------------------------------
