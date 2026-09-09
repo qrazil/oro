@@ -308,6 +308,10 @@ pub struct CodeObject {
     pub nfree: usize,
     /// Parameters in declaration order (empty for a module).
     pub params: Vec<ParamInfo>,
+    /// True when every parameter is a plain positional one — no `*args`, no
+    /// `**kwargs`. Computed here so the VM's argument binder can take its
+    /// static path on a simple `f(a, b)` without walking `params` first.
+    pub simple_params: bool,
     /// Local slots whose name also exists at module scope but was made local by
     /// assignment (no `global` declaration). Used only to turn an
     /// unbound-local error into a teaching message. Empty for the module.

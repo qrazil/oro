@@ -208,3 +208,32 @@ retirement, not on reuse, so pooling never extends a value's lifetime.
 Less than hoped, and the reason is instructive: `locals` and `stack` were not
 the only two allocations per call. `bind_call` also collected a
 `Vec<&ParamInfo>` and a `vec![None; n]` on *every* call — see step 8.
+
+### 8. A static argument-binding path
+
+`bind_call`'s doc comment described two paths — a static one binding positional
+arguments straight into their slots, and a dynamic one matching by name — but
+the code only ever ran the dynamic one. It collected a `Vec<&ParamInfo>`, a
+`vec![None; n]` and a leftovers vector before it could bind anything, on every
+call, however simple. The static path (no keywords, no `*args`/`**kwargs`,
+every parameter covered by an argument or its default) now binds with **zero
+allocations**. `self` is passed to `bind_call` separately instead of being
+prepended into a freshly allocated argument vector, removing another allocation
+and a full argument copy from every method call.
+
+| bench | before | after | delta |
+|---|---|---|---|
+| fib | 0.208s | 0.178s | **-14%** |
+| loop | 0.607s | 0.623s | +3% (noise; no calls) |
+| strjoin | 0.116s | 0.115s | -1% |
+| dictops | 0.357s | 0.357s | 0% |
+| oo | 0.374s | 0.335s | **-10%** |
+| genpipe | 0.158s | 0.166s | +5% |
+| exc | 0.140s | 0.136s | -3% |
+| listbuild | 0.304s | 0.302s | -1% |
+| chain | 0.164s | 0.146s | **-11%** |
+
+Verified byte-identical diagnostics across thirteen error programs covering
+every argument-binding failure — too many positional, too few, unexpected
+keyword, multiple values for one argument, defaults, `*args`, `**kwargs`,
+methods, and keyword calls to methods — plus all 65 corpus programs.

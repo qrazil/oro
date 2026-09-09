@@ -1308,7 +1308,7 @@ impl Vm {
                 if self.frames.len() >= MAX_FRAMES {
                     return Err(self.err("maximum recursion depth exceeded"));
                 }
-                let frame = self.bind_call(&f, args, kwargs)?;
+                let frame = self.bind_call(&f, None, args, kwargs)?;
                 if f.code.is_generator {
                     // Calling a generator function does not run it; it produces a
                     // generator holding the suspended (unstarted) frame.
@@ -1339,10 +1339,7 @@ impl Vm {
         if self.frames.len() >= MAX_FRAMES {
             return Err(self.err("maximum recursion depth exceeded"));
         }
-        let mut call_args = Vec::with_capacity(args.len() + 1);
-        call_args.push(receiver.clone());
-        call_args.extend(args);
-        let mut frame = self.bind_call(&func, call_args, kwargs)?;
+        let mut frame = self.bind_call(&func, Some(receiver.clone()), args, kwargs)?;
         frame.ret_action = action;
         frame.super_ctx = Some((defclass, receiver));
         self.frames.push(frame);
@@ -1586,7 +1583,7 @@ impl Vm {
                             op.name()
                         )));
                     }
-                    let mut frame = self.bind_call(&f, call_args, Vec::new())?;
+                    let mut frame = self.bind_call(&f, None, call_args, Vec::new())?;
                     frame.ret_action = ReturnAction::DriveSeq;
                     self.frames.push(frame);
                     return Ok(());
@@ -2030,7 +2027,7 @@ impl Vm {
                     if f.code.is_generator {
                         return Err(self.err("sort key must not be a generator function"));
                     }
-                    let mut frame = self.bind_call(&f, vec![item], Vec::new())?;
+                    let mut frame = self.bind_call(&f, None, vec![item], Vec::new())?;
                     frame.ret_action = ReturnAction::DriveSort;
                     self.frames.push(frame);
                     return Ok(());
@@ -2860,14 +2857,56 @@ impl Vm {
     /// taken when keyword arguments are present or the function has `*args` /
     /// `**kwargs`, where some argument names are only known at runtime and must
     /// be matched by name against the parameter list.
+    ///
+    /// `receiver`, when present, is the method call's `self`: it binds to the
+    /// first parameter ahead of `args`. It is passed separately rather than
+    /// prepended to `args` by the caller because prepending means allocating a
+    /// second argument vector and re-copying every argument into it, on every
+    /// method call.
     fn bind_call(
         &mut self,
         func: &Rc<Function>,
+        receiver: Option<Value>,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
     ) -> Result<Frame, RuntimeError> {
         let mut frame = self.take_frame(func.code.clone(), &func.freevars);
         let code = &func.code;
+
+        // --- The static path ---------------------------------------------
+        //
+        // No keywords, no `*args`/`**kwargs`, and every parameter filled by a
+        // positional argument or its own default. That is the overwhelming
+        // majority of calls, and it needs no name matching at all — so it needs
+        // no allocation either. The dynamic path below builds three vectors
+        // (the normal-parameter list, the fill slots, the leftovers) before it
+        // can bind anything; on a call-heavy program that dominated.
+        let supplied = args.len() + usize::from(receiver.is_some());
+        let first_defaulted = code.params.len().saturating_sub(func.defaults.len());
+        if kwargs.is_empty()
+            && code.simple_params
+            && supplied <= code.params.len()
+            && supplied >= first_defaulted
+        {
+            let mut values = receiver.into_iter().chain(args);
+            for p in &code.params[..supplied] {
+                let v = values.next().expect("supplied counts the values exactly");
+                store_param(&mut frame, p.target, v);
+            }
+            for (i, p) in code.params.iter().enumerate().skip(supplied) {
+                let v = func.defaults[i - first_defaulted].clone();
+                store_param(&mut frame, p.target, v);
+            }
+            return Ok(frame);
+        }
+
+        // --- The dynamic path ---------------------------------------------
+        let mut args = args;
+        if let Some(receiver) = receiver {
+            // Only now is the combined vector worth building: this path has to
+            // match names against it anyway.
+            args.insert(0, receiver);
+        }
 
         let normal: Vec<&ParamInfo> =
             code.params.iter().filter(|p| p.kind == crate::ast::ParamKind::Normal).collect();

@@ -96,6 +96,7 @@ impl<'a> Codegen<'a> {
             nlocals: self.table.scopes()[self.func].nlocals as usize,
             ncells: self.table.ncells(self.func) as usize,
             nfree: self.table.nfree(self.func) as usize,
+            simple_params: params.iter().all(|p| p.kind == ParamKind::Normal),
             params,
             is_generator: self.is_generator,
             module_names: if self.func == self.table.module() {
