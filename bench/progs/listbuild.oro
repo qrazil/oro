@@ -1,0 +1,17 @@
+# List-heavy: build, index, and mutate a 400k-element list, then reduce it with
+# an explicit loop. Portable to CPython (no chains, no `=>`).
+xs = []
+i = 0
+while i < 400000:
+    xs.append(i * 3)
+    i = i + 1
+
+total = 0
+i = 0
+n = len(xs)
+while i < n:
+    xs[i] = xs[i] + 1
+    total = total + xs[i]
+    i = i + 1
+
+print(total)

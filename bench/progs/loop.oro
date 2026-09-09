@@ -1,0 +1,9 @@
+# Dispatch-bound: a 3M-iteration while loop doing integer arithmetic. This is
+# close to a pure measure of instruction-fetch + dispatch cost.
+i = 0
+total = 0
+while i < 3000000:
+    total = total + i
+    i = i + 1
+
+print(total)

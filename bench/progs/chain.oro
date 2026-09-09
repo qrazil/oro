@@ -1,0 +1,13 @@
+# ORO-ONLY: the collection protocol (`.map`/`.filter`/`.reduce`) with `=>`
+# lambdas. CPython cannot parse this file; chain.py is the equivalent-behaviour
+# twin written in Python's spelling (comprehensions + a loop).
+xs = []
+i = 0
+while i < 200000:
+    xs.append(i)
+    i = i + 1
+
+ys = xs.filter(x => x % 2 == 0).map(x => x * 3)
+total = ys.reduce(0, (acc, x) => acc + x)
+print(len(ys))
+print(total)

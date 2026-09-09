@@ -1,0 +1,9 @@
+# String building: 200k f-string formats appended to a list, then joined.
+parts = []
+i = 0
+while i < 200000:
+    parts.append(f"{i}")
+    i = i + 1
+
+s = ",".join(parts)
+print(len(s))

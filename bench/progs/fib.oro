@@ -1,0 +1,8 @@
+# Call-heavy: naive recursive fib. Exercises the call path (frame setup,
+# argument binding, return) more than anything else in the suite.
+def fib(n):
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+print(fib(27))

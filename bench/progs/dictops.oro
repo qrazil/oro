@@ -1,0 +1,12 @@
+# Dict-heavy: 500k integer-keyed writes, then a full scan summing the values.
+d = {}
+i = 0
+while i < 500000:
+    d[i] = i * 2
+    i = i + 1
+
+total = 0
+for k in d:
+    total = total + d[k]
+
+print(total)

@@ -1,0 +1,46 @@
+# Method- and attribute-heavy OO code: instance construction, attribute
+# loads/stores, method calls, and inheritance with super().
+class Vec:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+    def add(self, other):
+        return Vec(self.x + other.x, self.y + other.y)
+
+    def scale(self, k):
+        self.x = self.x * k
+        self.y = self.y * k
+        return self
+
+    def norm1(self):
+        return self.x + self.y
+
+
+class Tagged(Vec):
+    def __init__(self, x, y, tag):
+        super().__init__(x, y)
+        self.tag = tag
+
+    def norm1(self):
+        return super().norm1() + 1
+
+
+acc = Vec(0, 0)
+one = Vec(1, 2)
+i = 0
+while i < 200000:
+    acc = acc.add(one)
+    i = i + 1
+
+t = Tagged(0, 0, "t")
+total = 0
+i = 0
+while i < 100000:
+    t.x = i
+    t.y = i
+    total = total + t.norm1()
+    i = i + 1
+
+print(acc.norm1())
+print(total)
