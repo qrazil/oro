@@ -11,7 +11,7 @@ harness checks oro and CPython agree before reporting a time.
 | OS | Linux 6.14.5 (Fedora 40) |
 | rustc | 1.97.1 |
 | CPython | 3.12.10 |
-| method | best-of-3 wall clock |
+| method | best-of-N wall clock (N=3 in the log below, N=5 for the summary) |
 
 ## The programs
 
@@ -28,6 +28,29 @@ harness checks oro and CPython agree before reporting a time.
 | `builtins` | 4 global lookups + 4 native calls per iteration, 300k iterations |
 | `chain` | the collection protocol (`.filter`/`.map`/`.reduce` with `=>`) — oro-only, CPython twin in `chain.py` |
 
+## Where things stand
+
+Best-of-5, against the pre-optimization baseline further down.
+
+| bench | baseline | now | improvement | vs CPython (was → now) |
+|---|---|---|---|---|
+| fib | 0.295s | **0.160s** | **-46%** | 7.20x → **3.90x** |
+| loop | 0.897s | **0.605s** | **-33%** | 2.13x → **1.39x** |
+| strjoin | 0.144s | **0.115s** | **-20%** | 2.36x → **1.89x** |
+| dictops | 0.430s | **0.352s** | **-18%** | 2.21x → **1.81x** |
+| oo | 0.482s | **0.319s** | **-34%** | 3.80x → **2.51x** |
+| genpipe | 0.215s | **0.164s** | **-24%** | 3.71x → **2.83x** |
+| exc | 0.204s | **0.130s** | **-36%** | 2.19x → **1.35x** |
+| listbuild | 0.416s | **0.302s** | **-27%** | 2.39x → **1.72x** |
+| builtins | 0.265s¹ | **0.233s** | **-12%** | 1.10x → **0.95x** |
+| chain | 0.220s | **0.148s** | **-33%** | 3.67x → **2.47x** |
+
+¹ `builtins` was added part-way through (step 10 explains why); its "baseline"
+is its first measurement, taken before the change it motivated.
+
+`size_of::<Op>()` = **8** (was 48), and `Op` is now `Copy`.
+Binary: 2.12 MB → 2.59 MB, all of it from `opt-level = 3`.
+
 ## Baseline — `opt-level = "s"` (commit before any optimization)
 
 | bench | oro | CPython | oro/CPython |
@@ -43,6 +66,7 @@ harness checks oro and CPython agree before reporting a time.
 | chain | 0.220s | 0.060s | 3.67x |
 
 `size_of::<Op>()` = 48, `size_of::<Value>()` = 16.
+(`builtins` did not exist yet — see step 10.)
 
 ## Per-optimization log
 
@@ -312,3 +336,71 @@ to the general path unchanged.
 Verified byte-identical across fifteen error programs — now including a runaway
 recursion caught by `except` and resumed, since this moved the `MAX_FRAMES`
 check relative to the stack pops — plus all 65 corpus programs.
+
+### 12. REVERTED — extending the fast call path to bound methods
+
+**Tried and rejected as a wash.** The same allocation-free binding, extended to
+`Value::Method` with a user function, so `obj.m(x)` would also bind straight off
+the operand stack. Best-of-7, A/B against the commit above:
+
+| bench | without | with | delta |
+|---|---|---|---|
+| oo | 0.318s | 0.305s | **-4%** |
+| chain | 0.147s | 0.152s | **+3%** |
+| genpipe | 0.158s | 0.160s | +1% |
+| strjoin | 0.116s | 0.123s | +6% |
+| listbuild | 0.305s | 0.313s | +3% |
+
+It helps user-method calls and hurts *native*-method calls, which now pay an
+extra `Value::Method` match and a `MethodKind::Native` bailout before falling
+through to the general path. That trade is bad for Oro specifically: the
+collection protocol (`.map`, `.filter`, `.append`, `.join`) means native method
+calls are at least as common as user ones, and three benchmarks got slower to
+make one faster.
+
+The real cost in `oo` is elsewhere anyway: `LoadAttr` still allocates an
+`Rc<BoundMethod>` for every method access, which the next section discusses.
+
+## What is left, ranked
+
+1. **A `LoadMethod` / `CallMethod` pair.** `obj.m(x)` allocates an
+   `Rc<BoundMethod>` at `LoadAttr` purely to carry `(receiver, func)` two
+   instructions to the `Call` that immediately destructures and drops it.
+   CPython's `LOAD_METHOD`/`CALL_METHOD` pushes the two separately and never
+   builds the object. This is the single biggest remaining item for OO code and
+   it is what would make step 12 pay off: with no `BoundMethod` to build, the
+   fast call path handles methods with no extra dispatch on the native-method
+   case. Estimate 10-15% on `oo` and `chain`. Medium risk — a codegen change,
+   but a local one (only where a call's callee is an attribute expression), and
+   it needs no jump-target remapping.
+
+2. **An inline cache for `LoadAttr` on instances.** Every `self.x` hashes the
+   name in the instance's field map; every `obj.method` hashes it *twice* (a
+   miss in the fields, then a walk up `Class.members`). A per-call-site cache
+   keyed on the receiver's class pointer, with a version counter on class
+   mutation, is the standard fix. Harder than the `LoadGlobal` cache because
+   instance fields are mutable and can shadow a class member, so the fast path
+   has to stay correct when a field appears later. Estimate 10% on `oo`.
+
+3. **Superinstructions.** The `loop` benchmark runs 13 instructions per
+   iteration; fusing `LoadFast`+`LoadFast`+`BinAdd` and
+   `Compare`+`PopJumpIfFalse` would take it to about 8. Now genuinely cheap to
+   *encode* (`Op` is one word), but fusing changes instruction indices, and jump
+   targets are absolute — including the op indices stored as values inside a
+   `MatchDispatch` table constant. Needs a proper post-codegen relocation pass.
+   Estimate 15-25% on `loop`, high risk without that pass done carefully.
+
+4. **A contiguous VM-wide operand stack.** Frames would hold `(base, len)`
+   offsets into one buffer, as CPython 3.11 does. Frame pooling already
+   recovered most of the allocation win, so this is now mostly about locality
+   and about letting a call bind arguments without touching two stacks. Large
+   refactor, modest remaining upside.
+
+5. **`kwargs: Vec<(String, Value)>` → `Rc<str>` keys.** A keyword call
+   allocates a `String` per keyword argument. Correct to fix, but *unmeasurable
+   on this suite* — no benchmark passes keywords in a loop, because idiomatic
+   Oro rarely does. Worth doing when something measures it, not before.
+
+6. **`OroDict` string keys.** `HKey::Str(s.s.clone())` clones the whole string
+   to build a hash key, so `d["name"]` allocates on every lookup. `dictops` uses
+   integer keys and so never sees it; a string-keyed dict benchmark would.
