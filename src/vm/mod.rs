@@ -376,13 +376,30 @@ struct Task {
     /// tasks are at two different places in the program.
     line: u32,
     col: u32,
+    /// Stack of in-flight `print` calls whose instance args are being rendered
+    /// through `__str__`. A `__str__` that itself prints nests cleanly.
+    prints: Vec<PrintJob>,
+    /// Stack of in-flight container-stringify jobs (see [`StrJob`]).
+    str_jobs: Vec<StrJob>,
+    sort_jobs: Vec<SortJob>,
+    seq_jobs: Vec<SeqJob>,
+    mat_jobs: Vec<MatJob>,
 }
 
 impl Task {
     /// A task with nothing running in it yet. Every field is an empty `Vec`,
     /// which does not allocate, so a task costs one struct until it runs.
     fn new() -> Task {
-        Task { frames: Vec::new(), line: 0, col: 0 }
+        Task {
+            frames: Vec::new(),
+            line: 0,
+            col: 0,
+            prints: Vec::new(),
+            str_jobs: Vec::new(),
+            sort_jobs: Vec::new(),
+            seq_jobs: Vec::new(),
+            mat_jobs: Vec::new(),
+        }
     }
 }
 
@@ -399,14 +416,6 @@ pub struct Vm {
     /// The module frame's locals, captured when the top-level frame returns.
     /// Written exactly once (at program end); used only by tests.
     last_locals: Vec<Value>,
-    /// Stack of in-flight `print` calls whose instance args are being rendered
-    /// through `__str__`. A `__str__` that itself prints nests cleanly.
-    prints: Vec<PrintJob>,
-    /// Stack of in-flight container-stringify jobs (see [`StrJob`]).
-    str_jobs: Vec<StrJob>,
-    sort_jobs: Vec<SortJob>,
-    seq_jobs: Vec<SeqJob>,
-    mat_jobs: Vec<MatJob>,
     /// The built-in exception classes, by name (shared identity for the run).
     excs: HashMap<&'static str, Rc<Class>>,
     /// Exceptions currently being handled (top = innermost), for bare `raise`.
@@ -477,11 +486,6 @@ impl Vm {
             task: Task::new(),
             frame_pool: Vec::new(),
             last_locals: Vec::new(),
-            prints: Vec::new(),
-            str_jobs: Vec::new(),
-            sort_jobs: Vec::new(),
-            seq_jobs: Vec::new(),
-            mat_jobs: Vec::new(),
             excs: exceptions::build_registry(),
             handling: Vec::new(),
             finally_why: Vec::new(),
@@ -1084,7 +1088,7 @@ impl Vm {
                     match driver {
                         GenDriver::ForLoop(_) => self.push(value),
                         GenDriver::Materialize => {
-                            self.mat_jobs.last_mut().expect("materialise job").items.push(value);
+                            self.task.mat_jobs.last_mut().expect("materialise job").items.push(value);
                             self.drive_materialize()?;
                         }
                     }
@@ -1602,7 +1606,7 @@ impl Vm {
         };
 
         let (shape, items) = self.seq_receiver(who, receiver)?;
-        self.seq_jobs.push(SeqJob {
+        self.task.seq_jobs.push(SeqJob {
             op,
             shape,
             items,
@@ -1646,7 +1650,7 @@ impl Vm {
     fn drive_seq(&mut self) -> Result<(), RuntimeError> {
         loop {
             let (item, func, shape, op) = {
-                let job = self.seq_jobs.last().expect("active seq job");
+                let job = self.task.seq_jobs.last().expect("active seq job");
                 // `find`, `any` and `all` stop as soon as the answer is settled,
                 // so a predicate is never called more often than it must be.
                 let settled = match job.op {
@@ -1655,17 +1659,17 @@ impl Vm {
                     _ => false,
                 };
                 if settled || job.next >= job.items.len() {
-                    let job = self.seq_jobs.pop().unwrap();
+                    let job = self.task.seq_jobs.pop().unwrap();
                     return self.finish_seq(job);
                 }
                 (job.items[job.next].clone(), job.func.clone(), job.shape, job.op)
             };
-            self.seq_jobs.last_mut().unwrap().next += 1;
+            self.task.seq_jobs.last_mut().unwrap().next += 1;
 
             // No predicate (`any()`, `all()`, `count()`): the element is its own
             // result, so no frame is needed at all.
             let Some(func) = func else {
-                self.seq_jobs.last_mut().unwrap().results.push(item);
+                self.task.seq_jobs.last_mut().unwrap().results.push(item);
                 continue;
             };
 
@@ -1680,6 +1684,7 @@ impl Vm {
             };
             if op == SeqOp::Reduce {
                 let acc = self
+                    .task
                     .seq_jobs
                     .last()
                     .and_then(|j| j.results.last().cloned())
@@ -1736,7 +1741,7 @@ impl Vm {
     /// Record one callback result. `reduce` threads a single accumulator rather
     /// than collecting per-element results, so it replaces instead of appending.
     fn record_seq_result(&mut self, value: Value) {
-        let job = self.seq_jobs.last_mut().expect("seq job");
+        let job = self.task.seq_jobs.last_mut().expect("seq job");
         if job.op == SeqOp::Reduce {
             job.results.clear();
         }
@@ -1934,7 +1939,7 @@ impl Vm {
         if !args.iter().any(|a| matches!(a, Value::Generator(_))) {
             return Ok(false);
         }
-        self.mat_jobs.push(MatJob {
+        self.task.mat_jobs.push(MatJob {
             callee: callee.clone(),
             args: args.to_vec(),
             kwargs: kwargs.to_vec(),
@@ -1957,7 +1962,7 @@ impl Vm {
         if !matches!(args.first(), Some(Value::Generator(_))) {
             return Ok(false);
         }
-        self.mat_jobs.push(MatJob {
+        self.task.mat_jobs.push(MatJob {
             callee: callee.clone(),
             args,
             kwargs,
@@ -1975,7 +1980,7 @@ impl Vm {
     fn drive_materialize(&mut self) -> Result<(), RuntimeError> {
         loop {
             let next_gen = {
-                let job = self.mat_jobs.last_mut().expect("materialise job");
+                let job = self.task.mat_jobs.last_mut().expect("materialise job");
                 let mut found = None;
                 for i in job.idx..job.args.len() {
                     if let Value::Generator(g) = &job.args[i] {
@@ -1987,7 +1992,7 @@ impl Vm {
                 found
             };
             let Some(gen) = next_gen else {
-                let mut job = self.mat_jobs.pop().expect("materialise job");
+                let mut job = self.task.mat_jobs.pop().expect("materialise job");
                 if job.receiver_in_args {
                     // Rebuild the bound method around the drained receiver.
                     let recv = job.args.remove(0);
@@ -2023,7 +2028,7 @@ impl Vm {
                 }
                 None => {
                     // Already exhausted: it contributes whatever was collected.
-                    let job = self.mat_jobs.last_mut().expect("materialise job");
+                    let job = self.task.mat_jobs.last_mut().expect("materialise job");
                     let items = std::mem::take(&mut job.items);
                     let idx = job.idx;
                     job.args[idx] = Value::List(Rc::new(RefCell::new(items)));
@@ -2107,7 +2112,7 @@ impl Vm {
             }
         };
         let n = items.len();
-        self.sort_jobs.push(SortJob {
+        self.task.sort_jobs.push(SortJob {
             items,
             keys: Vec::with_capacity(n),
             next: 0,
@@ -2121,16 +2126,16 @@ impl Vm {
     fn drive_sort(&mut self) -> Result<(), RuntimeError> {
         loop {
             let (item, keyfn) = {
-                let job = self.sort_jobs.last().expect("active sort job");
+                let job = self.task.sort_jobs.last().expect("active sort job");
                 if job.next >= job.items.len() {
-                    let job = self.sort_jobs.pop().unwrap();
+                    let job = self.task.sort_jobs.pop().unwrap();
                     let sorted =
                         self.wrap(crate::builtins::sort_by_keys(job.items, &job.keys, job.reverse))?;
                     return self.finish_sort(sorted, job.in_place);
                 }
                 (job.items[job.next].clone(), job.keyfn.clone())
             };
-            self.sort_jobs.last_mut().unwrap().next += 1;
+            self.task.sort_jobs.last_mut().unwrap().next += 1;
 
             match keyfn {
                 Value::Func(f) => {
@@ -2151,7 +2156,7 @@ impl Vm {
                 // called inline and the loop continues without a frame.
                 Value::Builtin(b) => {
                     let key = self.wrap((b.func)(vec![item]))?;
-                    self.sort_jobs.last_mut().unwrap().keys.push(key);
+                    self.task.sort_jobs.last_mut().unwrap().keys.push(key);
                 }
                 Value::Method(m) => {
                     let key = match &m.kind {
@@ -2159,7 +2164,7 @@ impl Vm {
                             .wrap(crate::builtins::call_method(&m.receiver, name, vec![item]))?,
                         _ => return Err(self.err("sort key must be a plain function")),
                     };
-                    self.sort_jobs.last_mut().unwrap().keys.push(key);
+                    self.task.sort_jobs.last_mut().unwrap().keys.push(key);
                 }
                 _ => return Err(self.err("sort key is not callable")),
             }
@@ -2215,16 +2220,16 @@ impl Vm {
                 }
             }
         }
-        self.prints.push(PrintJob { rendered: Vec::new(), remaining: args, next: 0, sep, end });
+        self.task.prints.push(PrintJob { rendered: Vec::new(), remaining: args, next: 0, sep, end });
         self.drive_print()
     }
 
     fn drive_print(&mut self) -> Result<(), RuntimeError> {
         loop {
             let next_val = {
-                let job = self.prints.last().expect("active print job");
+                let job = self.task.prints.last().expect("active print job");
                 if job.next >= job.remaining.len() {
-                    let job = self.prints.pop().unwrap();
+                    let job = self.task.prints.pop().unwrap();
                     // `end` is written verbatim, so print(end="") emits no
                     // newline at all — hence write!/flush rather than println!.
                     use std::io::Write;
@@ -2237,7 +2242,7 @@ impl Vm {
                 }
                 job.remaining[job.next].clone()
             };
-            self.prints.last_mut().unwrap().next += 1;
+            self.task.prints.last_mut().unwrap().next += 1;
 
             if let Value::Instance(inst) = &next_val {
                 let cls = inst.class.clone();
@@ -2260,7 +2265,7 @@ impl Vm {
                 return self.begin_stringify(next_val, StrCont::Print);
             }
             let s = next_val.display();
-            self.prints.last_mut().unwrap().rendered.push(s);
+            self.task.prints.last_mut().unwrap().rendered.push(s);
         }
     }
 
@@ -2271,7 +2276,7 @@ impl Vm {
         let mut instances = Vec::new();
         let mut path = Vec::new();
         collect_repr_instances(&value, &mut instances, &mut path);
-        self.str_jobs.push(StrJob { value, instances, results: Vec::new(), next: 0, cont });
+        self.task.str_jobs.push(StrJob { value, instances, results: Vec::new(), next: 0, cont });
         self.drive_str()
     }
 
@@ -2279,11 +2284,11 @@ impl Vm {
     /// Re-entered via the `DriveStr` return action after each dunder returns.
     fn drive_str(&mut self) -> Result<(), RuntimeError> {
         let next_inst = {
-            let job = self.str_jobs.last().expect("active str job");
+            let job = self.task.str_jobs.last().expect("active str job");
             (job.next < job.instances.len()).then(|| job.instances[job.next].clone())
         };
         if let Some(inst) = next_inst {
-            self.str_jobs.last_mut().unwrap().next += 1;
+            self.task.str_jobs.last_mut().unwrap().next += 1;
             // Every collected instance has an Oro __repr__ (the collection
             // criterion), so this always dispatches a frame.
             let (f, defclass) =
@@ -2291,14 +2296,14 @@ impl Vm {
             return self.invoke_user(f, inst, defclass, Vec::new(), Vec::new(), ReturnAction::DriveStr);
         }
         // All element reprs are ready: rebuild the string and run the cont.
-        let job = self.str_jobs.pop().unwrap();
+        let job = self.task.str_jobs.pop().unwrap();
         let mut idx = 0;
         let mut path = Vec::new();
         let s = build_repr(&job.value, &job.results, &mut idx, &mut path);
         match job.cont {
             StrCont::Push => self.push(Value::str(s)),
             StrCont::Print => {
-                self.prints.last_mut().expect("print job").rendered.push(s);
+                self.task.prints.last_mut().expect("print job").rendered.push(s);
                 self.drive_print()?;
             }
             StrCont::FormatSpec(spec) => {
@@ -2779,7 +2784,7 @@ impl Vm {
                     Value::Str(s) => s.s.clone(),
                     other => other.display(),
                 };
-                self.prints.last_mut().expect("print job").rendered.push(s);
+                self.task.prints.last_mut().expect("print job").rendered.push(s);
                 self.drive_print()?;
             }
             ReturnAction::DriveStr => {
@@ -2787,11 +2792,11 @@ impl Vm {
                     Value::Str(s) => s.s.clone(),
                     other => other.display(),
                 };
-                self.str_jobs.last_mut().expect("str job").results.push(s);
+                self.task.str_jobs.last_mut().expect("str job").results.push(s);
                 self.drive_str()?;
             }
             ReturnAction::DriveSort => {
-                self.sort_jobs.last_mut().expect("sort job").keys.push(value);
+                self.task.sort_jobs.last_mut().expect("sort job").keys.push(value);
                 self.drive_sort()?;
             }
             ReturnAction::DriveSeq => {
@@ -2891,7 +2896,7 @@ impl Vm {
             GenDriver::Materialize => {
                 // This argument is fully drained: swap the list in and move on to
                 // the next generator argument, or retry the call.
-                let job = self.mat_jobs.last_mut().expect("materialise job");
+                let job = self.task.mat_jobs.last_mut().expect("materialise job");
                 let items = std::mem::take(&mut job.items);
                 let idx = job.idx;
                 job.args[idx] = Value::List(Rc::new(RefCell::new(items)));
@@ -2903,22 +2908,22 @@ impl Vm {
 
     fn job_depths(&self) -> JobDepths {
         JobDepths {
-            prints: self.prints.len(),
-            str_jobs: self.str_jobs.len(),
-            sort_jobs: self.sort_jobs.len(),
-            seq_jobs: self.seq_jobs.len(),
-            mat_jobs: self.mat_jobs.len(),
+            prints: self.task.prints.len(),
+            str_jobs: self.task.str_jobs.len(),
+            sort_jobs: self.task.sort_jobs.len(),
+            seq_jobs: self.task.seq_jobs.len(),
+            mat_jobs: self.task.mat_jobs.len(),
         }
     }
 
     /// Discard jobs started inside a block that an exception is unwinding out
     /// of. Their driver frames are gone, so nothing will ever complete them.
     fn truncate_jobs(&mut self, d: JobDepths) {
-        self.prints.truncate(d.prints);
-        self.str_jobs.truncate(d.str_jobs);
-        self.sort_jobs.truncate(d.sort_jobs);
-        self.seq_jobs.truncate(d.seq_jobs);
-        self.mat_jobs.truncate(d.mat_jobs);
+        self.task.prints.truncate(d.prints);
+        self.task.str_jobs.truncate(d.str_jobs);
+        self.task.sort_jobs.truncate(d.sort_jobs);
+        self.task.seq_jobs.truncate(d.seq_jobs);
+        self.task.mat_jobs.truncate(d.mat_jobs);
     }
 
     /// Unwind `exc` through the block and frame stacks. On success (a handler or
