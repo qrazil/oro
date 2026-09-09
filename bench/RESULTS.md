@@ -291,3 +291,24 @@ itself).
 
 `builtins` now runs at **0.98x CPython** — the first benchmark in the suite
 where Oro is ahead.
+
+### 11. Bind call arguments straight off the operand stack
+
+After frame pooling and the static binding path, one allocation was left on the
+call path and `do_call` made it unconditionally: `popn(n)` split the arguments
+off the caller's operand stack into a fresh `Vec` purely to hand them to
+`invoke`. For an ordinary Oro function with positional parameters they can be
+moved straight from the caller's stack into the callee's slots — no vector, no
+re-copy, each value moved exactly once. Everything else (builtins, methods,
+classes, `*args`, keywords, a wrong arity that owes a diagnostic) falls through
+to the general path unchanged.
+
+| bench | before | after | delta |
+|---|---|---|---|
+| fib | 0.186s | 0.166s | **-11%** |
+| builtins | 0.245s | 0.232s | **-5%** |
+| everything else | | | within drift |
+
+Verified byte-identical across fifteen error programs — now including a runaway
+recursion caught by `except` and resumed, since this moved the `MAX_FRAMES`
+check relative to the stack pops — plus all 65 corpus programs.

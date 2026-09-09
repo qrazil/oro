@@ -1184,9 +1184,66 @@ impl Vm {
     // --- Calls ---------------------------------------------------------------
 
     fn do_call(&mut self, n: usize) -> Result<(), RuntimeError> {
+        // Fast path: a plain Oro function whose parameters are all positional
+        // and exactly covered by the arguments already sitting on the operand
+        // stack. Binding straight off that stack is what keeps a call from
+        // allocating a temporary argument vector — after frame pooling and the
+        // static binding path, that vector was the last allocation left on the
+        // call path, and a call-heavy program does nothing but pay for it.
+        if let Some(func) = self.fast_call_target(n) {
+            return self.call_fast(func, n);
+        }
         let args = self.popn(n);
         let callee = self.pop();
         self.invoke(callee, args, Vec::new())
+    }
+
+    /// The callee for [`Vm::call_fast`], if this call site qualifies: an
+    /// ordinary (non-generator) Oro function with only positional parameters,
+    /// called with enough arguments to fill the ones that have no default.
+    /// Everything else — builtins, methods, classes, `*args`, keywords, a
+    /// wrong arity that owes a diagnostic — falls through to the general path.
+    fn fast_call_target(&self, n: usize) -> Option<Rc<Function>> {
+        let stack = &self.frames.last()?.stack;
+        let callee = stack.get(stack.len().checked_sub(n + 1)?)?;
+        let f = match callee {
+            Value::Func(f) => f,
+            _ => return None,
+        };
+        let code = &f.code;
+        if code.is_generator || !code.simple_params || n > code.params.len() {
+            return None;
+        }
+        let first_defaulted = code.params.len() - f.defaults.len();
+        if n < first_defaulted {
+            return None;
+        }
+        Some(f.clone())
+    }
+
+    /// Move `n` arguments from the caller's operand stack straight into a fresh
+    /// frame's slots. No argument vector, no re-copy — the values are moved once.
+    fn call_fast(&mut self, func: Rc<Function>, n: usize) -> Result<(), RuntimeError> {
+        if self.frames.len() >= MAX_FRAMES {
+            return Err(self.err("maximum recursion depth exceeded"));
+        }
+        let mut frame = self.take_frame(func.code.clone(), &func.freevars);
+        let params = &func.code.params;
+        {
+            let caller = self.frames.last_mut().expect("no active frame");
+            let base = caller.stack.len() - n;
+            for (p, v) in params.iter().zip(caller.stack.drain(base..)) {
+                store_param(&mut frame, p.target, v);
+            }
+            caller.stack.pop().expect("the callee itself");
+        }
+        // Any trailing parameters the call did not supply take their defaults.
+        let first_defaulted = params.len() - func.defaults.len();
+        for (i, p) in params.iter().enumerate().skip(n) {
+            store_param(&mut frame, p.target, func.defaults[i - first_defaulted].clone());
+        }
+        self.frames.push(frame);
+        Ok(())
     }
 
     fn do_call_ex(&mut self) -> Result<(), RuntimeError> {
