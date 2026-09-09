@@ -33,6 +33,24 @@ fn builtin(name: &'static str, func: fn(Vec<Value>) -> Result<Value, String>) ->
     Value::Builtin(Rc::new(Builtin { name, func }))
 }
 
+/// One of the three standard streams, shared process-wide.
+///
+/// `modules::build` runs on every `import`, and two readers on fd 0 would each
+/// hold their own buffer — one of them able to swallow bytes the other is
+/// waiting for. The three standard streams are identities, not values, so they
+/// are made once.
+fn std_stream(which: &'static str) -> Value {
+    thread_local! {
+        static STREAMS: RefCell<HashMap<&'static str, Value>> = RefCell::new(HashMap::new());
+    }
+    STREAMS.with(|s| {
+        s.borrow_mut()
+            .entry(which)
+            .or_insert_with(|| Value::Stream(Rc::new(crate::stream::OroStream::std_stream(which))))
+            .clone()
+    })
+}
+
 fn build_sys(argv: &[String]) -> Value {
     let argv_list: Vec<Value> = argv.iter().map(|s| Value::str(s.clone())).collect();
     module(
@@ -41,9 +59,15 @@ fn build_sys(argv: &[String]) -> Value {
             ("argv", Value::List(Rc::new(RefCell::new(argv_list)))),
             ("exit", builtin("sys.exit", sys_exit)),
             ("platform", Value::str("oro")),
-            ("stdout", Value::str("<stdout>")),
-            ("stderr", Value::str("<stderr>")),
-            ("stdin", Value::str("<stdin>")),
+            // Real fd-backed byte streams, not name placeholders. They are
+            // unbuffered like every other writer in the language, which is why
+            // Oro flushes as it goes (`python3 -u` semantics) — there is
+            // nothing to flush rather than something that flushes eagerly.
+            // `print` writes through the same handle, so `print(...)` and
+            // `sys.stdout.write(b"...")` interleave in program order.
+            ("stdout", std_stream("<stdout>")),
+            ("stderr", std_stream("<stderr>")),
+            ("stdin", std_stream("<stdin>")),
         ],
     )
 }

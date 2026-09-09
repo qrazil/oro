@@ -1,0 +1,41 @@
+# INTENTIONAL DIVERGENCE.
+# `sys.stdout`/`sys.stderr`/`sys.stdin` are byte streams. CPython's are text
+# streams with a `.buffer` underneath, so `sys.stdout.write` takes `str` there
+# and `bytes` here, and returns a count there and `None` here. There is one
+# stream protocol in Oro, not one for text and one for bytes, and the price of
+# that is this edge.
+import sys
+
+# `print` is unchanged and still takes `str`; streams take `bytes` and nothing
+# else. The two spellings do not accept the same argument, and both reach fd 1
+# in program order — that ordering is the thing this test exists to pin, and it
+# holds because every writer in the language is unbuffered.
+print("one")
+sys.stdout.write(b"two\n")
+print("three")
+sys.stdout.write(b"four")
+sys.stdout.write(b" and five\n")
+
+# No `flush()` anywhere in the language: a writer has nothing pending to flush,
+# so there is no ritual to forget and no truncated last response.
+print(sys.stdout, sys.stderr, sys.stdin)
+print(type(sys.stdout) == type(sys.stdin))
+
+# Text goes out through the same `.to_bytes()` every other boundary asks for.
+name = "wørld"
+sys.stdout.write(f"hello, {name}\n".to_bytes())
+
+# A `str` is a TypeError, not an implicit encode.
+try:
+    sys.stdout.write("text")
+except TypeError as e:
+    print("str to a stream:", e)
+
+# stdout is a writer, and asking it to read is a mistake rather than an EOF.
+try:
+    sys.stdout.read(1)
+except ValueError as e:
+    print("read from stdout:", e)
+
+# stderr is a stream too, and is written the same way.
+sys.stderr.write(b"to stderr\n")
