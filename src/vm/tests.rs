@@ -1087,3 +1087,24 @@ fn private_native_modules_resolve_only_inside_the_stdlib() {
     let e = run_err("import _io\n");
     assert!(e.message.contains("No module named '_io'"), "got: {}", e.message);
 }
+
+/// `bytes` is a sequence of ints that, until this cast, could not be *built*
+/// from ints: `chr(200).to_bytes()` is the two octets of U+00C8 in UTF-8, not
+/// one octet 200, so `b"\xc8"` could not be produced from a computed value at
+/// all. It is a building block for binary protocols, not a convenience.
+#[test]
+fn a_list_of_ints_converts_to_bytes() {
+    assert_eq!(eval("r = [97, 98, 99].to_bytes()\n").repr(), "b'abc'");
+    assert_eq!(eval("r = [].to_bytes()\n").repr(), "b''");
+    assert_eq!(eval("r = (0, 200, 255).to_bytes()\n").repr(), "b'\\x00\\xc8\\xff'");
+    // A bool is an int everywhere else in the language, so it is one here.
+    assert_eq!(eval("r = [True, 98].to_bytes()\n").repr(), "b'\\x01b'");
+    // The whole point is the octet a `str` cannot reach.
+    assert_eq!(int(&eval("r = len([200].to_bytes())\n")), 1);
+    assert_eq!(int(&eval("r = len(f\"{200:c}\".to_bytes())\n")), 2);
+
+    for src in ["r = [256].to_bytes()\n", "r = [-1].to_bytes()\n", "r = [b\"a\"].to_bytes()\n"] {
+        let e = run_err(src);
+        assert!(e.message.contains("ValueError"), "{src}: got {}", e.message);
+    }
+}

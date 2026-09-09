@@ -3561,6 +3561,8 @@ fn classify_error(msg: &str) -> &'static str {
         // operation on a closed file, and (via io.UnsupportedOperation, a
         // ValueError subclass) for reading a writer.
         || m.contains("invalid file mode")
+        || m.contains("must be in range(0, 256)")
+        || m.contains("must be an int, not")
         || m.contains("must be at least")
         || m.contains("must not be empty")
         || m.contains("found no delimiter")

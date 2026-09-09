@@ -901,6 +901,32 @@ fn split_whitespace_n(s: &str, maxsplit: i64, from_right: bool) -> Vec<String> {
 /// `to_float`, `to_bool`, `to_list`, `to_dict`. Instances and containers whose
 /// `to_str` must run an Oro dunder are intercepted by the VM before reaching
 /// here, since a native method can never re-enter the interpreter.
+/// A sequence of ints as octets. Out of range or not an int is a `ValueError`
+/// naming the offending element: a `bytes` built from a number that did not fit
+/// in a byte would be silently wrong data, which is the failure mode this
+/// language exists to refuse.
+fn ints_to_bytes(items: &[Value]) -> VResult<Value> {
+    let mut out = Vec::with_capacity(items.len());
+    for (i, v) in items.iter().enumerate() {
+        match v {
+            Value::Int(n) if (0..=255).contains(n) => out.push(*n as u8),
+            // A bool is an int everywhere else in the language — `xs[True]`,
+            // `sum([True, True])` — so it is one here too.
+            Value::Bool(b) => out.push(*b as u8),
+            Value::Int(n) => {
+                return Err(format!("to_bytes(): item {i} must be in range(0, 256), got {n}"))
+            }
+            other => {
+                return Err(format!(
+                    "to_bytes(): item {i} must be an int, not '{}'",
+                    other.type_name()
+                ))
+            }
+        }
+    }
+    Ok(Value::bytes(out))
+}
+
 pub fn is_cast_method(name: &str) -> bool {
     matches!(
         name,
@@ -939,6 +965,14 @@ fn cast_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
                 // `encoding=` argument. Others are a library, written in Oro.
                 Value::Str(s) => Ok(Value::bytes(s.s.as_bytes())),
                 Value::Bytes(_) => Ok(recv.clone()),
+                // `bytes` is a sequence of ints, and this is the only way to
+                // *construct* one from ints. `chr(200).to_bytes()` yields the
+                // two octets of U+00C8 in UTF-8, not one octet 200, so without
+                // this there is no way to build `b"\xc8"` from a computed
+                // value at all — which makes every binary protocol
+                // unwriteable.
+                Value::List(l) => ints_to_bytes(&l.borrow()),
+                Value::Tuple(t) => ints_to_bytes(t),
                 other => Err(format!(
                     "'{}' object has no conversion to bytes",
                     other.type_name()
