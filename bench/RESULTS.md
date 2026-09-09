@@ -185,3 +185,26 @@ directions. LLVM had already common-subexpressioned the repeated `last_mut()`
 within a match arm; the bounds check it leaves behind is one predictable
 compare. Reverted rather than kept, because a wash is not worth the extra
 `expect("operand stack underflow")` boilerplate at a dozen call sites.
+
+### 7. Frame pooling
+
+Retired frames keep their buffers instead of freeing them, so a call refills a
+`locals` vector and an operand stack rather than asking `malloc` for the two
+blocks a return just handed back. Capped at 128 frames; buffers are emptied at
+retirement, not on reuse, so pooling never extends a value's lifetime.
+
+| bench | before | after | delta |
+|---|---|---|---|
+| fib | 0.220s | 0.208s | **-5%** |
+| loop | 0.610s | 0.607s | 0% |
+| strjoin | 0.119s | 0.116s | -3% |
+| dictops | 0.353s | 0.357s | +1% |
+| oo | 0.384s | 0.374s | -3% |
+| genpipe | 0.157s | 0.158s | +1% |
+| exc | 0.141s | 0.140s | -1% |
+| listbuild | 0.298s | 0.304s | +2% |
+| chain | 0.167s | 0.164s | -2% |
+
+Less than hoped, and the reason is instructive: `locals` and `stack` were not
+the only two allocations per call. `bind_call` also collected a
+`Vec<&ParamInfo>` and a `vec![None; n]` on *every* call — see step 8.

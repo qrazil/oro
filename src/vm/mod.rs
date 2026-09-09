@@ -44,6 +44,14 @@ impl std::error::Error for RuntimeError {}
 /// clean error.
 const MAX_FRAMES: usize = 200_000;
 
+/// How many retired [`Frame`]s to keep for reuse.
+///
+/// Calls and returns are a stack discipline, so the steady state of any
+/// program needs only a handful of recycled frames; the cap is what stops a
+/// deeply recursive program from parking 200_000 frames' worth of buffers in
+/// the pool after it unwinds.
+const FRAME_POOL_MAX: usize = 128;
+
 /// A single activation record. Everything a running function needs lives here,
 /// on the heap, in the `frames` vector — never on the Rust call stack.
 struct Frame {
@@ -346,6 +354,8 @@ enum StrCont {
 /// The virtual machine.
 pub struct Vm {
     frames: Vec<Frame>,
+    /// Retired frames, kept for their buffer capacity. See [`Vm::take_frame`].
+    frame_pool: Vec<Frame>,
     line: u32,
     col: u32,
     /// The module frame's locals, captured when the top-level frame returns.
@@ -427,6 +437,7 @@ impl Vm {
     fn new(argv: Vec<String>) -> Vm {
         Vm {
             frames: Vec::new(),
+            frame_pool: Vec::new(),
             line: 0,
             col: 0,
             last_locals: Vec::new(),
@@ -451,6 +462,61 @@ impl Vm {
                 is_exception: false,
             }),
         }
+    }
+
+    /// A frame ready to run `code`, reusing a retired frame's buffers when one
+    /// is available.
+    ///
+    /// Two heap allocations per call — the `locals` vector, sized by the
+    /// compiler's pre-pass, and the operand `stack`'s first growth — were the
+    /// dominant cost on the call path, and a call-heavy program does nothing
+    /// but pay them. A returning frame's buffers are exactly the shape the next
+    /// call wants, so they are kept and refilled rather than freed and
+    /// re-`malloc`'d microseconds later.
+    fn take_frame(&mut self, code: Rc<CodeObject>, free: &[Rc<RefCell<Value>>]) -> Frame {
+        let nlocals = code.nlocals;
+        let ncells = code.ncells;
+        match self.frame_pool.pop() {
+            // `recycle` emptied every buffer already; only capacity was kept.
+            Some(mut f) => {
+                f.code = code;
+                f.pc = 0;
+                f.locals.resize(nlocals, Value::Unbound);
+                f.cells.extend((0..ncells).map(|_| Rc::new(RefCell::new(Value::Unbound))));
+                f.free.extend_from_slice(free);
+                f
+            }
+            None => Frame {
+                locals: vec![Value::Unbound; nlocals],
+                cells: (0..ncells).map(|_| Rc::new(RefCell::new(Value::Unbound))).collect(),
+                free: free.to_vec(),
+                stack: Vec::new(),
+                pc: 0,
+                code,
+                ret_action: ReturnAction::Normal,
+                super_ctx: None,
+                blocks: Vec::new(),
+            },
+        }
+    }
+
+    /// Retire a finished frame into the pool.
+    ///
+    /// The buffers are emptied *here*, when the frame dies, rather than lazily
+    /// on reuse: pooling is a memory optimisation and must not extend the
+    /// lifetime of a single value the frame was holding.
+    fn recycle(&mut self, mut frame: Frame) {
+        if self.frame_pool.len() >= FRAME_POOL_MAX {
+            return;
+        }
+        frame.locals.clear();
+        frame.cells.clear();
+        frame.free.clear();
+        frame.stack.clear();
+        frame.blocks.clear();
+        frame.super_ctx = None;
+        frame.ret_action = ReturnAction::Normal;
+        self.frame_pool.push(frame);
     }
 
     fn push_module_frame(&mut self, code: Rc<CodeObject>) {
@@ -2444,7 +2510,7 @@ impl Vm {
 
     /// Build a module value from a finished module-body `frame`, cache it, and
     /// push it to the importer.
-    fn finish_module(&mut self, path: Rc<str>, frame: Frame) {
+    fn finish_module(&mut self, path: Rc<str>, frame: &Frame) {
         let mut members = HashMap::new();
         for (name, target) in &frame.code.module_names {
             let value = match target {
@@ -2558,6 +2624,14 @@ impl Vm {
         // Take the action out so the whole `frame` stays usable (BuildModule
         // needs it to read the module namespace).
         let action = std::mem::replace(&mut frame.ret_action, ReturnAction::Normal);
+        // BuildModule is the one action that reads the frame; it runs first,
+        // then the frame retires like any other.
+        if let ReturnAction::BuildModule(path) = action {
+            self.finish_module(path, &frame);
+            self.recycle(frame);
+            return Ok(Step::Next);
+        }
+        self.recycle(frame);
         match action {
             ReturnAction::Normal => self.push(value),
             ReturnAction::DropForInit => {
@@ -2597,7 +2671,7 @@ impl Vm {
                     self.wrap(crate::format::format_value(&value, crate::format::CONV_NONE, &spec))?;
                 self.push(Value::str(out));
             }
-            ReturnAction::BuildModule(path) => self.finish_module(path, frame),
+            ReturnAction::BuildModule(_) => unreachable!("handled before the frame retired"),
         }
         Ok(Step::Next)
     }
@@ -2667,7 +2741,9 @@ impl Vm {
     /// A generator frame reached `return` (or fell off the end): mark it done
     /// and route its driver's `for` loop to the exhaustion target.
     fn generator_stop(&mut self) -> Result<Step, RuntimeError> {
-        self.frames.pop();
+        if let Some(frame) = self.frames.pop() {
+            self.recycle(frame);
+        }
         let (gen, driver) = self.gen_stack.pop().expect("generator stop outside a driver");
         {
             let mut g = gen.borrow_mut();
@@ -2744,7 +2820,9 @@ impl Vm {
                 }
                 None => {
                     // No handler in this frame: discard it and try the caller.
-                    self.frames.pop();
+                    if let Some(frame) = self.frames.pop() {
+                        self.recycle(frame);
+                    }
                     if self.frames.is_empty() {
                         // An uncaught SystemExit sets the process exit code.
                         if let Value::Instance(i) = &exc {
@@ -2783,23 +2861,13 @@ impl Vm {
     /// `**kwargs`, where some argument names are only known at runtime and must
     /// be matched by name against the parameter list.
     fn bind_call(
-        &self,
+        &mut self,
         func: &Rc<Function>,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
     ) -> Result<Frame, RuntimeError> {
+        let mut frame = self.take_frame(func.code.clone(), &func.freevars);
         let code = &func.code;
-        let mut frame = Frame {
-            locals: vec![Value::Unbound; code.nlocals],
-            cells: (0..code.ncells).map(|_| Rc::new(RefCell::new(Value::Unbound))).collect(),
-            free: func.freevars.clone(),
-            stack: Vec::new(),
-            pc: 0,
-            code: code.clone(),
-            ret_action: ReturnAction::Normal,
-            super_ctx: None,
-        blocks: Vec::new(),
-        };
 
         let normal: Vec<&ParamInfo> =
             code.params.iter().filter(|p| p.kind == crate::ast::ParamKind::Normal).collect();
