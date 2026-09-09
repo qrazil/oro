@@ -3095,7 +3095,6 @@ fn get_iter(v: &Value) -> Result<Value, String> {
         }
         Value::Bytes(b) => IterState::Bytes { bytes: b.clone(), idx: 0 },
         Value::Dict(d) => IterState::Snapshot { items: d.borrow().keys(), idx: 0 },
-        Value::File(f) => IterState::File { file: f.clone() },
         // A generator is its own iterator; ForIter resumes it directly.
         Value::Generator(_) => return Ok(v.clone()),
         Value::Iter(_) => return Ok(v.clone()),
@@ -3168,20 +3167,6 @@ fn iter_next(it: &Value) -> Result<Option<Value>, String> {
                 Ok(Some(v))
             } else {
                 Ok(None)
-            }
-        }
-        IterState::File { file } => {
-            use std::io::BufRead;
-            let mut f = file.borrow_mut();
-            if f.closed {
-                return Err("I/O operation on closed file".to_string());
-            }
-            let reader = f.reader.as_mut().ok_or("file not open for reading")?;
-            let mut line = String::new();
-            if reader.read_line(&mut line).map_err(|e| e.to_string())? == 0 {
-                Ok(None)
-            } else {
-                Ok(Some(Value::str(line)))
             }
         }
     }
@@ -3558,6 +3543,15 @@ fn classify_error(msg: &str) -> &'static str {
         || m.contains("step")
         || m.contains("arg is an empty sequence")
         || m.contains("expected at least")
+        // Stream faults. CPython answers ValueError for a bad mode, for an
+        // operation on a closed file, and (via io.UnsupportedOperation, a
+        // ValueError subclass) for reading a writer.
+        || m.contains("invalid file mode")
+        || m.contains("must be at least")
+        || m.contains("must not be empty")
+        || m.contains("found no delimiter")
+        || m.contains("on a closed ")
+        || m.contains("on a stream open for")
     {
         "ValueError"
     } else if m.contains("expected a character")

@@ -4,14 +4,8 @@ oro
 /usr/local/bin
 ('report.tar', '.gz')
 ('plain', '')
-17
-alpha
-beta
-gamma
-['alpha', 'beta', 'gamma']
-alpha
-['beta\n', 'gamma\n']
-4
+True True False
 True
 False
 FileNotFoundError caught
+remove of a missing file raises

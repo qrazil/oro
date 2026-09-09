@@ -16,5 +16,6 @@ pub mod format;
 pub mod lexer;
 pub mod regexutil;
 pub mod parser;
+pub mod stream;
 pub mod value;
 pub mod vm;

@@ -1,0 +1,33 @@
+import os
+
+# os.path string operations (deterministic, identical under CPython on POSIX).
+print(os.path.join("a", "b", "c"))
+print(os.path.join("/etc", "hosts"))
+print(os.path.basename("/usr/local/bin/oro"))
+print(os.path.dirname("/usr/local/bin/oro"))
+print(os.path.splitext("report.tar.gz"))
+print(os.path.splitext("plain"))
+
+# The filesystem questions that do not go through a stream stay here, where the
+# oracle can check them. `open` itself moved to divergence/38_streams.oro: it
+# returns bytes in Oro and text in CPython, so the same source no longer means
+# the same thing to both runtimes.
+here = os.getcwd()
+print(os.path.exists(here), os.path.isdir(here), os.path.isfile(here))
+print(os.path.dirname(here + "/x.txt") == here)
+print(os.path.exists("oro_no_such_file.txt"))
+
+# A missing path raises before any mode or encoding question arises, so this
+# one line of `open` still behaves identically under both runtimes.
+try:
+    open("oro_no_such_file.txt", "r")
+    print("no error")
+except FileNotFoundError:
+    print("FileNotFoundError caught")
+
+# Removing something that is not there is an error, not a silent no-op.
+try:
+    os.remove("oro_no_such_file.txt")
+    print("no error")
+except FileNotFoundError:
+    print("remove of a missing file raises")

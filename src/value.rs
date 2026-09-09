@@ -20,6 +20,7 @@ use std::rc::Rc;
 
 use crate::bigint::BigInt;
 use crate::compiler::CodeObject;
+use crate::stream::OroStream;
 
 /// A short alias for the fallible results produced by value operations and
 /// builtins. The message is a bare string; the VM decorates it with the source
@@ -60,9 +61,10 @@ pub enum Value {
     /// A module namespace (`sys`, `os`, `os.path`) — attribute access reads its
     /// members.
     Module(Rc<Module>),
-    /// An open text file, refcounted so it closes deterministically when the
-    /// last reference is dropped (Oro's answer to `with`).
-    File(Rc<RefCell<OroFile>>),
+    /// An open byte stream — a `File` from `open()`, or a `Buffer` — refcounted
+    /// so it closes deterministically when the last reference is dropped
+    /// (Oro's answer to `with`). See `crate::stream`.
+    Stream(Rc<OroStream>),
     /// A generator: a suspended function activation, advanced by iteration. The
     /// concrete state lives in the VM (it holds a `Frame`), so this is an opaque
     /// handle here.
@@ -148,8 +150,6 @@ pub enum IterState {
     Bytes { bytes: Rc<Vec<u8>>, idx: usize },
     /// Dict/set iteration works over a snapshot taken at `GetIter` time.
     Snapshot { items: Vec<Value>, idx: usize },
-    /// Line-by-line iteration over an open file (`for line in f`).
-    File { file: Rc<RefCell<OroFile>> },
 }
 
 /// A compiled Oro function together with its captured environment.
@@ -273,15 +273,6 @@ pub struct OroMatch {
 pub struct Module {
     pub name: Rc<str>,
     pub members: RefCell<HashMap<Rc<str>, Value>>,
-}
-
-/// An open text file. Reading and writing go through buffered handles; dropping
-/// the last `Rc` flushes and closes it (see the `with`-free file lifetime).
-pub struct OroFile {
-    pub path: String,
-    pub reader: Option<std::io::BufReader<std::fs::File>>,
-    pub writer: Option<std::io::BufWriter<std::fs::File>>,
-    pub closed: bool,
 }
 
 /// The proxy returned by `super()`: attribute access searches the method
@@ -434,7 +425,7 @@ impl Value {
             Value::Range(r) => !r.is_empty(),
             Value::Iter(_) | Value::Func(_) | Value::Builtin(_) | Value::Method(_) => true,
             Value::Class(_) | Value::Super(_) => true,
-            Value::Module(_) | Value::File(_) | Value::Generator(_) => true,
+            Value::Module(_) | Value::Stream(_) | Value::Generator(_) => true,
             Value::Regex(_) | Value::Match(_) => true,
             // An instance is truthy unless its class defines a falsy __len__;
             // the VM overrides this when a __len__/__bool__ dunder is present.
@@ -464,7 +455,7 @@ impl Value {
             Value::Instance(_) => "object",
             Value::Super(_) => "super",
             Value::Module(_) => "module",
-            Value::File(_) => "file",
+            Value::Stream(s) => s.kind.type_name(),
             Value::Generator(_) => "generator",
             Value::Regex(_) => "Pattern",
             Value::Match(_) => "Match",
@@ -573,11 +564,7 @@ impl Value {
                 }
             }
             Value::Module(m) => format!("<module '{}'>", m.name),
-            Value::File(f) => {
-                let f = f.borrow();
-                let mode = if f.writer.is_some() { "w" } else { "r" };
-                format!("<file '{}' mode '{}'>", f.path, mode)
-            }
+            Value::Stream(s) => s.repr(),
             Value::Unbound => "<unbound>".to_string(),
         }
     }

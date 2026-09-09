@@ -6,15 +6,15 @@
 # the working directory it is run from.
 import os
 
-path = os.path.join(os.environ.get("TMPDIR", "/tmp"), "oro_file_scope_sample.txt")
+path = os.path.join(os.environ.get("TMPDIR", "/tmp"), "oro_file_scope_sample.bin")
 w = open(path, "w")
-w.write("hello\nworld\n")
+w.write(b"hello\nworld\n")
 w.close()
 
 
 def read_it(p):
     f = open(p)
-    text = f.read()
+    text = f.read(64)
     return text
 
 
@@ -25,6 +25,6 @@ def hand_back(p):
 
 print(len(read_it(path)) > 0)
 h = hand_back(path)
-print(len(h.read()) >= 0)
+print(len(h.read(64)) >= 0)
 os.remove(path)
 print("cleaned up:", os.path.exists(path) == False)

@@ -155,35 +155,32 @@ fn bi_set(_args: Vec<Value>) -> VResult<Value> {
 }
 
 fn bi_open(args: Vec<Value>) -> VResult<Value> {
-    use std::io::{BufReader, BufWriter};
+    use crate::stream::OroStream;
     let (path, mode) = match args.as_slice() {
         [Value::Str(p)] => (p.s.clone(), "r".to_string()),
         [Value::Str(p), Value::Str(m)] => (p.s.clone(), m.s.clone()),
         [_] | [_, _] => return Err("open() arguments must be strings".to_string()),
         _ => return Err("open() takes 1 or 2 arguments".to_string()),
     };
-    let io_err = |e: &std::io::Error| crate::vm::modules::io_err(e, &path);
-    let mut file = crate::value::OroFile { path: path.clone(), reader: None, writer: None, closed: false };
-    match mode.as_str() {
-        "r" => {
-            let f = std::fs::File::open(&path).map_err(|e| io_err(&e))?;
-            file.reader = Some(BufReader::new(f));
-        }
-        "w" => {
-            let f = std::fs::File::create(&path).map_err(|e| io_err(&e))?;
-            file.writer = Some(BufWriter::new(f));
-        }
-        "a" => {
-            let f = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .map_err(|e| io_err(&e))?;
-            file.writer = Some(BufWriter::new(f));
+    let io_err = |e: std::io::Error| crate::vm::modules::io_err(&e, &path);
+    let stream = match mode.as_str() {
+        "r" => OroStream::open_read(&path).map_err(io_err)?,
+        "w" => OroStream::open_write(&path).map_err(io_err)?,
+        "a" => OroStream::open_append(&path).map_err(io_err)?,
+        // Every mode is bytes, so the `b` contrasts with nothing: it would be a
+        // letter meaning "not the other kind" in a language that has no other
+        // kind. The error names the replacement rather than quietly accepting
+        // it (see `docs/stdlib-server-design.md` §2).
+        "rb" | "wb" | "ab" => {
+            return Err(format!(
+                "invalid file mode '{mode}' — open() has no 'b' suffix because there is no text \
+                 mode to contrast with: every stream in Oro is bytes. Use '{}'.",
+                &mode[..1]
+            ))
         }
         other => return Err(format!("invalid file mode '{other}' (use 'r', 'w', or 'a')")),
-    }
-    Ok(Value::File(Rc::new(RefCell::new(file))))
+    };
+    Ok(Value::Stream(Rc::new(stream)))
 }
 
 fn bi_int(_args: Vec<Value>) -> VResult<Value> {
@@ -653,10 +650,17 @@ pub fn method_exists(recv: &Value, name: &str) -> bool {
             matches!(name, "map" | "filter")
         }
         Value::Dict(_) => matches!(name, "get" | "keys" | "values" | "items" | "map" | "filter"),
-        Value::File(_) => matches!(
-            name,
-            "read" | "readline" | "readlines" | "write" | "close"
-        ),
+        // The protocol is `read`/`write`; `read_until` and `close` are methods
+        // on the concrete type, the way `bufio.Reader` has `ReadSlice` in Go.
+        // There is no `flush` and no line iterator.
+        Value::Stream(s) => match s.kind {
+            crate::stream::StreamKind::Buffer => {
+                matches!(name, "read" | "write" | "read_until" | "close" | "bytes")
+            }
+            crate::stream::StreamKind::File { .. } => {
+                matches!(name, "read" | "write" | "read_until" | "close")
+            }
+        },
         Value::Regex(_) => matches!(
             name,
             "search" | "findall" | "finditer" | "fullmatch" | "sub" | "split"
@@ -675,7 +679,7 @@ pub fn call_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value>
         Value::Bytes(b) => bytes_method(b, name, args),
         Value::List(l) => list_method(l, name, args),
         Value::Dict(d) => dict_method(d, name, args),
-        Value::File(f) => file_method(f, name, args),
+        Value::Stream(s) => stream_method(s, name, args),
         Value::Regex(r) => regex_method(r, name, args),
         Value::Match(m) => match_method(m, name, args),
         other => Err(format!("'{}' object has no method '{}'", other.type_name(), name)),
@@ -723,60 +727,73 @@ fn match_method(
     }
 }
 
-fn file_method(
-    f: &Rc<RefCell<crate::value::OroFile>>,
+fn stream_method(
+    s: &Rc<crate::stream::OroStream>,
     name: &str,
     args: Vec<Value>,
 ) -> VResult<Value> {
-    use std::io::{BufRead, Read, Write};
-    let mut file = f.borrow_mut();
-    if file.closed && name != "close" {
-        return Err("I/O operation on closed file".to_string());
-    }
     match name {
         "read" => {
-            exactly(&args, 0, "read")?;
-            let reader = file.reader.as_mut().ok_or("file not open for reading")?;
-            let mut s = String::new();
-            reader.read_to_string(&mut s).map_err(|e| e.to_string())?;
-            Ok(Value::str(s))
-        }
-        "readline" => {
-            exactly(&args, 0, "readline")?;
-            let reader = file.reader.as_mut().ok_or("file not open for reading")?;
-            let mut s = String::new();
-            reader.read_line(&mut s).map_err(|e| e.to_string())?;
-            Ok(Value::str(s))
-        }
-        "readlines" => {
-            exactly(&args, 0, "readlines")?;
-            let reader = file.reader.as_mut().ok_or("file not open for reading")?;
-            let mut out = Vec::new();
-            loop {
-                let mut s = String::new();
-                if reader.read_line(&mut s).map_err(|e| e.to_string())? == 0 {
-                    break;
+            let n = match args.as_slice() {
+                [Value::Int(n)] => *n,
+                // `read()` with no argument would be a second behaviour under
+                // one name, and an unbounded read is a memory footgun on a
+                // server. Reading a whole stream is `io.read(r)`.
+                [] => {
+                    return Err("read() takes a size — use io.read(r) to read a whole stream"
+                        .to_string())
                 }
-                out.push(Value::str(s));
-            }
-            Ok(Value::List(Rc::new(RefCell::new(out))))
+                _ => {
+                    return Err(format!(
+                        "read() size argument must be int, not '{}'",
+                        type_of(&args, 0)
+                    ))
+                }
+            };
+            Ok(Value::bytes(s.read(n)?))
         }
         "write" => {
-            let text = str_arg(&args, 0, "write")?;
-            let writer = file.writer.as_mut().ok_or("file not open for writing")?;
-            writer.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
-            Ok(Value::Int(text.chars().count() as i64))
+            // Bytes only, in both directions, everywhere in the language. The
+            // spellings for text are `print("hi")` and `w.write(s.to_bytes())`.
+            let b = bytes_arg(&args, 0, "write")?;
+            s.write(&b)?;
+            Ok(Value::None)
+        }
+        "read_until" => {
+            let delim = bytes_arg(&args, 0, "read_until")?;
+            let limit = match args.get(1) {
+                Some(Value::Int(n)) => *n,
+                // The limit is required, not defaulted: it is the thing that
+                // stops a client sending an unbounded header block, and a
+                // default would be a number nobody chose.
+                None => return Err("read_until() takes a delimiter and a limit".to_string()),
+                Some(_) => {
+                    return Err(format!(
+                        "read_until() limit argument must be int, not '{}'",
+                        type_of(&args, 1)
+                    ))
+                }
+            };
+            exactly(&args, 2, "read_until")?;
+            Ok(Value::bytes(s.read_until(&delim, limit)?))
+        }
+        "bytes" => {
+            exactly(&args, 0, "bytes")?;
+            Ok(Value::bytes(s.bytes()?))
         }
         "close" => {
             exactly(&args, 0, "close")?;
-            // Dropping the buffered handles flushes and closes them.
-            file.reader = None;
-            file.writer = None;
-            file.closed = true;
+            s.close()?;
             Ok(Value::None)
         }
-        _ => Err(format!("'file' object has no method '{name}'")),
+        _ => Err(format!("'{}' object has no method '{name}'", s.kind.type_name())),
     }
+}
+
+/// The type name of argument `i`, for a diagnostic. `NoneType` when absent, so
+/// a missing argument reads the same way a wrong one does.
+fn type_of(args: &[Value], i: usize) -> &'static str {
+    args.get(i).map(|v| v.type_name()).unwrap_or("NoneType")
 }
 
 /// Optional integer argument (Python's `maxsplit`, `width`, ... style).

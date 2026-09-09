@@ -1,0 +1,91 @@
+# DIVERGENCE: `open(p, "r")` returns a byte stream in Oro and a text stream in
+# CPython, so this program cannot be oracled by running it under both. It is
+# still a CPython program with one letter different, and that is how its
+# baseline is reviewed: the `"rb"` twin of this file is run under CPython and
+# diffed against this output. Every remaining difference is one of two kinds —
+# a spelling CPython does not have (`.to_str()`, `read_until`), or an exception
+# *message*, which is why the checks below print a fixed line from the `except`
+# body: the exception *type* is then checked by the `except` clause itself, and
+# the two runtimes' wordings never enter the diff. The twin is checked in beside
+# this file as `38_streams.twin.py`; regenerating the baseline means running it
+# under CPython and diffing.
+import os
+
+tmp = "oro_corpus_scratch.bin"
+
+# Writing takes bytes and nothing else. Text becomes bytes at the boundary,
+# with the same `.to_bytes()` every other boundary in the language asks for.
+w = open(tmp, "w")
+w.write(b"alpha\nbeta\n")
+w.write("gamma\n".to_bytes())
+w.close()
+
+# read(n) is the raw primitive: at most n bytes, and b"" at EOF. It is allowed
+# to return fewer than n without being at EOF, so nothing here asks it for a
+# fixed count and then assumes it got one.
+r = open(tmp, "r")
+print(r.read(5))
+print(r.read(6))
+print(r.read(1000))
+print(r.read(1000))
+print(r.read(1000) == b"")
+
+# The whole file as text is a compose of two things that already exist, and
+# there is no text stream type to do it for you.
+r2 = open(tmp, "r")
+whole = r2.read(1000)
+print(whole.to_str().strip().split("\n"))
+print(len(whole))
+
+# read_until includes the delimiter, and leaves the rest in the buffer for the
+# next read. Nothing in Oro can see that buffer.
+r3 = open(tmp, "r")
+print(r3.read_until(b"\n", 64))
+print(r3.read_until(b"\n", 64))
+print(r3.read(1000))
+# At EOF it returns what it has rather than raising: the end of a stream is not
+# a fault, the same rule read(n) follows.
+print(r3.read_until(b"\n", 64))
+
+# Reaching the limit before the delimiter is a ValueError, which is what stops
+# a client sending an unbounded header block.
+r4 = open(tmp, "r")
+try:
+    r4.read_until(b"\n", 3)
+    print("no error")
+except ValueError:
+    print("limit reached without a delimiter: ValueError")
+
+# Appending, then reading the result back.
+a = open(tmp, "a")
+a.write(b"delta\n")
+a.close()
+r5 = open(tmp, "r")
+print(r5.read(1000).to_str().strip().split("\n"))
+
+# close() exists for when end of scope is too late; there is no Closer
+# interface, because refcounting already closes at end of scope. Using a closed
+# stream is an error, and closing twice is not.
+r6 = open(tmp, "r")
+r6.close()
+r6.close()
+try:
+    r6.read(1)
+    print("no error")
+except ValueError:
+    print("read on a closed stream: ValueError")
+
+# A reader is not a writer and a writer is not a reader.
+try:
+    open(tmp, "r").write(b"x")
+    print("no error")
+except ValueError:
+    print("write to a reader: ValueError")
+try:
+    open(tmp, "w").read(1)
+    print("no error")
+except ValueError:
+    print("read from a writer: ValueError")
+
+os.remove(tmp)
+print(os.path.exists(tmp))

@@ -1,0 +1,17 @@
+b'alpha'
+b'\nbeta\n'
+b'gamma\n'
+b''
+True
+['alpha', 'beta', 'gamma']
+17
+b'alpha\n'
+b'beta\n'
+b'gamma\n'
+b''
+limit reached without a delimiter: ValueError
+['alpha', 'beta', 'gamma', 'delta']
+read on a closed stream: ValueError
+write to a reader: ValueError
+read from a writer: ValueError
+False
