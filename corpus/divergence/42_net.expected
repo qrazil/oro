@@ -13,6 +13,7 @@ also a ConnectionError: <class 'ConnectionRefusedError'>
 also an OSError: <class 'ConnectionRefusedError'>
 deadline: <class 'TimeoutError'> timed out
 no port: dial() address must be 'host:port', not '127.0.0.1' — a port is required (use ':0' for any free port, and brackets for IPv6, as in '[::1]:8080')
+short body: stream ended after 2 bytes, expected 5
 listener read: 'TcpListener' object has no attribute 'read'
 listener write: 'TcpListener' object has no attribute 'write'
 closed listener: accept() on a closed TcpListener

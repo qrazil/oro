@@ -103,6 +103,21 @@ try:
 except ValueError as e:
     print("no port:", e)
 
+# `io.read(r, n)` on a stream that ends short is an `EOFError` — §4's table,
+# and the case a hand-rolled read loop gets wrong when a body spans two packets
+# and the peer hangs up in the middle of it.
+ln3 = net.listen("127.0.0.1:0")
+c3 = net.dial(ln3.local)
+s3 = ln3.accept()
+s3.set_timeout(5)
+c3.write(b"ab")
+c3.shutdown_write()
+try:
+    io.read(s3, 5)
+except EOFError as e:
+    print("short body:", e)
+ln3.close()
+
 # A listener is not a Reader and not a Writer, and it does not merely refuse at
 # the call: it has no `read` and no `write` at all. The io protocol is a naming
 # convention, so "is this a Reader?" is answered by whether the method is there.
