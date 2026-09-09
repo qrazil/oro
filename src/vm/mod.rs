@@ -657,13 +657,34 @@ impl Vm {
                     *self.top().free[s as usize].borrow_mut() = v;
                 }
                 Op::LoadGlobal(n) => {
-                    // Globals are the builtin functions plus the exception classes.
-                    let name = self.frames.last().unwrap().code.names[n as usize].clone();
-                    let v = exceptions::lookup(&self.excs, &name)
-                        .or_else(|| crate::builtins::lookup(&name));
-                    match v {
+                    // Globals are the builtin functions plus the exception
+                    // classes. Builtins resolve straight out of this call site's
+                    // cache; see `CodeObject::builtin_cache` for why they are
+                    // the only half that is cached.
+                    let idx = n as usize;
+                    let frame = self.frames.last().expect("no active frame");
+                    let hit = frame.code.builtin_cache.borrow()[idx].clone();
+                    match hit {
                         Some(v) => self.push(v),
-                        None => return Err(self.err(format!("name '{name}' is not defined"))),
+                        None => {
+                            let name = frame.code.names[idx].clone();
+                            let resolved = exceptions::lookup(&self.excs, &name)
+                                .or_else(|| crate::builtins::lookup(&name));
+                            match resolved {
+                                Some(v) => {
+                                    if matches!(v, Value::Builtin(_)) {
+                                        frame.code.builtin_cache.borrow_mut()[idx] =
+                                            Some(v.clone());
+                                    }
+                                    self.push(v);
+                                }
+                                None => {
+                                    return Err(
+                                        self.err(format!("name '{name}' is not defined"))
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
                 Op::Pop => {

@@ -89,6 +89,7 @@ impl<'a> Codegen<'a> {
             ops: self.ops,
             spans: self.spans,
             consts: self.consts,
+            builtin_cache: RefCell::new(vec![None; self.names.len()]),
             names: self.names,
             classes: self.classes,
             pairs: self.pairs,

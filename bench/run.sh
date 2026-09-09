@@ -49,6 +49,7 @@ BENCHES=(
   "genpipe"
   "exc"
   "listbuild"
+  "builtins"
   "chain:py=chain.py"
 )
 

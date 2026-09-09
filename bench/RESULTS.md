@@ -25,6 +25,7 @@ harness checks oro and CPython agree before reporting a time.
 | `genpipe` | three chained generators over 300k elements (frame suspend/resume) |
 | `exc` | raise/catch on 2/3 of 200k iterations, with a `finally` on every one |
 | `listbuild` | 400k list appends, then indexed read-modify-write |
+| `builtins` | 4 global lookups + 4 native calls per iteration, 300k iterations |
 | `chain` | the collection protocol (`.filter`/`.map`/`.reduce` with `=>`) — oro-only, CPython twin in `chain.py` |
 
 ## Baseline — `opt-level = "s"` (commit before any optimization)
@@ -262,3 +263,31 @@ base chain by reference instead of cloning an `Rc` per level.
 Real but small, and only where it should be: attribute-heavy code and exception
 construction (which builds an instance with an `args` field per raise).
 Everything else is inside this machine's ±3% run-to-run drift.
+
+### 10. An inline cache for `LoadGlobal` (and a benchmark that finds it)
+
+The suite had a hole: nothing exercised builtin lookup in a loop, which is
+something real scripts do constantly (`len(xs)` inside a `while`). `builtins`
+was added to close it — 4 global lookups and 4 native calls per iteration —
+and measured **0.265s vs CPython's 0.242s** before any change here.
+
+`LoadGlobal` was hashing a string against the exception registry, then walking
+a match arm per builtin name, then **allocating a fresh `Rc<Builtin>` wrapper**
+to hand back — every time. A per-call-site cache on the code object removes all
+three. It needs no invalidation: Oro has no assignable module namespace, so the
+set of globals cannot change while a program runs. Only builtins are cached —
+exception classes have a per-VM `Rc` identity that a second `Vm` running the
+same code object must not inherit, whereas a builtin has no observable identity
+at all (`Value::Builtin` is unhashable and never compares equal, even to
+itself).
+
+| bench | before | after | delta |
+|---|---|---|---|
+| builtins | 0.265s | 0.245s | **-8%** |
+| oo | 0.324s | 0.315s | -3% |
+| listbuild | 0.303s | 0.295s | -3% |
+| fib | 0.177s | 0.186s | +5% (noise; no globals) |
+| everything else | | | within drift |
+
+`builtins` now runs at **0.98x CPython** — the first benchmark in the suite
+where Oro is ahead.

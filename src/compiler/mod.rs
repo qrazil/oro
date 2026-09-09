@@ -19,6 +19,7 @@
 mod codegen;
 mod symbols;
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::ast::{CmpOp, ParamKind, Stmt};
@@ -291,6 +292,24 @@ pub struct CodeObject {
     /// instruction is what lets `Op` be 8 bytes and `Copy`; a name used at ten
     /// call sites is stored once and its `Rc` is never cloned per dispatch.
     pub names: Vec<Rc<str>>,
+    /// One slot per entry in `names`, holding the builtin that `LoadGlobal`
+    /// resolved there, filled on first execution.
+    ///
+    /// This is an inline cache, and it is the rare kind that needs no
+    /// invalidation at all. Oro's globals are exactly the builtin functions and
+    /// the exception classes, and neither set can change while a program runs —
+    /// there is no assignable module namespace to invalidate against. Only
+    /// *builtins* are cached: exception classes have a per-VM `Rc` identity
+    /// (`ValueError == ValueError` is a pointer comparison), and a code object
+    /// could in principle be run by a second `Vm`, so caching those would be
+    /// unsound. A builtin has no observable identity — `Value::Builtin` is
+    /// unhashable and never compares equal, even to itself — so caching one is
+    /// invisible to any program.
+    ///
+    /// Without it, every `len(...)` in a loop hashed a string, walked a match
+    /// arm per builtin name, and then *allocated* a fresh `Rc<Builtin>` wrapper
+    /// to hand back.
+    pub builtin_cache: RefCell<Vec<Option<Value>>>,
     /// Class descriptions, indexed by `BuildClass`. See [`ClassSpec`].
     pub classes: Vec<Rc<ClassSpec>>,
     /// Operand pairs for the two instructions that need two of them —

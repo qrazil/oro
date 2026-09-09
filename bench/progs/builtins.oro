@@ -1,0 +1,11 @@
+# Builtin-heavy: four global lookups and four native calls per iteration.
+# Every `len(...)` in a loop is a LoadGlobal, and the rest of the suite barely
+# exercises that path — real scripts do it constantly.
+xs = [1, 2, 3, 4, 5]
+total = 0
+i = 0
+while i < 300000:
+    total = total + len(xs) + abs(0 - i) + min(i, 7) + max(i, 3)
+    i = i + 1
+
+print(total)
