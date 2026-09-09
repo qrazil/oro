@@ -50,6 +50,7 @@ fn sexp(e: &Expr) -> String {
         Expr::Int { value, .. } => value.clone(),
         Expr::Float { value, .. } => value.clone(),
         Expr::Str { value, .. } => format!("\"{value}\""),
+        Expr::Bytes { value, .. } => format!("b\"{}\"", String::from_utf8_lossy(value)),
         Expr::FString { value, .. } => format!("f\"{value}\""),
         Expr::Bool { value, .. } => value.to_string(),
         Expr::NoneLit { .. } => "None".to_string(),
@@ -1196,4 +1197,12 @@ fn lambda_forms_parse() {
 fn lambda_rejects_non_name_params() {
     let e = parse_err("f = 1 => 2\n");
     assert!(e.message.contains("parameter name"), "got: {}", e.message);
+}
+
+/// A bytes literal is an atom wherever a string literal is, including as a
+/// `case` pattern (its value is hashable, so it keys the jump table).
+#[test]
+fn bytes_literal_is_an_atom() {
+    assert_eq!(sexp_of("b\"hi\" + b\"\\x41\"\n"), "(+ b\"hi\" b\"A\")");
+    parse("match x:\n    case b\"quit\":\n        pass\n");
 }

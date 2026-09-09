@@ -321,6 +321,10 @@ pub enum Expr {
     /// source wrote `r"..."`; it does not affect the value, only how the
     /// formatter reprints it.
     Str { value: String, raw: bool, line: usize, col: usize },
+    /// Bytes literal (escapes already decoded to octets). `raw` records whether
+    /// the source wrote `rb"..."`; it does not affect the value, only how the
+    /// formatter reprints it.
+    Bytes { value: Vec<u8>, raw: bool, line: usize, col: usize },
     /// f-string literal (raw inner text; interpolation parsed later).
     FString { value: String, line: usize, col: usize },
     /// `True` / `False`.
@@ -413,6 +417,7 @@ impl Expr {
             Expr::Int { line, col, .. }
             | Expr::Float { line, col, .. }
             | Expr::Str { line, col, .. }
+            | Expr::Bytes { line, col, .. }
             | Expr::FString { line, col, .. }
             | Expr::Bool { line, col, .. }
             | Expr::NoneLit { line, col, .. }

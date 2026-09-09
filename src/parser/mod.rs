@@ -128,6 +128,7 @@ impl Parser {
             TokenKind::Int(_)
                 | TokenKind::Float(_)
                 | TokenKind::Str(..)
+                | TokenKind::Bytes(..)
                 | TokenKind::FString(_)
                 | TokenKind::True
                 | TokenKind::False
@@ -442,6 +443,7 @@ impl Parser {
             TokenKind::Int(_)
             | TokenKind::Float(_)
             | TokenKind::Str(..)
+            | TokenKind::Bytes(..)
             | TokenKind::True
             | TokenKind::False
             | TokenKind::None
@@ -1033,6 +1035,10 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Str { value, raw, line, col })
             }
+            TokenKind::Bytes(value, raw) => {
+                self.advance();
+                Ok(Expr::Bytes { value, raw, line, col })
+            }
             TokenKind::FString(value) => {
                 self.advance();
                 Ok(Expr::FString { value, line, col })
@@ -1275,6 +1281,7 @@ impl Parser {
             TokenKind::Int(_)
                 | TokenKind::Float(_)
                 | TokenKind::Str(..)
+                | TokenKind::Bytes(..)
                 | TokenKind::FString(_)
                 | TokenKind::True
                 | TokenKind::False
@@ -1379,6 +1386,7 @@ fn describe(kind: &TokenKind) -> String {
         Int(s) => format!("integer `{s}`"),
         Float(s) => format!("float `{s}`"),
         Str(..) => "a string literal".to_string(),
+        Bytes(..) => "a bytes literal".to_string(),
         FString(_) => "an f-string literal".to_string(),
         Ident(s) => format!("identifier `{s}`"),
         True => "keyword `True`".to_string(),

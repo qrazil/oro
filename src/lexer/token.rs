@@ -18,6 +18,10 @@ pub enum TokenKind {
     /// carries no semantics — a raw string has already been decoded — but the
     /// formatter needs it to reprint `r"\d+"` instead of `"\\d+"`.
     Str(String, bool),
+    /// Bytes literal (`b"..."`), escapes already decoded to octets, plus
+    /// whether it was written as `rb"..."`. The flag carries no semantics; the
+    /// formatter needs it to reprint `rb"\d+"` instead of `b"\\d+"`.
+    Bytes(Vec<u8>, bool),
     /// f-string literal. A single token for now: the raw inner text is kept
     /// verbatim (no escape processing, no interpolation parsing).
     FString(String),

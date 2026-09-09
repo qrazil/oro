@@ -235,6 +235,23 @@ impl Lexer {
             // natural way to write regex patterns.
             self.advance(); // consume the `r`/`R` prefix
             self.scan_string(false, true)
+        } else if (c == 'b' || c == 'B') && matches!(self.peek2(), Some('\'') | Some('"')) {
+            self.advance(); // consume the `b`/`B` prefix
+            self.scan_bytes(false)
+        } else if (c == 'r' || c == 'R')
+            && matches!(self.peek2(), Some('b') | Some('B'))
+            && matches!(self.peek_at(2), Some('\'') | Some('"'))
+        {
+            self.advance(); // consume the `r`/`R`
+            self.advance(); // consume the `b`/`B`
+            self.scan_bytes(true)
+        } else if (c == 'b' || c == 'B')
+            && matches!(self.peek2(), Some('r') | Some('R'))
+            && matches!(self.peek_at(2), Some('\'') | Some('"'))
+        {
+            // CPython accepts both orders; Oro spells it one way, and says so
+            // rather than lexing `br` as a name and failing further along.
+            Err(self.error("a raw bytes literal is spelled rb\"...\", not br\"...\""))
         } else if c == '\'' || c == '"' {
             self.scan_string(false, false)
         } else if c == '_' || c.is_ascii_alphabetic() {
@@ -357,6 +374,79 @@ impl Lexer {
             TokenKind::Str(value, is_raw)
         };
         self.push_at(kind, sl, sc);
+        self.line_has_tokens = true;
+        Ok(())
+    }
+
+    /// Scan a `b"..."` / `rb"..."` literal into octets. Two things differ from
+    /// [`Lexer::scan_string`]: `\u`/`\U` are rejected because they name a
+    /// character rather than a byte, and a non-ASCII source character is a hard
+    /// error — there is no encoding to guess, and guessing UTF-8 would make the
+    /// literal's length depend on the editor.
+    fn scan_bytes(&mut self, is_raw: bool) -> Result<(), LexError> {
+        let (sl, sc) = (self.line, self.col);
+        let quote = self.advance().unwrap(); // opening ' or "
+        let mut value: Vec<u8> = Vec::new();
+
+        loop {
+            match self.peek() {
+                None | Some('\n') => {
+                    return Err(LexError::new("unterminated bytes literal", sl, sc));
+                }
+                Some(c) if c == quote => {
+                    self.advance();
+                    break;
+                }
+                Some('\\') => {
+                    self.advance();
+                    match self.peek() {
+                        None => {
+                            return Err(LexError::new("unterminated bytes literal", sl, sc));
+                        }
+                        Some(e) => {
+                            self.advance();
+                            // A raw literal keeps the backslash verbatim; it
+                            // still escapes a closing quote for termination.
+                            if is_raw {
+                                value.push(b'\\');
+                                push_byte(&mut value, e, sl, sc)?;
+                            } else if let Some(c) = simple_escape(e) {
+                                // Every simple escape names an ASCII character,
+                                // so each is exactly one octet.
+                                push_byte(&mut value, c, sl, sc)?;
+                            } else if e == 'x' {
+                                let mut digits = String::new();
+                                for _ in 0..2 {
+                                    match self.peek() {
+                                        Some(d) if d.is_ascii_hexdigit() => {
+                                            digits.push(self.advance().unwrap())
+                                        }
+                                        _ => break,
+                                    }
+                                }
+                                match decode_hex_escape('x', &digits) {
+                                    // `\xNN` is at most U+00FF, i.e. one octet.
+                                    Ok(c) => value.push(c as u8),
+                                    Err(msg) => return Err(LexError::new(msg, sl, sc)),
+                                }
+                            } else {
+                                return Err(LexError::new(
+                                    unknown_bytes_escape_message(e),
+                                    sl,
+                                    sc,
+                                ));
+                            }
+                        }
+                    }
+                }
+                Some(c) => {
+                    self.advance();
+                    push_byte(&mut value, c, sl, sc)?;
+                }
+            }
+        }
+
+        self.push_at(TokenKind::Bytes(value, is_raw), sl, sc);
         self.line_has_tokens = true;
         Ok(())
     }
@@ -646,5 +736,39 @@ pub fn unknown_escape_message(e: char) -> String {
     format!(
         "unknown escape `\\{e}` — Oro's escapes are \\n \\t \\r \\a \\b \\f \\v \\0 \\\\ \\' \\\" \\xNN \\uNNNN \\UNNNNNNNN; \
          write `\\\\{e}` for a literal backslash, or use a raw string r\"...\""
+    )
+}
+
+
+/// Append one source character to a bytes literal. Non-ASCII has no octet to
+/// be, so it is rejected here with both spellings that do work.
+fn push_byte(out: &mut Vec<u8>, c: char, line: usize, col: usize) -> Result<(), LexError> {
+    if !c.is_ascii() {
+        return Err(LexError::new(
+            format!(
+                "non-ASCII character `{c}` in a bytes literal — a bytes literal holds octets, \
+                 not text; write the octets as `\\xNN`, or encode a str with `\"...\".to_bytes()`"
+            ),
+            line,
+            col,
+        ));
+    }
+    out.push(c as u8);
+    Ok(())
+}
+
+/// The message for an escape a bytes literal does not recognise. `\u`/`\U` are
+/// listed separately: they are valid in a `str` and name a character, which a
+/// bytes literal has no way to store.
+pub fn unknown_bytes_escape_message(e: char) -> String {
+    if e == 'u' || e == 'U' {
+        return format!(
+            "`\\{e}` names a character, which a bytes literal cannot hold — write the octets as \
+             `\\xNN`, or encode a str with `\"...\".to_bytes()`"
+        );
+    }
+    format!(
+        "unknown escape `\\{e}` in a bytes literal — its escapes are \\n \\t \\r \\a \\b \\f \\v \\0 \\\\ \\' \\\" \\xNN; \
+         write `\\\\{e}` for a literal backslash, or use a raw bytes literal rb\"...\""
     )
 }

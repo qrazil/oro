@@ -169,3 +169,22 @@ fn comments_survive_formatting() {
         );
     }
 }
+
+/// A bytes literal reprints as octets: printable ASCII literally, everything
+/// else as `\xNN` (the one spelling that always round-trips), and `rb"..."`
+/// keeps its raw spelling for the same reason `r"..."` does.
+#[test]
+fn bytes_literals_reprint_as_octets() {
+    let cases = [
+        ("x = b\"hi\"\n", "x = b\"hi\"\n"),
+        ("x = B'hi'\n", "x = b\"hi\"\n"),
+        ("x = b\"\\xff\\x00\"\n", "x = b\"\\xff\\x00\"\n"),
+        ("x = b\"a\\tb\\n\"\n", "x = b\"a\\tb\\n\"\n"),
+        // The quote flips only to avoid escaping, as it does for `str`.
+        ("x = b'say \"hi\"'\n", "x = b'say \"hi\"'\n"),
+        ("x = rb\"\\d+\"\n", "x = rb\"\\d+\"\n"),
+    ];
+    for (src, want) in cases {
+        assert_eq!(format_source(src).expect("should format"), want, "source: {src:?}");
+    }
+}

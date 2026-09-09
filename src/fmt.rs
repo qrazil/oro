@@ -11,7 +11,8 @@
 //! * 4-space indent, never tabs.
 //! * One statement per line.
 //! * Double-quoted strings, except a string containing a `"` (and no `'`)
-//!   prints with single quotes instead of escaping.
+//!   prints with single quotes instead of escaping. A bytes literal follows the
+//!   same quote rule, and shows every octet outside printable ASCII as `\xNN`.
 //! * Spaces around binary/boolean/comparison operators and after commas; none
 //!   just inside brackets.
 //! * No automatic line wrapping — the corpus this was modeled on never breaks
@@ -590,6 +591,7 @@ fn expr_inner(e: &Expr) -> (String, u8) {
     match e {
         Expr::Int { value, .. } | Expr::Float { value, .. } => (value.clone(), ATOM),
         Expr::Str { value, raw, .. } => (quote_str_maybe_raw(value, *raw), ATOM),
+        Expr::Bytes { value, raw, .. } => (quote_bytes_maybe_raw(value, *raw), ATOM),
         Expr::FString { value, .. } => (quote_fstring(value), ATOM),
         Expr::Bool { value, .. } => ((if *value { "True" } else { "False" }).to_string(), ATOM),
         Expr::NoneLit { .. } => ("None".to_string(), ATOM),
@@ -781,6 +783,45 @@ fn quote_str(value: &str) -> String {
                 out.push(c);
             }
             c => out.push(c),
+        }
+    }
+    out.push(quote);
+    out
+}
+
+/// Reprint a bytes literal, keeping `rb"..."` form on the same terms as
+/// `r"..."`. Only printable ASCII can be shown literally; every other octet is
+/// written back as `\xNN`, which is the one spelling that always round-trips.
+fn quote_bytes_maybe_raw(value: &[u8], raw: bool) -> String {
+    if raw {
+        if let Ok(text) = std::str::from_utf8(value) {
+            if can_be_raw(text) {
+                let quote = if text.contains('"') { '\'' } else { '"' };
+                return format!("rb{quote}{text}{quote}");
+            }
+        }
+    }
+    quote_bytes(value)
+}
+
+fn quote_bytes(value: &[u8]) -> String {
+    let quote =
+        if value.contains(&b'"') && !value.contains(&b'\'') { '\'' } else { '"' };
+    let mut out = String::with_capacity(value.len() + 3);
+    out.push('b');
+    out.push(quote);
+    for &x in value {
+        match x {
+            b'\\' => out.push_str("\\\\"),
+            b'\n' => out.push_str("\\n"),
+            b'\t' => out.push_str("\\t"),
+            b'\r' => out.push_str("\\r"),
+            x if x == quote as u8 => {
+                out.push('\\');
+                out.push(quote);
+            }
+            0x20..=0x7e => out.push(x as char),
+            _ => out.push_str(&format!("\\x{x:02x}")),
         }
     }
     out.push(quote);

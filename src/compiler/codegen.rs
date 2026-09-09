@@ -463,6 +463,7 @@ impl<'a> Codegen<'a> {
                 .map(Value::Float)
                 .map_err(|_| self.err(format!("invalid float literal `{value}`"), *line, *col)),
             Expr::Str { value, .. } => Ok(Value::str(value.clone())),
+            Expr::Bytes { value, .. } => Ok(Value::bytes(value.clone())),
             Expr::Bool { value, .. } => Ok(Value::Bool(*value)),
             Expr::NoneLit { .. } => Ok(Value::None),
             Expr::Unary { op: UnaryOp::Neg, operand, line, col } => {
@@ -990,6 +991,10 @@ impl<'a> Codegen<'a> {
             }
             Expr::Str { value, line, col, .. } => {
                 let idx = self.add_const(Value::str(value.clone()));
+                self.emit(Op::LoadConst(idx), *line, *col);
+            }
+            Expr::Bytes { value, line, col, .. } => {
+                let idx = self.add_const(Value::bytes(value.clone()));
                 self.emit(Op::LoadConst(idx), *line, *col);
             }
             Expr::FString { value, line, col } => self.emit_fstring(value, *line, *col)?,

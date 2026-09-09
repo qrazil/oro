@@ -444,3 +444,43 @@ fn raw_strings_record_their_spelling() {
         vec![Str("\\d+".to_string(), false), Newline, Eof]
     );
 }
+
+/// `b"..."` decodes to octets, not text. `\xNN` reaches bytes a `str` literal
+/// could not spell as one character, and the `rb` spelling is recorded the same
+/// way `r` is.
+#[test]
+fn bytes_literals_decode_to_octets() {
+    assert_eq!(
+        kinds("b\"a\\tb\\x00\\xff\"\n"),
+        vec![Bytes(vec![b'a', 0x09, b'b', 0x00, 0xff], false), Newline, Eof]
+    );
+    assert_eq!(
+        kinds("rb\"\\d+\"\n"),
+        vec![Bytes(b"\\d+".to_vec(), true), Newline, Eof]
+    );
+    // A bytes literal is a separate token kind, never a string one.
+    assert_eq!(kinds("B'hi'\n"), vec![Bytes(b"hi".to_vec(), false), Newline, Eof]);
+}
+
+/// Everything a bytes literal cannot hold is rejected at the point it is
+/// written, with the two spellings that do work.
+#[test]
+fn bytes_literal_rejects_what_it_cannot_hold() {
+    let e = err("b\"café\"\n");
+    assert!(e.message.contains("non-ASCII character `é`"), "got: {}", e.message);
+    assert!(e.message.contains("to_bytes()"), "got: {}", e.message);
+
+    let e = err("b\"\\u00e9\"\n");
+    assert!(e.message.contains("names a character"), "got: {}", e.message);
+
+    let e = err("b\"\\q\"\n");
+    assert!(e.message.contains("unknown escape `\\q`"), "got: {}", e.message);
+
+    // One spelling for a raw bytes literal, and the other one says so.
+    let e = err("br\"x\"\n");
+    assert!(e.message.contains("rb\"...\""), "got: {}", e.message);
+
+    assert_eq!(err("b\"oops\n").message, "unterminated bytes literal");
+    // A non-ASCII character is still rejected in the raw form.
+    assert!(err("rb\"é\"\n").message.contains("non-ASCII character"));
+}
