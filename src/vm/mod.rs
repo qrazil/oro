@@ -371,13 +371,18 @@ enum StrCont {
 struct Task {
     /// The frame stack. Never the Rust call stack — see the module docs.
     frames: Vec<Frame>,
+    /// Source position of the instruction currently executing, which is what
+    /// every diagnostic this task raises will name. Per-execution because two
+    /// tasks are at two different places in the program.
+    line: u32,
+    col: u32,
 }
 
 impl Task {
     /// A task with nothing running in it yet. Every field is an empty `Vec`,
     /// which does not allocate, so a task costs one struct until it runs.
     fn new() -> Task {
-        Task { frames: Vec::new() }
+        Task { frames: Vec::new(), line: 0, col: 0 }
     }
 }
 
@@ -386,9 +391,11 @@ pub struct Vm {
     /// The execution currently in flight. See [`Task`].
     task: Task,
     /// Retired frames, kept for their buffer capacity. See [`Vm::take_frame`].
+    ///
+    /// Process-wide on purpose: buffers a finished task hands back are exactly
+    /// the shape the next task's first call wants, and a per-task pool would
+    /// re-`malloc` them once per task.
     frame_pool: Vec<Frame>,
-    line: u32,
-    col: u32,
     /// The module frame's locals, captured when the top-level frame returns.
     /// Written exactly once (at program end); used only by tests.
     last_locals: Vec<Value>,
@@ -469,8 +476,6 @@ impl Vm {
         Vm {
             task: Task::new(),
             frame_pool: Vec::new(),
-            line: 0,
-            col: 0,
             last_locals: Vec::new(),
             prints: Vec::new(),
             str_jobs: Vec::new(),
@@ -587,7 +592,8 @@ impl Vm {
     }
 
     fn err(&self, message: impl Into<String>) -> RuntimeError {
-        RuntimeError { message: message.into(), line: self.line as usize, col: self.col as usize }
+        let (line, col) = (self.task.line as usize, self.task.col as usize);
+        RuntimeError { message: message.into(), line, col }
     }
 
     fn wrap<T>(&self, r: Result<T, String>) -> Result<T, RuntimeError> {
@@ -623,8 +629,8 @@ impl Vm {
                 let pc = frame.pc;
                 frame.pc = pc + 1;
                 let (l, c) = frame.code.spans[pc];
-                self.line = l;
-                self.col = c;
+                self.task.line = l;
+                self.task.col = c;
                 frame.code.ops[pc]
             };
 
@@ -2977,7 +2983,8 @@ impl Vm {
             other => ("Exception".to_string(), other.display()),
         };
         let message = if msg.is_empty() { name } else { format!("{name}: {msg}") };
-        RuntimeError { message, line: self.line as usize, col: self.col as usize }
+        let (line, col) = (self.task.line as usize, self.task.col as usize);
+        RuntimeError { message, line, col }
     }
 
     /// Bind arguments to a fresh frame's slots and cells.
