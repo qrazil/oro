@@ -393,6 +393,11 @@ struct Task {
     /// `ForIter` target to jump to when each is exhausted. Pushed on resume,
     /// popped on `yield`/exhaustion.
     gen_stack: Vec<(Rc<RefCell<crate::value::GenBox>>, GenDriver)>,
+    /// The locals of this task's outermost frame, captured when it returns —
+    /// i.e. what the execution left behind when it ran out of stack segment.
+    /// For the main task that is the module namespace, which is what the VM
+    /// unit tests inspect. Written exactly once per task.
+    last_locals: Vec<Value>,
 }
 
 impl Task {
@@ -411,6 +416,7 @@ impl Task {
             handling: Vec::new(),
             finally_why: Vec::new(),
             gen_stack: Vec::new(),
+            last_locals: Vec::new(),
         }
     }
 }
@@ -425,9 +431,6 @@ pub struct Vm {
     /// the shape the next task's first call wants, and a per-task pool would
     /// re-`malloc` them once per task.
     frame_pool: Vec<Frame>,
-    /// The module frame's locals, captured when the top-level frame returns.
-    /// Written exactly once (at program end); used only by tests.
-    last_locals: Vec<Value>,
     /// The built-in exception classes, by name (shared identity for the run).
     excs: HashMap<&'static str, Rc<Class>>,
     /// Program arguments, exposed as `sys.argv`.
@@ -488,7 +491,6 @@ impl Vm {
         Vm {
             task: Task::new(),
             frame_pool: Vec::new(),
-            last_locals: Vec::new(),
             excs: exceptions::build_registry(),
             argv,
             exit_code: None,
@@ -2757,7 +2759,7 @@ impl Vm {
 
         let mut frame = self.task.frames.pop().expect("return with no frame");
         if self.task.frames.is_empty() {
-            self.last_locals = frame.locals;
+            self.task.last_locals = frame.locals;
             return Ok(Step::Done(value));
         }
         // Take the action out so the whole `frame` stays usable (BuildModule

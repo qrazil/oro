@@ -15,7 +15,7 @@ fn run_locals(src: &str) -> Vec<Value> {
     let mut vm = Vm::new(Vec::new());
     vm.push_module_frame(code);
     vm.run_loop().expect("run");
-    vm.last_locals
+    vm.task.last_locals
 }
 
 /// Run `src` and return the value bound to the first module variable (slot 0).
