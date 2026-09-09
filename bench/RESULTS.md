@@ -161,3 +161,27 @@ diagnostics across eight targeted error programs — including the ones where th
 faulting frame is popped before the error is built, such as `__init__() should
 return None` and an f-string format spec applied after `__str__` returns — plus
 all 65 corpus programs. It was reverted purely on the numbers.)
+
+### 6. REVERTED — collapsing repeated frame lookups in hot opcodes
+
+**Tried and rejected as noise.** The hot opcodes each call `self.top()` two or
+three times (`LoadFast` reads `locals` then pushes; every binary operator pops
+twice; the conditional jumps pop then set `pc`), and each call is a
+bounds-checked index into `frames`. Rewriting `LoadConst`, `LoadFast`,
+`StoreFast`, `Pop`, `Dup`, `DupTwo`, the arithmetic operators, `Compare` and
+the four conditional jumps to take exactly one borrow produced:
+
+| bench | before | after | delta |
+|---|---|---|---|
+| fib | 0.220s | 0.217s | -1% |
+| loop | 0.610s | 0.609s | 0% |
+| dictops | 0.353s | 0.364s | +3% |
+| oo | 0.384s | 0.378s | -2% |
+| exc | 0.141s | 0.147s | +4% |
+| listbuild | 0.298s | 0.314s | +5% |
+
+Four benchmarks better, three worse, everything inside ±5% — noise, in both
+directions. LLVM had already common-subexpressioned the repeated `last_mut()`
+within a match arm; the bounds check it leaves behind is one predictable
+compare. Reverted rather than kept, because a wash is not worth the extra
+`expect("operand stack underflow")` boilerplate at a dozen call sites.
