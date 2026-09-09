@@ -1,0 +1,7 @@
+True False True
+absent octet: 'in <bytes>' requires bytes as left operand
+present octet: 'in <bytes>' requires bytes as left operand
+-1 0
+True False
+found by iteration: True
+str in bytes: 'in <bytes>' requires bytes as left operand

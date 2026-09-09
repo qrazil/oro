@@ -11,3 +11,10 @@ b'' b'solo'
 mixed list rejected: join() requires bytes elements, found 'str'
 b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok'
 not callable: bytes() is not callable in Oro — write `x.to_bytes()` to convert a value, or the literal `b""` to build an empty one.
+b'abc' b'' b'\x00\xc8\xff'
+1 2
+True hi
+b'\x01\x00b'
+out of range: to_bytes(): item 1 must be in range(0, 256), got 256
+negative: to_bytes(): item 0 must be in range(0, 256), got -1
+not an int: to_bytes(): item 1 must be an int, not 'str'

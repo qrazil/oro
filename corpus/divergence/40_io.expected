@@ -1,0 +1,25 @@
+<Buffer 11 bytes>
+b'hello' b' ' b'world' b''
+b'one two' b'one ' b'two'
+b'' b''
+b'whole stream'
+b''
+b'0123' b'456789'
+True
+short stream: stream ended after 2 bytes, expected 5
+caught as Exception: <class 'EOFError'>
+b''
+negative count: io.read() count must not be negative, got -1
+b'd' b'r'
+b'dri'
+b'drip'
+dribbled dry: stream ended after 4 bytes, expected 99
+7 b'payload'
+5 b'payload-more'
+0
+b'GET / HTTP/1.1\r\nHost: x\r\n\r\n'
+b'body'
+limit: read_until() found no delimiter in the first 8 bytes
+no io.write: module 'io' has no attribute 'write'
+no flush: 'Buffer' object has no attribute 'flush'
+no bare read: read() takes a size — use io.read(r) to read a whole stream

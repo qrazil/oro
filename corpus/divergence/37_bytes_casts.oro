@@ -56,3 +56,29 @@ try:
     bytes([1, 2])
 except Exception as e:
     print("not callable:", e)
+
+# A list of ints is the only way to *build* bytes from numbers. `bytes` is a
+# sequence of ints, but until this cast nothing could go the other way: the
+# int->char format spec produces a `str`, and a `str` becomes UTF-8, so 200 is
+# two octets rather than one and `b"\xc8"` was unreachable from a computed
+# value. That makes binary protocols unwriteable, which is why this is a
+# building block and not a convenience.
+print([97, 98, 99].to_bytes(), [].to_bytes(), (0, 200, 255).to_bytes())
+print(len([200].to_bytes()), len(f"{200:c}".to_bytes()))
+print([104, 105].to_bytes() == b"hi", [104, 105].to_bytes().to_str())
+# A bool is an int here because a bool is an int everywhere else in Oro.
+print([True, False, 98].to_bytes())
+# An element that is not an octet is refused rather than truncated or wrapped:
+# bytes built from a number that did not fit in a byte is silently wrong data.
+try:
+    print([1, 256].to_bytes())
+except ValueError as e:
+    print("out of range:", e)
+try:
+    print([-1].to_bytes())
+except ValueError as e:
+    print("negative:", e)
+try:
+    print([104, "i"].to_bytes())
+except ValueError as e:
+    print("not an int:", e)

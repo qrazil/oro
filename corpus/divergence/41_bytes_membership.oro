@@ -1,0 +1,47 @@
+# INTENTIONAL DIVERGENCE, and the only one in `bytes` that answers a *different
+# thing* rather than refusing a spelling: `5 in b"abc"` asks CPython whether the
+# octet 5 appears, and CPython says False. Oro raises TypeError.
+#
+# The reason is that `in` over `bytes` means subsequence containment — `b"ab" in
+# b"xaby"` — and CPython quietly gives the same operator a second meaning when
+# the left side is an int. Two meanings for one operator, chosen by the type of
+# the operand, is the kind of thing the README's divergence table exists for:
+# the useful spelling is explicit, and it is one that already works.
+#
+#     if 5 in b:              ->    if b.find(bytes([5])) != -1:
+#     if b[i] == 58:                                (or an index comparison)
+#
+# This file exists because "intentionally different" must not become "quietly
+# broken": the divergence is documented in the README and in §1 of
+# docs/stdlib-server-design.md, and this is what checks it.
+
+# Subsequence containment, which is what `in` means here, and agrees with
+# CPython. (Also oracled in core/35_bytes.oro; repeated as the contrast.)
+print(b"ab" in b"xaby", b"ba" in b"xaby", b"" in b"x")
+
+# An int on the left is refused rather than reinterpreted. CPython answers
+# False here, and True for `97 in b"abc"`.
+try:
+    print(5 in b"abc")
+except TypeError as e:
+    print("absent octet:", e)
+try:
+    print(97 in b"abc")
+except TypeError as e:
+    print("present octet:", e)
+
+# The spellings that mean it, and do work.
+print(b"abc".find([5].to_bytes()), b"abc".find([97].to_bytes()))
+print(b"abc"[0] == 97, b"abc"[0] == 5)
+found = False
+for octet in b"abc":
+    if octet == 97:
+        found = True
+print("found by iteration:", found)
+
+# `str` on the left is a TypeError in both runtimes — there is no encoding
+# guess, in either direction.
+try:
+    print("a" in b"abc")
+except TypeError as e:
+    print("str in bytes:", e)

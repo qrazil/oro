@@ -97,3 +97,15 @@ print(counts)
 name = b"oro"
 print(f"name={name} len={len(name)}")
 print(f"{b'x'!r}")
+
+# --- Octets a str cannot reach ----------------------------------------------
+# Every octet is a valid byte, and most of them are not a valid UTF-8 character
+# on their own. This is the gap `[ints].to_bytes()` fills (its spelling is a
+# `to_` cast, so the cast itself lives in divergence/37_bytes_casts.oro) — and
+# these are the values it has to produce, pinned here against CPython.
+print(b"\xc8", len(b"\xc8"), b"\xc8"[0])
+print(b"\x00\xc8\xff", len(b"\x00\xc8\xff"), b"\x00\xc8\xff"[1])
+# The same codepoint as text is one character and two octets, which is exactly
+# why a str cannot stand in for a byte.
+print(len(chr(200)), len(b"\xc3\x88"), b"\xc8" == b"\xc3\x88")
+print(sorted(b"\x00\xc8\xff"), b"\x00\xc8\xff"[-1])

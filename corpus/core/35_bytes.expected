@@ -49,3 +49,7 @@ b'HTTP/1.1' 8
 {b'a': 3, b'b': 2, b'c': 1}
 name=b'oro' len=3
 b'x'
+b'\xc8' 1 200
+b'\x00\xc8\xff' 3 200
+1 2 False
+[0, 200, 255] 255
