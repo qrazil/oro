@@ -229,36 +229,46 @@ impl OroStream {
         }
         let limit = limit as usize;
         let mut inner = self.borrow_readable("read_until")?;
+        let too_long = || format!("read_until() found no delimiter in the first {limit} bytes");
         let mut out: Vec<u8> = Vec::new();
         loop {
-            // Only the tail of what is already collected can start a delimiter
-            // that the next chunk completes, so the scan never restarts.
-            let scan_from = out.len().saturating_sub(delim.len() - 1);
             if inner.fill()? == 0 {
                 return Ok(out);
             }
-            let prev = out.len();
-            out.extend_from_slice(&inner.buf[inner.pos..inner.end]);
-            match find(&out[scan_from..], delim) {
-                Some(i) => {
-                    let take = scan_from + i + delim.len();
-                    if take > limit {
-                        return Err(format!(
-                            "read_until() found no delimiter in the first {limit} bytes"
-                        ));
+            let chunk = &inner.buf[inner.pos..inner.end];
+            // Everything already collected has been scanned, so the only
+            // delimiter this pass can newly complete is one straddling the
+            // boundary: at most `delim.len() - 1` bytes from each side.
+            let carry = (delim.len() - 1).min(out.len());
+            let split = if carry == 0 {
+                None
+            } else {
+                let head = (delim.len() - 1).min(chunk.len());
+                let mut edge = Vec::with_capacity(carry + head);
+                edge.extend_from_slice(&out[out.len() - carry..]);
+                edge.extend_from_slice(&chunk[..head]);
+                find(&edge, delim).map(|i| i + delim.len() - carry)
+            };
+            // Bytes of this chunk that belong to the result, delimiter
+            // included. The chunk is never copied wholesale before the scan:
+            // a `Buffer` holding megabytes must not pay for all of them to
+            // read one short line out of it.
+            match split.or_else(|| find(chunk, delim).map(|i| i + delim.len())) {
+                Some(take) => {
+                    if out.len() + take > limit {
+                        return Err(too_long());
                     }
-                    // Leave everything after the delimiter in the buffer; it
+                    // Everything after the delimiter stays in the buffer; it
                     // belongs to the next read.
-                    inner.pos += take - prev;
-                    out.truncate(take);
+                    out.extend_from_slice(&chunk[..take]);
+                    inner.pos += take;
                     return Ok(out);
                 }
                 None => {
+                    out.extend_from_slice(chunk);
                     inner.pos = inner.end;
                     if out.len() >= limit {
-                        return Err(format!(
-                            "read_until() found no delimiter in the first {limit} bytes"
-                        ));
+                        return Err(too_long());
                     }
                 }
             }

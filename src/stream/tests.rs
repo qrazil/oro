@@ -131,3 +131,20 @@ fn read_all_pre_sizes_from_stat_and_resumes_mid_stream() {
     assert_eq!(rest.capacity(), rest.len());
     std::fs::remove_file(&path).unwrap();
 }
+
+#[test]
+fn read_until_does_not_walk_past_what_it_returns() {
+    // A short line out of a large Buffer must cost the line, not the Buffer:
+    // copying the whole chunk before scanning it would make repeated calls
+    // quadratic in the amount of data waiting.
+    let mut contents = b"first\n".to_vec();
+    contents.extend(std::iter::repeat_n(b'x', 1_000_000));
+    let b = OroStream::buffer(contents);
+    assert_eq!(b.read_until(b"\n", 64).unwrap(), b"first\n");
+    assert_eq!(b.bytes().unwrap().len(), 1_000_000);
+    // The delimiter can still straddle two of a Buffer's writes.
+    let split = OroStream::buffer(b"a\r".to_vec());
+    split.write(b"\nb").unwrap();
+    assert_eq!(split.read_until(b"\r\n", 64).unwrap(), b"a\r\n");
+    assert_eq!(split.read(8).unwrap(), b"b");
+}
