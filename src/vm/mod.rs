@@ -384,6 +384,11 @@ struct Task {
     sort_jobs: Vec<SortJob>,
     seq_jobs: Vec<SeqJob>,
     mat_jobs: Vec<MatJob>,
+    /// Exceptions currently being handled (top = innermost), for bare `raise`.
+    handling: Vec<Value>,
+    /// Why each in-flight `finally` body is running, so `EndFinally` can resume
+    /// the exception or `return` that was suspended to run the cleanup.
+    finally_why: Vec<Why>,
 }
 
 impl Task {
@@ -399,6 +404,8 @@ impl Task {
             sort_jobs: Vec::new(),
             seq_jobs: Vec::new(),
             mat_jobs: Vec::new(),
+            handling: Vec::new(),
+            finally_why: Vec::new(),
         }
     }
 }
@@ -418,11 +425,6 @@ pub struct Vm {
     last_locals: Vec<Value>,
     /// The built-in exception classes, by name (shared identity for the run).
     excs: HashMap<&'static str, Rc<Class>>,
-    /// Exceptions currently being handled (top = innermost), for bare `raise`.
-    handling: Vec<Value>,
-    /// Why each in-flight `finally` body is running, so `EndFinally` can resume
-    /// the exception or `return` that was suspended to run the cleanup.
-    finally_why: Vec<Why>,
     /// Generators currently being advanced (innermost on top), with the
     /// `ForIter` target to jump to when each is exhausted. Pushed on resume,
     /// popped on `yield`/exhaustion.
@@ -487,8 +489,6 @@ impl Vm {
             frame_pool: Vec::new(),
             last_locals: Vec::new(),
             excs: exceptions::build_registry(),
-            handling: Vec::new(),
-            finally_why: Vec::new(),
             gen_stack: Vec::new(),
             argv,
             exit_code: None,
@@ -1133,7 +1133,7 @@ impl Vm {
                 Op::Reraise => {
                     // Bare `raise` / no matching except: re-raise the exception
                     // currently being handled.
-                    match self.handling.pop() {
+                    match self.task.handling.pop() {
                         Some(exc) => return Ok(Step::Raise(exc)),
                         None => {
                             return Err(self.err("No active exception to re-raise".to_string()))
@@ -1142,6 +1142,7 @@ impl Vm {
                 }
                 Op::LoadHandling => {
                     let exc = self
+                        .task
                         .handling
                         .last()
                         .cloned()
@@ -1149,7 +1150,7 @@ impl Vm {
                     self.push(exc);
                 }
                 Op::EndHandler => {
-                    self.handling.pop();
+                    self.task.handling.pop();
                 }
                 Op::ExcMatch => {
                     let class = self.pop();
@@ -1160,11 +1161,11 @@ impl Vm {
                 Op::BeginFinally => {
                     // The normal fall-through into a finally body: nothing was
                     // suspended.
-                    self.finally_why.push(Why::Normal);
+                    self.task.finally_why.push(Why::Normal);
                 }
                 Op::EndFinally => {
                     // Resume whatever was suspended to run this finally.
-                    match self.finally_why.pop().expect("finally without a reason") {
+                    match self.task.finally_why.pop().expect("finally without a reason") {
                         Why::Normal => {}
                         Why::Raise(exc) => return Ok(Step::Raise(exc)),
                         Why::Return(v) => return self.do_return(v),
@@ -2748,7 +2749,7 @@ impl Vm {
                 let frame = self.top();
                 frame.stack.truncate(b.stack_len);
                 frame.pc = b.target;
-                self.finally_why.push(Why::Return(value));
+                self.task.finally_why.push(Why::Return(value));
                 return Ok(Step::Next);
             }
             // Except blocks are simply discarded on the way out.
@@ -2823,7 +2824,7 @@ impl Vm {
                     let frame = self.top();
                     frame.stack.truncate(b.stack_len);
                     frame.pc = b.target;
-                    self.finally_why.push(Why::Break);
+                    self.task.finally_why.push(Why::Break);
                     return Step::Next;
                 }
                 BlockKind::Loop { .. } => {
@@ -2865,7 +2866,7 @@ impl Vm {
                         let frame = self.top();
                         frame.stack.truncate(b.stack_len);
                         frame.pc = b.target;
-                        self.finally_why.push(Why::Continue);
+                        self.task.finally_why.push(Why::Continue);
                         return Step::Next;
                     }
                     BlockKind::Except => {}
@@ -2943,13 +2944,13 @@ impl Vm {
                     match b.kind {
                         BlockKind::Except => {
                             frame.pc = b.target;
-                            self.handling.push(exc);
+                            self.task.handling.push(exc);
                             return None;
                         }
                         BlockKind::Finally => {
                             frame.pc = b.target;
                             // Run the finally body; EndFinally re-raises after.
-                            self.finally_why.push(Why::Raise(exc));
+                            self.task.finally_why.push(Why::Raise(exc));
                             return None;
                         }
                         // A loop being unwound by an exception is just abandoned.
