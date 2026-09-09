@@ -139,11 +139,16 @@ Implemented and working today:
   stack, so pipelines never grow the native stack.
 - **`global`** for mutating module-level state from a function.
 - **Modules:** `import a.b.c` / `import x as y`, built-in `sys`, `os`, `time`,
-  `re`, and `subprocess`, and user modules loaded from the script's directory
+  `re`, and `proc`; `io` and `json`, which are written in Oro and shipped as
+  source inside the binary; and user modules loaded from the script's directory
   (run once, cached).
-- **File I/O:** `open(path, mode)` (`r`/`w`/`a`, UTF-8 text) with
-  `read`/`readline`/`readlines`/`write`/`close` and line iteration; files close
-  deterministically at end of scope (no `with`).
+- **Byte streams:** `open(path, mode)` (`r`/`w`/`a`, and every one of them
+  **bytes**) returning a stream with `read(n)`/`write(b)`, plus
+  `read_until(delim, limit)` and `close()`; `io.read`, `io.copy` and
+  `io.buffer` in `std/io.oro`; `sys.stdout`/`stderr`/`stdin` as real streams on
+  fd 1/2/0. Streams close deterministically at end of scope (no `with`), and
+  there is no `flush()` anywhere in the language. See
+  [The io protocol](#the-io-protocol).
 - **f-strings** with the full format mini-language: `{x:.2f}`, `{n:05d}`,
   `{x:,}`, alignment (`<^>`), sign/`#`/`0` flags, the `!r`/`!s` conversions, and
   nested specs like `{x:.{p}f}`.
@@ -311,8 +316,8 @@ out of scope — deterministically, at end of block:
 
 ```python
 def read(path):
-    f = open(path)      # opened here
-    return f.read()     # f's last reference dies at return → file closed
+    f = open(path)          # opened here
+    return io.read(f)       # f's last reference dies at return → file closed
 ```
 
 `with` exists in Python because the *language spec* refuses to promise *when* an
@@ -323,6 +328,73 @@ therefore promise the timing, which removes the reason `with` exists.
 
 (The flip side is honest: refcounting alone cannot reclaim reference *cycles* —
 see [Known limitations](#known-limitations).)
+
+### The io protocol
+
+Every stream in Oro — a file, a `Buffer`, `sys.stdout` — has the same two
+methods, and there are only two:
+
+```
+read(n)   -> bytes      # 1..n bytes; b"" at EOF; MAY return fewer than n
+write(b)  -> None       # writes all of b, or raises
+```
+
+That is a **naming convention, not a declared type**: there is no `class
+Reader`, nothing to inherit from and no registration. Any object with a `read`
+of that shape is a Reader, which is why `io.read` and `io.copy` work unchanged
+on a class you wrote this afternoon. In a dynamic language this costs exactly
+nothing, and the alternative — a family of stream types that each guess
+differently — is the zoo every scripting language ends up with.
+
+Four consequences, each of which will eventually surprise someone, so they are
+stated rather than discovered:
+
+- **`open(path, mode)` returns bytes, in all three modes, and there is no
+  `"rb"`.** There is no text mode, no `encoding=`, no text wrapper and no line
+  iterator. With text mode gone the `b` contrasts with nothing — a letter
+  meaning "not the other kind" in a language that has no other kind — so it is
+  rejected with a message naming the replacement. Whole-file text is a compose
+  of two things that already exist:
+
+  ```python
+  f = open(path, "r")
+  s = io.read(f).to_str()                              # a whole file, as text
+  lines = io.read(f).to_str().rstrip("\n").split("\n")  # …and its lines
+  ```
+
+- **`read(n)` may return fewer than `n` bytes without being at EOF**, because
+  that is what a stream is: `n` is a maximum, and the answer is "what has
+  arrived". EOF is an empty return, not an exception — every stream ends, and
+  the normal termination of the most common loop in systems programming is not
+  a fault. Code that needs *exactly* `n` bytes calls `io.read(r, n)`, which
+  loops and raises `EOFError` if the stream ends short. `r.read(n)` is the raw
+  primitive; `io.read(...)` does the whole job.
+
+- **`print` and streams are separate worlds.** `print` takes `str`; streams
+  take `bytes` and nothing else, in either direction, anywhere in the language.
+  `sys.stdout.write("hi")` is a `TypeError`; the spellings are `print("hi")`
+  and `sys.stdout.write(b"hi")`, and both reach fd 1 in program order. This is a
+  real edge to trip over, and it is the price of having one stream protocol
+  rather than one for text and one for bytes.
+
+- **There is no `flush()`, anywhere.** Every reader buffers internally, so
+  `read_until(b"\r\n\r\n", 65536)` is one syscall per 8 KiB rather than one per
+  byte, and nothing in Oro can see or size that buffer — an API whose correct
+  use is "always, right away" is not an API, it is a default someone forgot to
+  set. Every *writer* is unbuffered, which is why `flush` can be absent: it is
+  one of the great silent bugs, where the program is correct, the tests pass,
+  the last response of every connection is truncated, and nothing raises. The
+  thing a buffered writer was for is an idiom the language already has —
+  `parts.join(b"")` once, at the call site, where it cannot be forgotten
+  halfway.
+
+The bill for all of this is `.to_bytes()` at the point where a program's text
+becomes output, and `.to_str()` where its input becomes text. That is the
+two-type tax, paid once at a visible boundary instead of smeared across a
+family of stream types.
+
+The full reasoning, including what was cut and why, is in
+`docs/stdlib-server-design.md` §2.
 
 ### Tabs rejected in leading whitespace
 
@@ -397,21 +469,40 @@ Locked design decisions, and what each one buys:
 
 ## Standard library surface
 
-Two built-in modules ship in the core; everything else is meant to grow as Oro
-written on top of it.
+A small set of modules ships in Rust, because each of them is a syscall or a
+per-byte loop. Everything else is written in Oro and shipped as source baked
+into the binary — `json` and `io` are there today, and that is the intended
+growth path for the standard library, not a temporary arrangement.
 
 - **`sys`** — `argv` (`argv[0]` is the script), `exit(code)` (raises
-  `SystemExit`; sets the process exit status if uncaught), `platform`,
-  `stdin`/`stdout`/`stderr`.
+  `SystemExit`; sets the process exit status if uncaught), `platform`, and
+  `stdin`/`stdout`/`stderr` as real byte streams on fd 0/1/2. They are
+  unbuffered, like every writer in the language.
 - **`os`** — `environ`, `getcwd()`, `listdir()`, `remove()`, `mkdir()`, and
   `path`.
 - **`os.path`** — `exists`, `isfile`, `isdir`, `join`, `basename`, `dirname`,
   `splitext`.
-- **`open(path, mode)`** — `r`/`w`/`a`, UTF-8 text. The file object has
-  `read()`, `readline()`, `readlines()`, `write()`, `close()`, and iterates line
-  by line. It closes when its last reference drops (see the `with`-free file
-  lifetime above). Missing files and permission errors raise `FileNotFoundError`
-  / `PermissionError`.
+- **`open(path, mode)`** — `r`/`w`/`a`, all three of them **bytes**; there is
+  no `"rb"` and no text mode (see [The io protocol](#the-io-protocol)). The
+  stream has `read(n)`, `write(b)`, `read_until(delim, limit)` and `close()`,
+  and no `flush()`. It closes when its last reference drops (see the
+  `with`-free file lifetime above), so `close()` is for when end of scope is
+  too late. `read_until` includes the delimiter and raises `ValueError` if the
+  limit is reached without finding one — which is what stops a client sending
+  an unbounded header block. Missing files and permission errors raise
+  `FileNotFoundError` / `PermissionError`.
+- **`io`** — written in Oro, and exactly three functions:
+  `io.read(r, n=None)` (everything until EOF, or exactly `n` with `EOFError` if
+  the stream ends short), `io.copy(dst, src)` (returns the count), and
+  `io.buffer(b=b"")` (an in-memory Reader and Writer, and the only way to get a
+  Reader you can feed literal bytes to). There is deliberately no `io.write`:
+  `w.write(b)` already writes everything or raises, so a free function would be
+  a second spelling for it. The asymmetry is real, and it is the two directions
+  being genuinely different — reading everything requires a loop, writing
+  everything does not.
+- **`json`** — also written in Oro: `json.parse(text)` and
+  `json.stringify(value, indent=None)`. `stringify` requires `str` dict keys
+  rather than silently stringifying an int one.
 - **`proc`** — exactly one function,
   `run(args, check=…, quiet=…, cwd=…, env=…, timeout=…)`, returning a
   `CompletedProcess` with `.returncode`, `.ok`, `.truncated`, `.stdout`,
@@ -466,6 +557,12 @@ different.
 
 | 0.1 | 0.2 | Why |
 |---|---|---|
+| `open(p, "r").read()` | `io.read(open(p, "r"))` | `open` returns bytes in every mode; a whole-stream read is a free function |
+| `open(p, "rb")` | `open(p, "r")` | With text mode gone, the `b` contrasts with nothing |
+| `f.readline()` / `f.readlines()` / `for line in f` | `io.read(f).to_str().rstrip("\n").split("\n")` | There is no text stream type and no line iterator |
+| `f.write("text")` | `f.write("text".to_bytes())` | Streams take bytes, in both directions, everywhere |
+| `f.flush()` | *(nothing)* | Writers are unbuffered, so there is nothing pending |
+| `sys.stdout` as a name | `sys.stdout.write(b"…")` | It is a real stream on fd 1 now |
 | `import subprocess` | `import proc` | Different defaults deserve a different name |
 | `subprocess.run(a, capture_output=True, text=True)` | `proc.run(a)` | Capture is always on, and the output streams live as well |
 | `r.stdout` after a failed command | `proc.run(a, check=False)` first | A nonzero exit now raises `CommandError` |
@@ -515,23 +612,30 @@ Stated plainly:
   also what CPython moved to in 3.12.
 - **Lambda parameters are plain names only** — no defaults, `*args`, `**kwargs`,
   or annotations, and the body is a single expression. Anything more is a `def`.
-- **`sys.stdout` / `sys.stderr` / `sys.stdin` are name placeholders, not stream
-  objects.** They carry the strings `'<stdout>'` etc., so there is no
-  `sys.stdout.write(...)`; use `print(..., end="")` to emit text without a
-  trailing newline. Giving them real file objects is a plausible addition, but
-  today they exist only so `sys.stdout` resolves.
+- **Streams take `bytes`, and `print` takes `str`.** `sys.stdout.write("hi")`
+  is a `TypeError`; write `print("hi")`, or `sys.stdout.write(b"hi")`, or
+  `sys.stdout.write(s.to_bytes())`. The two reach fd 1 in program order — they
+  just do not accept the same argument. See
+  [The io protocol](#the-io-protocol).
+- **There is no `seek`/`tell`, and no read-write mode.** Read-write without
+  random access is nearly useless (you can append, or reopen), so `"rw"` is
+  really a request for `seek`, which is a genuine building block and should
+  exist before the 1.0 freeze. It is deferred rather than cut: every reader
+  buffers, so a seek has to invalidate that buffer, and getting that wrong
+  produces stale reads that look like data corruption.
 - **Output is never block-buffered.** Oro flushes stdout as it goes, so it behaves
   like `python3 -u`. CPython block-buffers when stdout is a pipe, which means a
   program that mixes `print` with an *inherited* subprocess's output can show the
   two interleaved differently under the two runtimes (they agree on a terminal,
   and agree under `python3 -u` anywhere). Only the interleaving differs; every
   line, and each stream's own order, is identical.
-- **Binary/encoding file modes, and `sys.path` mutation, are unsupported.**
-  `open` is UTF-8 text only (`r`/`w`/`a`); modules resolve against the one
-  documented search path (the script's directory) with no runtime path changes.
-- **No stdlib beyond `sys`/`os`.** Data structures like a `Set` class, and
-  modules like `json`/`csv`, are the intended growth area — written in Oro on top
-  of the frozen core, not baked into it.
+- **There is one encoding, and `sys.path` cannot be mutated.** UTF-8 is it:
+  no `encoding=` argument exists anywhere, and other encodings are a library
+  written in Oro, later. Modules resolve against the one documented search path
+  (the script's directory) with no runtime path changes.
+- **The stdlib is deliberately small.** `io` and `json` ship, written in Oro;
+  data structures like a `Set` class and modules like `csv` are the intended
+  growth area — written in Oro on top of the frozen core, not baked into it.
 
 ## The corpus: CPython as an oracle
 
