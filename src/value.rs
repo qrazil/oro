@@ -766,13 +766,20 @@ fn format_float(f: f64) -> String {
     }
 }
 
-/// Produce a single-quoted Python-style repr of a string, escaping specials.
+/// Produce a Python-style repr of a string, escaping specials. The quote flips
+/// to `"` when the data holds a `'` and no `"`, so the common case never needs
+/// an escaped quote — the same rule `repr_bytes` follows, and the one CPython
+/// uses.
 fn repr_str(s: &str) -> String {
+    let quote = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
     let mut out = String::with_capacity(s.len() + 2);
-    out.push('\'');
+    out.push(quote);
     for c in s.chars() {
         match c {
-            '\'' => out.push_str("\\'"),
+            c if c == quote => {
+                out.push('\\');
+                out.push(quote);
+            }
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
             '\t' => out.push_str("\\t"),
@@ -786,7 +793,7 @@ fn repr_str(s: &str) -> String {
             _ => out.push(c),
         }
     }
-    out.push('\'');
+    out.push(quote);
     out
 }
 

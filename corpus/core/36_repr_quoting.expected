@@ -1,0 +1,15 @@
+'plain'
+"it's"
+'say "hi"'
+'a\'b"c'
+"'"
+'"'
+'\'"'
+["it's", 'say "hi"', 'both\'"', 'plain']
+{'k': "it's", 'q': 'say "hi"'}
+("it's",)
+'tab\tnl\nret\rback\\end'
+'nul\x00del\x7fesc\x1b'
+'it\'s\tand "both"'
+'é ünïcode'
+"it's é"

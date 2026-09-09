@@ -1,0 +1,24 @@
+# repr picks its quote from the data: `"` when the string holds a `'` and no
+# `"`, so the common case needs no escape. CPython's rule, and the one bytes
+# repr follows too.
+print(repr("plain"))
+print(repr("it's"))
+print(repr('say "hi"'))
+print(repr("a'b\"c"))
+print(repr("'"))
+print(repr('"'))
+print(repr("'\""))
+
+# The rule has to survive nesting: container repr dispatches to the element's.
+print(repr(["it's", 'say "hi"', "both'\"", "plain"]))
+print(repr({"k": "it's", "q": 'say "hi"'}))
+print(repr(("it's",)))
+
+# Escapes are unaffected by the quote choice.
+print(repr("tab\tnl\nret\rback\\end"))
+print(repr("nul\x00del\x7fesc\x1b"))
+print(repr("it's\tand \"both\""))
+
+# Non-ASCII is printable and stays raw in CPython 3.
+print(repr("é ünïcode"))
+print(repr("it's é"))
