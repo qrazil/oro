@@ -108,8 +108,17 @@ redefined: a dotted import must use `as` (`import a.b.c as c`).
 Implemented and working today:
 
 - **Values:** `int` (inline `i64`, promoting to arbitrary-precision bignum on
-  overflow), `float`, `bool`, `str`, `None`, `list`, `tuple`, `dict`, `set`,
-  `range`, and functions (including closures over *read* access).
+  overflow), `float`, `bool`, `str`, `bytes`, `None`, `list`, `tuple`, `dict`,
+  `set`, `range`, and functions (including closures over *read* access).
+- **`bytes`, a second type and not a redefinition of `str`.** `b"..."` (and
+  `rb"..."`) is a sequence of octets: `b[i]` is an `int`, `b[i:j]` is `bytes`,
+  iteration yields `int`s, and `len` counts octets. Cross the boundary
+  explicitly with `s.to_bytes()` (UTF-8, cannot fail) and `b.to_str()` (UTF-8,
+  strict — invalid input raises rather than substituting replacement
+  characters). Making `str` *be* bytes would have been one type fewer, but it
+  changes what `len(s)`, `s[i]` and `for c in s` mean under an unchanged
+  spelling, which is the one thing Oro will not do — and it would put character
+  indexing permanently beyond CPython's reach as an oracle.
 - **Control flow:** `if` / `elif` / `else`, `while`, `for … in …`,
   `break`, `continue`, `pass`, and `match` (a value-only switch — see below).
 - **Functions:** positional params, defaults, `*args`, `**kwargs`, and the call-
@@ -144,8 +153,8 @@ Implemented and working today:
   `enumerate` and `zip` return lists rather than lazy iterators — the same eager
   choice `dict.keys()` already makes. Type names (`str`, `int`, `list`, …) are
   deliberately *not* callable; see the `to_` casts below.
-- **Methods:** the common `str`/`list`/`dict` methods, the `to_` conversions on
-  every value, and the collection protocol below.
+- **Methods:** the common `str`/`bytes`/`list`/`dict` methods, the `to_`
+  conversions on every value, and the collection protocol below.
 - **The collection protocol**, on lists, tuples, dicts, ranges and generators.
   Chains replaced comprehensions; this is what lets them replace *loops* too.
 
@@ -234,6 +243,12 @@ Each of these is omitted on purpose. The reason matters more than the list.
   only hashable composite, so `counts[(host, port)]` has no substitute, and they
   are load-bearing for multiple return, `a, b = b, a`, and `*args`.
 
+- **No `bytearray`, and no growable byte buffer.** Oro already has one frozen
+  idiom for building a string incrementally — append to a list, `join` at the
+  end — and it builds `bytes` just as well, with the same performance and zero
+  new types. The one case that genuinely needs a mutable window is a buffered
+  reader, which belongs in Rust and never shows Oro code its buffer.
+
 - **No `re.match`.** It anchors at the start of the string — almost always not
   what people mean, and endlessly confused with `re.search`. Use `re.search`, or
   a leading `^` to anchor on purpose.
@@ -251,8 +266,8 @@ Each of these is omitted on purpose. The reason matters more than the list.
 
 - **Type names are not callable.** Conversion is a method on the value:
   `xs.to_list()`, `"42".to_int()`, `"ff".to_int(16)`, `x.to_str()`,
-  `s.to_float()`, `v.to_bool()`, `pairs.to_dict()`. Construction is a literal:
-  `[]`, `{}`, `""`, `0`. This is one spelling per thing, it chains in reading
+  `s.to_float()`, `v.to_bool()`, `pairs.to_dict()`, `s.to_bytes()`.
+  Construction is a literal: `[]`, `{}`, `""`, `b""`, `0`. This is one spelling per thing, it chains in reading
   order, and it removes a whole error class by construction — a conversion needs
   something to convert, so there is no zero-argument form to confuse with
   building an empty value.

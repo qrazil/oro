@@ -1,0 +1,58 @@
+# DIVERGENCE: everything about `bytes` that CPython can run lives in
+# core/35_bytes.oro, where the oracle checks it. Only the two spellings CPython
+# has no way to execute are here: the `to_str()`/`to_bytes()` casts (conversion
+# is a method on the value, not a call on a type name), and `xs.join(b"")`,
+# which Oro reverses so the sequence is the subject and the separator the
+# detail. Reviewed by hand instead of oracled.
+
+# str -> bytes is UTF-8 and cannot fail. There is no `encoding=` argument
+# anywhere: UTF-8 is the one encoding.
+s = "héllo"
+b = s.to_bytes()
+print(b, len(s), len(b))
+print(b.to_str(), b.to_str() == s)
+print("".to_bytes(), b"".to_str() == "")
+# Each cast is a no-op on its own type.
+print(b"ab".to_bytes(), "ab".to_str())
+
+# bytes -> str is strict. Substituting replacement characters would corrupt a
+# body rather than report it, so invalid UTF-8 raises. CPython's
+# UnicodeDecodeError is a ValueError subclass, so this `except` is the same one.
+try:
+    print(b"\xff\xfe".to_str())
+except ValueError as e:
+    print("undecodable:", e)
+
+# A UTF-8 sequence cut in half — the shape a fixed-size read actually produces.
+truncated = "é".to_bytes()[:1]
+print(truncated, len(truncated))
+try:
+    truncated.to_str()
+except ValueError as e:
+    print("half a character:", e)
+
+# The collection protocol's join, reversed from CPython's: `xs.join(b"")`
+# ends a chain instead of sending the reader back to the front of the line.
+parts = [b"GET", b"/index.html", b"HTTP/1.1"]
+print(parts.join(b" "))
+print(parts.join(b""))
+print([].join(b","), [b"solo"].join(b","))
+# join never guesses a conversion, so a list mixing str and bytes is an error.
+try:
+    print([b"a", "b"].join(b""))
+except Exception as e:
+    print("mixed list rejected:", e)
+
+# The chain that builds bytes without a bytearray: append to a list, join once.
+out = []
+out.append(b"HTTP/1.1 200 OK")
+out.append(b"Content-Length: 2")
+out.append(b"")
+out.append(b"ok")
+print(out.join(b"\r\n"))
+
+# `bytes` is not callable; the error names both replacements.
+try:
+    bytes([1, 2])
+except Exception as e:
+    print("not callable:", e)
