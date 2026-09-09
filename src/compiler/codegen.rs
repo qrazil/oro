@@ -8,6 +8,7 @@
 //! built for it.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::ast::{
@@ -37,6 +38,12 @@ struct Codegen<'a> {
     ops: Vec<Op>,
     spans: Vec<(u32, u32)>,
     consts: Vec<Value>,
+    /// Interned names for the name-carrying opcodes, plus the reverse map that
+    /// keeps `self.x` used in ten places from being stored ten times.
+    names: Vec<Rc<str>>,
+    name_idx: HashMap<Rc<str>, u32>,
+    classes: Vec<Rc<ClassSpec>>,
+    pairs: Vec<(u32, u32)>,
     protos: Vec<Rc<FuncProto>>,
     /// Cursor into the current scope's child list.
     cursor: usize,
@@ -65,6 +72,10 @@ impl<'a> Codegen<'a> {
             ops: Vec::new(),
             spans: Vec::new(),
             consts: Vec::new(),
+            names: Vec::new(),
+            name_idx: HashMap::new(),
+            classes: Vec::new(),
+            pairs: Vec::new(),
             protos: Vec::new(),
             cursor: 0,
             loops: Vec::new(),
@@ -78,6 +89,9 @@ impl<'a> Codegen<'a> {
             ops: self.ops,
             spans: self.spans,
             consts: self.consts,
+            names: self.names,
+            classes: self.classes,
+            pairs: self.pairs,
             protos: self.protos,
             nlocals: self.table.scopes()[self.func].nlocals as usize,
             ncells: self.table.ncells(self.func) as usize,
@@ -102,17 +116,46 @@ impl<'a> Codegen<'a> {
         idx
     }
 
-    fn here(&self) -> usize {
-        self.ops.len()
+    fn here(&self) -> u32 {
+        self.ops.len() as u32
     }
 
-    fn add_const(&mut self, v: Value) -> usize {
-        let idx = self.consts.len();
+    fn add_const(&mut self, v: Value) -> u32 {
+        let idx = self.consts.len() as u32;
         self.consts.push(v);
         idx
     }
 
-    fn set_target(&mut self, idx: usize, target: usize) {
+    /// Intern a name into the code object's name table, returning its index.
+    /// Names carried by opcodes live here rather than inline so that `Op` stays
+    /// one 8-byte `Copy` word; interning also means a name used at many call
+    /// sites is stored once.
+    fn add_name(&mut self, name: &str) -> u32 {
+        if let Some(&i) = self.name_idx.get(name) {
+            return i;
+        }
+        let rc: Rc<str> = Rc::from(name);
+        let idx = self.names.len() as u32;
+        self.names.push(rc.clone());
+        self.name_idx.insert(rc, idx);
+        idx
+    }
+
+    fn add_class(&mut self, spec: ClassSpec) -> u32 {
+        let idx = self.classes.len() as u32;
+        self.classes.push(Rc::new(spec));
+        idx
+    }
+
+    /// Reserve a slot in the two-operand side table (see [`Op::MatchDispatch`]
+    /// and [`Op::SetupLoop`]); the operands are patched in once known.
+    fn add_pair(&mut self) -> u32 {
+        let idx = self.pairs.len() as u32;
+        self.pairs.push((0, 0));
+        idx
+    }
+
+    fn set_target(&mut self, idx: usize, target: u32) {
         match &mut self.ops[idx] {
             Op::Jump(t)
             | Op::PopJumpIfFalse(t)
@@ -210,7 +253,8 @@ impl<'a> Codegen<'a> {
                     .ok_or_else(|| self.err("empty import path", *line, *col))?
                     .to_string();
                 let dotted = path.join(".");
-                self.emit(Op::ImportModule(Rc::from(dotted.as_str())), *line, *col);
+                let n = self.add_name(&dotted);
+                self.emit(Op::ImportModule(n), *line, *col);
                 self.emit_store(&Expr::Name { name: bound, line: *line, col: *col })?;
             }
             Stmt::Yield { value, line, col } => {
@@ -314,11 +358,12 @@ impl<'a> Codegen<'a> {
     ) -> CResult<()> {
         self.emit_expr(subject)?;
         // Placeholder; patched once body offsets and the table are known.
-        let dispatch = self.emit(Op::MatchDispatch { table: 0, default: 0 }, line, col);
+        let pair = self.add_pair();
+        let dispatch = self.emit(Op::MatchDispatch(pair), line, col);
 
         let mut end_jumps = Vec::new();
         let mut table = OroDict::new();
-        let mut default_target: Option<usize> = None;
+        let mut default_target: Option<u32> = None;
 
         for case in cases {
             let start = self.here();
@@ -343,7 +388,8 @@ impl<'a> Codegen<'a> {
         let end = self.here();
         let default = default_target.unwrap_or(end);
         let table_idx = self.add_const(Value::Dict(Rc::new(RefCell::new(table))));
-        self.ops[dispatch] = Op::MatchDispatch { table: table_idx, default };
+        self.pairs[pair as usize] = (table_idx, default);
+        debug_assert!(matches!(self.ops[dispatch], Op::MatchDispatch(_)));
         for j in end_jumps {
             self.set_target(j, end);
         }
@@ -536,7 +582,8 @@ impl<'a> Codegen<'a> {
         let (cl, cc) = cond.pos();
         // The loop block is pushed once, before the condition; break/continue
         // unwind to it (running any enclosing finally).
-        let setup = self.emit(Op::SetupLoop { brk: 0, cont: 0 }, cl, cc);
+        let setup = self.add_pair();
+        self.emit(Op::SetupLoop(setup), cl, cc);
         let top = self.here();
         self.patch_loop_cont(setup, top);
         self.emit_expr(cond)?;
@@ -558,7 +605,8 @@ impl<'a> Codegen<'a> {
         let (il, ic) = iter.pos();
         // SetupLoop before the iterator so the loop block's saved stack depth is
         // *below* the iterator — a `break` then removes it on the way out.
-        let setup = self.emit(Op::SetupLoop { brk: 0, cont: 0 }, il, ic);
+        let setup = self.add_pair();
+        self.emit(Op::SetupLoop(setup), il, ic);
         self.emit_expr(iter)?;
         self.emit(Op::GetIter, il, ic);
         let top = self.here();
@@ -587,16 +635,15 @@ impl<'a> Codegen<'a> {
         Ok(())
     }
 
-    fn patch_loop_cont(&mut self, setup: usize, target: usize) {
-        if let Op::SetupLoop { cont, .. } = &mut self.ops[setup] {
-            *cont = target;
-        }
+    /// Patch a `SetupLoop`'s continue point. `setup` is its slot in the
+    /// two-operand side table, not an instruction index.
+    fn patch_loop_cont(&mut self, setup: u32, target: u32) {
+        self.pairs[setup as usize].1 = target;
     }
 
-    fn patch_loop_brk(&mut self, setup: usize, target: usize) {
-        if let Op::SetupLoop { brk, .. } = &mut self.ops[setup] {
-            *brk = target;
-        }
+    /// Patch a `SetupLoop`'s break (after-loop) target.
+    fn patch_loop_brk(&mut self, setup: u32, target: u32) {
+        self.pairs[setup as usize].0 = target;
     }
 
     fn emit_break(&mut self, line: usize, col: usize) -> CResult<()> {
@@ -709,7 +756,7 @@ impl<'a> Codegen<'a> {
         }
         let body = vec![Stmt::Return { value: Some((*data.body).clone()), line, col }];
         let proto = self.compile_function("<lambda>", &data.params, &body, child)?;
-        let proto_idx = self.protos.len();
+        let proto_idx = self.protos.len() as u32;
         self.protos.push(Rc::new(proto));
         self.emit(Op::MakeFunction(proto_idx), line, col);
         Ok(())
@@ -728,7 +775,7 @@ impl<'a> Codegen<'a> {
     ) -> CResult<()> {
         let child = self.next_child();
         let proto = self.compile_function(name, params, body, child)?;
-        let proto_idx = self.protos.len();
+        let proto_idx = self.protos.len() as u32;
         self.protos.push(Rc::new(proto));
         // Evaluate default values in this (enclosing) scope, in order.
         for p in params {
@@ -813,7 +860,8 @@ impl<'a> Codegen<'a> {
         }
 
         let spec = ClassSpec { name: Rc::from(name), members, has_base };
-        self.emit(Op::BuildClass(Rc::new(spec)), line, col);
+        let idx = self.add_class(spec);
+        self.emit(Op::BuildClass(idx), line, col);
         self.emit_store(&Expr::Name { name: name.to_string(), line, col })?;
         Ok(())
     }
@@ -902,7 +950,7 @@ impl<'a> Codegen<'a> {
                 self.emit(Op::StoreSubscript, *line, *col);
             }
             Expr::Tuple { elements, line, col } | Expr::List { elements, line, col } => {
-                self.emit(Op::UnpackSequence(elements.len()), *line, *col);
+                self.emit(Op::UnpackSequence(elements.len() as u32), *line, *col);
                 for e in elements {
                     self.emit_store(e)?;
                 }
@@ -910,7 +958,8 @@ impl<'a> Codegen<'a> {
             Expr::Attribute { value, attr, line, col } => {
                 // Stack for StoreAttr: value (below), then the object.
                 self.emit_expr(value)?;
-                self.emit(Op::StoreAttr(Rc::from(attr.as_str())), *line, *col);
+                let n = self.add_name(attr);
+                self.emit(Op::StoreAttr(n), *line, *col);
             }
             other => {
                 let (l, c) = other.pos();
@@ -955,7 +1004,8 @@ impl<'a> Codegen<'a> {
                     Resolution::Cell(s) => self.emit(Op::LoadCell(s), *line, *col),
                     Resolution::Free(s) => self.emit(Op::LoadFree(s), *line, *col),
                     Resolution::Global => {
-                        self.emit(Op::LoadGlobal(Rc::from(name.as_str())), *line, *col)
+                        let n = self.add_name(name);
+                        self.emit(Op::LoadGlobal(n), *line, *col)
                     }
                 };
             }
@@ -1000,7 +1050,8 @@ impl<'a> Codegen<'a> {
             }
             Expr::Attribute { value, attr, line, col } => {
                 self.emit_expr(value)?;
-                self.emit(Op::LoadAttr(Rc::from(attr.as_str())), *line, *col);
+                let n = self.add_name(attr);
+                self.emit(Op::LoadAttr(n), *line, *col);
             }
             Expr::Subscript { value, index, line, col } => {
                 self.emit_expr(value)?;
@@ -1018,20 +1069,20 @@ impl<'a> Codegen<'a> {
                 for e in elements {
                     self.emit_expr(e)?;
                 }
-                self.emit(Op::BuildList(elements.len()), *line, *col);
+                self.emit(Op::BuildList(elements.len() as u32), *line, *col);
             }
             Expr::Tuple { elements, line, col } => {
                 for e in elements {
                     self.emit_expr(e)?;
                 }
-                self.emit(Op::BuildTuple(elements.len()), *line, *col);
+                self.emit(Op::BuildTuple(elements.len() as u32), *line, *col);
             }
             Expr::Dict { entries, line, col } => {
                 for (k, v) in entries {
                     self.emit_expr(k)?;
                     self.emit_expr(v)?;
                 }
-                self.emit(Op::BuildMap(entries.len()), *line, *col);
+                self.emit(Op::BuildMap(entries.len() as u32), *line, *col);
             }
         }
         Ok(())
@@ -1119,7 +1170,7 @@ impl<'a> Codegen<'a> {
                     self.emit_expr(e)?;
                 }
             }
-            self.emit(Op::Call(args.len()), line, col);
+            self.emit(Op::Call(args.len() as u32), line, col);
             return Ok(());
         }
         // General path: assemble a positional list and a keyword dict.
@@ -1216,7 +1267,7 @@ impl<'a> Codegen<'a> {
             }
             1 => {}
             n => {
-                self.emit(Op::BuildString(n), line, col);
+                self.emit(Op::BuildString(n as u32), line, col);
             }
         }
         Ok(())
@@ -1374,7 +1425,7 @@ impl<'a> Codegen<'a> {
             }
             1 => {}
             n => {
-                self.emit(Op::BuildString(n), line, col);
+                self.emit(Op::BuildString(n as u32), line, col);
             }
         }
         Ok(())

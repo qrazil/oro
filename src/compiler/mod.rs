@@ -53,10 +53,10 @@ pub enum VarTarget {
 /// The static description of one `class` statement: the class's name, its
 /// members in stack order, and whether a base class was pushed beneath them.
 ///
-/// This lives behind an `Rc` in [`Op::BuildClass`] rather than inline. Inline,
-/// its `Vec<Rc<str>>` alone made *every* `Op` 48 bytes wide — a `class`
-/// statement, compiled once per program and executed once, was setting the
-/// cache density of the entire instruction stream.
+/// Held in [`CodeObject::classes`] and named by index from [`Op::BuildClass`],
+/// never inline. Inline, its `Vec<Rc<str>>` alone made *every* `Op` 48 bytes
+/// wide — a `class` statement, compiled once per program and executed once, was
+/// setting the cache density of the entire instruction stream.
 #[derive(Debug)]
 pub struct ClassSpec {
     pub name: Rc<str>,
@@ -64,16 +64,31 @@ pub struct ClassSpec {
     pub has_base: bool,
 }
 
-/// A single instruction. Jump targets are absolute instruction indices.
+/// A single instruction: a one-byte tag plus at most one 32-bit operand, so
+/// **`Op` is exactly 8 bytes and `Copy`**. Jump targets are absolute
+/// instruction indices.
 ///
-/// Kept deliberately narrow: the dispatch loop streams through `ops` linearly,
-/// so every byte of `Op` is a byte of instruction cache. No variant may carry
-/// an inline `Vec` or `String` — box it (see [`ClassSpec`]). `compiler::tests`
-/// asserts the size so a careless variant cannot quietly widen it again.
-#[derive(Debug, Clone)]
+/// Both properties are load-bearing, and neither is an accident:
+///
+/// * **8 bytes.** The dispatch loop streams through `ops` linearly, so the
+///   width of `Op` is the instruction-cache density of the whole interpreter,
+///   and a power-of-two stride turns `ops[pc]` into a shift instead of a
+///   multiply. `Op` was 48 bytes; at 8 the same cache line holds six
+///   instructions instead of one.
+/// * **`Copy`.** The loop reads the current instruction out before executing
+///   it (execution can restructure `frames`, so the borrow cannot be held).
+///   While `Op` held an `Rc<str>`, that read was a refcount bump per
+///   instruction. A `Copy` `Op` makes it a register move.
+///
+/// The rule that keeps both true: **a variant may carry at most one `u32`.**
+/// Anything larger goes in a side table on [`CodeObject`] and is named by
+/// index — strings in [`CodeObject::names`], class descriptions in
+/// [`CodeObject::classes`], the two-operand instructions in
+/// [`CodeObject::pairs`]. `compiler::tests::op_is_one_word` is the tripwire.
+#[derive(Debug, Clone, Copy)]
 pub enum Op {
     /// Push a constant from the pool.
-    LoadConst(usize),
+    LoadConst(u32),
     /// Push `None`.
     LoadNone,
     /// Read/write a plain local slot.
@@ -85,8 +100,9 @@ pub enum Op {
     /// Read/write a cell captured from an enclosing function.
     LoadFree(u16),
     StoreFree(u16),
-    /// Look a name up in the builtins (the only globals Oro has).
-    LoadGlobal(Rc<str>),
+    /// Look a name up in the builtins (the only globals Oro has). The operand
+    /// indexes [`CodeObject::names`].
+    LoadGlobal(u32),
     /// Discard the top of the stack.
     Pop,
     /// Duplicate the top of the stack.
@@ -112,19 +128,19 @@ pub enum Op {
     Compare(CmpOp),
 
     // Control flow. Targets are absolute op indices.
-    Jump(usize),
-    PopJumpIfFalse(usize),
-    PopJumpIfTrue(usize),
+    Jump(u32),
+    PopJumpIfFalse(u32),
+    PopJumpIfTrue(u32),
     /// Short-circuit `and`: if the top is falsy, leave it and jump; else pop.
-    JumpIfFalseOrPop(usize),
+    JumpIfFalseOrPop(u32),
     /// Short-circuit `or`: if the top is truthy, leave it and jump; else pop.
-    JumpIfTrueOrPop(usize),
+    JumpIfTrueOrPop(u32),
 
     // Collection construction.
-    BuildList(usize),
-    BuildTuple(usize),
+    BuildList(u32),
+    BuildTuple(u32),
     /// Pop `2 * n` values (`k0, v0, k1, v1, ...`) into a new dict.
-    BuildMap(usize),
+    BuildMap(u32),
     /// Append the top value to the list one below it (list stays on the stack).
     ListAppend,
     /// Extend the list one below the top with the iterable on top.
@@ -139,49 +155,52 @@ pub enum Op {
     StoreSubscript,
     /// Pop `step, upper, lower, value` and push `value[lower:upper:step]`.
     LoadSlice,
-    /// Load an attribute (used for method access like `s.split`).
-    LoadAttr(Rc<str>),
+    /// Load an attribute (used for method access like `s.split`). The operand
+    /// indexes [`CodeObject::names`].
+    LoadAttr(u32),
     /// Pop the object (top) then the value; set `obj.<name> = value`. Only
-    /// user-class instances have settable attributes.
-    StoreAttr(Rc<str>),
-    /// Build a class from the base (if `spec.has_base`, below the members) and
-    /// the `spec.members.len()` member values above it (in `spec.members`
-    /// order), then push the resulting class. Members are methods and
-    /// class-level attributes.
-    ///
-    /// The payload sits behind an `Rc` on purpose — see [`ClassSpec`].
-    BuildClass(Rc<ClassSpec>),
+    /// user-class instances have settable attributes. The operand indexes
+    /// [`CodeObject::names`].
+    StoreAttr(u32),
+    /// Build a class from the base (if `has_base`, below the members) and the
+    /// members above it, then push the resulting class. Members are methods and
+    /// class-level attributes. The operand indexes [`CodeObject::classes`].
+    BuildClass(u32),
     /// Push a `super()` proxy for the current method's `super_ctx`.
     LoadSuper,
     /// Import the module named by the dotted path and push it (bound by the
-    /// caller to a name). Only built-in modules resolve in this build.
-    ImportModule(Rc<str>),
+    /// caller to a name). Only built-in modules resolve in this build. The
+    /// operand indexes [`CodeObject::names`].
+    ImportModule(u32),
     /// Pop an iterable and push `n` elements in reverse (top = first element).
-    UnpackSequence(usize),
+    UnpackSequence(u32),
     /// Format an f-string replacement field: pop the format-spec string (top)
     /// and the value beneath it, apply the `!r`/`!s` conversion encoded in the
     /// byte, and push the resulting string.
     FormatValue(u8),
     /// Pop `n` strings and push their concatenation (f-string assembly).
-    BuildString(usize),
+    BuildString(u32),
     /// All-literal `match` dispatch. Pop the subject and look it up in the
     /// dict constant at `table` (mapping each literal pattern to the op index of
     /// its case body, first case winning on equal keys); jump there, or to
     /// `default` on no match / an unhashable subject. O(1) versus a compare
     /// chain — the reason `match` earns its keep over `if`/`elif`.
-    MatchDispatch { table: usize, default: usize },
+    ///
+    /// Needs two operands, so they live in [`CodeObject::pairs`] as
+    /// `(table, default)` and the instruction carries the index.
+    MatchDispatch(u32),
 
     // Iteration.
     GetIter,
     /// If the iterator on top is exhausted, pop it and jump; otherwise push the
     /// next element (iterator stays underneath).
-    ForIter(usize),
+    ForIter(u32),
 
     // Functions and calls.
     /// Build a closure from prototype `index`, popping its default values.
-    MakeFunction(usize),
+    MakeFunction(u32),
     /// Call with `n` positional args already on the stack above the callable.
-    Call(usize),
+    Call(u32),
     /// Call with an assembled positional list and keyword dict on the stack:
     /// `func, poslist, kwdict`.
     CallEx,
@@ -192,9 +211,9 @@ pub enum Op {
 
     // Exceptions.
     /// Push a try/except block; an exception routes to `target` (dispatch).
-    SetupExcept(usize),
+    SetupExcept(u32),
     /// Push a try/finally block; an exception routes to `target` (finally body).
-    SetupFinally(usize),
+    SetupFinally(u32),
     /// Pop the innermost active block (try body finished normally).
     PopBlock,
     /// Pop the top value and raise it as an exception.
@@ -209,9 +228,12 @@ pub enum Op {
     /// Pop a class then the exception; push whether the exception matches it.
     ExcMatch,
     /// Push a loop block so `break`/`continue` can unwind through any `finally`
-    /// bodies between them and the loop. `brk` is the after-loop target; `cont`
-    /// is the loop's continue point.
-    SetupLoop { brk: usize, cont: usize },
+    /// bodies between them and the loop.
+    ///
+    /// Needs two operands, so they live in [`CodeObject::pairs`] as
+    /// `(brk, cont)` — the after-loop target and the loop's continue point —
+    /// and the instruction carries the index.
+    SetupLoop(u32),
     /// Leave the innermost loop, running enclosing `finally` bodies first.
     Break,
     /// Jump to the innermost loop's continue point, running enclosing `finally`
@@ -264,6 +286,18 @@ pub struct CodeObject {
     /// used to position runtime errors.
     pub spans: Vec<(u32, u32)>,
     pub consts: Vec<Value>,
+    /// Interned names, indexed by `LoadGlobal`, `LoadAttr`, `StoreAttr` and
+    /// `ImportModule`. Keeping the strings here rather than inline in the
+    /// instruction is what lets `Op` be 8 bytes and `Copy`; a name used at ten
+    /// call sites is stored once and its `Rc` is never cloned per dispatch.
+    pub names: Vec<Rc<str>>,
+    /// Class descriptions, indexed by `BuildClass`. See [`ClassSpec`].
+    pub classes: Vec<Rc<ClassSpec>>,
+    /// Operand pairs for the two instructions that need two of them —
+    /// `MatchDispatch` and `SetupLoop`. They are executed once per `match` and
+    /// once per loop *entry*, so an extra indirection on them is free, and it
+    /// is what keeps every other instruction one word wide.
+    pub pairs: Vec<(u32, u32)>,
     /// Nested function prototypes, indexed by `MakeFunction`.
     pub protos: Vec<Rc<FuncProto>>,
     /// Number of plain local slots to allocate for a frame.

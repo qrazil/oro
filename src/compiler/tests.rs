@@ -58,7 +58,7 @@ fn block_scope_variable_is_function_local_not_leaked_upward() {
     let has_global_y = code
         .ops
         .iter()
-        .any(|op| matches!(op, Op::LoadGlobal(n) if &**n == "y"));
+        .any(|op| matches!(op, Op::LoadGlobal(n) if &*code.names[*n as usize] == "y"));
     assert!(has_global_y, "y must not be visible after the block");
 }
 
@@ -91,18 +91,26 @@ fn integer_literal_promotes_to_bigint_when_too_large() {
 }
 
 /// `Op` is the unit the dispatch loop streams through, so its width *is* the
-/// instruction-cache density of the interpreter. It was 48 bytes because
-/// `BuildClass` carried an inline `Vec<Rc<str>>` — one variant, compiled and
-/// executed once per program, taxing every instruction in every program.
-/// Boxing that payload was the fix; this assertion is what keeps it fixed.
+/// instruction-cache density of the interpreter, and a power-of-two stride is
+/// what turns `ops[pc]` into a shift rather than a multiply. It started at 48
+/// bytes; one word is the design.
 ///
-/// If a new variant widens `Op`, box its payload (see `ClassSpec`) rather than
-/// raising this number.
+/// `Copy` matters just as much: the loop must read the instruction out before
+/// executing it (execution can restructure `frames`), and while `Op` held an
+/// `Rc<str>` that read was a refcount bump on every single instruction.
+///
+/// The rule that keeps both true is that no variant carries more than one
+/// `u32`. If a new one needs more, put the payload in a `CodeObject` side table
+/// (`names`, `classes`, `pairs`) and carry the index — do not raise these
+/// numbers.
 #[test]
-fn op_stays_narrow() {
+fn op_is_one_word() {
     assert_eq!(
         std::mem::size_of::<Op>(),
-        24,
-        "Op grew — box the offending variant's payload instead of widening every instruction"
+        8,
+        "Op grew — move the payload into a CodeObject side table rather than \
+         widening every instruction"
     );
+    fn assert_copy<T: Copy>() {}
+    assert_copy::<Op>();
 }

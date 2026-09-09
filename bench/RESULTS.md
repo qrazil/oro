@@ -89,3 +89,29 @@ remaining 16-byte payloads are the `Rc<str>` names (`LoadGlobal`, `LoadAttr`,
 Small but uniformly in the right direction, which is what halving the width of
 the per-dispatch `clone` and doubling instruction-cache density should look
 like. The real payoff is step 3, which this unblocks.
+
+### 3. `Op` 24 → 8 bytes and `Copy` (intern every payload)
+
+Names (`LoadGlobal`/`LoadAttr`/`StoreAttr`/`ImportModule`) move into a
+per-`CodeObject` `names: Vec<Rc<str>>`; class descriptions into `classes`; the
+two instructions that genuinely need two operands (`MatchDispatch`,
+`SetupLoop`) into `pairs`. Every remaining operand is a `u32`, so `Op` is one
+8-byte `Copy` word — six instructions per cache line instead of one, `ops[pc]`
+is a shift instead of a multiply, and the per-dispatch instruction read stops
+being a refcount bump.
+
+| bench | before | after | delta |
+|---|---|---|---|
+| fib | 0.230s | 0.226s | -2% |
+| loop | 0.727s | 0.620s | **-15%** |
+| strjoin | 0.125s | 0.122s | -2% |
+| dictops | 0.373s | 0.363s | -3% |
+| oo | 0.404s | 0.379s | **-6%** |
+| genpipe | 0.176s | 0.161s | **-9%** |
+| exc | 0.159s | 0.154s | -3% |
+| listbuild | 0.316s | 0.308s | -3% |
+| chain | 0.178s | 0.175s | -2% |
+
+Biggest single win on the dispatch-bound benchmark, exactly where a denser
+instruction stream should show up. `fib` barely moves — its cost is not fetch,
+it is the two heap allocations per call (Tier 2).

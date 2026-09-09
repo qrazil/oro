@@ -518,11 +518,12 @@ impl Vm {
     fn run_loop(&mut self) -> Result<Value, RuntimeError> {
         loop {
             // Fetch. A short borrow reads the instruction and its span, then we
-            // release it so call/return can restructure `frames`.
+            // release it so call/return can restructure `frames`. `Op` is a
+            // `Copy` word, so reading it out costs a register move.
             let (op, pc) = {
                 let frame = self.frames.last().expect("no active frame");
                 let pc = frame.pc;
-                let op = frame.code.ops[pc].clone();
+                let op = frame.code.ops[pc];
                 let (l, c) = frame.code.spans[pc];
                 self.line = l;
                 self.col = c;
@@ -552,7 +553,7 @@ impl Vm {
     fn step(&mut self, op: Op) -> Result<Step, RuntimeError> {
             match op {
                 Op::LoadConst(i) => {
-                    let v = self.frames.last().unwrap().code.consts[i].clone();
+                    let v = self.frames.last().unwrap().code.consts[i as usize].clone();
                     self.push(v);
                 }
                 Op::LoadNone => self.push(Value::None),
@@ -589,8 +590,9 @@ impl Vm {
                     let v = self.pop();
                     *self.top().free[s as usize].borrow_mut() = v;
                 }
-                Op::LoadGlobal(name) => {
+                Op::LoadGlobal(n) => {
                     // Globals are the builtin functions plus the exception classes.
+                    let name = self.frames.last().unwrap().code.names[n as usize].clone();
                     let v = exceptions::lookup(&self.excs, &name)
                         .or_else(|| crate::builtins::lookup(&name));
                     match v {
@@ -675,43 +677,43 @@ impl Vm {
                         self.push(Value::Bool(r));
                     }
                 }
-                Op::Jump(t) => self.top().pc = t,
+                Op::Jump(t) => self.top().pc = t as usize,
                 Op::PopJumpIfFalse(t) => {
                     let v = self.pop();
                     if !v.truthy() {
-                        self.top().pc = t;
+                        self.top().pc = t as usize;
                     }
                 }
                 Op::PopJumpIfTrue(t) => {
                     let v = self.pop();
                     if v.truthy() {
-                        self.top().pc = t;
+                        self.top().pc = t as usize;
                     }
                 }
                 Op::JumpIfFalseOrPop(t) => {
                     if self.top().stack.last().unwrap().truthy() {
                         self.pop();
                     } else {
-                        self.top().pc = t;
+                        self.top().pc = t as usize;
                     }
                 }
                 Op::JumpIfTrueOrPop(t) => {
                     if self.top().stack.last().unwrap().truthy() {
-                        self.top().pc = t;
+                        self.top().pc = t as usize;
                     } else {
                         self.pop();
                     }
                 }
                 Op::BuildList(n) => {
-                    let items = self.popn(n);
+                    let items = self.popn(n as usize);
                     self.push(Value::List(Rc::new(RefCell::new(items))));
                 }
                 Op::BuildTuple(n) => {
-                    let items = self.popn(n);
+                    let items = self.popn(n as usize);
                     self.push(Value::Tuple(Rc::new(items)));
                 }
                 Op::BuildMap(n) => {
-                    let items = self.popn(2 * n);
+                    let items = self.popn(2 * n as usize);
                     let mut dict = OroDict::new();
                     let mut it = items.into_iter();
                     while let (Some(k), Some(v)) = (it.next(), it.next()) {
@@ -764,12 +766,14 @@ impl Vm {
                     let r = self.wrap(slice_get(&obj, &lower, &upper, &step))?;
                     self.push(r);
                 }
-                Op::LoadAttr(name) => {
+                Op::LoadAttr(n) => {
+                    let name = self.frames.last().unwrap().code.names[n as usize].clone();
                     let obj = self.pop();
                     let r = self.wrap(get_attr(&obj, &name))?;
                     self.push(r);
                 }
-                Op::StoreAttr(name) => {
+                Op::StoreAttr(n) => {
+                    let name = self.frames.last().unwrap().code.names[n as usize].clone();
                     let obj = self.pop();
                     let value = self.pop();
                     match &obj {
@@ -786,10 +790,12 @@ impl Vm {
                         }
                     }
                 }
-                Op::BuildClass(spec) => {
+                Op::BuildClass(i) => {
+                    let spec = self.frames.last().unwrap().code.classes[i as usize].clone();
                     self.build_class(&spec)?;
                 }
-                Op::ImportModule(path) => {
+                Op::ImportModule(n) => {
+                    let path = self.frames.last().unwrap().code.names[n as usize].clone();
                     return self.import_module(&path);
                 }
                 Op::LoadSuper => {
@@ -807,6 +813,7 @@ impl Vm {
                     self.push(sup);
                 }
                 Op::UnpackSequence(n) => {
+                    let n = n as usize;
                     let seq = self.pop();
                     let items = self.wrap(iterate_to_vec(&seq))?;
                     if items.len() != n {
@@ -869,16 +876,17 @@ impl Vm {
                     self.push(Value::str(out));
                 }
                 Op::BuildString(n) => {
-                    let parts = self.popn(n);
+                    let parts = self.popn(n as usize);
                     let mut s = String::new();
                     for p in parts {
                         s.push_str(&p.display());
                     }
                     self.push(Value::str(s));
                 }
-                Op::MatchDispatch { table, default } => {
+                Op::MatchDispatch(pair) => {
+                    let (table, default) = self.top().code.pairs[pair as usize];
                     let subject = self.pop();
-                    let dict = match &self.top().code.consts[table] {
+                    let dict = match &self.top().code.consts[table as usize] {
                         Value::Dict(d) => d.clone(),
                         _ => unreachable!("MatchDispatch table is always a dict const"),
                     };
@@ -886,7 +894,7 @@ impl Vm {
                     // takes the default — matching the compare-chain path.
                     let target = match dict.borrow().get(&subject) {
                         Ok(Some(Value::Int(t))) => t as usize,
-                        _ => default,
+                        _ => default as usize,
                     };
                     self.top().pc = target;
                 }
@@ -896,6 +904,7 @@ impl Vm {
                     self.push(it);
                 }
                 Op::ForIter(target) => {
+                    let target = target as usize;
                     let it = self.top().stack.last().expect("ForIter on empty stack").clone();
                     // A generator is advanced by resuming its frame; the value
                     // (or exhaustion) arrives via Yield/Return, not inline.
@@ -929,8 +938,8 @@ impl Vm {
                         }
                     }
                 }
-                Op::MakeFunction(idx) => self.make_function(idx)?,
-                Op::Call(n) => self.do_call(n)?,
+                Op::MakeFunction(idx) => self.make_function(idx as usize)?,
+                Op::Call(n) => self.do_call(n as usize)?,
                 Op::CallEx => self.do_call_ex()?,
                 Op::Return => {
                     // A generator body reaching return (including the implicit
@@ -957,6 +966,7 @@ impl Vm {
                     }
                 }
                 Op::SetupExcept(target) => {
+                    let target = target as usize;
                     let jobs = self.job_depths();
                     let stack_len = self.top().stack.len();
                     self.top()
@@ -964,6 +974,7 @@ impl Vm {
                         .push(Block { kind: BlockKind::Except, target, stack_len, jobs });
                 }
                 Op::SetupFinally(target) => {
+                    let target = target as usize;
                     let jobs = self.job_depths();
                     let stack_len = self.top().stack.len();
                     self.top()
@@ -973,12 +984,13 @@ impl Vm {
                 Op::PopBlock => {
                     self.top().blocks.pop();
                 }
-                Op::SetupLoop { brk, cont } => {
+                Op::SetupLoop(pair) => {
+                    let (brk, cont) = self.top().code.pairs[pair as usize];
                     let jobs = self.job_depths();
                     let stack_len = self.top().stack.len();
                     self.top().blocks.push(Block {
-                        kind: BlockKind::Loop { cont },
-                        target: brk,
+                        kind: BlockKind::Loop { cont: cont as usize },
+                        target: brk as usize,
                         stack_len,
                         jobs,
                     });
