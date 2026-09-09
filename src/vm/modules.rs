@@ -24,7 +24,7 @@ pub fn build(name: &str, argv: &[String]) -> Option<Value> {
 fn module(name: &str, members: Vec<(&str, Value)>) -> Value {
     let mut map = HashMap::new();
     for (k, v) in members {
-        map.insert(k.to_string(), v);
+        map.insert(Rc::from(k), v);
     }
     Value::Module(Rc::new(Module { name: Rc::from(name), members: RefCell::new(map) }))
 }

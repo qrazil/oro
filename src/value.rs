@@ -184,7 +184,11 @@ pub struct Class {
     pub name: Rc<str>,
     pub base: Option<Rc<Class>>,
     /// Methods and class-level attributes, by name.
-    pub members: RefCell<HashMap<String, Value>>,
+    ///
+    /// Keyed by `Rc<str>`, not `String`: the names come from the code object's
+    /// interned name table, so storing one is a refcount bump rather than a
+    /// fresh heap allocation. Lookups still take a `&str` (`Rc<str>: Borrow<str>`).
+    pub members: RefCell<HashMap<Rc<str>, Value>>,
     /// True when this class descends from `BaseException`. Such instances get
     /// native message storage/rendering and are what `raise`/`except` operate on.
     pub is_exception: bool,
@@ -193,34 +197,43 @@ pub struct Class {
 impl Class {
     /// Find `name` in this class or its base chain, returning the member and the
     /// class it was found in (the latter fixes `super()`'s search origin).
+    ///
+    /// Walks the chain by reference: each base is owned by its subclass, so the
+    /// search needs no refcount traffic at all, and only the class it actually
+    /// finds the member in is cloned.
     pub fn find(class: &Rc<Class>, name: &str) -> Option<(Value, Rc<Class>)> {
-        let mut cur = Some(class.clone());
-        while let Some(c) = cur {
-            if let Some(v) = c.members.borrow().get(name) {
-                return Some((v.clone(), c.clone()));
+        let mut cur = class;
+        loop {
+            if let Some(v) = cur.members.borrow().get(name) {
+                return Some((v.clone(), cur.clone()));
             }
-            cur = c.base.clone();
+            cur = cur.base.as_ref()?;
         }
-        None
     }
 
     /// True when `class` is `other` or a subclass of it (used by `isinstance`).
     pub fn is_subclass(class: &Rc<Class>, other: &Rc<Class>) -> bool {
-        let mut cur = Some(class.clone());
-        while let Some(c) = cur {
-            if Rc::ptr_eq(&c, other) {
+        let mut cur = class;
+        loop {
+            if Rc::ptr_eq(cur, other) {
                 return true;
             }
-            cur = c.base.clone();
+            match &cur.base {
+                Some(base) => cur = base,
+                None => return false,
+            }
         }
-        false
     }
 }
 
 /// An instance of a user class. Instance attributes live in `fields`.
 pub struct Instance {
     pub class: Rc<Class>,
-    pub fields: RefCell<HashMap<String, Value>>,
+    /// Instance attributes, by name. Keyed by `Rc<str>` so that `self.x = v`
+    /// stores a refcount bump rather than allocating a fresh `String` for a
+    /// name the code object already owns — attribute assignment is the single
+    /// most common statement in object-heavy code.
+    pub fields: RefCell<HashMap<Rc<str>, Value>>,
 }
 
 /// The state of a generator. Its suspended activation record is a VM `Frame`,
@@ -251,7 +264,7 @@ pub struct OroMatch {
 /// or data like `sys.argv`).
 pub struct Module {
     pub name: Rc<str>,
-    pub members: RefCell<HashMap<String, Value>>,
+    pub members: RefCell<HashMap<Rc<str>, Value>>,
 }
 
 /// An open text file. Reading and writing go through buffered handles; dropping

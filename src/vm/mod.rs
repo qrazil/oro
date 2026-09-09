@@ -844,7 +844,7 @@ impl Vm {
                     let value = self.pop();
                     match &obj {
                         Value::Instance(inst) => {
-                            inst.fields.borrow_mut().insert(name.to_string(), value);
+                            inst.fields.borrow_mut().insert(name.clone(), value);
                         }
                         other => {
                             let msg = format!(
@@ -2246,7 +2246,7 @@ impl Vm {
         };
         let mut members = HashMap::with_capacity(spec.members.len());
         for (n, v) in spec.members.iter().zip(member_vals) {
-            members.insert(n.to_string(), v);
+            members.insert(n.clone(), v);
         }
         // A class inherits exception-hood from its base, so user exceptions
         // (`class MyError(Exception)`) render and raise like built-in ones.
@@ -2411,12 +2411,12 @@ impl Vm {
             output.stdout.len() >= MAX_CAPTURE_BYTES || output.stderr.len() >= MAX_CAPTURE_BYTES;
 
         let mut fields = HashMap::new();
-        fields.insert("returncode".to_string(), Value::Int(returncode));
-        fields.insert("ok".to_string(), Value::Bool(returncode == 0));
-        fields.insert("truncated".to_string(), Value::Bool(truncated));
-        fields.insert("stdout".to_string(), Value::str(stdout));
-        fields.insert("stderr".to_string(), Value::str(stderr));
-        fields.insert("args".to_string(), Value::List(Rc::new(RefCell::new(list))));
+        fields.insert(Rc::from("returncode"), Value::Int(returncode));
+        fields.insert(Rc::from("ok"), Value::Bool(returncode == 0));
+        fields.insert(Rc::from("truncated"), Value::Bool(truncated));
+        fields.insert(Rc::from("stdout"), Value::str(stdout));
+        fields.insert(Rc::from("stderr"), Value::str(stderr));
+        fields.insert(Rc::from("args"), Value::List(Rc::new(RefCell::new(list))));
         self.push(Value::Instance(Rc::new(Instance {
             class: self.proc_class.clone(),
             fields: RefCell::new(fields),
@@ -2516,7 +2516,7 @@ impl Vm {
             };
             // Unbound names (declared but never assigned on this path) are skipped.
             if !matches!(value, Value::Unbound) {
-                members.insert(name.to_string(), value);
+                members.insert(name.clone(), value);
             }
         }
         let module = Value::Module(Rc::new(crate::value::Module {
@@ -2549,7 +2549,7 @@ impl Vm {
     /// Build an exception instance of `class`, storing its args tuple natively.
     fn make_exception_instance(&self, class: Rc<Class>, args: Vec<Value>) -> Value {
         let mut fields = HashMap::new();
-        fields.insert("args".to_string(), Value::Tuple(Rc::new(args)));
+        fields.insert(Rc::from("args"), Value::Tuple(Rc::new(args)));
         Value::Instance(Rc::new(Instance { class, fields: RefCell::new(fields) }))
     }
 

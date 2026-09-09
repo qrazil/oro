@@ -237,3 +237,28 @@ Verified byte-identical diagnostics across thirteen error programs covering
 every argument-binding failure — too many positional, too few, unexpected
 keyword, multiple values for one argument, defaults, `*args`, `**kwargs`,
 methods, and keyword calls to methods — plus all 65 corpus programs.
+
+### 9. Attribute maps keyed by `Rc<str>`, not `String`
+
+`self.x = v` did `fields.insert(name.to_string(), value)` — a fresh heap
+allocation for a name the code object already owned, on every attribute store.
+`Instance.fields`, `Class.members` and `Module.members` are now keyed by
+`Rc<str>`, so storing a name is a refcount bump; lookups are unchanged
+(`Rc<str>: Borrow<str>`). `Class::find` and `Class::is_subclass` also walk the
+base chain by reference instead of cloning an `Rc` per level.
+
+| bench | before | after | delta |
+|---|---|---|---|
+| fib | 0.178s | 0.177s | -1% |
+| loop | 0.623s | 0.630s | +1% |
+| strjoin | 0.115s | 0.118s | +3% |
+| dictops | 0.357s | 0.354s | -1% |
+| oo | 0.335s | 0.324s | **-3%** |
+| genpipe | 0.166s | 0.163s | -2% |
+| exc | 0.136s | 0.131s | **-4%** |
+| listbuild | 0.302s | 0.303s | 0% |
+| chain | 0.146s | 0.149s | +2% |
+
+Real but small, and only where it should be: attribute-heavy code and exception
+construction (which builds an instance with an `args` field per raise).
+Everything else is inside this machine's ±3% run-to-run drift.
