@@ -2,8 +2,8 @@
 
 *Requirements and design for the layer that lets Oro serve HTTP. Status:
 partly built.* `bytes`, the io protocol, `open`, the three stream types,
-blocking TCP, the `Task` split, the scheduler, `spawn`, channels and
-`std/http.oro` have landed. The reactor, timers, `SO_REUSEPORT` scale-out and
+blocking TCP, the `Task` split, the scheduler, `spawn`, channels,
+`std/http.oro` and `SO_REUSEPORT` scale-out have landed. The reactor, timers and
 graceful shutdown have not.
 
 *Where the build contradicted the design, the original reasoning is kept beside
@@ -1043,8 +1043,8 @@ that VM's other connections. Three reasons that is the right trade here, and one
 reason it is not permanent:
 
 1. **The deployment model already bounds the blast radius.** The architecture is
-   N VMs behind `SO_REUSEPORT`, one Oro task queue each. A stuck task removes 1/N of
-   capacity — exactly what a blocked OS thread does in a thread-per-core server,
+   N VMs behind `SO_REUSEPORT`, one Oro task queue each — and that is now built
+   rather than planned (§4). A stuck task removes 1/N of capacity — exactly what a blocked OS thread does in a thread-per-core server,
    which is the standard the industry already accepts.
 2. **Preemption costs the interpreter, and the interpreter is the problem.** A
    safepoint check on every instruction costs on the hottest path in the system,
@@ -1489,12 +1489,58 @@ indefinitely. That is slowloris, it was reachable through the documented API,
 and it is now not. The exception type and the message are unchanged:
 `TimeoutError`, CPython's bare "timed out".
 
-Two smaller gaps, so they are not mistaken for design: `net.listen(addr)` takes
-no `reuseport=` yet — `SO_REUSEADDR` is set on every listener, because a server
-that cannot restart until `TIME_WAIT` drains is a server that cannot be
-deployed, but `SO_REUSEPORT` is a different option and waits for M6, which is
-the milestone that has something to scale out. The keyword in the sketch above
-is the spelling it will arrive under, not a flag that exists today.
+**`reuseport=` is built, and this paragraph is the correction it owed.** What
+stood here said `net.listen(addr)` "takes no `reuseport=` yet", that the option
+"waits for M6", and that the keyword in the sketch above "is the spelling it
+will arrive under, not a flag that exists today". All three are now out of date,
+and the first is the one that had been quietly wrong for longer than it looked:
+the sketch at the top of §4 has always shown `reuseport=true`, so the document
+was describing an argument the implementation did not have.
+
+*The spelling is the sketch's, kept rather than chosen.* `reuseport` is
+**keyword-only**. §4 committed to that spelling in advance and there was no
+reason to break the promise; independently, `net.listen(addr, true)` is a bare
+boolean whose meaning no reader can recover from the call site, and admitting
+both spellings would put two ways to do one thing into a language whose stated
+rule is that there is one. Every call that existed before still reads exactly as
+it did, so "two constructors and two objects" is as true as it was.
+
+*`SO_REUSEADDR` is still set on every listener*, on both paths, for the reason
+it always was: a server that cannot restart until `TIME_WAIT` drains is a server
+that cannot be deployed. What changed is who sets it. On the default path
+`std::net::TcpListener::bind` still does. On the `reuseport` path Oro creates
+the socket itself and therefore sets it itself — which is the sort of guarantee
+that gets lost when a second code path appears, so there is a test that reads
+both options back off both kinds of listener.
+
+*What it cost, since this document's habit is to say.* `SO_REUSEPORT` must be
+set between `socket(2)` and `bind(2)`, and `std::net::TcpListener::bind` does
+all of socket-creation, `setsockopt`, `bind` and `listen` inside one call with
+no hook in the middle — checked against the std source, not assumed. mio has no
+`TcpSocket` any more and offers nothing either. So the option is reachable only
+by creating the socket by hand, which is four syscalls and an `unsafe` block.
+It was written rather than bought: `libc` was already in the tree under mio, so
+it adds no dependency, while `socket2` would have been a new one taken for a
+problem that is tedious rather than hard — which is precisely the line the
+README's policy draws, and the same line that had timers written by hand. The
+`unsafe` is confined to `src/net/reuseport.rs` and the confinement is enforced
+by a crate-level `#![deny(unsafe_code)]` that exactly one module opts out of.
+That module's docs carry the full argument, including a post-`bind` shortcut
+that appears to work on Linux and cannot work here.
+
+*It raises on platforms that do not have it, and the line is Linux, not "has
+the constant".* This is the decision most worth recording. `SO_REUSEPORT` on
+macOS and the BSDs is not a weaker Linux option; it is a different feature with
+the same name — it shares the port without balancing across it, which is why
+FreeBSD later added the balancing behaviour under a *separate* name,
+`SO_REUSEPORT_LB`. A build that accepted `reuseport=true` on macOS would bind
+all N workers happily and then send nearly all the traffic to one of them: a
+box that performs like one core with nothing in any log to say why. Binding
+without the option is the same failure by the other road. So `net.listen`
+raises an `OSError` naming the platform, the option FreeBSD would need, and the
+way to keep working. FreeBSD support is a small change and is deliberately not
+guessed at from here, because an untested guess at another kernel's semantics is
+the bet this decision just declined to take.
 
 **Addresses are strings.** `"host:port"`, with Go's bracket form for IPv6
 (`"[::1]:8080"`). No `Address` type. A type would buy parsing that is rarely
@@ -2730,7 +2776,9 @@ the way.
 
 `net.listen`/`dial`, `TcpListener.accept`, `TcpStream` as Reader/Writer,
 timeouts and error mapping — **all of which have already landed, blocking** (see
-the status note above). What M4 still owes is `SO_REUSEPORT`. The M3b half —
+the status note above). `SO_REUSEPORT` — which is what M4 still owed — has since
+landed too, as `net.listen(addr, reuseport=true)`; §4 carries the decision, its
+cost and the platform rule. The M3b half —
 `accept`, `read` and `write` parking instead of stopping the VM — landed with
 the reactor, and non-blocking DNS (with a non-blocking `connect` alongside it,
 for the reason §4 gives) landed after it.
@@ -2772,15 +2820,26 @@ demo with `http.serve`.
 with its own `Vm`) sharing a `SO_REUSEPORT` listener; graceful shutdown via the
 flag plus listener close; `http.serve(addr, handler, workers=N)`.
 
-**Landed, apart from the scale-out.** `Router` shipped with M5. `serve` and its
-graceful shutdown are in `std/http.oro`, covered by
-`corpus/divergence/60_http_serve.oro` and demonstrated by
-`examples/server.oro`. `workers=N` and `SO_REUSEPORT` are the half that is not
-built: they need a second VM in a second thread, which is a claim about the
-runtime rather than about `http`, and `serve` is deliberately shaped so that
-adding it changes nothing above the listener — N processes each calling
-`serve` on a shared `SO_REUSEPORT` listener is the same function called N
-times.
+**Landed, and the scale-out with it — in the shape that turned out to be
+right.** `Router` shipped with M5. `serve` and its graceful shutdown are in
+`std/http.oro`, covered by `corpus/divergence/60_http_serve.oro` and
+demonstrated by `examples/server.oro`. `SO_REUSEPORT` is now `net.listen`'s
+`reuseport=true`, and the prediction this section made held exactly: **nothing
+above the listener changed**, not one line, because N processes each calling
+`serve` on their own `reuseport` listener *is* the same function called N times.
+`tests/reuseport.rs` runs three real `oro` processes on one port and counts what
+each accepted, which is the only form of that claim worth having.
+
+*What is deliberately still not built is `workers=N`* — a launcher inside the
+runtime that starts the other N-1 processes for you. That is a separate decision
+and a smaller one than it looks: this section used to bundle it with
+`SO_REUSEPORT` on the theory that both "need a second VM in a second thread",
+and that theory was wrong. Sharing a port needs no second VM in *this* process
+at all; it needs a second *process*, which the operating system, a shell loop, a
+systemd unit or a container orchestrator will all start more correctly than a
+language runtime would. The README documents how to run N workers with the tools
+that already exist. If `workers=N` is ever added it will be a convenience over
+that, not the mechanism.
 
 ### What can be built in parallel
 

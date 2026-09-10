@@ -2315,6 +2315,16 @@ impl Vm {
                     // proc.run is finished here so it can take keyword args and
                     // build a Completed instance.
                     "proc.run" => return self.do_proc_run(args, kwargs).map(|()| Step::Next),
+                    // `net.listen` takes `reuseport=`, and the check further
+                    // down this arm refuses keyword arguments to any plain
+                    // `Builtin` — so, like `proc.run`, it is finished here. It
+                    // does not park and needs nothing else from the VM, so this
+                    // is the whole of it.
+                    "net.listen" => {
+                        let r = self.wrap(modules::net_listen_kw(args, &kwargs))?;
+                        self.push(r);
+                        return Ok(Step::Next);
+                    }
                     "str" if matches!(args.first(), Some(Value::Instance(_))) && args.len() == 1 => {
                         return self
                             .stringify_instance(args.into_iter().next().unwrap(), false)

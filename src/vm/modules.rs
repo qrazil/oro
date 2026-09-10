@@ -245,11 +245,46 @@ fn build_net() -> Value {
     )
 }
 
+/// The registered entry point. Reached only by a call with no keyword
+/// arguments; [`super::Vm::invoke`] intercepts `net.listen` by name so that
+/// `reuseport=` can be spelled as a keyword at all (a plain `Builtin` is
+/// `fn(Vec<Value>)` and the VM rejects keywords to one), and hands both halves
+/// to [`net_listen_kw`].
 fn net_listen(args: Vec<Value>) -> Result<Value, String> {
-    // `reuseport=True` is in §4's sketch and is not here: sharing one port
-    // across N VMs is the scale-out story, and there is one VM.
+    net_listen_kw(args, &[])
+}
+
+/// `net.listen(addr, reuseport=false)`.
+///
+/// **`reuseport` is keyword-only, and that is §4's spelling kept rather than
+/// chosen.** §4 sketched `net.listen("0.0.0.0:8080", reuseport=true)` and said
+/// in terms that the keyword in the sketch "is the spelling it will arrive
+/// under"; arriving under a different one would make the sketch wrong twice.
+/// It is also the right call on its own merits: `net.listen(addr, true)` is a
+/// bare boolean at a call site whose meaning no reader can recover, and
+/// admitting it positionally would mean two spellings for one thing in a
+/// language whose stated rule is one way to do each thing. Keeping it
+/// keyword-only leaves §4's "two constructors and two objects" exactly as true
+/// as it was — every existing call still reads as it did, and the new argument
+/// is invisible until someone needs it.
+pub(super) fn net_listen_kw(args: Vec<Value>, kwargs: &[(String, Value)]) -> Result<Value, String> {
     let addr = one_addr(&args, "listen")?;
-    Ok(Value::Stream(Rc::new(crate::net::listen(&addr)?)))
+    let mut reuseport = false;
+    for (k, v) in kwargs {
+        if k != "reuseport" {
+            return Err(format!("listen() got an unexpected keyword argument '{k}'"));
+        }
+        match v {
+            Value::Bool(b) => reuseport = *b,
+            other => {
+                return Err(format!(
+                    "listen() reuseport argument must be bool, not '{}'",
+                    other.type_name()
+                ))
+            }
+        }
+    }
+    Ok(Value::Stream(Rc::new(crate::net::listen(&addr, reuseport)?)))
 }
 
 /// `net.dial` is finished in the VM: it *parks* the calling task, first on the
@@ -260,8 +295,9 @@ fn net_dial(_args: Vec<Value>) -> Result<Value, String> {
     Err("internal: net.dial must be dispatched by the VM (it parks)".to_string())
 }
 
-/// The one argument both constructors take: an address, as a string. No
-/// `Address` type — see §4.
+/// The one *positional* argument both constructors take: an address, as a
+/// string. No `Address` type — see §4. (`net.listen` also takes the keyword
+/// `reuseport=`; see [`net_listen_kw`].)
 pub(super) fn one_addr(args: &[Value], who: &str) -> Result<String, String> {
     match args {
         [Value::Str(s)] => Ok(s.s.clone()),

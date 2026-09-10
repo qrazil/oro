@@ -3,6 +3,10 @@
 //! `oro <file.oro>` compiles and runs a program. The earlier inspection modes
 //! are kept: `--tokens` dumps the lexer output and `--ast` dumps the parse tree.
 
+// The binary front-end carries the same rule as the library (see `lib.rs`):
+// no `unsafe` here, and the compiler rather than a convention is what says so.
+#![deny(unsafe_code)]
+
 use std::process::ExitCode;
 
 use oro_lang::compiler;

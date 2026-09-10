@@ -1870,7 +1870,7 @@ fn a_failed_module_body_releases_its_path() {
 fn resolving_only_happens_for_a_name() {
     // A real listener, so the dials connect rather than failing for an
     // unrelated reason. Loopback only, and the port is the kernel's.
-    let ln = crate::net::listen("127.0.0.1:0").expect("bind an ephemeral port");
+    let ln = crate::net::listen("127.0.0.1:0", false).expect("bind an ephemeral port");
     let addr = ln.addr_attr("local").expect("read the port back");
     let port = addr.rsplit(':').next().expect("an address has a port").to_string();
 

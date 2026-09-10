@@ -7,6 +7,16 @@
 //! The lexer and parser are implemented so far; the compiler and VM are
 //! intentionally absent.
 
+//! ## `unsafe`, and where the one block of it lives
+//!
+//! This crate had no `unsafe` in it at all, and that was worth keeping — so it
+//! is now **enforced rather than asserted**. `deny(unsafe_code)` applies to
+//! every module here; exactly one, [`net::reuseport`], carries an
+//! `#[allow(unsafe_code)]`, and the compiler is what stops a second one
+//! appearing. The reasoning for spending it — four syscalls that std gives no
+//! way to reach — is in that module's own docs and in `Cargo.toml`.
+#![deny(unsafe_code)]
+
 pub mod ast;
 pub mod bigint;
 pub mod builtins;

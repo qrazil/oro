@@ -71,8 +71,23 @@
 //! makes the panic unreachable, because "unreachable by construction" is a
 //! claim and this is how a claim gets checked.
 //!
+//! ## `SO_REUSEPORT`, and the shape of scaling out
+//!
+//! `net.listen(addr, reuseport=true)` asks the kernel to let *several
+//! processes* hold the same listening port and to spread accepted connections
+//! across them. That is the whole scale-out story, and it is this small because
+//! nothing above the listener changes: Oro runs one VM per OS thread with
+//! nothing shared, so more cores means more *processes*, and N processes each
+//! calling `serve` on their own listener is the same function called N times.
+//!
+//! The option must be set between `socket(2)` and `bind(2)`, which is a window
+//! `std::net::TcpListener::bind` does not expose. [`reuseport`] is the
+//! consequence: five syscalls, and the only `unsafe` in this crate. Its module
+//! docs carry the evidence for every claim in that sentence, including the
+//! post-`bind` shortcut that appears to work and does not.
+//!
 //! Not here, on purpose: UDP (not a stream, so it cannot satisfy the io
-//! protocol), Unix domain sockets, TLS, and `SO_REUSEPORT` scale-out.
+//! protocol), Unix domain sockets, and TLS.
 
 use std::net::ToSocketAddrs;
 
@@ -81,26 +96,95 @@ use mio::net::TcpListener;
 use crate::stream::OroStream;
 use crate::value::VResult;
 
-/// `net.listen(addr)`: bind, listen, and hand back a listener.
+/// `net.listen(addr, reuseport=false)`: bind, listen, and hand back a listener.
 ///
-/// `SO_REUSEADDR` is set on every listener — a server that cannot restart until
-/// its old connections leave `TIME_WAIT` is a server that cannot be deployed.
-/// It is set by `std::net::TcpListener::bind` itself on every non-Windows
-/// platform, which is the only way to get it without either `unsafe` or a
-/// socket crate, and both of those are ruled out. `SO_REUSEPORT` — several
-/// processes sharing one port — is a different option, is how the N-VM
-/// deployment scales out, and is deliberately not here yet.
-pub fn listen(addr: &str) -> VResult<OroStream> {
+/// `SO_REUSEADDR` is set on every listener, on both paths below — a server that
+/// cannot restart until its old connections leave `TIME_WAIT` is a server that
+/// cannot be deployed. On the default path `std::net::TcpListener::bind` sets
+/// it for us on every non-Windows platform; on the `reuseport` path nobody sets
+/// it unless [`reuseport::bind`] does, which is why that function sets it
+/// explicitly rather than relying on the option it was actually asked for.
+///
+/// ## The two paths, and why the default one did not move
+///
+/// `reuseport=false` is **byte-for-byte the code that was here before**: std's
+/// bind, then `from_std`. That is deliberate. The new path replaces socket
+/// creation, and the cheapest way to be sure a feature nobody asked for costs
+/// nobody anything is for the untouched case to be literally untouched — no
+/// new syscall, no new branch inside the bind, and no `unsafe` reached at all.
+///
+/// `reuseport=true` goes to [`reuseport::bind`], which is the only `unsafe` in
+/// this crate and explains itself there.
+///
+/// ## What happens on a platform that does not have it
+///
+/// **It raises.** The alternative — bind without the option and carry on — is
+/// the failure this argument exists to prevent: the first process to start gets
+/// the port, every other worker dies with `EADDRINUSE` or, worse, silently
+/// receives no connections, and the symptom is "our eight-core box performs
+/// like a one-core box" with nothing in any log to explain it.
+///
+/// The line is drawn at **Linux (and Android)**, not at "platforms that define
+/// the constant", and that distinction is the substance of the decision.
+/// `SO_REUSEPORT` on macOS and the BSDs is not a weaker version of the Linux
+/// option; it is a *different feature wearing the same name*. BSD's lets
+/// several sockets hold the port, but does not distribute incoming connections
+/// across them the way Linux's hash does — FreeBSD later added the balancing
+/// behaviour under a separate name, `SO_REUSEPORT_LB`, precisely because the
+/// original could not be changed to mean it. So a macOS build that accepted
+/// `reuseport=true` would bind all N workers happily and then feed nearly all
+/// of the traffic to one of them: the exact undiagnosable outcome, reached by
+/// the other road. Windows has no equivalent at all.
+///
+/// Adding FreeBSD via `SO_REUSEPORT_LB` is a small change and a plausible one.
+/// It is not made here because it cannot be tested here, and an untested guess
+/// at another kernel's semantics is the same bet this function just declined to
+/// take. The error message names the option so that whoever has the machine
+/// knows exactly what to implement.
+pub fn listen(addr: &str, reuseport: bool) -> VResult<OroStream> {
     let addrs = resolve(addr, "listen")?;
-    // `std`'s bind, not mio's, and then `from_std`. It is `std::net`'s bind
-    // that sets `SO_REUSEADDR` on every non-Windows platform, which is the
-    // guarantee this function's whole doc comment is about; taking mio's would
-    // be trusting a second crate to keep making the same choice. `from_std`
-    // costs nothing — it is a wrapper around the same fd.
-    let ln = std::net::TcpListener::bind(&addrs[..]).map_err(|e| err_msg(&e))?;
+    let ln = if reuseport {
+        bind_reuseport(&addrs)?
+    } else {
+        // `std`'s bind, not mio's, and then `from_std`. It is `std::net`'s bind
+        // that sets `SO_REUSEADDR` on every non-Windows platform, which is the
+        // guarantee this function's whole doc comment is about; taking mio's
+        // would be trusting a second crate to keep making the same choice.
+        // `from_std` costs nothing — it is a wrapper around the same fd.
+        std::net::TcpListener::bind(&addrs[..]).map_err(|e| err_msg(&e))?
+    };
     ln.set_nonblocking(true).map_err(|e| err_msg(&e))?;
     OroStream::listener(TcpListener::from_std(ln)).map_err(|e| err_msg(&e))
 }
+
+/// The platform gate, kept apart from [`listen`] so that the supported and
+/// unsupported builds differ in one expression rather than in the shape of the
+/// function.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn bind_reuseport(addrs: &[std::net::SocketAddr]) -> VResult<std::net::TcpListener> {
+    reuseport::bind(addrs).map_err(|e| err_msg(&e))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn bind_reuseport(_addrs: &[std::net::SocketAddr]) -> VResult<std::net::TcpListener> {
+    Err(REUSEPORT_UNSUPPORTED.to_string())
+}
+
+/// The message for `reuseport=true` on a platform that cannot honour it.
+///
+/// A `const` rather than a `format!` at the raise site because [`classify`]
+/// matches on it: the text is the key, so it is written once and matched
+/// against itself. See [`listen`] for why this is an error and not a shrug.
+#[allow(dead_code)]
+pub(crate) const REUSEPORT_UNSUPPORTED: &str = concat!(
+    "listen() reuseport=true is not supported on this platform — SO_REUSEPORT ",
+    "load-balances accepted connections on Linux 3.9+ only. macOS and the BSDs ",
+    "define an option of the same name that shares the port without balancing ",
+    "across it (FreeBSD spells the balancing one SO_REUSEPORT_LB), and Windows ",
+    "has no equivalent; binding without it would give one worker the port and ",
+    "leave the rest silently idle. Run a single worker here — omit reuseport — ",
+    "and scale out on Linux."
+);
 
 /// What a `net.dial(addr)` has to do before it can connect: a name to look up,
 /// or an address to connect to right now.
@@ -300,6 +384,15 @@ pub fn classify(msg: &str) -> Option<&'static str> {
     {
         return Some("ValueError");
     }
+    // `reuseport=true` where the kernel has no such thing. `OSError`, because
+    // the argument was well-formed and the *platform* is what refused it —
+    // the same class CPython gives a socket option the OS will not take. It is
+    // named here rather than left to the general `[Errno …]` rule because there
+    // is no errno: no syscall failed, one was declined. Inventing an errno for
+    // it would be exactly what `err_msg` refuses to do elsewhere.
+    if msg.contains("reuseport=true is not supported on this platform") {
+        return Some("OSError");
+    }
     // Asking a socket to accept, or a listener to read: the same class of
     // mistake as reading a file opened for writing, and the same answer
     // CPython gives it — a `ValueError`, not a `TypeError`, because the object
@@ -326,6 +419,13 @@ pub fn classify(msg: &str) -> Option<&'static str> {
         None
     }
 }
+
+/// The `SO_REUSEPORT` bind, and the crate's only `unsafe`. Linux-only by
+/// construction — on other platforms [`listen`] raises before it could be
+/// called, so the module is not compiled at all rather than compiled and
+/// unreachable.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+mod reuseport;
 
 #[cfg(test)]
 mod tests;

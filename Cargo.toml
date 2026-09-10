@@ -36,9 +36,23 @@ path = "src/lib.rs"
 #
 # `libc` is a *bindings* crate, declarations rather than an implementation, so
 # the static-musl release gate survives it. That is checked, not assumed.
+#
+# `libc` is now a *direct* dependency as well as mio's, and that promotion adds
+# nothing to the build: it is the same `libc 0.2` crate, already compiled, and
+# `cargo tree` gains a line rather than a node. It is direct because
+# `net.listen(addr, reuseport=true)` needs `setsockopt(2)` **before** `bind(2)`,
+# and there is no way to reach that point from std — `TcpListener::bind` creates,
+# configures and binds the socket inside one call and exposes no hook (checked
+# against the std source, not assumed; see `src/net/reuseport.rs`). That is the
+# one place in this crate where the alternative to four documented syscalls is a
+# new dependency (`socket2`) bought for tedium rather than difficulty, which the
+# README's policy declines. The cost is paid instead in `unsafe`, confined to
+# `src/net/reuseport.rs` by a crate-level `#![deny(unsafe_code)]` that exactly one
+# module opts out of.
 [dependencies]
 regex = "1"
 mio = { version = "1", features = ["os-poll", "net"] }
+libc = "0.2"
 
 # Release build for the distributed single binary.
 #

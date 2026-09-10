@@ -30,6 +30,28 @@ one is named here with the reason.
   away on the first line of use. The reasoning is in
   [`docs/stdlib-server-design.md`](docs/stdlib-server-design.md) §3.
 
+- [`libc`](https://docs.rs/libc) (0 transitive), and it was already here —
+  mio's own dependency, listed separately now because `net` calls it directly.
+  It buys exactly one thing: `SO_REUSEPORT`, which has to be set on a socket
+  *between* `socket(2)` and `bind(2)`, and `std::net::TcpListener::bind` does
+  socket-creation, `setsockopt`, `bind` and `listen` inside one call with no
+  hook in the middle. That is checked against the std source rather than
+  assumed, and mio offers no way in either. **This is the one place in the crate
+  with `unsafe` in it** — four syscalls in `src/net/reuseport.rs`, each with the
+  invariant that makes it sound written at the call site.
+
+  The honest alternative was [`socket2`](https://docs.rs/socket2), which wraps
+  exactly this in a safe API and is a fine crate. It was declined because
+  `setsockopt` is *tedious, not hard* — the line the policy above draws, and the
+  same line that had timers written by hand below — and because taking it would
+  not have removed the `unsafe` from the program, only moved it into somebody
+  else's repository. What it would genuinely have bought is "no `unsafe`
+  authored here", which is worth something and is not worth a permanent
+  dependency. That property is now *enforced* rather than asserted anyway:
+  `#![deny(unsafe_code)]` sits at both crate roots and exactly one module opts
+  out, so a second `unsafe` block anywhere in Oro is a compile error rather than
+  a thing to notice in review.
+
 Timers are the one thing mio does not have, and they are not imported either:
 `epoll_wait` already takes a timeout, so "wake this task in *n* ms" is a sorted
 list of deadlines whose head becomes that argument. That is a small amount of
@@ -769,6 +791,7 @@ measurement, and the reason the same argument does not move `http`.
   import net
 
   ln = net.listen("127.0.0.1:0")        # SO_REUSEADDR; ":0" = any free port
+  ln = net.listen("0.0.0.0:8080", reuseport=true)   # share the port; see below
   print(ln.local)                       # "127.0.0.1:41337" — ask what you got
   conn = ln.accept()                    # -> TcpStream
 
@@ -991,6 +1014,11 @@ Stated plainly:
   optional, so an unbounded buffer would let a chatty child exhaust memory. Past
   the cap the stream still flows to the terminal in full, only the retained copy
   stops growing, and `.truncated` on the result is `true`.
+- **Workers share nothing.** Scaling past one core means N processes
+  (`net.listen(addr, reuseport=true)`), and each has its own heap: module-level
+  state is per-worker, so counters, caches, in-memory sessions and rate limits
+  are all N-way split. Cross-process state needs a database or a file. See
+  [Scaling past one core](#scaling-past-one-core-n-processes-one-port).
 - **`map`/`filter` are eager.** Each step allocates a new collection, so a long
   chain over a large list allocates once per step. Generators remain the lazy
   escape hatch.
@@ -1219,6 +1247,94 @@ event loop written by hand: `slow` is an ordinary function that calls
 than the process. The same is true of every socket read and write in the
 stack — which is why `http.serve` is a `while true:` around `accept()` and a
 `spawn` per connection, and why that is enough.
+
+### Scaling past one core: N processes, one port
+
+Everything above happens on **one** OS thread, and that is the design rather
+than a stage it grows out of: every Oro value is an `Rc`, so a value can never
+cross a thread, so a VM owns its own scheduler and its own ready queue. More
+cores therefore means more *processes*, not more threads — and the way N
+processes serve one port is `SO_REUSEPORT`:
+
+```python
+# worker.oro — run as many copies of this as you have cores.
+import net
+
+def handle(conn):
+    conn.read_until(b"\r\n\r\n", 65536)
+    conn.write(b"HTTP/1.1 204 No Content\r\n\r\n")
+    conn.close()
+
+ln = net.listen("0.0.0.0:8080", reuseport=true)
+while true:
+    spawn(handle, ln.accept())
+```
+
+`reuseport=true` is the entire change to the program. Every worker runs the same
+code and binds the same address; the **kernel** hashes each incoming
+connection's four-tuple and hands it to exactly one of them. There is no proxy
+in front, no shared accept queue and no thundering herd — the connection is
+delivered to one worker, which then serves it with the green threads it already
+had.
+
+Run them the way you run any other set of processes. Nothing in Oro starts them,
+on purpose — a shell, a systemd unit, a supervisor or a container orchestrator
+all do it better than a language runtime would, and they handle restarts too:
+
+```sh
+# One worker per core, in a shell.
+for i in $(seq "$(nproc)"); do
+  ./target/release/oro worker.oro &
+done
+wait
+```
+
+```ini
+# Or as a systemd template unit — `systemctl start oro-worker@{1..8}`.
+[Service]
+ExecStart=/usr/local/bin/oro /srv/app/worker.oro
+Restart=always
+```
+
+**`http.serve` does not take the option yet**, so `examples/server.oro` above is
+a one-worker program and N copies of it collide on the port. `serve` calls
+`net.listen` for you and has nowhere to pass `reuseport=` through; giving it one
+(as `http.serve(addr, handler, workers=N)`) is a separate, small change tracked
+in `docs/stdlib-server-design.md` M6. Until then, scaling out means owning the
+listener yourself — which is the loop above, and is what `serve` is doing
+underneath in any case.
+
+Restarts are the quiet win. Because every worker holds the port independently,
+you can stop and restart one at a time and the port is never unbound — the
+remaining workers keep serving through it, which is a rolling deploy with no
+extra machinery.
+
+**Two things to know before you rely on it.**
+
+*Linux only, and it says so.* `reuseport=true` raises an `OSError` on macOS,
+the BSDs and Windows rather than binding without the option. This is deliberate
+and the error explains itself. macOS and the BSDs define a `SO_REUSEPORT` that
+shares a port **without balancing across it** — same name, different feature,
+which is why FreeBSD later added the balancing one as `SO_REUSEPORT_LB`.
+Accepting the argument there would give you N workers, one of which received
+almost everything, and no way to tell from any log. Develop on macOS with a
+single worker; scale out on Linux.
+
+*Nothing is shared between workers, and that is your problem to solve.* This is
+the real cost of the model and it is worth being blunt about. Each worker is a
+separate process with a separate VM and a separate heap. A module-level `dict`
+is **per-worker**: a counter counts that worker's requests, a cache is a cache
+with N copies and N miss rates, and a rate limiter limits per worker rather than
+per client. In-memory sessions mean a client that lands on a different worker on
+its next request is logged out — the kernel balances by four-tuple, so it *will*
+land elsewhere.
+
+Nothing in Oro fixes this, and nothing is planned to. Cross-process state goes
+where cross-process state goes: a database, Redis, or a file, reached over the
+same `net` module. If your server genuinely holds mutable state in memory, one
+worker is the honest answer and it will serve far more traffic than most people
+expect — the demo above overlaps whole request cycles inside a two-second
+handler on a single thread.
 
 Ctrl-C on this demo is a hard kill, because the program has nothing but the
 accept loop in it. A *graceful* shutdown needs a second task holding the

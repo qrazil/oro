@@ -26,6 +26,19 @@ use crate::stream::{Io, OroStream};
 /// fires on a bug.
 const GUARD: f64 = 20.0;
 
+/// `net.listen` as every test but the `SO_REUSEPORT` ones want it: an address,
+/// and the default for the second argument.
+///
+/// This shadows the glob-imported [`super::listen`] deliberately. `reuseport`
+/// is a bind-time option that no test about reading, writing, timeouts or
+/// closing has an opinion on, and threading a `false` through forty call sites
+/// would put a constant in front of the reader forty times to say nothing. The
+/// tests that *are* about it call `super::listen` with both arguments, which is
+/// also what makes them visible as the ones that care.
+fn listen(addr: &str) -> VResult<OroStream> {
+    super::listen(addr, false)
+}
+
 /// Wait for a non-blocking operation to finish, the way the scheduler would.
 ///
 /// Every socket in Oro is non-blocking now, so `read`, `write`, `read_until`
@@ -523,4 +536,206 @@ fn a_malformed_address_never_reaches_the_resolver() {
         assert!(e.contains("must be 'host:port'"), "{bad}: {e}");
         assert_eq!(classify(&e), Some("ValueError"));
     }
+}
+
+// --- `SO_REUSEPORT`, §4's scale-out half ------------------------------------
+//
+// These tests are written against one rule that the rest of this file does not
+// need: **the sockopt being accepted proves nothing.** A kernel that stored the
+// flag and ignored it, or an implementation that set it on the wrong socket, or
+// after `bind` where it has no effect, would all pass a `getsockopt` check and
+// deliver a server that runs on one core. So the flag readback is here as a
+// unit check, and the test the feature actually stands on is
+// `two_listeners_on_one_port_both_receive_connections`, which counts arrivals.
+//
+// The file's own three rules still hold: ephemeral ports only (the first
+// listener binds `:0` and the second is told the port it got), loopback only,
+// and a deadline on everything.
+
+/// How many connections the load-balancing test makes.
+///
+/// Sized for a claim that cannot flake rather than for a tight one. The
+/// assertion is "each listener received at least one", not "they split evenly":
+/// the kernel picks a socket by hashing the connection's 4-tuple, so an even
+/// split is a tendency and a *non-empty* split, over this many independent
+/// draws, is a certainty in every sense that matters to CI. Asserting a ratio
+/// would be asserting a property of the hash, and it would eventually fail on
+/// somebody's machine at three in the morning.
+const SPREAD_CONNS: usize = 64;
+
+/// Bind a `reuseport` listener on a known address, as `net.listen` would.
+fn reuse_listen(addr: &str) -> VResult<OroStream> {
+    super::listen(addr, true)
+}
+
+/// Accept everything queued on `ln` right now, and stop at the first `Block`.
+///
+/// Bounded by [`GUARD`] like everything else here, but it is not a spin: the
+/// connections are all established before any accept runs, so a `Block` means
+/// this listener's share has been drained, not that the work has not arrived.
+fn drain(ln: &OroStream) -> Vec<OroStream> {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs_f64(GUARD);
+    let mut out = Vec::new();
+    loop {
+        match ln.accept().expect("accept on a live listener") {
+            Io::Ready(s) => out.push(s),
+            Io::Block(_) => return out,
+        }
+        assert!(std::time::Instant::now() < until, "drain() ran past the guard");
+    }
+}
+
+/// **The test the feature stands on.** Two listeners, one port, N connections,
+/// and both listeners get some.
+///
+/// This is the claim `SO_REUSEPORT` exists to make and the only one that
+/// distinguishes it from an option that was set and forgotten. Two listeners in
+/// one process rather than two processes is not a weakening: the kernel's
+/// reuseport group is keyed on the address, the port and the socket's UID, and
+/// has no notion of which process a member lives in — what it balances across
+/// is *sockets*. The N-process arrangement Oro actually deploys is checked, end
+/// to end and through the language, in `tests/reuseport.rs`.
+#[test]
+fn two_listeners_on_one_port_both_receive_connections() {
+    let a = reuse_listen("127.0.0.1:0").expect("bind an ephemeral port with reuseport");
+    let addr = a.addr_attr("local").unwrap();
+    let b = reuse_listen(&addr).expect("a second listener on the same port");
+
+    // Every connection completes into a listen backlog before anything
+    // accepts, so by the time the drains run the kernel has already made all
+    // N of its choices. Nothing here races.
+    let clients: Vec<_> = (0..SPREAD_CONNS)
+        .map(|i| dial(&addr).unwrap_or_else(|e| panic!("connection {i}: {e}")))
+        .collect();
+
+    let (got_a, got_b) = (drain(&a).len(), drain(&b).len());
+    assert_eq!(got_a + got_b, SPREAD_CONNS, "connections went missing: {got_a} + {got_b}");
+    assert!(got_a > 0 && got_b > 0, "one listener got everything: {got_a} / {got_b}");
+    drop(clients);
+}
+
+/// Without `reuseport`, the second bind is refused — which is what makes the
+/// test above evidence rather than a coincidence.
+///
+/// If the port could be shared anyway, "two listeners both received
+/// connections" would say nothing about the option. This is the control.
+#[test]
+fn without_reuseport_the_second_bind_is_refused() {
+    let a = listen("127.0.0.1:0").expect("bind an ephemeral port");
+    let addr = a.addr_attr("local").unwrap();
+
+    let e = failure(listen(&addr));
+    assert!(e.contains("Address already in use"), "{e}");
+    // `None` on purpose: `EADDRINUSE` is not one of the four `ConnectionError`
+    // subclasses this module names, so it falls through to the general
+    // `[Errno …]` rule and becomes an `OSError` — which is the answer CPython
+    // gives it. See `classify`.
+    assert_eq!(classify(&e), None);
+
+    // And the asymmetry is real in the other direction too: a *reuseport*
+    // listener cannot join a port that was bound without it. Both sockets must
+    // have set the option before their own bind — that is the kernel's rule,
+    // and it is the rule that makes the post-`bind` shortcut in
+    // `super::reuseport`'s docs unusable here.
+    let e = failure(reuse_listen(&addr));
+    assert!(e.contains("Address already in use"), "{e}");
+}
+
+/// Both socket options are on the socket, and `SO_REUSEADDR` did not get lost
+/// on the way to the new path.
+///
+/// The second half is the one worth having. `net.listen`'s documented contract
+/// is that *every* listener carries `SO_REUSEADDR`; on the default path std
+/// sets it, and on the `reuseport` path nothing does unless this crate does. A
+/// regression there would not show up as a failing test anywhere else — it
+/// would show up as a production server that cannot restart, months later.
+#[test]
+fn both_options_are_set_on_a_reuseport_listener_and_neither_is_on_a_plain_one() {
+    use super::reuseport::getsockopt_int;
+
+    let ln = super::reuseport::bind(&resolve("127.0.0.1:0", "listen").unwrap()).unwrap();
+    assert_ne!(getsockopt_int(&ln, libc::SO_REUSEPORT).unwrap(), 0, "SO_REUSEPORT");
+    assert_ne!(getsockopt_int(&ln, libc::SO_REUSEADDR).unwrap(), 0, "SO_REUSEADDR");
+
+    // The default path: std's bind, which sets `SO_REUSEADDR` and only that.
+    // This pins the asymmetry the two paths are supposed to have — if std ever
+    // started setting `SO_REUSEPORT` too, `reuseport=false` would silently
+    // become a shared port and this would say so.
+    let plain = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    assert_ne!(getsockopt_int(&plain, libc::SO_REUSEADDR).unwrap(), 0, "SO_REUSEADDR");
+    assert_eq!(getsockopt_int(&plain, libc::SO_REUSEPORT).unwrap(), 0, "SO_REUSEPORT");
+}
+
+/// IPv6 goes down the other `bind_fd` arm, and the two arms share no code.
+///
+/// That is exactly why this test exists: the `sockaddr` marshalling is written
+/// twice, once per family, and the v6 arm is the one no other test in this file
+/// would ever reach. A wrong length or a wrong family there is the one mistake
+/// in this feature that is unsound rather than merely broken.
+///
+/// Skipped rather than failed where the loopback has no IPv6 — the same shape
+/// as `an_ipv6_listener_accepts_an_ipv6_dial` above, and for the same reason.
+#[test]
+fn reuseport_works_over_ipv6() {
+    let Ok(a) = reuse_listen("[::1]:0") else { return };
+    let addr = a.addr_attr("local").unwrap();
+    let b = reuse_listen(&addr).expect("a second v6 listener on the same port");
+
+    let clients: Vec<_> = (0..SPREAD_CONNS).map(|_| dial(&addr).unwrap()).collect();
+    let (got_a, got_b) = (drain(&a).len(), drain(&b).len());
+    assert_eq!(got_a + got_b, SPREAD_CONNS);
+    assert!(got_a > 0 && got_b > 0, "one v6 listener got everything: {got_a} / {got_b}");
+    drop(clients);
+}
+
+/// A `reuseport` listener is an ordinary listener in every other respect.
+///
+/// The accepted connection has to be a full Reader and Writer with §2's
+/// semantics, because `serve` does not know or care which way the listener was
+/// bound — that indifference is the entire reason scale-out needed no changes
+/// above the listener.
+#[test]
+fn a_reuseport_listener_accepts_an_ordinary_connection() {
+    let ln = reuse_listen("127.0.0.1:0").unwrap();
+    let addr = ln.addr_attr("local").unwrap();
+    let client = dial(&addr).unwrap();
+    let server = ac(&ln).unwrap();
+    client.set_timeout(Some(GUARD)).unwrap();
+    server.set_timeout(Some(GUARD)).unwrap();
+
+    wr(&client, b"ping").unwrap();
+    assert_eq!(rd(&server, 4).unwrap(), b"ping");
+    wr(&server, b"pong").unwrap();
+    assert_eq!(rd(&client, 4).unwrap(), b"pong");
+}
+
+/// The address is still checked before anything is bound, and by the same code.
+///
+/// `reuseport=true` must not become a second door into `listen` with its own
+/// diagnostics — same message, same class, whichever way it is called.
+#[test]
+fn a_malformed_address_is_refused_on_the_reuseport_path_too() {
+    for bad in ["127.0.0.1", "", "localhost"] {
+        let plain = failure(listen(bad));
+        let reuse = failure(reuse_listen(bad));
+        assert_eq!(plain, reuse, "{bad}: the two paths disagree");
+        assert_eq!(classify(&reuse), Some("ValueError"));
+    }
+}
+
+/// The platform refusal is an `OSError` and says what to do instead.
+///
+/// The message is checked here rather than only on the platforms that raise it,
+/// because those are precisely the platforms this suite does not run on. What
+/// can be checked everywhere is that the text and the classifier agree, so the
+/// exception a macOS user catches is the one the docs promise.
+#[test]
+fn the_unsupported_platform_message_classifies_as_an_oserror() {
+    let msg = super::REUSEPORT_UNSUPPORTED;
+    assert_eq!(classify(msg), Some("OSError"));
+    // Actionable, not just correct: it names the platform that has the
+    // feature, the option FreeBSD would need, and the way to keep working.
+    assert!(msg.contains("Linux 3.9+"), "{msg}");
+    assert!(msg.contains("SO_REUSEPORT_LB"), "{msg}");
+    assert!(msg.contains("omit reuseport"), "{msg}");
 }
