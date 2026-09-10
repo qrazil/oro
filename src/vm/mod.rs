@@ -2,10 +2,15 @@
 //! [`Frame`]s (architecture point 1).
 //!
 //! **Calling an Oro function never recurses in Rust.** A call pushes a new
-//! [`Frame`] onto `frames` and the same loop keeps turning; `Return` pops the
-//! frame and hands the value back to the caller's operand stack. This is what
-//! makes 5000-deep recursion (and, later, generators/coroutines) possible
-//! without growing the native stack.
+//! [`Frame`] onto the frame stack and the same loop keeps turning; `Return`
+//! pops the frame and hands the value back to the caller's operand stack. This
+//! is what makes 5000-deep recursion (and, later, generators/coroutines)
+//! possible without growing the native stack.
+//!
+//! That frame stack, and every piece of interpreter state that hangs off it,
+//! lives on a [`Task`] rather than on [`Vm`] — the split between *what is
+//! running right now* and *what is true of this process*. Nothing spawns a
+//! second task yet; the point of the separation is that one could.
 
 pub mod arith;
 mod exceptions;
