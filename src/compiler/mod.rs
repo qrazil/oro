@@ -202,6 +202,33 @@ pub enum Op {
     MakeFunction(u32),
     /// Call with `n` positional args already on the stack above the callable.
     Call(u32),
+    /// Prepare `obj.m(...)` for an immediate call, in place of
+    /// `LoadAttr` + `Call`. Pops the receiver and pushes **three** slots —
+    /// a tag, an auxiliary value, and the receiver or callable — which
+    /// [`Op::CallMethod`] consumes along with the arguments stacked above
+    /// them. The operand indexes [`CodeObject::names`].
+    ///
+    /// The point of the pair is what it does *not* build: `obj.m(x)` used to
+    /// allocate an `Rc<BoundMethod>` at `LoadAttr` purely to carry
+    /// `(receiver, function)` two instructions to the `Call` that immediately
+    /// destructured and dropped it. Three stack slots carry the same thing for
+    /// three moves and a refcount bump.
+    ///
+    /// The three shapes, by the tag in the first slot:
+    ///
+    /// * `Value::Class(defclass)` — an Oro method. The second slot is its
+    ///   `Value::Func` and the third the receiver, which is also its `self`.
+    /// * `Value::Unbound` — a native method. The third slot is the receiver;
+    ///   the name comes from the `CallMethod` instruction.
+    /// * `Value::None` — not a method at all (an instance field or class
+    ///   attribute holding a callable, a module member, an unbound function
+    ///   read off a class). The third slot is that value and it is called with
+    ///   the arguments alone.
+    LoadMethod(u32),
+    /// Call what [`Op::LoadMethod`] prepared. Needs two operands — the method
+    /// name and the argument count — so they live in [`CodeObject::pairs`] as
+    /// `(name, argc)` and the instruction carries the index.
+    CallMethod(u32),
     /// Call with an assembled positional list and keyword dict on the stack:
     /// `func, poslist, kwdict`.
     CallEx,

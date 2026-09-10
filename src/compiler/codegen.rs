@@ -1195,6 +1195,30 @@ impl<'a> Codegen<'a> {
         }
 
         let simple = args.iter().all(|a| matches!(a, Arg::Positional(_))) && kwargs.is_empty();
+        // `obj.m(a, b)` — a simple call whose callee is an attribute — is the
+        // one call shape that need not build a bound method to make. It emits
+        // the `LoadMethod`/`CallMethod` pair instead, one instruction for one
+        // instruction, so no index in the stream moves and no jump target
+        // (nor any op index stored inside a `MatchDispatch` table) needs
+        // relocating. The `LoadMethod` carries the attribute's own position,
+        // exactly as the `LoadAttr` it replaces did, so a missing attribute
+        // still reports where the attribute is written.
+        if simple {
+            if let Expr::Attribute { value, attr, line: aline, col: acol } = func {
+                self.emit_expr(value)?;
+                let n = self.add_name(attr);
+                self.emit(Op::LoadMethod(n), *aline, *acol);
+                for a in args {
+                    if let Arg::Positional(e) = a {
+                        self.emit_expr(e)?;
+                    }
+                }
+                let pair = self.add_pair();
+                self.pairs[pair as usize] = (n, args.len() as u32);
+                self.emit(Op::CallMethod(pair), line, col);
+                return Ok(());
+            }
+        }
         self.emit_expr(func)?;
         if simple {
             for a in args {

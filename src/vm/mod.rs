@@ -1722,6 +1722,28 @@ impl Vm {
                 Op::MakeFunction(idx) => self.make_function(idx as usize)?,
                 Op::Call(n) => return self.do_call(n as usize),
                 Op::CallEx => return self.do_call_ex(),
+                Op::LoadMethod(n) => {
+                    let name = self.task.frames.last().unwrap().code.names[n as usize].clone();
+                    let obj = self.pop();
+                    match self.wrap(resolve_method(&obj, &name))? {
+                        MethodRef::User { recv, func, defclass } => {
+                            self.push(Value::Class(defclass));
+                            self.push(Value::Func(func));
+                            self.push(recv);
+                        }
+                        MethodRef::Native(recv) => {
+                            self.push(Value::Unbound);
+                            self.push(Value::None);
+                            self.push(recv);
+                        }
+                        MethodRef::Plain(v) => {
+                            self.push(Value::None);
+                            self.push(Value::None);
+                            self.push(v);
+                        }
+                    }
+                }
+                Op::CallMethod(pair) => return self.do_call_method(pair as usize),
                 Op::Return => {
                     // A generator body reaching return (including the implicit
                     // one at the end) is exhausted: StopIteration for its driver.
@@ -1948,6 +1970,114 @@ impl Vm {
         self.task.frames.push(frame);
     }
 
+    /// Call what `LoadMethod` prepared: three slots and `argc` arguments above
+    /// them. See [`Op::LoadMethod`] for what the slots hold.
+    fn do_call_method(&mut self, pair: usize) -> Result<Step, RuntimeError> {
+        let (name_idx, argc) = self.task.frames.last().expect("no active frame").code.pairs[pair];
+        let n = argc as usize;
+        let tag_is = {
+            let stack = &self.task.frames.last().expect("no active frame").stack;
+            let tag = &stack[stack.len() - n - 3];
+            match tag {
+                Value::Class(_) => 0u8,
+                Value::Unbound => 1,
+                _ => 2,
+            }
+        };
+        if tag_is == 0 {
+            // An Oro method. The receiver sits directly beneath the arguments
+            // and *is* the first one, so a simple signature binds the whole
+            // call straight off the operand stack — the same trade `call_fast`
+            // makes for a plain function, which a bound method could never
+            // take while it arrived wrapped in an `Rc<BoundMethod>`.
+            let bindable = {
+                let stack = &self.task.frames.last().expect("no active frame").stack;
+                match &stack[stack.len() - n - 2] {
+                    Value::Func(f) => {
+                        let code = &f.code;
+                        !code.is_generator
+                            && code.simple_params
+                            && n < code.params.len()
+                            && n + 1 >= code.params.len() - f.defaults.len()
+                    }
+                    _ => false,
+                }
+            };
+            if bindable && self.task.frames.len() < MAX_FRAMES {
+                return self.call_method_fast(n);
+            }
+        }
+        // Everything else assembles the argument vector the general paths take.
+        let args = self.popn(n);
+        let recv_or_callee = self.pop();
+        let aux = self.pop();
+        let tag = self.pop();
+        match tag {
+            Value::Class(defclass) => {
+                let func = match aux {
+                    Value::Func(f) => f,
+                    other => unreachable!("LoadMethod pushed a non-function: {}", other.type_name()),
+                };
+                self.invoke_user(
+                    func,
+                    recv_or_callee,
+                    defclass,
+                    args,
+                    Vec::new(),
+                    ReturnAction::Normal,
+                )
+                .map(|()| Step::Next)
+            }
+            Value::Unbound => {
+                let name =
+                    self.task.frames.last().expect("no active frame").code.names[name_idx as usize]
+                        .clone();
+                self.invoke_native_method(recv_or_callee, &name, args, Vec::new())
+            }
+            _ => self.invoke(recv_or_callee, args, Vec::new()),
+        }
+    }
+
+    /// The Oro-method twin of [`Vm::call_fast`]: the receiver is the first
+    /// parameter, so receiver and arguments move from the caller's operand
+    /// stack into the callee's slots in one pass, with no argument vector.
+    fn call_method_fast(&mut self, n: usize) -> Result<Step, RuntimeError> {
+        let (func, defclass) = {
+            let stack = &self.task.frames.last().expect("no active frame").stack;
+            let func = match &stack[stack.len() - n - 2] {
+                Value::Func(f) => f.clone(),
+                _ => unreachable!("checked by the caller"),
+            };
+            let defclass = match &stack[stack.len() - n - 3] {
+                Value::Class(c) => c.clone(),
+                _ => unreachable!("checked by the caller"),
+            };
+            (func, defclass)
+        };
+        let mut frame = self.take_frame(func.code.clone(), &func.freevars);
+        let params = &func.code.params;
+        let receiver = {
+            let caller = self.task.frames.last_mut().expect("no active frame");
+            let base = caller.stack.len() - n;
+            for (p, v) in params[1..].iter().zip(caller.stack.drain(base..)) {
+                store_param(&mut frame, p.target, v);
+            }
+            let receiver = caller.stack.pop().expect("the receiver");
+            caller.stack.pop().expect("the function slot");
+            caller.stack.pop().expect("the class slot");
+            receiver
+        };
+        store_param(&mut frame, params[0].target, receiver.clone());
+        // Any trailing parameters the call did not supply take their defaults.
+        let first_defaulted = params.len() - func.defaults.len();
+        for (i, p) in params.iter().enumerate().skip(n + 1) {
+            store_param(&mut frame, p.target, func.defaults[i - first_defaulted].clone());
+        }
+        frame.super_ctx = Some((defclass, receiver));
+        self.task.frames.push(frame);
+        Ok(Step::Next)
+    }
+
     fn do_call_ex(&mut self) -> Result<Step, RuntimeError> {
         let kwdict = self.pop();
         let poslist = self.pop();
@@ -1971,6 +2101,144 @@ impl Vm {
             _ => return Err(self.err("internal: CallEx keyword dict malformed")),
         };
         self.invoke(callee, args, kwargs)
+    }
+
+    /// Call a native (builtin) method on `receiver`.
+    ///
+    /// Lifted out of [`Vm::invoke`]'s `MethodKind::Native` arm so that
+    /// `CallMethod` can reach it with a receiver and a name and never build
+    /// the `Rc<BoundMethod>` that used to carry the two here. The body is
+    /// unchanged, including the order of its tests: several of these methods
+    /// must run *in the VM* rather than as native code, because they can park
+    /// (`join`, `send`, `recv`, `close`, the io protocol), or run an Oro
+    /// callback (`map`, `filter`, `sort`, `sorted`, `min`, `max`), or run a
+    /// user `__str__` (`to_str`).
+    fn invoke_native_method(
+        &mut self,
+        receiver: Value,
+        name: &Rc<str>,
+        args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
+    ) -> Result<Step, RuntimeError> {
+        // Task and channel methods are dispatched ahead of
+        // everything else in this arm for two reasons. They are the
+        // ones that can *park*, so they must reach the VM rather
+        // than `call_method`, which can only return a `Value`. And
+        // a generator handed to `ch.send` has to arrive at the far
+        // end as a generator — the materialise path below would
+        // drain it into a list, which is precisely the "a generator
+        // is a first-class value and can cross tasks" case §3
+        // calls out.
+        if let Some(step) = self.task_or_channel_method(&receiver, name, &args, &kwargs)? {
+            return Ok(step);
+        }
+        // The io protocol's two methods, plus `read_until`,
+        // `accept` and `close`. Four of the five can park on the
+        // reactor and the fifth has to *wake* whoever is parked, so
+        // none of them can be a `Value`-returning native method.
+        //
+        // The `matches!` is not redundant with the check inside:
+        // this arm runs on *every* native method call in the
+        // program, and a discriminant test here is what keeps that
+        // from being a call into a cold function. Measured — it is
+        // worth about a point on the method-heavy benchmarks.
+        if matches!(receiver, Value::Stream(_)) {
+            if let Some(step) =
+                self.stream_io_method(&receiver, name, &args, &kwargs)?
+            {
+                return Ok(step);
+            }
+        }
+        // `to_str` may need to run a user `__str__`, or render a
+        // container's elements through their `__repr__`; both go
+        // through frames, so they cannot run as native methods.
+        if &**name == "to_str" && args.is_empty() && kwargs.is_empty() {
+            if matches!(receiver, Value::Instance(_)) {
+                return self
+                    .stringify_instance(receiver.clone(), false)
+                    .map(|()| Step::Next);
+            }
+            if is_container(&receiver) {
+                return self
+                    .begin_stringify(receiver.clone(), StrCont::Push)
+                    .map(|()| Step::Next);
+            }
+        }
+        // map/filter run Oro callbacks, so they are driven from the
+        // VM rather than executed as native methods.
+        if let Some(op) = SeqOp::from_name(name)
+            .filter(|_| crate::builtins::is_collection(&receiver))
+        {
+            // A generator receiver has to be drained first; the
+            // retry arrives back here with a list in its place.
+            if matches!(receiver, Value::Generator(_)) {
+                let callee = Self::rebound_method(&receiver, name);
+                let with_recv = std::iter::once(receiver.clone())
+                    .chain(args.iter().cloned())
+                    .collect::<Vec<_>>();
+                if let Some(step) =
+                    self.materialize_receiver(&callee, with_recv, kwargs.clone())?
+                {
+                    return Ok(step);
+                }
+            }
+            return self.do_seq_op(op, &receiver, args, kwargs).map(|()| Step::Next);
+        }
+        // list.sort(key=…, reverse=…) shares sorted()'s frame-driven
+        // key machinery; it just writes back in place.
+        if &**name == "sort" {
+            if let Value::List(l) = &receiver {
+                if !args.is_empty() {
+                    return Err(self.err("sort() takes no positional arguments"));
+                }
+                let (keyfn, reverse) = self.sort_kwargs("sort", kwargs)?;
+                let items = l.borrow().clone();
+                return self
+                    .begin_sort(items, keyfn, reverse, Some(l.clone()))
+                    .map(|()| Step::Next);
+            }
+        }
+        // The chain's three orderings. Like their builtin twins
+        // they compare with `<`, so a receiver of instances needs
+        // frames; anything else falls straight through to native.
+        if matches!(&**name, "sorted" | "min" | "max")
+            && !matches!(receiver, Value::Generator(_))
+            && crate::builtins::is_collection(&receiver)
+            && args.is_empty()
+            && kwargs.is_empty()
+        {
+            let (shape, items) = self.seq_receiver(name, &receiver)?;
+            let keys = items.clone();
+            let kind = match &**name {
+                "sorted" => OrdKind::Sort(shape),
+                other => OrdKind::Extreme {
+                    want_min: other == "min",
+                    who: if other == "min" { "min" } else { "max" },
+                },
+            };
+            return self.begin_order(kind, items, keys, false).map(|()| Step::Next);
+        }
+        if let Some(step) =
+            self.materialize_generator_args(&Self::rebound_method(&receiver, name), &args, &kwargs)?
+        {
+            return Ok(step);
+        }
+        let r =
+            self.wrap(crate::builtins::call_method(&receiver, name, args, kwargs))?;
+        self.push(r);
+        Ok(Step::Next)
+    }
+
+    /// The `Rc<BoundMethod>` a native method call needs only when it has to be
+    /// *retried* — a generator receiver or a generator argument has to be
+    /// drained through frames first, and the retry needs a callable to come
+    /// back to. Rare by construction, so it can afford the allocation the
+    /// ordinary path no longer makes.
+    fn rebound_method(receiver: &Value, name: &Rc<str>) -> Value {
+        Value::Method(Rc::new(BoundMethod {
+            receiver: receiver.clone(),
+            kind: MethodKind::Native(name.clone()),
+        }))
     }
 
     /// Dispatch a call. Builtins and bound methods execute natively (they never
@@ -2052,133 +2320,7 @@ impl Vm {
             }
             Value::Method(m) => match &m.kind {
                 MethodKind::Native(name) => {
-                    // Task and channel methods are dispatched ahead of
-                    // everything else in this arm for two reasons. They are the
-                    // ones that can *park*, so they must reach the VM rather
-                    // than `call_method`, which can only return a `Value`. And
-                    // a generator handed to `ch.send` has to arrive at the far
-                    // end as a generator — the materialise path below would
-                    // drain it into a list, which is precisely the "a generator
-                    // is a first-class value and can cross tasks" case §3
-                    // calls out.
-                    if let Some(step) = self.task_or_channel_method(&m.receiver, name, &args, &kwargs)? {
-                        return Ok(step);
-                    }
-                    // The io protocol's two methods, plus `read_until`,
-                    // `accept` and `close`. Four of the five can park on the
-                    // reactor and the fifth has to *wake* whoever is parked, so
-                    // none of them can be a `Value`-returning native method.
-                    //
-                    // The `matches!` is not redundant with the check inside:
-                    // this arm runs on *every* native method call in the
-                    // program, and a discriminant test here is what keeps that
-                    // from being a call into a cold function. Measured — it is
-                    // worth about a point on the method-heavy benchmarks.
-                    if matches!(m.receiver, Value::Stream(_)) {
-                        if let Some(step) =
-                            self.stream_io_method(&m.receiver, name, &args, &kwargs)?
-                        {
-                            return Ok(step);
-                        }
-                    }
-                    // `to_str` may need to run a user `__str__`, or render a
-                    // container's elements through their `__repr__`; both go
-                    // through frames, so they cannot run as native methods.
-                    if &**name == "to_str" && args.is_empty() && kwargs.is_empty() {
-                        if matches!(m.receiver, Value::Instance(_)) {
-                            return self
-                                .stringify_instance(m.receiver.clone(), false)
-                                .map(|()| Step::Next);
-                        }
-                        if is_container(&m.receiver) {
-                            return self
-                                .begin_stringify(m.receiver.clone(), StrCont::Push)
-                                .map(|()| Step::Next);
-                        }
-                    }
-                    // map/filter run Oro callbacks, so they are driven from the
-                    // VM rather than executed as native methods.
-                    if let Some(op) = SeqOp::from_name(name)
-                        .filter(|_| crate::builtins::is_collection(&m.receiver))
-                    {
-                        // A generator receiver has to be drained first; the
-                        // retry arrives back here with a list in its place.
-                        if matches!(m.receiver, Value::Generator(_)) {
-                            let callee = Value::Method(m.clone());
-                            let with_recv = std::iter::once(m.receiver.clone())
-                                .chain(args.iter().cloned())
-                                .collect::<Vec<_>>();
-                            if let Some(step) =
-                                self.materialize_receiver(&callee, with_recv, kwargs.clone())?
-                            {
-                                return Ok(step);
-                            }
-                        }
-                        return self.do_seq_op(op, &m.receiver, args, kwargs).map(|()| Step::Next);
-                    }
-                    // list.sort(key=…, reverse=…) shares sorted()'s frame-driven
-                    // key machinery; it just writes back in place.
-                    if &**name == "sort" {
-                        if let Value::List(l) = &m.receiver {
-                            if !args.is_empty() {
-                                return Err(self.err("sort() takes no positional arguments"));
-                            }
-                            let (keyfn, reverse) = self.sort_kwargs("sort", kwargs)?;
-                            let items = l.borrow().clone();
-                            return self
-                                .begin_sort(items, keyfn, reverse, Some(l.clone()))
-                                .map(|()| Step::Next);
-                        }
-                    }
-                    // The chain's three orderings. Like their builtin twins
-                    // they compare with `<`, so a receiver of instances needs
-                    // frames; anything else falls straight through to native.
-                    if matches!(&**name, "sorted" | "min" | "max")
-                        && !matches!(m.receiver, Value::Generator(_))
-                        && crate::builtins::is_collection(&m.receiver)
-                        && args.is_empty()
-                        && kwargs.is_empty()
-                    {
-                        let (shape, items) = self.seq_receiver(name, &m.receiver)?;
-                        let keys = items.clone();
-                        let kind = match &**name {
-                            "sorted" => OrdKind::Sort(shape),
-                            other => OrdKind::Extreme {
-                                want_min: other == "min",
-                                who: if other == "min" { "min" } else { "max" },
-                            },
-                        };
-                        return self.begin_order(kind, items, keys, false).map(|()| Step::Next);
-                    }
-                    // A generator *receiver* is drained the same way a
-                    // generator argument is, for the same reason: the native
-                    // method below iterates it, and native code can never
-                    // resume a generator. The retry arrives back here with a
-                    // list in the receiver's place. The `matches!` keeps the
-                    // name test — and the vector it builds — off the path every
-                    // other native method call takes.
-                    if matches!(m.receiver, Value::Generator(_))
-                        && crate::builtins::drains_generator_receiver(name)
-                    {
-                        let callee = Value::Method(m.clone());
-                        let with_recv = std::iter::once(m.receiver.clone())
-                            .chain(args.iter().cloned())
-                            .collect::<Vec<_>>();
-                        if let Some(step) =
-                            self.materialize_receiver(&callee, with_recv, kwargs.clone())?
-                        {
-                            return Ok(step);
-                        }
-                    }
-                    if let Some(step) =
-                        self.materialize_generator_args(&Value::Method(m.clone()), &args, &kwargs)?
-                    {
-                        return Ok(step);
-                    }
-                    let r =
-                        self.wrap(crate::builtins::call_method(&m.receiver, name, args, kwargs))?;
-                    self.push(r);
-                    Ok(Step::Next)
+                    self.invoke_native_method(m.receiver.clone(), name, args, kwargs)
                 }
                 MethodKind::User { func, defclass } => {
                     // A `def` with a `yield` in it is a generator function
@@ -4968,6 +5110,79 @@ fn slice_indices(len: usize, lower: Option<i64>, upper: Option<i64>, step: i64) 
 }
 
 // --- Attributes -------------------------------------------------------------
+
+/// What `LoadMethod` found, and how `CallMethod` should call it. See
+/// [`Op::LoadMethod`].
+enum MethodRef {
+    /// An Oro method: the receiver, the function, and the class it is defined
+    /// in (which fixes `super()`'s search origin).
+    User { recv: Value, func: Rc<Function>, defclass: Rc<Class> },
+    /// A native method on this receiver; the name is the instruction's.
+    Native(Value),
+    /// Not a method: a value to call with the arguments alone.
+    Plain(Value),
+}
+
+/// [`get_attr`] for an attribute that is about to be called, answering with
+/// the *parts* of a bound method rather than a bound method.
+///
+/// It must agree with `get_attr` case for case — the same value found in the
+/// same order, and character-for-character the same message when there is
+/// none — because whether a program takes this path or that one is decided by
+/// the shape of the source, not by anything the program can observe. The two
+/// arms that are not methods (`Value::Class`, `Value::Module`) simply defer to
+/// `get_attr` rather than restate it.
+fn resolve_method(obj: &Value, name: &Rc<str>) -> Result<MethodRef, String> {
+    let key: &str = name;
+    match obj {
+        Value::Instance(inst) => {
+            if let Some(v) = inst.fields.borrow().get(key) {
+                return Ok(MethodRef::Plain(v.clone()));
+            }
+            match Class::find(&inst.class, key) {
+                Some((Value::Func(func), defclass)) => {
+                    Ok(MethodRef::User { recv: obj.clone(), func, defclass })
+                }
+                Some((member, _)) => Ok(MethodRef::Plain(member)),
+                None if crate::builtins::is_cast_method(key) => Ok(MethodRef::Native(obj.clone())),
+                None => Err(format!("'{}' object has no attribute '{}'", inst.class.name, key)),
+            }
+        }
+        Value::Class(_) | Value::Module(_) => get_attr(obj, name).map(MethodRef::Plain),
+        Value::Super(sp) => {
+            let mut cur = sp.start.clone();
+            while let Some(c) = cur {
+                let found = c.members.borrow().get(key).cloned();
+                if let Some(member) = found {
+                    return Ok(match member {
+                        Value::Func(func) => {
+                            MethodRef::User { recv: sp.instance.clone(), func, defclass: c }
+                        }
+                        other => MethodRef::Plain(other),
+                    });
+                }
+                cur = c.base.clone();
+            }
+            Err(format!("'super' object has no attribute '{key}'"))
+        }
+        Value::Stream(s) if s.has_addr_attr(key) => {
+            Ok(MethodRef::Plain(Value::str(s.addr_attr(key)?)))
+        }
+        Value::Task(_) if key == "join" => Ok(MethodRef::Native(obj.clone())),
+        Value::Channel(_) if matches!(key, "send" | "recv" | "close") => {
+            Ok(MethodRef::Native(obj.clone()))
+        }
+        _ => {
+            if crate::builtins::method_exists(obj, key) {
+                Ok(MethodRef::Native(obj.clone()))
+            } else if let Some(msg) = crate::builtins::cut_method_message(obj, key) {
+                Err(msg.to_string())
+            } else {
+                Err(format!("'{}' object has no attribute '{}'", obj.type_name(), key))
+            }
+        }
+    }
+}
 
 /// Attribute read for any value. Instances, classes, and `super` proxies are
 /// handled here (no `__getattr__` hook exists, so this never runs Oro code);
