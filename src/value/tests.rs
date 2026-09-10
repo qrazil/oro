@@ -89,6 +89,38 @@ fn mutable_containers_stay_unhashable() {
     }
 }
 
+/// `OroDict::remove` splices an entry out of a compact array and slides every
+/// index past it down one. The corpus checks the answers against CPython; this
+/// pins the invariant underneath them — that the index still points at the
+/// right entry afterwards, which is the thing a shifted `Vec` breaks silently.
+#[test]
+fn dict_remove_keeps_insertion_order_and_the_index_honest() {
+    let mut d = OroDict::new();
+    for i in 0..5 {
+        d.insert(Value::Int(i), Value::Int(i * 10)).unwrap();
+    }
+    assert_eq!(d.remove(&Value::Int(2)).unwrap().unwrap().try_equals(&Value::Int(20)), Some(true));
+    assert_eq!(d.len(), 4);
+    // Every surviving key still resolves to its own value, including the three
+    // that moved down a slot.
+    for i in [0, 1, 3, 4] {
+        let got = d.get(&Value::Int(i)).unwrap().expect("key survived the removal");
+        assert_eq!(got.try_equals(&Value::Int(i * 10)), Some(true), "key {i}");
+    }
+    let order: Vec<i64> = d.items().iter().map(|(k, _)| match k {
+        Value::Int(i) => *i,
+        other => panic!("expected int key, got {}", other.repr()),
+    }).collect();
+    assert_eq!(order, vec![0, 1, 3, 4], "insertion order survives a removal from the middle");
+
+    // A miss answers `None` rather than erroring, which is what lets the
+    // two-argument `pop` hand back its default.
+    assert!(d.remove(&Value::Int(2)).unwrap().is_none());
+    // An unhashable key is still an error, not a miss.
+    let list = Value::List(Rc::new(RefCell::new(vec![])));
+    assert!(d.remove(&list).is_err());
+}
+
 #[test]
 fn bytes_repr_matches_cpython() {
     // Printable ASCII stays literal; everything else is \xNN, including the

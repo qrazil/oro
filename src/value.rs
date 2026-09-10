@@ -433,6 +433,29 @@ impl OroDict {
     pub fn items(&self) -> &[(Value, Value)] {
         &self.entries
     }
+
+    /// Remove `key` and answer its value, or `None` if it was not there.
+    ///
+    /// Insertion order survives the removal, which is the whole point: `d.pop`
+    /// is the removal a language with no `del` offers, and an order-preserving
+    /// dict that reorders itself when you take a key out of it would be a
+    /// surprise nobody asked for. The entry is spliced out of `entries` and
+    /// every index past it slides down one — O(n) in the dict's size, the price
+    /// of a compact array with no tombstones, and the same shape as
+    /// `list.pop(i)`, which shifts for the same reason.
+    pub fn remove(&mut self, key: &Value) -> VResult<Option<Value>> {
+        let hk = HKey::from_value(key)?;
+        let Some(pos) = self.index.remove(&hk) else {
+            return Ok(None);
+        };
+        let (_, value) = self.entries.remove(pos);
+        for slot in self.index.values_mut() {
+            if *slot > pos {
+                *slot -= 1;
+            }
+        }
+        Ok(Some(value))
+    }
 }
 
 /// A hashable projection of a [`Value`], used as a dict key.

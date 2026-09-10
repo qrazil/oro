@@ -744,7 +744,9 @@ pub fn method_exists(recv: &Value, name: &str) -> bool {
         Value::Tuple(_) | Value::Range(_) | Value::Generator(_) => {
             matches!(name, "map" | "filter")
         }
-        Value::Dict(_) => matches!(name, "get" | "keys" | "values" | "items" | "map" | "filter"),
+        Value::Dict(_) => {
+            matches!(name, "get" | "pop" | "keys" | "values" | "items" | "map" | "filter")
+        }
         // The protocol is `read`/`write`; `read_until` and `close` are methods
         // on the concrete type, the way `bufio.Reader` has `ReadSlice` in Go.
         // There is no `flush` and no line iterator.
@@ -2292,6 +2294,24 @@ fn dict_method(d: &Rc<RefCell<OroDict>>, name: &str, args: Vec<Value>) -> VResul
                 _ => return Err("get() takes 1 or 2 arguments".to_string()),
             };
             Ok(d.borrow().get(key)?.unwrap_or(default))
+        }
+        // The removal, and the reason `del` could be cut: `d.pop(k)` raises
+        // `KeyError` when the key is absent, `d.pop(k, default)` answers the
+        // default. CPython's two arities exactly — the README has cited this
+        // method as `del`'s replacement since before it existed.
+        "pop" => {
+            let (key, default) = match args.as_slice() {
+                [k] => (k, None),
+                [k, def] => (k, Some(def)),
+                _ => return Err("pop() takes 1 or 2 arguments".to_string()),
+            };
+            match d.borrow_mut().remove(key)? {
+                Some(v) => Ok(v),
+                None => match default {
+                    Some(def) => Ok(def.clone()),
+                    None => Err(format!("key error: {}", key.repr())),
+                },
+            }
         }
         "keys" => {
             exactly(&args, 0, "keys")?;
