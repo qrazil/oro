@@ -69,10 +69,6 @@ pub enum CmpOp {
     LtEq,
     /// `>=`
     GtEq,
-    /// `is`
-    Is,
-    /// `is not`
-    IsNot,
     /// `in`
     In,
     /// `not in`

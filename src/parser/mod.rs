@@ -849,6 +849,12 @@ impl Parser {
         }
 
         loop {
+            // `is` is still a reserved word, so the message lands on the
+            // operator itself rather than on whatever follows it.
+            if matches!(self.cur_kind(), TokenKind::Is) {
+                return Err(self.cut_is());
+            }
+
             // Comparison operators chain, so they are handled as a group rather
             // than as ordinary left-associative infix operators.
             if self.peek_compare().is_some() {
@@ -912,6 +918,7 @@ impl Parser {
                 let operand = self.parse_expr(UNARY_BP)?;
                 Ok(Expr::Unary { op: UnaryOp::Pos, operand: Box::new(operand), line, col })
             }
+            TokenKind::Is => Err(self.cut_is()),
             _ => self.parse_postfix_atom(),
         }
     }
@@ -1164,8 +1171,29 @@ impl Parser {
 
     // --- Operator tables -----------------------------------------------------
 
+    /// The diagnostic for `is` / `is not`, which were cut.
+    ///
+    /// `==` and `!=` already compare every reference type by identity, so `is`
+    /// was a second spelling of an answer Oro already had — except in the one
+    /// place it disagreed, where its answer was unfixable: `"hel" + "lo" is
+    /// "hello"` is a question about CPython's string-interning table, not about
+    /// the program, and Oro has no such table to consult.
+    fn cut_is(&self) -> ParseError {
+        if *self.peek_kind() == TokenKind::Not {
+            self.error(
+                "`is not` is not in Oro — use `!=`, which already compares \
+                 reference types by identity",
+            )
+        } else {
+            self.error(
+                "`is` is not in Oro — use `==`, which already compares \
+                 reference types by identity",
+            )
+        }
+    }
+
     /// If the current position is the start of a comparison operator, return its
-    /// [`CmpOp`] and how many tokens it spans (`is not` and `not in` span two).
+    /// [`CmpOp`] and how many tokens it spans (`not in` spans two).
     fn peek_compare(&self) -> Option<(CmpOp, usize)> {
         match self.cur_kind() {
             TokenKind::EqEq => Some((CmpOp::Eq, 1)),
@@ -1175,13 +1203,6 @@ impl Parser {
             TokenKind::LtEq => Some((CmpOp::LtEq, 1)),
             TokenKind::GtEq => Some((CmpOp::GtEq, 1)),
             TokenKind::In => Some((CmpOp::In, 1)),
-            TokenKind::Is => {
-                if *self.peek_kind() == TokenKind::Not {
-                    Some((CmpOp::IsNot, 2))
-                } else {
-                    Some((CmpOp::Is, 1))
-                }
-            }
             TokenKind::Not if *self.peek_kind() == TokenKind::In => Some((CmpOp::NotIn, 2)),
             _ => None,
         }

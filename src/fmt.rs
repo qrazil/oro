@@ -642,8 +642,6 @@ fn cmp_str(op: CmpOp) -> &'static str {
         CmpOp::Gt => ">",
         CmpOp::LtEq => "<=",
         CmpOp::GtEq => ">=",
-        CmpOp::Is => "is",
-        CmpOp::IsNot => "is not",
         CmpOp::In => "in",
         CmpOp::NotIn => "not in",
     }

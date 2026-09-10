@@ -20,7 +20,6 @@ def work(n):
 a = spawn(work, 1)
 b = spawn(work, 2)
 print("a task equals itself:", a == a, a == b)
-print("a task is itself:", a is a, a is b)
 ch1 = chan()
 ch2 = chan()
 print("a channel equals itself:", ch1 == ch1, ch1 == ch2)
@@ -62,7 +61,7 @@ r2.close()
 import re
 
 # 1. `re.compile(p)` is a fresh Pattern every time. CPython caches compiled
-#    patterns, so `re.compile("a") is re.compile("a")` is True there and false
+#    patterns, so `re.compile("a") == re.compile("a")` is True there and false
 #    here. Oro has no pattern cache; the identity rule is the same, the number
 #    of objects is not.
 p1 = re.compile("a")

@@ -2548,7 +2548,7 @@ impl Vm {
             CmpOp::Gt => "__gt__",
             CmpOp::LtEq => "__le__",
             CmpOp::GtEq => "__ge__",
-            // `is`, `in`, and their negations have no rich-comparison dunder.
+            // `in` and `not in` have no rich-comparison dunder.
             _ => return Ok(false),
         };
         if let Some((f, defclass)) = instance_method(a, name) {
@@ -4101,44 +4101,9 @@ fn compare(op: CmpOp, a: &Value, b: &Value) -> Result<bool, String> {
         CmpOp::Gt => a.compare(b)? == Ordering::Greater,
         CmpOp::LtEq => a.compare(b)? != Ordering::Greater,
         CmpOp::GtEq => a.compare(b)? != Ordering::Less,
-        CmpOp::Is => value_is(a, b),
-        CmpOp::IsNot => !value_is(a, b),
         CmpOp::In => contains(b, a)?,
         CmpOp::NotIn => !contains(b, a)?,
     })
-}
-
-/// Identity comparison. For the immutable scalars Oro shares by value this is
-/// value equality; for heap objects it is `Rc` pointer identity.
-///
-/// This used to end at `Func` and answer `false` for everything after it, so
-/// `gen is gen`, `conn is conn`, `t is t` and `C is C` were all false — in the
-/// operator whose entire job is to answer that question. Everything with an
-/// address now answers with it, via [`Value::identity`].
-fn value_is(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::None, Value::None) => true,
-        (Value::Bool(x), Value::Bool(y)) => x == y,
-        (Value::Int(x), Value::Int(y)) => x == y,
-        (Value::Str(x), Value::Str(y)) => Rc::ptr_eq(x, y),
-        (Value::Bytes(x), Value::Bytes(y)) => Rc::ptr_eq(x, y),
-        (Value::List(x), Value::List(y)) => Rc::ptr_eq(x, y),
-        (Value::Tuple(x), Value::Tuple(y)) => Rc::ptr_eq(x, y),
-        (Value::Dict(x), Value::Dict(y)) => Rc::ptr_eq(x, y),
-        (Value::Range(x), Value::Range(y)) => Rc::ptr_eq(x, y),
-        // A builtin has no single address to point at — the builtin cache is
-        // per call site — so its name is its identity, which is what
-        // `len is len` is asking.
-        (Value::Builtin(x), Value::Builtin(y)) => x.name == y.name,
-        // Everything else that has an address: functions, generators, classes,
-        // instances, modules, streams, tasks, channels, patterns, matches.
-        // A bound method deliberately has none, so `a.m is a.m` is false here
-        // exactly as it is in CPython — a fresh one is built per access.
-        _ => match (a.identity(), b.identity()) {
-            (Some(x), Some(y)) => x == y,
-            _ => false,
-        },
-    }
 }
 
 fn contains(container: &Value, item: &Value) -> Result<bool, String> {

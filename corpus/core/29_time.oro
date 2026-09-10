@@ -17,4 +17,4 @@ elapsed = time.monotonic() - start
 print(elapsed >= 0.02)
 
 # sleep returns null (CPython returns None; same thing, new spelling).
-print(time.sleep(0) is null)
+print(time.sleep(0) == null)

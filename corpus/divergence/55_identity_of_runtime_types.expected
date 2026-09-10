@@ -1,5 +1,4 @@
 a task equals itself: true false
-a task is itself: true false
 a channel equals itself: true false
 chan(0) and chan(0) are two channels: false
 a stream equals itself: true false

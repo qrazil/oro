@@ -815,6 +815,9 @@ fn keyword_kind(s: &str) -> Option<TokenKind> {
         "and" => And,
         "or" => Or,
         "not" => Not,
+        // `is` was cut (the parser names `==`), but it stays a reserved word:
+        // letting it become an ordinary name would make `x is y` a call
+        // expression and the diagnostic land somewhere else entirely.
         "is" => Is,
         "pass" => Pass,
         "true" => True,

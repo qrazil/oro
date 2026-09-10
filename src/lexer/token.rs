@@ -56,6 +56,8 @@ pub enum TokenKind {
     And,
     Or,
     Not,
+    /// Reserved, and never part of an expression: `is` was cut, and the parser
+    /// rejects this token with a message naming `==`.
     Is,
     Pass,
 

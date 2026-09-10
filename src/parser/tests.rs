@@ -92,8 +92,6 @@ fn sexp(e: &Expr) -> String {
                     CmpOp::Gt => ">",
                     CmpOp::LtEq => "<=",
                     CmpOp::GtEq => ">=",
-                    CmpOp::Is => "is",
-                    CmpOp::IsNot => "is-not",
                     CmpOp::In => "in",
                     CmpOp::NotIn => "not-in",
                 };
@@ -231,10 +229,8 @@ fn comparison_binds_looser_than_arithmetic() {
 }
 
 #[test]
-fn is_not_and_not_in() {
-    assert_eq!(sexp_of("a is not b"), "(cmp a is-not b)");
+fn in_and_not_in() {
     assert_eq!(sexp_of("a not in b"), "(cmp a not-in b)");
-    assert_eq!(sexp_of("a is b"), "(cmp a is b)");
     assert_eq!(sexp_of("a in b"), "(cmp a in b)");
 }
 
@@ -962,6 +958,21 @@ fn cut_assert() {
 #[test]
 fn cut_raise_from() {
     assert_cut("raise X from Y", "`raise X from Y` is not supported");
+}
+
+#[test]
+fn cut_is() {
+    assert_cut("a is b", "`is` is not in Oro");
+    assert_cut("a is b", "use `==`");
+    assert_cut("a is not b", "`is not` is not in Oro");
+    assert_cut("a is not b", "use `!=`");
+    // Chained and parenthesised positions reach the same diagnostic, and so
+    // does `is` where an expression was expected at all.
+    assert_cut("if a < b is c:\n    pass\n", "`is` is not in Oro");
+    assert_cut("print(x is null)", "`is` is not in Oro");
+    assert_cut("is = 5", "`is` is not in Oro");
+    // `not in` is untouched: only the `is` half of the pair was cut.
+    assert_eq!(sexp_of("a not in b"), "(cmp a not-in b)");
 }
 
 #[test]

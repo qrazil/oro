@@ -274,10 +274,11 @@ Implemented and working today:
   task or channel is equal to itself and to nothing else, and is a `dict` key,
   which is what makes a registry keyed by connection or by task writable at all.
   Two closures over one code object are two functions. A `builtin` is compared
-  by name rather than address (`len is len`, and the builtin cache is per call
-  site, so there is no one address); a bound method by receiver and function,
-  which is why `a.m == a.m` is true and `a.m is a.m` is false — a new one is
-  built per access, in CPython too. `list` and `dict` stay unhashable, and so
+  by name rather than address (`len == len`, and the builtin cache is per call
+  site, so there is no one address); a bound method by receiver and function, so
+  `a.m == a.m` is true even though a fresh one is built on every access — as in
+  CPython, where `==` is likewise the operator that sees through
+  that. `list` and `dict` stay unhashable, and so
   does an instance of a class that defines `__eq__`: CPython clears `__hash__`
   there and lets the class define one back, and Oro's dunder set has no
   `__hash__`, so it is permanent. There is no `hash()` builtin, and dict order
@@ -291,6 +292,31 @@ Each of these is omitted on purpose. The reason matters more than the list.
 - **No walrus (`:=`).** Assignment is a statement; a second assignment operator
   that also returns a value is precisely the "more than one way" the thesis
   rejects.
+- **No `is` (and no `is not`).** `==` already compares a function, generator,
+  class, instance, module, stream, pattern, match, task or channel *by
+  identity*, and `null`, ints and bools by value, so on everything with an
+  address the two operators agree and `is` is a second spelling of an answer the
+  language already gives. They disagreed in exactly two places, and neither is a
+  reason to keep an operator: two mutable containers with equal contents
+  (`[1, 2] is [1, 2]` was false where `==` is true), and a class that defines
+  `__eq__`.
+
+  What settled it is the third case, the one where `is` could not be made to
+  agree with *CPython*. `"hel" + "lo" is "hello"` is `True` under CPython and was
+  `false` here, because CPython's answer is a fact about its string-interning
+  table — implementation-defined, and not the same across versions or build
+  flags. Oro cannot match it without carrying an interning table it has no other
+  use for, so this was identical syntax quietly meaning two different things, in
+  the computational core, with no fix available. That is the one thing the
+  compatibility rule above forbids, and the operator was the only removable part
+  of it.
+
+  It is also the operator behind the most-asked beginner question in Python —
+  why `x is y` is true for `5` and false for `1000` — which exists only because
+  a language has two similar comparisons whose overlap is an implementation
+  detail. The cost is worth naming rather than hiding: the *aliasing* question,
+  "are these two equal lists the same list", is no longer expressible at all.
+  Nothing in the language, the standard library or the corpus was asking it.
 - **No comprehensions.** Not because a second iteration construct is
   intolerable, but because a comprehension reads *inside-out* — in
   `[f(x) for x in xs if p(x)]` the iteration is in the middle, the transform on
@@ -800,6 +826,7 @@ different.
 | `list(xs)`, `dict(pairs)` | `xs.to_list()`, `pairs.to_dict()` | as above |
 | `list()`, `dict()`, `str()`, `int()` | `[]`, `{}`, `""`, `0` | Literals build; type names are not callable |
 | `lambda x: x * 2` | `x => x * 2` | Shorter, and the point of a lambda is brevity |
+| `x is y` / `x is not y` | `x == y` / `x != y` | `==` already compares reference types by identity; `is` differed from CPython on interned strings and could not be fixed |
 | `True` / `False` / `None` | `true` / `false` / `null` | Capitalisation was Python's class-naming convention leaking into syntax |
 | `s.lstrip(…)` / `s.rstrip(…)` | `s.strip(…, side="left")` / `side="right"` | One strip with a named end, not three methods |
 | `s.rfind(sub)` | `s.find(sub, reverse=true)` | One find with a named direction; `reverse=` as in `sorted` |
