@@ -2351,10 +2351,23 @@ impl Vm {
                 return Ok(step);
             }
         }
-        if let Some(step) =
-            self.materialize_generator_args(&Self::rebound_method(&receiver, name), &args, &kwargs)?
-        {
-            return Ok(step);
+        // A generator *argument* is drained the same way, and the same
+        // `matches!` discipline applies — except that here the thing being kept
+        // off the ordinary path is not a name test but a heap allocation.
+        // `rebound_method` builds an `Rc<BoundMethod>`, and spelling it as an
+        // argument meant building one on **every native method call in the
+        // program** so that `materialize_generator_args` could look at its
+        // arguments, find no generator among them, and answer `None`. That is
+        // the very allocation the `LoadMethod`/`CallMethod` pair exists to
+        // remove: `xs.append(i)` was paying for a bound method it never used.
+        if args.iter().any(|a| matches!(a, Value::Generator(_))) {
+            if let Some(step) = self.materialize_generator_args(
+                &Self::rebound_method(&receiver, name),
+                &args,
+                &kwargs,
+            )? {
+                return Ok(step);
+            }
         }
         let r =
             self.wrap(crate::builtins::call_method(&receiver, name, args, kwargs))?;
