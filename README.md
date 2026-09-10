@@ -190,6 +190,23 @@ Implemented and working today:
   (`g().map(f)`), not just drive a `for` loop. Builtins run in Rust and can
   never re-enter the interpreter, so the generator is drained a frame at a time
   and the call is retried — the native stack never grows with it.
+- **Green threads: `spawn` and `chan`, six names in total.** `spawn(f, *args)`
+  starts `f(*args)` as a task and returns a handle; `t.join()` waits and returns
+  the function's value. `chan()` is a rendezvous and `chan(n)` a buffer of `n`,
+  with `send`, `recv`, `close`, and `for msg in ch` iterating until the channel
+  is closed and drained. A task costs a few hundred bytes and a handful of small
+  allocations — frames are already heap cells, so nothing is copied and the
+  native stack is never involved.
+
+  Three consequences worth stating plainly. **Scheduling is cooperative**: a
+  task yields at a channel operation and nowhere else, so a CPU-bound handler
+  starves its peers until it finishes. **There is no parallelism inside one VM**,
+  which is why there is no `select` and no locks — a shutdown flag is a
+  variable, a cache is a `dict`, and sharing them is free. And **an uncaught
+  exception in a task kills only that task**: it is re-raised in whoever joins
+  it, or, if nobody ever does, printed when the handle is dropped, with the
+  process exiting 1. Neither Go's answer (kill the process) nor Python's (print
+  and exit 0 anyway). The reasoning is `docs/stdlib-server-design.md` §3.
 - **Python truthiness** and Python's cross-type numeric equality (`1 == 1.0 ==
   True`).
 
