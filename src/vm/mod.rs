@@ -1039,6 +1039,39 @@ impl Vm {
                         continue;
                     }
                 }
+                // The ordinary call and the ordinary return, which between
+                // them are the whole cost of `fib`. Both conditions are
+                // exactly the ones the general paths test for themselves —
+                // `fast_call_target` decides the call, and a return is plain
+                // when there is no `finally` to run on the way out, an outer
+                // frame to return into, and nothing for the VM to do with the
+                // value but push it. Anything else falls through to `step`.
+                Op::Call(n) if self.task.frames.len() < MAX_FRAMES => {
+                    if let Some(func) = self.fast_call_target(n as usize) {
+                        self.call_fast_unchecked(func, n as usize);
+                        continue;
+                    }
+                }
+                Op::Return => {
+                    let plain = self.task.frames.len() > 1 && {
+                        let frame = self.task.frames.last().expect("no active frame");
+                        !frame.code.is_generator
+                            && frame.blocks.is_empty()
+                            && matches!(frame.ret_action, ReturnAction::Normal)
+                    };
+                    if plain {
+                        let mut frame = self.task.frames.pop().expect("return with no frame");
+                        let value = frame.stack.pop().expect("operand stack underflow");
+                        self.recycle(frame);
+                        self.task
+                            .frames
+                            .last_mut()
+                            .expect("a caller, checked above")
+                            .stack
+                            .push(value);
+                        continue;
+                    }
+                }
                 _ => {}
             }
 
@@ -1699,6 +1732,14 @@ impl Vm {
         if self.task.frames.len() >= MAX_FRAMES {
             return Err(self.err("maximum recursion depth exceeded"));
         }
+        self.call_fast_unchecked(func, n);
+        Ok(Step::Next)
+    }
+
+    /// [`Vm::call_fast`] with the frame-limit check already made by the caller,
+    /// so that it can be a plain `()` and the dispatch loop's fast path need
+    /// not carry an error route it can never take.
+    fn call_fast_unchecked(&mut self, func: Rc<Function>, n: usize) {
         let mut frame = self.take_frame(func.code.clone(), &func.freevars);
         let params = &func.code.params;
         {
@@ -1715,7 +1756,6 @@ impl Vm {
             store_param(&mut frame, p.target, func.defaults[i - first_defaulted].clone());
         }
         self.task.frames.push(frame);
-        Ok(Step::Next)
     }
 
     fn do_call_ex(&mut self) -> Result<Step, RuntimeError> {
