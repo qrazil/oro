@@ -1,0 +1,106 @@
+# repr escapes every character CPython calls unprintable, not just the ASCII
+# controls. CPython's rule (`unicode_repr` in Objects/unicodeobject.c) is
+# category-based: escape anything in Cc, Cf, Cs, Co, Cn, Zl, Zp or Zs, with
+# U+0020 exempted and always printed as itself. Everything else — accents, CJK,
+# emoji, combining marks — goes out raw, as it has since Python 3.
+#
+# The point is round-tripping. A repr that emits a bare U+0080, a no-break
+# space, or a soft hyphen has produced output nobody can read back: the
+# characters are invisible, and copying the line does not reliably reproduce the
+# value. Sibling of 36_repr_quoting.oro, which covers the quote-selection half
+# of the same rule.
+#
+# One case is deliberately absent: a lone surrogate. CPython can hold one and
+# reprs it as \udXXX; Oro's strings are Rust `str`, so U+D800..U+DFFF cannot be
+# built at all — `"\ud800"` is a lex error, which is the loud divergence Oro
+# prefers to a quiet one.
+
+# The first two blocks entire: C0 controls, printable ASCII, DEL, the C1
+# controls, and the Latin-1 supplement. Every code point here has been assigned
+# since Unicode 1.0, so no Unicode-version skew can reach this loop.
+for i in range(256):
+    print(i, repr(chr(i)))
+
+# U+2000..U+202F: the densest mix of the escaping categories anywhere — Zs
+# spaces (2000-200A, 202F), Cf invisibles (200B-200F, 202A-202E), Zl (2028) and
+# Zp (2029), interleaved with ordinary printable punctuation.
+for i in range(8192, 8240):
+    print(i, repr(chr(i)))
+
+# One case per category the rule names, plus the printable neighbours that must
+# survive untouched. (Written as separate statements rather than a list: a
+# multi-line bracketed literal is not something `oro fmt` will keep.)
+print(repr("\xa0"))  # Zs  NO-BREAK SPACE
+print(repr("\xad"))  # Cf  SOFT HYPHEN
+print(repr("\u200b"))  # Cf  ZERO WIDTH SPACE — not White_Space, so is_whitespace misses it
+print(repr("\ufeff"))  # Cf  BYTE ORDER MARK
+print(repr("\u2028"))  # Zl  LINE SEPARATOR
+print(repr("\u2029"))  # Zp  PARAGRAPH SEPARATOR
+print(repr("\u0600"))  # Cf  ARABIC NUMBER SIGN
+print(repr("\u1680"))  # Zs  OGHAM SPACE MARK
+print(repr("\u180e"))  # Cf  MONGOLIAN VOWEL SEPARATOR
+print(repr("\u3000"))  # Zs  IDEOGRAPHIC SPACE
+print(repr("\ue000"))  # Co  first private use character
+print(repr("\ufdd0"))  # Cn  a permanent noncharacter
+print(repr("\ufffe"))  # Cn  a permanent noncharacter
+print(repr("\U000f0000"))  # Co  private use, plane 15 — needs the 8-digit \U form
+print(repr("\U000e0001"))  # Cf  LANGUAGE TAG — non-BMP, unprintable
+print(repr("\U0001d173"))  # Cf  MUSICAL SYMBOL BEGIN BEAM — non-BMP, unprintable
+print(repr(" "))  # Zs, and the one exemption: a plain space is always printable
+print(repr("é"))  # Ll  precomposed e-acute, printable, stays raw
+print(repr("é"))  # Mn  e plus combining acute: grapheme-extended but printable
+print(repr("日本語"))  # Lo  CJK, printable
+print(repr("😀"))  # So  emoji, printable, non-BMP, stays raw
+print(repr("🧿"))  # So  emoji, printable, non-BMP, stays raw
+print(repr("󠄀"))  # Mn  VARIATION SELECTOR-17: non-BMP and grapheme-extended,
+# yet printable — the case a naive char::escape_debug gets wrong.
+
+# Quote selection and escaping are independent rules and have to compose: the
+# quote is still chosen from the apostrophes and double quotes in the data, and
+# the escaping happens inside whichever quote won.
+print(repr("it's\x1b"))
+print(repr('has "both" kinds and \x00'))
+print(repr("a'b\"c\x9f"))
+print(repr("\xa0it's\xa0"))
+print(repr("\u200b'\u200b"))
+
+# Nesting: a container's repr dispatches to its elements', so the escaping has
+# to hold at depth.
+print(repr(["\x80", "it's", "\u200b", "😀"]))
+print(repr({"\xa0": ["\x7f", ("\ufeff", "\U000e0001")]}))
+print(repr(("\xad", {"k": "\u2028"})))
+
+
+# Round-trip, checked rather than eyeballed. Second argument: the exact text
+# repr must produce. Third: that same text written back into this file as a
+# literal. If repr is round-trip-safe both comparisons are True — the escape it
+# printed is one the lexer reads back as the character it started from.
+def rt(built, spelled, reparsed):
+    print(repr(built) == spelled, built == reparsed, spelled)
+
+
+rt(chr(0), "'\\x00'", "\x00")
+rt(chr(9), "'\\t'", "\t")
+rt(chr(27), "'\\x1b'", "\x1b")
+rt(chr(92), "'\\\\'", "\\")
+rt(chr(127), "'\\x7f'", "\x7f")
+rt(chr(128), "'\\x80'", "\x80")
+rt(chr(155), "'\\x9b'", "\x9b")
+rt(chr(160), "'\\xa0'", "\xa0")
+rt(chr(173), "'\\xad'", "\xad")
+rt(chr(233), "'é'", "é")
+rt(chr(8203), "'\\u200b'", "\u200b")
+rt(chr(8232), "'\\u2028'", "\u2028")
+rt(chr(65279), "'\\ufeff'", "\ufeff")
+rt(chr(57344), "'\\ue000'", "\ue000")
+rt(chr(119155), "'\\U0001d173'", "\U0001d173")
+rt(chr(128512), "'😀'", "😀")
+rt(chr(917505), "'\\U000e0001'", "\U000e0001")
+rt(chr(983040), "'\\U000f0000'", "\U000f0000")
+
+# bytes repr is a different rule and must not drift into this one: a byte is a
+# number, so every octet outside printable ASCII is \xNN — 0x80 and above
+# included, exactly where str now prints a character or a \u escape instead.
+print(repr(b"\x00\x1b\x7f\x80\x9b\xa0\xad\xff"))
+print(repr("\xa0\xad"), repr(b"\xa0\xad"))
+print(repr("é"), repr(b"\xc3\xa9"))

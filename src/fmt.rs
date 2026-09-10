@@ -759,14 +759,28 @@ fn quote_str_maybe_raw(value: &str, raw: bool) -> String {
 }
 
 /// A raw string cannot express a trailing backslash (it would escape the closing
-/// quote), a newline, or both quote styles at once.
+/// quote), or both quote styles at once. It also cannot escape anything, so a
+/// value holding an unprintable character can only be reprinted raw with that
+/// character sitting invisibly in the source — which is the thing this
+/// formatter must not emit. Those fall back to a quoted string, where the
+/// character gets a visible `\xNN`.
 fn can_be_raw(value: &str) -> bool {
     !value.ends_with('\\')
-        && !value.contains('\n')
-        && !value.contains('\r')
         && !(value.contains('"') && value.contains('\''))
+        && value.chars().all(crate::value::is_printable)
 }
 
+/// Reprint a string literal. Every character CPython would not print gets a
+/// `\xNN`/`\uNNNN`/`\UNNNNNNNN` escape rather than being echoed raw: a
+/// formatter that writes a bare U+0080 or a no-break space back into the source
+/// has silently changed a file into one nobody can read or safely re-edit, and
+/// on a second pass the character may not survive at all. Escaping is always
+/// meaning-preserving, so this costs nothing but a few visible characters.
+///
+/// NUL is written `\x00`, not `\0`. Oro reads `\0` as exactly NUL, but these
+/// files are also meant to run under CPython, where `\0` opens an *octal*
+/// escape — so `"\0" + "7"` would reprint as `"\07"` and read back there as
+/// U+0007. `\x00` is the one spelling both agree on.
 fn quote_str(value: &str) -> String {
     let quote = if value.contains('"') && !value.contains('\'') { '\'' } else { '"' };
     let mut out = String::with_capacity(value.len() + 2);
@@ -777,12 +791,12 @@ fn quote_str(value: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\t' => out.push_str("\\t"),
             '\r' => out.push_str("\\r"),
-            '\0' => out.push_str("\\0"),
             c if c == quote => {
                 out.push('\\');
                 out.push(c);
             }
-            c => out.push(c),
+            c if crate::value::is_printable(c) => out.push(c),
+            c => crate::value::push_unicode_escape(&mut out, c),
         }
     }
     out.push(quote);
