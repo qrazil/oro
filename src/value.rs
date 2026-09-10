@@ -524,7 +524,7 @@ impl BoundMethod {
         let recv = HKey::from_value(&self.receiver)?;
         let func = match &self.kind {
             MethodKind::User { func, .. } => HKey::Id(Rc::as_ptr(func) as *const () as usize),
-            MethodKind::Native(name) => HKey::Str(name.to_string()),
+            MethodKind::Native(name) => HKey::Str(StrKey(OroStr::new(name.to_string()))),
         };
         Ok(HKey::Method(Box::new(recv), Box::new(func)))
     }
@@ -834,6 +834,39 @@ impl OroDict {
 /// Everything else *is* a key, including the reference types, keyed by
 /// [`Value::identity`]. That is what makes a registry keyed by connection, task
 /// or handler writable at all — `docs/stdlib-server-design.md` §7 item 13.
+/// A string dict key, shared with the string it came from rather than copied
+/// out of it.
+///
+/// `HKey::Str` used to hold a `String`, so `d["name"]` allocated a copy of the
+/// whole string to build a probe that was thrown away a moment later — on every
+/// read and every write. An `Rc<OroStr>` is the same key for a refcount bump.
+///
+/// Equality and hashing are by **content**, which is what makes this a drop-in
+/// for the `String` it replaces: two equal strings must land in the same bucket
+/// however they were built, so the hash cannot involve the address. Equality
+/// leads with a pointer comparison because a key stored from an interned name
+/// is usually probed with the very same `Rc`, and then answers by content.
+#[derive(Clone)]
+struct StrKey(Rc<OroStr>);
+
+impl PartialEq for StrKey {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0) || self.0.s == other.0.s
+    }
+}
+
+impl Eq for StrKey {}
+
+impl std::hash::Hash for StrKey {
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Exactly what `String`'s own `Hash` does, so a dict built before this
+        // change and one built after agree bucket for bucket.
+        self.0.s.hash(state);
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum HKey {
     None,
@@ -841,7 +874,7 @@ enum HKey {
     Big(BigInt),
     /// Only non-integral floats reach here (integral ones normalise to `Int`).
     Float(u64),
-    Str(String),
+    Str(StrKey),
     Bytes(Vec<u8>),
     Tuple(Vec<HKey>),
     /// A `range`, by the sequence it denotes rather than its three fields:
@@ -893,7 +926,7 @@ impl HKey {
                     HKey::Float(f.to_bits())
                 }
             }
-            Value::Str(s) => HKey::Str(s.s.clone()),
+            Value::Str(s) => HKey::Str(StrKey(s.clone())),
             Value::Bytes(b) => HKey::Bytes((**b).clone()),
             Value::Tuple(items) => {
                 let mut parts = Vec::with_capacity(items.len());
