@@ -21,6 +21,7 @@ true true
 --- identity is a shortcut inside a container, and never at `==`
 false
 true true true true
+20000 true true
 --- __eq__ may answer with anything, and `==` hands it back unconverted
 [1, 2, 3]
 true true true

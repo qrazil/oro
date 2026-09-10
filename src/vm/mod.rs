@@ -416,9 +416,13 @@ struct CmpJob {
 /// pairs, which is what keeps the machine flat: a level either asks about one
 /// more pair or announces its answer.
 enum CmpLevel {
-    /// Waiting on a comparison dunder's return value. `negate` is the
-    /// `__ne__`-from-`__eq__` fallback.
-    Dunder { negate: bool },
+    /// Waiting on a comparison dunder's return value.
+    ///
+    /// There is no negated form of this. `!=` is normalised to `==` plus one
+    /// negation of the *whole* answer before the machine starts, and nothing
+    /// inside a container ever consults `__ne__` — CPython compares elements
+    /// with `Py_EQ` and negates at the end, and so does this.
+    Dunder,
     /// Two sequences, element by element. For `==` every pair must match; for
     /// an ordering the first pair that does *not* match decides the whole
     /// answer by `op`, which is CPython's `list_richcompare` exactly.
@@ -2949,13 +2953,13 @@ impl Vm {
         if let Some(name) = rich_dunder(op) {
             if let Some((f, defclass)) = instance_method(&a, name) {
                 self.task.cmp_jobs.last_mut().expect("cmp job")
-                    .levels.push(CmpLevel::Dunder { negate: false });
+                    .levels.push(CmpLevel::Dunder);
                 self.invoke_user(f, a, defclass, vec![b], Vec::new(), ReturnAction::DriveCmp)?;
                 return Ok(PairStep::Dispatched);
             }
             if let Some((f, defclass)) = instance_method(&b, reflect_dunder(op)) {
                 self.task.cmp_jobs.last_mut().expect("cmp job")
-                    .levels.push(CmpLevel::Dunder { negate: false });
+                    .levels.push(CmpLevel::Dunder);
                 self.invoke_user(f, b, defclass, vec![a], Vec::new(), ReturnAction::DriveCmp)?;
                 return Ok(PairStep::Dispatched);
             }
@@ -3017,12 +3021,28 @@ impl Vm {
     /// (`None` when the level has only just been pushed). A level that finishes
     /// is popped and its answer flows to the level beneath it.
     fn advance_top(&mut self, incoming: Option<bool>) -> Result<CmpNext, RuntimeError> {
+        // A loop, not a self-call: `LevelStep::Retry` fires once per element
+        // settled by the identity shortcut, and a list of ten thousand
+        // references to one object would otherwise be ten thousand Rust frames
+        // — the recursion this whole design exists to not do.
+        let mut incoming = incoming;
+        loop {
+            match self.advance_once(incoming)? {
+                Some(next) => return Ok(next),
+                None => incoming = None,
+            }
+        }
+    }
+
+    /// One step of [`advance_top`]. `None` means the level settled an element
+    /// without asking anything and wants to be advanced again.
+    fn advance_once(&mut self, incoming: Option<bool>) -> Result<Option<CmpNext>, RuntimeError> {
         let job = self.task.cmp_jobs.last_mut().expect("cmp job");
         let level = job.levels.last_mut().expect("cmp level");
         let step = match level {
             // A dunder level is popped by the `DriveCmp` return action, which
             // is the only thing that can answer it.
-            CmpLevel::Dunder { .. } => unreachable!("a dunder level is resumed by its frame"),
+            CmpLevel::Dunder => unreachable!("a dunder level is resumed by its frame"),
             CmpLevel::Seq { a, b, i, op, deciding } => {
                 if *deciding {
                     // The deciding pair was asked with the original operator,
@@ -3087,11 +3107,11 @@ impl Vm {
             }
         };
         match step {
-            LevelStep::Ask(a, b, op) => Ok(CmpNext::Ask(a, b, op)),
-            LevelStep::Retry => self.advance_top(None),
+            LevelStep::Ask(a, b, op) => Ok(Some(CmpNext::Ask(a, b, op))),
+            LevelStep::Retry => Ok(None),
             LevelStep::Done(v) => {
                 self.task.cmp_jobs.last_mut().expect("cmp job").levels.pop();
-                Ok(CmpNext::Give(v))
+                Ok(Some(CmpNext::Give(v)))
             }
         }
     }
@@ -3879,13 +3899,13 @@ impl Vm {
             ReturnAction::NegateBool => self.push(Value::Bool(!value.truthy())),
             ReturnAction::DriveCmp => {
                 let job = self.task.cmp_jobs.last_mut().expect("cmp job");
-                let negate = match job.levels.pop() {
-                    Some(CmpLevel::Dunder { negate }) => negate,
+                match job.levels.pop() {
+                    Some(CmpLevel::Dunder) => {}
                     _ => unreachable!("DriveCmp without a waiting dunder level"),
-                };
+                }
                 // Truthiness, not the value: this is a decision inside `in` or
                 // a container comparison, where CPython applies `bool()` too.
-                self.drive_cmp(CmpNext::Give(value.truthy() != negate))?;
+                self.drive_cmp(CmpNext::Give(value.truthy()))?;
             }
 
             ReturnAction::FormatSpec(spec) => {

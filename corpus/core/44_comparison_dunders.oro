@@ -80,6 +80,17 @@ n = Never()
 print(n == n)
 print(n in [n], [n] == [n], (n,) == (n,), {"k": n} == {"k": n})
 
+# The shortcut has to be a loop and not a recursion: one list of many
+# references to a single object settles every element without asking anything,
+# and a Rust frame per element would be a stack overflow rather than an answer.
+wide = []
+i = 0
+while i < 20000:
+    wide.append(n)
+    i = i + 1
+other = wide[0:20000]
+print(len(wide), wide == other, n in wide)
+
 print("--- __eq__ may answer with anything, and `==` hands it back unconverted")
 class Truthy:
     def __eq__(self, other):
