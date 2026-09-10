@@ -1,0 +1,9 @@
+lists freed
+dicts freed
+tuples freed
+instances freed
+mixed chain freed
+200000
+parsed document freed
+refused: maximum nesting depth (10000) exceeded at position 10000
+partial structure freed

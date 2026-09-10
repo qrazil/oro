@@ -78,18 +78,50 @@ fn positions_are_character_offsets() {
 /// Nesting is bounded, and the bound is reported as an ordinary parse error at
 /// an ordinary position — so a server that answers `except ValueError` with a
 /// 400 keeps answering 400 rather than falling through to a 500.
+///
+/// The bound is on *memory amplification* — one input byte of `[` buys a heap
+/// container — and on nothing else. Stack safety is not its job and must not
+/// depend on it: neither parsing nor freeing the result recurses in Rust at any
+/// depth (`value::tests::freeing_deeply_nested_values_never_recurses` is the
+/// teardown half, on a deliberately small stack). This test runs on a small
+/// stack too, so that a parser or teardown that started recursing again would
+/// fail here rather than only on the machine with the least headroom.
 #[test]
 fn nesting_is_bounded_and_never_reaches_the_rust_stack() {
-    let deep = "[".repeat(MAX_DEPTH) + &"]".repeat(MAX_DEPTH);
-    assert!(parse(&deep).is_ok(), "{MAX_DEPTH} containers must still parse");
-    let deeper = "[".repeat(MAX_DEPTH + 2) + &"]".repeat(MAX_DEPTH + 2);
-    let e = parse(&deeper).expect_err("past the limit");
-    assert!(e.starts_with("maximum nesting depth (10000) exceeded at position "), "got: {e}");
-    assert_eq!(classify(&e), Some("ValueError"));
-    // A million opening brackets is the shape that would have overflowed a
-    // recursive parser's stack; it must simply be an error.
-    let hostile = "[".repeat(1_000_000);
-    assert!(parse(&hostile).is_err());
+    std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            let deep = "[".repeat(MAX_DEPTH) + &"]".repeat(MAX_DEPTH);
+            let parsed = parse(&deep).expect("MAX_DEPTH containers must still parse");
+            // Freeing it is the other half, and it happens right here.
+            drop(parsed);
+
+            let deeper = "[".repeat(MAX_DEPTH + 2) + &"]".repeat(MAX_DEPTH + 2);
+            let e = parse(&deeper).expect_err("past the limit");
+            assert!(
+                e.starts_with("maximum nesting depth (10000) exceeded at position "),
+                "got: {e}"
+            );
+            assert_eq!(classify(&e), Some("ValueError"));
+
+            // A million opening brackets is the shape that overflows a
+            // recursive parser. It must simply be an error — and the partial
+            // structure built before the limit tripped has to be freed on the
+            // way out, which is the teardown path again.
+            let hostile = "[".repeat(1_000_000);
+            assert!(parse(&hostile).is_err());
+
+            // Same for the encoder: a value deeper than it will walk is an
+            // error, and the value still has to be freed afterwards.
+            let mut v = Value::List(OroList::new(Vec::new()));
+            for _ in 0..MAX_DEPTH + 10 {
+                v = Value::List(OroList::new(vec![v]));
+            }
+            assert!(stringify(&v, None).is_err());
+        })
+        .expect("spawn")
+        .join()
+        .expect("a recursive parse or teardown would have aborted, not unwound");
 }
 
 #[test]
@@ -118,15 +150,15 @@ fn stringify_matches_the_module_it_replaced() {
 /// still catches it. It must not be a Rust stack overflow.
 #[test]
 fn stringify_is_bounded_too() {
-    let mut v = Value::List(Rc::new(RefCell::new(Vec::new())));
+    let mut v = Value::List(OroList::new(Vec::new()));
     for _ in 0..MAX_DEPTH + 10 {
-        v = Value::List(Rc::new(RefCell::new(vec![v])));
+        v = Value::List(OroList::new(vec![v]));
     }
     let e = stringify(&v, None).expect_err("past the limit");
     assert_eq!(e, "maximum recursion depth exceeded");
     assert_eq!(classify(&e), None, "the VM's own table answers this one");
 
-    let cycle = Rc::new(RefCell::new(Vec::new()));
+    let cycle = OroList::new(Vec::new());
     cycle.borrow_mut().push(Value::List(cycle.clone()));
     assert_eq!(
         stringify(&Value::List(cycle.clone()), None).unwrap_err(),

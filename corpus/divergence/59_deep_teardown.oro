@@ -1,0 +1,116 @@
+# INTENTIONAL DIVERGENCE. CPython answers most of this with a RecursionError
+# (its own teardown is recursive, and `sys.setrecursionlimit` is how it hides
+# that), so the oracle cannot generate the baseline. Reviewed by hand.
+#
+# Freeing a deeply nested value must not recurse in Rust. This is a safety
+# property, not a performance one: a recursive teardown overflows the stack
+# and calls `abort()` — not a panic, not an Oro exception, nothing a program
+# can catch — and the depth is chosen by whoever built the value, which on a
+# socket is an anonymous client.
+#
+# The depths here are deliberately far past `json`'s 10 000-container cap,
+# because that cap bounds memory amplification and was never a bound on stack
+# depth. See `mod teardown` in src/value.rs.
+
+import json
+
+DEPTH = 200000
+
+
+def nest_lists(n):
+    v = []
+    i = 0
+    while i < n:
+        v = [v]
+        i = i + 1
+    return v
+
+
+def nest_dicts(n):
+    v = 0
+    i = 0
+    while i < n:
+        v = {"n": v}
+        i = i + 1
+    return v
+
+
+def nest_tuples(n):
+    v = ()
+    i = 0
+    while i < n:
+        v = (v,)
+        i = i + 1
+    return v
+
+
+class Node:
+    def __init__(self, nxt):
+        self.next = nxt
+
+
+def nest_instances(n):
+    v = null
+    i = 0
+    while i < n:
+        v = Node(v)
+        i = i + 1
+    return v
+
+
+# Each is built, then dropped by rebinding the only name holding it. A
+# recursive teardown would abort the process here rather than print anything
+# after it.
+v = nest_lists(DEPTH)
+v = 0
+print("lists freed")
+
+v = nest_dicts(DEPTH)
+v = 0
+print("dicts freed")
+
+v = nest_tuples(DEPTH)
+v = 0
+print("tuples freed")
+
+v = nest_instances(DEPTH)
+v = 0
+print("instances freed")
+
+# A mixed chain: no one container kind appears twice in a row, so a fix that
+# only broke one kind of chain would still recurse.
+v = null
+i = 0
+while i < DEPTH / 4:
+    v = [v]
+    v = (v,)
+    v = {"n": v}
+    v = [v]
+    i = i + 1
+v = 0
+print("mixed chain freed")
+
+# A value that goes out of scope at the end of a function, rather than by
+# rebinding — the same teardown, reached the other way.
+def build_and_discard(n):
+    local = nest_lists(n)
+    return n
+
+
+print(build_and_discard(DEPTH))
+
+# And the case that started this: a document off the wire, freed after use.
+# `json` refuses to build one past its cap, so the deepest it can hand back is
+# the cap itself — the point is that freeing what it *does* build is safe, and
+# that the refusal itself frees the partial structure it had already built.
+text = "[" * 10000 + "]" * 10000
+doc = json.parse(text)
+doc = 0
+print("parsed document freed")
+
+hostile = "[" * 500000
+try:
+    json.parse(hostile)
+except ValueError as e:
+    print("refused:", e)
+print("partial structure freed")

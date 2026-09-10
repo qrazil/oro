@@ -21,7 +21,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::bigint::BigInt;
-use crate::value::{OroDict, Value};
+use crate::value::{OroDict, OroList, Value};
 
 /// The deepest nesting `parse` accepts, and the deepest `stringify` will walk.
 ///
@@ -168,7 +168,7 @@ impl<'a> Parser<'a> {
                     self.skip_ws();
                     if self.i < self.b.len() && self.b[self.i] == b']' {
                         self.i += 1;
-                        Value::List(Rc::new(RefCell::new(Vec::new())))
+                        Value::List(OroList::new(Vec::new()))
                     } else {
                         self.push(&mut stack, Partial::Array(Vec::new()))?;
                         continue 'read;
@@ -214,7 +214,7 @@ impl<'a> Parser<'a> {
                                 let Some(Partial::Array(items)) = stack.pop() else {
                                     unreachable!("just matched an array")
                                 };
-                                value = Value::List(Rc::new(RefCell::new(items)));
+                                value = Value::List(OroList::new(items));
                             }
                             _ => return Err(self.unexpected_here()),
                         }

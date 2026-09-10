@@ -80,12 +80,12 @@ fn add(a: &Value, b: &Value) -> Result<Value, String> {
         (Value::List(x), Value::List(y)) => {
             let mut v = x.borrow().clone();
             v.extend(y.borrow().iter().cloned());
-            Ok(Value::List(std::rc::Rc::new(std::cell::RefCell::new(v))))
+            Ok(Value::List(crate::value::OroList::new(v)))
         }
         (Value::Tuple(x), Value::Tuple(y)) => {
             let mut v = (**x).clone();
             v.extend(y.iter().cloned());
-            Ok(Value::Tuple(std::rc::Rc::new(v)))
+            Ok(Value::Tuple(crate::value::OroTuple::new(v)))
         }
         _ => Err(type_err("+", a, b)),
     }
@@ -114,14 +114,14 @@ fn mul(a: &Value, b: &Value) -> Result<Value, String> {
             for _ in 0..count {
                 out.extend(base.iter().cloned());
             }
-            Ok(Value::List(std::rc::Rc::new(std::cell::RefCell::new(out))))
+            Ok(Value::List(crate::value::OroList::new(out)))
         }
         Value::Tuple(t) => {
             let mut out = Vec::with_capacity(t.len() * count);
             for _ in 0..count {
                 out.extend(t.iter().cloned());
             }
-            Ok(Value::Tuple(std::rc::Rc::new(out)))
+            Ok(Value::Tuple(crate::value::OroTuple::new(out)))
         }
         _ => Err(type_err("*", a, b)),
     }

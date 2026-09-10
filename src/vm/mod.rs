@@ -32,8 +32,8 @@ use crate::ast::CmpOp;
 use crate::compiler::{CaptureSource, ClassSpec, CodeObject, Op, ParamInfo, VarTarget};
 use crate::task::{TaskHandle, TaskId};
 use crate::value::{
-    BoundMethod, Class, Function, Instance, IterState, MethodKind, OroDict, RangeVal,
-    SuperProxy, Value,
+    BoundMethod, Class, Function, Instance, IterState, MethodKind, OroDict, OroList, OroTuple,
+    RangeVal, SuperProxy, Value,
 };
 use std::collections::{HashMap, VecDeque};
 use std::cell::Cell;
@@ -368,7 +368,7 @@ struct SortJob {
     reverse: bool,
     /// `Some(list)` for `list.sort()`, which sorts in place and yields None;
     /// `None` for `sorted()`, which pushes a new list.
-    in_place: Option<Rc<RefCell<Vec<Value>>>>,
+    in_place: Option<Rc<OroList>>,
 }
 
 /// Rendering a container to a string, where some elements are instances whose
@@ -519,7 +519,7 @@ enum OrdKind {
     /// `sorted(...)` / `xs.sorted()`: push a new collection of this shape.
     Sort(SeqShape),
     /// `xs.sort(...)`: write back in place and push `None`.
-    SortInPlace(Rc<RefCell<Vec<Value>>>),
+    SortInPlace(Rc<OroList>),
     /// `min` / `max` / `min_by` / `max_by`: push the winning element. `who`
     /// is the spelling the program used, so the empty-sequence message names
     /// the call that was actually written.
@@ -890,7 +890,7 @@ impl Vm {
 
     /// The list at the top of the stack (left in place), for the incremental
     /// call-argument assembly ops.
-    fn expect_list_tos(&mut self, who: &str) -> Result<Rc<RefCell<Vec<Value>>>, RuntimeError> {
+    fn expect_list_tos(&mut self, who: &str) -> Result<Rc<OroList>, RuntimeError> {
         match self.top().stack.last() {
             Some(Value::List(l)) => Ok(l.clone()),
             _ => Err(self.err(format!("internal: {who} on non-list"))),
@@ -1143,11 +1143,11 @@ impl Vm {
                 }
                 Op::BuildList(n) => {
                     let items = self.popn(n as usize);
-                    self.push(Value::List(Rc::new(RefCell::new(items))));
+                    self.push(Value::List(OroList::new(items)));
                 }
                 Op::BuildTuple(n) => {
                     let items = self.popn(n as usize);
-                    self.push(Value::Tuple(Rc::new(items)));
+                    self.push(Value::Tuple(OroTuple::new(items)));
                 }
                 Op::BuildMap(n) => {
                     let items = self.popn(2 * n as usize);
@@ -2165,7 +2165,7 @@ impl Vm {
                     .borrow()
                     .items()
                     .iter()
-                    .map(|(k, v)| Value::Tuple(Rc::new(vec![k.clone(), v.clone()])))
+                    .map(|(k, v)| Value::Tuple(OroTuple::new(vec![k.clone(), v.clone()])))
                     .collect();
                 (SeqShape::Dict, pairs)
             }
@@ -2341,7 +2341,7 @@ impl Vm {
                     let bucket = match self.wrap(d.get(key))? {
                         Some(Value::List(l)) => l,
                         _ => {
-                            let l = Rc::new(RefCell::new(Vec::new()));
+                            let l = OroList::new(Vec::new());
                             self.wrap(d.insert(key.clone(), Value::List(l.clone())))?;
                             l
                         }
@@ -2363,7 +2363,7 @@ impl Vm {
                 }
                 let rebuild = |v: Vec<Value>| Self::rebuild_shape(shape, v);
                 let pair = vec![self.wrap(rebuild(yes))?, self.wrap(rebuild(no))?];
-                self.push(Value::Tuple(Rc::new(pair)));
+                self.push(Value::Tuple(OroTuple::new(pair)));
                 return Ok(());
             }
             _ => {}
@@ -2424,8 +2424,8 @@ impl Vm {
     /// dict the elements are `(key, value)` pairs.
     fn rebuild_shape(shape: SeqShape, items: Vec<Value>) -> Result<Value, String> {
         Ok(match shape {
-            SeqShape::List => Value::List(Rc::new(RefCell::new(items))),
-            SeqShape::Tuple => Value::Tuple(Rc::new(items)),
+            SeqShape::List => Value::List(OroList::new(items)),
+            SeqShape::Tuple => Value::Tuple(OroTuple::new(items)),
             SeqShape::Dict => {
                 let mut d = crate::value::OroDict::new();
                 for entry in items {
@@ -2558,7 +2558,7 @@ impl Vm {
                     let job = self.task.mat_jobs.last_mut().expect("materialise job");
                     let items = std::mem::take(&mut job.items);
                     let idx = job.idx;
-                    job.args[idx] = Value::List(Rc::new(RefCell::new(items)));
+                    job.args[idx] = Value::List(OroList::new(items));
                     job.idx += 1;
                 }
             }
@@ -2654,7 +2654,7 @@ impl Vm {
         items: Vec<Value>,
         keyfn: Option<Value>,
         reverse: bool,
-        in_place: Option<Rc<RefCell<Vec<Value>>>>,
+        in_place: Option<Rc<OroList>>,
     ) -> Result<(), RuntimeError> {
         let keyfn = match keyfn {
             Some(f) => f,
@@ -3038,7 +3038,7 @@ impl Vm {
                 CmpLevel::Seq { a: x.borrow().clone(), b: y.borrow().clone(), i: 0, op, deciding: false }
             }
             (Value::Tuple(x), Value::Tuple(y)) => {
-                CmpLevel::Seq { a: x.as_ref().clone(), b: y.as_ref().clone(), i: 0, op, deciding: false }
+                CmpLevel::Seq { a: (**x).clone(), b: (**y).clone(), i: 0, op, deciding: false }
             }
             (Value::Dict(x), Value::Dict(y)) => {
                 let (x, y) = (x.borrow(), y.borrow());
@@ -3680,7 +3680,7 @@ impl Vm {
         // `.to_str()` at the point the program knows it is text.
         fields.insert(Rc::from("stdout"), Value::bytes(output.stdout));
         fields.insert(Rc::from("stderr"), Value::bytes(output.stderr));
-        fields.insert(Rc::from("args"), Value::List(Rc::new(RefCell::new(list))));
+        fields.insert(Rc::from("args"), Value::List(OroList::new(list)));
         self.push(Value::Instance(Rc::new(Instance {
             class: self.proc_class.clone(),
             fields: RefCell::new(fields),
@@ -3846,7 +3846,7 @@ impl Vm {
     /// Build an exception instance of `class`, storing its args tuple natively.
     fn make_exception_instance(&self, class: Rc<Class>, args: Vec<Value>) -> Value {
         let mut fields = HashMap::new();
-        fields.insert(Rc::from("args"), Value::Tuple(Rc::new(args)));
+        fields.insert(Rc::from("args"), Value::Tuple(OroTuple::new(args)));
         Value::Instance(Rc::new(Instance { class, fields: RefCell::new(fields) }))
     }
 
@@ -4074,7 +4074,7 @@ impl Vm {
                 let job = self.task.mat_jobs.last_mut().expect("materialise job");
                 let items = std::mem::take(&mut job.items);
                 let idx = job.idx;
-                job.args[idx] = Value::List(Rc::new(RefCell::new(items)));
+                job.args[idx] = Value::List(OroList::new(items));
                 return self.drive_materialize();
             }
         }
@@ -4313,7 +4313,7 @@ impl Vm {
             store_param(&mut frame, p.target, value.expect("all normal params filled"));
         }
         if let Some(p) = var_param {
-            store_param(&mut frame, p.target, Value::Tuple(Rc::new(extra_positional)));
+            store_param(&mut frame, p.target, Value::Tuple(OroTuple::new(extra_positional)));
         }
         if let Some(p) = kw_param {
             store_param(&mut frame, p.target, Value::Dict(Rc::new(RefCell::new(extra_kw))));
@@ -4567,18 +4567,18 @@ fn slice_get(
             let l = l.borrow();
             if step == 1 {
                 let (start, stop) = unit_range(l.len(), lo, hi);
-                return Ok(Value::List(Rc::new(RefCell::new(l[start..stop].to_vec()))));
+                return Ok(Value::List(OroList::new(l[start..stop].to_vec())));
             }
             let idxs = slice_indices(l.len(), lo, hi, step);
-            Ok(Value::List(Rc::new(RefCell::new(idxs.into_iter().map(|i| l[i].clone()).collect()))))
+            Ok(Value::List(OroList::new(idxs.into_iter().map(|i| l[i].clone()).collect())))
         }
         Value::Tuple(t) => {
             if step == 1 {
                 let (start, stop) = unit_range(t.len(), lo, hi);
-                return Ok(Value::Tuple(Rc::new(t[start..stop].to_vec())));
+                return Ok(Value::Tuple(OroTuple::new(t[start..stop].to_vec())));
             }
             let idxs = slice_indices(t.len(), lo, hi, step);
-            Ok(Value::Tuple(Rc::new(idxs.into_iter().map(|i| t[i].clone()).collect())))
+            Ok(Value::Tuple(OroTuple::new(idxs.into_iter().map(|i| t[i].clone()).collect())))
         }
         other => Err(format!("'{}' object is not sliceable", other.type_name())),
     }
@@ -5146,7 +5146,7 @@ fn ord_defers(v: &Value) -> bool {
 }
 
 /// `sorted()` builds a new list; `list.sort()` writes back where it was.
-fn sort_kind(in_place: Option<Rc<RefCell<Vec<Value>>>>) -> OrdKind {
+fn sort_kind(in_place: Option<Rc<OroList>>) -> OrdKind {
     match in_place {
         Some(l) => OrdKind::SortInPlace(l),
         None => OrdKind::Sort(SeqShape::List),
@@ -5232,7 +5232,7 @@ fn same_object(a: &Value, b: &Value) -> bool {
 fn membership_items(container: &Value, item: &Value) -> Result<Vec<Value>, String> {
     match container {
         Value::List(l) => Ok(l.borrow().clone()),
-        Value::Tuple(t) => Ok(t.as_ref().clone()),
+        Value::Tuple(t) => Ok((**t).clone()),
         other => Err(format!(
             "internal: {} membership does not dispatch (item {})",
             other.type_name(),

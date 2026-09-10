@@ -50,7 +50,7 @@ fn reference_types_are_equal_to_themselves_and_hashable() {
     assert!(a.identity().is_some());
     assert!(Value::Int(1).identity().is_none());
     assert!(Value::str("s").identity().is_none());
-    assert!(Value::Tuple(Rc::new(vec![Value::Int(1)])).identity().is_none());
+    assert!(Value::Tuple(OroTuple::new(vec![Value::Int(1)])).identity().is_none());
 }
 
 /// A `range` is a sequence, and CPython compares it as one: same length, same
@@ -81,7 +81,7 @@ fn ranges_compare_and_hash_as_the_sequence_they_denote() {
 #[test]
 fn mutable_containers_stay_unhashable() {
     let mut d = OroDict::new();
-    let list = Value::List(Rc::new(RefCell::new(vec![Value::Int(1)])));
+    let list = Value::List(OroList::new(vec![Value::Int(1)]));
     let dict = Value::Dict(Rc::new(RefCell::new(OroDict::new())));
     for v in [list, dict] {
         let e = d.insert(v.clone(), Value::Int(0)).expect_err("must not be a key");
@@ -157,4 +157,137 @@ fn bytes_hash_as_dict_keys_and_never_collide_with_str() {
     d.insert(Value::str("k"), Value::Int(2)).unwrap();
     assert_eq!(d.len(), 2);
     assert_eq!(d.get(&Value::bytes(&b"k"[..])).unwrap().unwrap().try_equals(&Value::Int(1)), Some(true));
+}
+
+/// Freeing a value must not recurse in Rust, for *any* nesting depth.
+///
+/// This is not a performance property, it is a safety one: a recursive teardown
+/// overflows the stack and `abort()`s — no panic, no Oro exception, nothing a
+/// server can catch — and the depth is chosen by whoever built the value, which
+/// on a socket is an anonymous client.
+///
+/// A depth *limit* cannot substitute for this. The depth a recursive drop
+/// survives depends on the frame size the optimizer happened to produce: before
+/// this change, a 10 000-deep list freed fine under `--release` and aborted the
+/// test runner under `cargo test`, on a thread with a 2 MiB stack. So the
+/// numbers here are deliberately absurd — far past any limit `json` or anything
+/// else imposes — because a test that a constant happens to clear is a test of
+/// the constant, not of the property.
+///
+/// Each case runs on a thread with a *small* stack, so that a regression fails
+/// here rather than only on whichever machine has the least headroom.
+#[test]
+fn freeing_deeply_nested_values_never_recurses() {
+    fn on_a_small_stack(f: impl FnOnce() + Send + 'static) {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(f)
+            .expect("spawn")
+            .join()
+            .expect("a recursive teardown would have aborted, not unwound");
+    }
+
+    const DEEP: usize = 200_000;
+
+    // Lists.
+    on_a_small_stack(|| {
+        let mut v = Value::List(OroList::new(Vec::new()));
+        for _ in 0..DEEP {
+            v = Value::List(OroList::new(vec![v]));
+        }
+        drop(v);
+    });
+
+    // Tuples.
+    on_a_small_stack(|| {
+        let mut v = Value::Tuple(OroTuple::new(Vec::new()));
+        for _ in 0..DEEP {
+            v = Value::Tuple(OroTuple::new(vec![v]));
+        }
+        drop(v);
+    });
+
+    // Dicts, nested through the *value* side...
+    on_a_small_stack(|| {
+        let mut v = Value::None;
+        for i in 0..DEEP {
+            let mut d = OroDict::new();
+            d.insert(Value::Int(i as i64), v).expect("int keys hash");
+            v = Value::Dict(Rc::new(RefCell::new(d)));
+        }
+        drop(v);
+    });
+
+    // Instances, whose children live in a field map.
+    on_a_small_stack(|| {
+        let class = Rc::new(Class {
+            name: Rc::from("Node"),
+            base: None,
+            members: RefCell::new(HashMap::new()),
+            is_exception: false,
+        });
+        let mut v = Value::None;
+        for _ in 0..DEEP {
+            let mut fields = HashMap::new();
+            fields.insert(Rc::from("next"), v);
+            v = Value::Instance(Rc::new(Instance { class: class.clone(), fields: RefCell::new(fields) }));
+        }
+        drop(v);
+    });
+
+    // And the mixed chain, which is what a real document is: no single one of
+    // the four appears twice in a row, so a fix that only broke one kind of
+    // chain would still recurse here.
+    on_a_small_stack(|| {
+        let mut v = Value::None;
+        for i in 0..DEEP / 4 {
+            v = Value::List(OroList::new(vec![v]));
+            v = Value::Tuple(OroTuple::new(vec![v]));
+            let mut d = OroDict::new();
+            d.insert(Value::Int(i as i64), v).expect("int keys hash");
+            v = Value::Dict(Rc::new(RefCell::new(d)));
+            v = Value::List(OroList::new(vec![v]));
+        }
+        drop(v);
+    });
+}
+
+/// A container that is still shared must not be emptied when one reference to
+/// it goes away — the teardown unlinks children only when it holds the *last*
+/// reference, which is exactly when the drop glue would otherwise recurse.
+#[test]
+fn teardown_only_unlinks_the_last_reference() {
+    let shared = OroList::new(vec![Value::Int(1), Value::Int(2)]);
+    let a = Value::List(shared.clone());
+    let b = Value::List(shared.clone());
+    drop(a);
+    assert_eq!(shared.borrow().len(), 2, "dropping one reference emptied the list");
+    match &b {
+        Value::List(l) => assert_eq!(l.borrow()[1].repr(), "2"),
+        _ => unreachable!(),
+    }
+    drop(b);
+    assert_eq!(Rc::strong_count(&shared), 1);
+    assert_eq!(shared.borrow().len(), 2, "the last *Value* went, but the Rc here still holds it");
+
+    // A dict entry is a pair, and *both* halves have to be released: a teardown
+    // that unlinked only the values would leave keys to the recursive glue.
+    // Shown by refcount rather than by depth, because a deep key cannot be
+    // built — hashing a nested tuple recurses, which is a separate limit this
+    // change does not touch (see the note in `mod teardown`).
+    let key_items = OroTuple::new(vec![Value::Int(7)]);
+    let mut d = OroDict::new();
+    d.insert(Value::Tuple(key_items.clone()), Value::None).expect("a tuple of ints hashes");
+    assert_eq!(Rc::strong_count(&key_items), 2);
+    drop(Value::Dict(Rc::new(RefCell::new(d))));
+    assert_eq!(Rc::strong_count(&key_items), 1, "the key half of the entry was not released");
+
+    // Cycles are collected by neither scheme — Oro has no GC — but tearing one
+    // down must still terminate rather than spin or recurse.
+    let cycle = OroList::new(Vec::new());
+    cycle.borrow_mut().push(Value::List(cycle.clone()));
+    let outer = Value::List(OroList::new(vec![Value::List(cycle.clone())]));
+    drop(outer);
+    assert_eq!(Rc::strong_count(&cycle), 2, "the self-reference is what keeps it alive");
+    cycle.borrow_mut().clear();
 }

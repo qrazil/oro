@@ -3,10 +3,9 @@
 //! (`p.search`, …) go through here. Match spans are reported as character
 //! offsets (Python semantics), converted from the crate's byte offsets.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::value::{OroMatch, OroRegex, Value};
+use crate::value::{OroList, OroMatch, OroRegex, OroTuple, Value};
 
 pub type RResult<T> = Result<T, String>;
 
@@ -80,17 +79,17 @@ pub fn findall(re: &regex::Regex, s: &str) -> Value {
             let tup: Vec<Value> = (1..=ngroups)
                 .map(|i| Value::str(caps.get(i).map(|m| m.as_str()).unwrap_or("").to_string()))
                 .collect();
-            out.push(Value::Tuple(Rc::new(tup)));
+            out.push(Value::Tuple(OroTuple::new(tup)));
         }
     }
-    Value::List(Rc::new(RefCell::new(out)))
+    Value::List(OroList::new(out))
 }
 
 /// `re.finditer`: a list of match objects (iterable by `for`), each carrying
 /// group spans and texts — the positions users need for two-pass techniques.
 pub fn finditer(re: &regex::Regex, s: &str) -> Value {
     let out: Vec<Value> = re.captures_iter(s).map(|caps| match_from_caps(&caps, s)).collect();
-    Value::List(Rc::new(RefCell::new(out)))
+    Value::List(OroList::new(out))
 }
 
 pub fn sub(re: &regex::Regex, repl: &str, s: &str) -> Value {
@@ -100,7 +99,7 @@ pub fn sub(re: &regex::Regex, repl: &str, s: &str) -> Value {
 
 pub fn split(re: &regex::Regex, s: &str) -> Value {
     let out: Vec<Value> = re.split(s).map(|p| Value::str(p.to_string())).collect();
-    Value::List(Rc::new(RefCell::new(out)))
+    Value::List(OroList::new(out))
 }
 
 /// `m.group(n)` — group 0 (or no arg) is the whole match; `None` if the group

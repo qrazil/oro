@@ -1816,20 +1816,52 @@ The discipline is the one the VM already keeps: **the codec never recurses into
 the Rust stack.** Both directions walk an explicit stack, so a document nested a
 million deep is a heap allocation per level and never a frame.
 
-That is necessary and not sufficient, because heap is also finite and the client
-is choosing how much of it to ask for: one byte of `[` buys a container, so an
-unbounded parser turns a 200 KB request into 200 000 live `Rc` allocations, a
-32x amplification from input the read limit already permitted. So there is a cap
-— **10 000 open containers** — chosen this way:
+**That is necessary and it is not sufficient, and the first version of this
+section got the reason wrong.** It claimed the depth cap also covered "the one
+place a native codec still touches the Rust stack: dropping the finished value",
+because `Value`'s drop glue is recursive. That is not a bound, it is a
+coincidence. The depth a recursive teardown survives is a function of the frame
+size the optimizer happened to emit — the cap of 10 000 cleared a `--release`
+build's stack and *aborted* a `cargo test` one on a 2 MiB thread — so the
+constant would have had to be re-tuned for every Rust upgrade, every change to
+`Value`'s layout, and every frame added to the drop chain, and getting it wrong
+in release is a `SIGABRT` that no `except` can catch.
+
+So teardown was made iterative instead (`mod teardown` in `src/value.rs`): when
+the last reference to a container goes away its children are moved to a
+thread-local worklist and the container is freed empty, and the outermost drop
+drains the worklist in a loop. Stack depth is now constant in the nesting depth.
+A 1 000 000-deep list builds and frees in a debug build, where 100 000 used to
+abort. **This was never a JSON bug** — a deeply nested list built by a `while`
+loop in Oro aborted exactly the same way, and had since containers existed;
+moving the parser to Rust is only what made someone look.
+
+It is not free, and the shape of the bill is worth recording because it is the
+same lesson as the reactor's. The obvious spelling, `impl Drop for Value`, taxes
+*every* value drop in the program — integers included — and cost **+7.7% on
+`loop`** and **+4.3% on `fib`**, two benchmarks with no container in them at
+all. Hooking the four container *payloads* instead (`OroList`, `OroTuple`,
+`OroDict`, `Instance`; the first two are newtypes that exist for no other
+reason) puts the cost only on programs that free containers: the general suite
+came back inside noise, and what is left is about **1-2%** there and **6-7% on
+`json`**, which frees more containers per second than anything else in the
+suite. That is the price of the abort not being reachable, on a benchmark that
+still runs 60x faster than the module it replaced, and it is worth paying.
+
+What the cap is *actually* for, and all it is for, is **memory amplification**.
+One byte of `[` buys a heap container, so an unbounded parser turns a 200 KB
+request into 200 000 live `Rc` allocations — 32x, from input the read limit
+already permitted. **10 000 open containers**, chosen this way:
 
 - Above anything real by three orders of magnitude. Deployed JSON does not nest
   past about thirty.
 - The same order as CPython's own ceiling, so a document CPython reads Oro
   reads. (CPython's C accelerator takes 5 000 and raises `RecursionError` at
   20 000.)
-- It also bounds the one place a native codec *still* touches the Rust stack:
-  dropping the finished value. `Value`'s `Drop` is recursive, so a 10 000-deep
-  result is what has to unwind, and that fits the main stack comfortably.
+- And it is no longer load-bearing for safety, which is the point: raising it,
+  lowering it or deleting it changes how much memory a client can ask for and
+  nothing else. That is a number worth arguing about. A number that decides
+  whether the process aborts is not.
 
 **This is a behaviour change and it is worth saying so plainly.** Documents
 nested between 10 001 and roughly 66 000 deep used to parse and now do not. The
@@ -1845,6 +1877,13 @@ encoder produced, and an existing `except RuntimeError` still catches it.
 The transferable rule: **moving a loop into the runtime moves its failure modes
 into the runtime too.** Whatever the VM was doing for that code by accident, the
 native version has to do on purpose.
+
+And a second one, which cost more to learn: **a limit is not a bound unless the
+thing it bounds is measurable in the same units.** "10 000 containers" is a
+bound on allocations; it was never a bound on stack bytes, and dressing it up as
+one hid a real abort behind a constant that only happened to be small enough in
+one build profile. When a limit is doing two jobs, the second one is usually the
+one that is wrong.
 
 #### 5. And a general finding that outlived the JSON question
 

@@ -416,6 +416,100 @@ The `step == 1` case is now a byte-range copy: O(1) index arithmetic for ASCII,
 one walk to the end offset otherwise. `bytes`, `list` and `tuple` got the same
 treatment. Verified against CPython on 1205 slice cases, byte-identical.
 
+### Freeing a nested value was recursive, and that was an `abort()`
+
+Not found by a benchmark — found by running `cargo test` in the profile the
+project's gate actually uses. The JSON depth test passed under `--release` and
+**aborted the test runner under plain `cargo test`**, because freeing a value is
+naturally recursive (a list's drop glue drops its elements, each of which may be
+a list) and a debug build's frames are larger. A stack overflow is `abort()`:
+not a panic, not an Oro exception, nothing a program can catch.
+
+It was never a JSON bug. A list nested by a `while` loop in pure Oro aborted the
+same way, and had since containers existed:
+
+| | before | after |
+|---|---|---|
+| 100 000-deep list, debug build | `SIGABRT` | frees |
+| 300 000-deep list, release build | `SIGABRT` | frees |
+| 1 000 000-deep list, debug build | `SIGABRT` | frees |
+
+Teardown is now a worklist rather than a call stack (`mod teardown` in
+`src/value.rs`): a container's `Drop` moves its children into a thread-local
+queue and leaves an empty container for the glue to free, and the outermost drop
+drains the queue in a loop. Stack depth is constant in nesting depth.
+
+**Where the hook goes was the whole performance story, and it took four
+measured attempts.** The obvious spelling — `impl Drop for Value` — taxes
+*every* value drop in the program, integers included:
+
+| bench | `Drop for Value` |
+|---|---|
+| `loop` | **+7.74%** min, **+8.61%** median |
+| `fib` | **+4.27%** min, **+4.84%** median |
+
+on two benchmarks that contain no container at all. Moving the hook onto the
+four container *payloads* (`OroList`, `OroTuple`, `OroDict`, `Instance` — the
+first two are newtypes that exist for no other reason) means only a program that
+frees a container pays. Three further rounds went after what was left, and it is
+worth recording which ones paid, because two of the three did not:
+
+| attempt | effect |
+|---|---|
+| hook on the payloads, not on `Value` | `loop`/`fib` back to zero — the whole win |
+| `#[inline(never)]` on the four drops | nothing (the cost was not glue size) |
+| stop allocating a `Vec` per dict/instance freed | real; `oo`/`exc` recovered ~1% |
+| one thread-local access per *level* instead of per node | small, kept |
+| skip the queue entirely for all-leaf containers | nothing measurable, kept on principle |
+
+A probe build — the newtypes present, the `Drop` bodies emptied — measured
+**within noise of the original**, which is what established that the residual
+cost is the worklist itself and not the type change or code layout.
+
+**What it costs, finally.** Interleaved A/B, pinned, best-of-21, against an A/A
+control taken in the same session:
+
+| bench | A/A floor | Δ min | Δ median |
+|---|---|---|---|
+| `fib` | +0.02% | −0.15% | +0.68% |
+| `loop` | −0.74% | +1.07% | +0.51% |
+| `strjoin` | −0.44% | +4.04% | +1.59% |
+| `strops` | −0.41% | +1.54% | +0.90% |
+| `dictops` | +0.19% | +3.71% | +3.20% |
+| `oo` | +0.60% | +0.86% | +2.46% |
+| `genpipe` | −0.10% | −1.87% | −0.55% |
+| `exc` | −0.21% | +2.36% | +2.52% |
+| `listbuild` | −0.20% | +1.27% | +0.97% |
+| `builtins` | −0.28% | +2.62% | +2.38% |
+| `chain` | +0.52% | +1.13% | +2.03% |
+| `json` | −2.67% | +7.99% | **+6.50%** |
+
+About 1-2% on the general suite and 6-7% on `json`, which frees more containers
+per second than anything else here — and note `json`'s own A/A floor is ±3%, so
+its true cost is nearer 5% than 8%. That is the price of an `abort()` reachable
+from socket input not being reachable, on a benchmark that still runs 60x faster
+than the module it replaced.
+
+### The branch, end to end
+
+`d65e900` (the branch point) against the tip, same harness, best-of-21. The
+slice fix more than pays for the teardown everywhere except `dictops`:
+
+| bench | Δ min | Δ median |
+|---|---|---|
+| `fib` | −2.04% | −1.83% |
+| `loop` | −4.20% | −4.18% |
+| `strjoin` | −3.76% | −3.05% |
+| `strops` | −1.63% | −0.80% |
+| `dictops` | +2.16% | +2.20% |
+| `oo` | −0.63% | +0.29% |
+| `genpipe` | −5.90% | −3.01% |
+| `exc` | −0.20% | +0.04% |
+| `listbuild` | **−8.87%** | **−8.88%** |
+| `builtins` | −0.79% | −1.28% |
+| `chain` | −3.10% | −2.86% |
+| `json` | | **6.52s → 0.11s** |
+
 ### An instance attribute costs 2.07x a local
 
 `std/json.oro` held its parse cursor in `self.pos`, and its own comment blamed
@@ -459,6 +553,9 @@ Read against this machine's A/A floor, which the mio section below records as
 mean +0.19% and worst 1.80% pinned (and up to +5% un-pinned). Every benchmark
 is inside that band or on the good side of it, so the honest reading is "no
 change, possibly a small win from the slice path" rather than a claimed 1.2%.
+
+(That was measured before the iterative teardown below, which is the other half
+of the bill. "The branch, end to end" further down is the number that counts.)
 
 ## What is left, ranked
 

@@ -11,7 +11,7 @@ use std::fmt::Write as _;
 use std::rc::Rc;
 
 use crate::bigint::BigInt;
-use crate::value::{Builtin, OroDict, OroStr, RangeVal, VResult, Value};
+use crate::value::{Builtin, OroDict, OroList, OroStr, OroTuple, RangeVal, VResult, Value};
 
 /// The body of a builtin the VM dispatches itself. Unreachable through the
 /// interpreter, which checks the name first; it exists so every global has the
@@ -331,7 +331,7 @@ fn bi_sorted(args: Vec<Value>) -> VResult<Value> {
     };
     let mut items = crate::vm::iterate_to_vec(iterable)?;
     sort_values(&mut items)?;
-    Ok(Value::List(Rc::new(RefCell::new(items))))
+    Ok(Value::List(OroList::new(items)))
 }
 
 /// The error a native ordering answers with when it meets an operand whose
@@ -516,15 +516,15 @@ fn bi_enumerate(args: Vec<Value>) -> VResult<Value> {
     let items = crate::vm::iterate_to_vec(it)?;
     let mut out = Vec::with_capacity(items.len());
     for (i, v) in items.into_iter().enumerate() {
-        out.push(Value::Tuple(Rc::new(vec![Value::Int(start + i as i64), v])));
+        out.push(Value::Tuple(OroTuple::new(vec![Value::Int(start + i as i64), v])));
     }
-    Ok(Value::List(Rc::new(RefCell::new(out))))
+    Ok(Value::List(OroList::new(out)))
 }
 
 /// `zip(a, b, ...)`, truncating to the shortest input. Eager, like `enumerate`.
 fn bi_zip(args: Vec<Value>) -> VResult<Value> {
     if args.is_empty() {
-        return Ok(Value::List(Rc::new(RefCell::new(Vec::new()))));
+        return Ok(Value::List(OroList::new(Vec::new())));
     }
     let mut cols = Vec::with_capacity(args.len());
     for a in &args {
@@ -534,9 +534,9 @@ fn bi_zip(args: Vec<Value>) -> VResult<Value> {
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         let row: Vec<Value> = cols.iter().map(|c| c[i].clone()).collect();
-        out.push(Value::Tuple(Rc::new(row)));
+        out.push(Value::Tuple(OroTuple::new(row)));
     }
-    Ok(Value::List(Rc::new(RefCell::new(out))))
+    Ok(Value::List(OroList::new(out)))
 }
 
 fn bi_any(args: Vec<Value>) -> VResult<Value> {
@@ -1440,7 +1440,7 @@ fn cast_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
         "to_list" => {
             exactly(&args, 0, "to_list")?;
             let items = crate::vm::iterate_to_vec(recv)?;
-            Ok(Value::List(Rc::new(RefCell::new(items))))
+            Ok(Value::List(OroList::new(items)))
         }
         "to_dict" => {
             exactly(&args, 0, "to_dict")?;
@@ -1517,7 +1517,7 @@ fn seq_parts(recv: &Value, who: &str) -> VResult<(Shape, Vec<Value>)> {
             d.borrow()
                 .items()
                 .iter()
-                .map(|(k, v)| Value::Tuple(Rc::new(vec![k.clone(), v.clone()])))
+                .map(|(k, v)| Value::Tuple(OroTuple::new(vec![k.clone(), v.clone()])))
                 .collect(),
         ),
         Value::Range(_) => (Shape::List, crate::vm::iterate_to_vec(recv)?),
@@ -1539,8 +1539,8 @@ enum Shape {
 
 fn rebuild(shape: Shape, items: Vec<Value>) -> VResult<Value> {
     Ok(match shape {
-        Shape::List => Value::List(Rc::new(RefCell::new(items))),
-        Shape::Tuple => Value::Tuple(Rc::new(items)),
+        Shape::List => Value::List(OroList::new(items)),
+        Shape::Tuple => Value::Tuple(OroTuple::new(items)),
         Shape::Dict => {
             let mut d = OroDict::new();
             for entry in items {
@@ -1648,7 +1648,7 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
             for v in &items {
                 out.extend(crate::vm::iterate_to_vec(v)?);
             }
-            Ok(Value::List(Rc::new(RefCell::new(out))))
+            Ok(Value::List(OroList::new(out)))
         }
         "chunk" => {
             let n = opt_int_arg(&args, 0, "chunk", 0)?;
@@ -1657,9 +1657,9 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
             }
             let out: Vec<Value> = items
                 .chunks(n as usize)
-                .map(|c| Value::List(Rc::new(RefCell::new(c.to_vec()))))
+                .map(|c| Value::List(OroList::new(c.to_vec())))
                 .collect();
-            Ok(Value::List(Rc::new(RefCell::new(out))))
+            Ok(Value::List(OroList::new(out)))
         }
         "zip" => {
             let other = crate::vm::iterate_to_vec(
@@ -1668,18 +1668,18 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
             let out: Vec<Value> = items
                 .iter()
                 .zip(other.iter())
-                .map(|(a, b)| Value::Tuple(Rc::new(vec![a.clone(), b.clone()])))
+                .map(|(a, b)| Value::Tuple(OroTuple::new(vec![a.clone(), b.clone()])))
                 .collect();
-            Ok(Value::List(Rc::new(RefCell::new(out))))
+            Ok(Value::List(OroList::new(out)))
         }
         "enumerate" => {
             let start = opt_int_arg(&args, 0, "enumerate", 0)?;
             let out: Vec<Value> = items
                 .into_iter()
                 .enumerate()
-                .map(|(i, v)| Value::Tuple(Rc::new(vec![Value::Int(start + i as i64), v])))
+                .map(|(i, v)| Value::Tuple(OroTuple::new(vec![Value::Int(start + i as i64), v])))
                 .collect();
-            Ok(Value::List(Rc::new(RefCell::new(out))))
+            Ok(Value::List(OroList::new(out)))
         }
         "join" => {
             // `xs.join(", ")` rather than `", ".join(xs)`: the separator is the
@@ -1874,7 +1874,7 @@ fn str_method(
                 }
             };
             let parts = parts.into_iter().map(Value::str).collect::<Vec<_>>();
-            Ok(Value::List(Rc::new(RefCell::new(parts))))
+            Ok(Value::List(OroList::new(parts)))
         }
         "join" => {
             exactly(&args, 1, "join")?;
@@ -2252,7 +2252,7 @@ fn bytes_method(
                 }
             };
             let parts = parts.into_iter().map(Value::bytes).collect::<Vec<_>>();
-            Ok(Value::List(Rc::new(RefCell::new(parts))))
+            Ok(Value::List(OroList::new(parts)))
         }
         "join" => {
             exactly(&args, 1, "join")?;
@@ -2286,7 +2286,7 @@ fn bytes_method(
     }
 }
 
-fn list_method(l: &Rc<RefCell<Vec<Value>>>, name: &str, args: Vec<Value>) -> VResult<Value> {
+fn list_method(l: &Rc<OroList>, name: &str, args: Vec<Value>) -> VResult<Value> {
     match name {
         "append" => {
             exactly(&args, 1, "append")?;
@@ -2369,11 +2369,11 @@ fn dict_method(d: &Rc<RefCell<OroDict>>, name: &str, args: Vec<Value>) -> VResul
         }
         "keys" => {
             exactly(&args, 0, "keys")?;
-            Ok(Value::List(Rc::new(RefCell::new(d.borrow().keys()))))
+            Ok(Value::List(OroList::new(d.borrow().keys())))
         }
         "values" => {
             exactly(&args, 0, "values")?;
-            Ok(Value::List(Rc::new(RefCell::new(d.borrow().values()))))
+            Ok(Value::List(OroList::new(d.borrow().values())))
         }
         "items" => {
             exactly(&args, 0, "items")?;
@@ -2381,9 +2381,9 @@ fn dict_method(d: &Rc<RefCell<OroDict>>, name: &str, args: Vec<Value>) -> VResul
                 .borrow()
                 .items()
                 .iter()
-                .map(|(k, v)| Value::Tuple(Rc::new(vec![k.clone(), v.clone()])))
+                .map(|(k, v)| Value::Tuple(OroTuple::new(vec![k.clone(), v.clone()])))
                 .collect();
-            Ok(Value::List(Rc::new(RefCell::new(items))))
+            Ok(Value::List(OroList::new(items)))
         }
         _ => Err(format!("'dict' object has no method '{name}'")),
     }

@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::value::{Builtin, Module, OroDict, Value};
+use crate::value::{Builtin, Module, OroDict, OroList, OroTuple, Value};
 
 /// Build the module named `name`, or `None` if it is not a built-in module.
 /// `argv` seeds `sys.argv`.
@@ -59,7 +59,7 @@ fn build_sys(argv: &[String]) -> Value {
     module(
         "sys",
         vec![
-            ("argv", Value::List(Rc::new(RefCell::new(argv_list)))),
+            ("argv", Value::List(OroList::new(argv_list))),
             ("exit", builtin("sys.exit", sys_exit)),
             ("platform", Value::str("oro")),
             // Real fd-backed byte streams, not name placeholders. They are
@@ -405,7 +405,7 @@ fn os_listdir(args: Vec<Value>) -> Result<Value, String> {
         let entry = entry.map_err(|e| e.to_string())?;
         names.push(Value::str(entry.file_name().to_string_lossy().into_owned()));
     }
-    Ok(Value::List(Rc::new(RefCell::new(names))))
+    Ok(Value::List(OroList::new(names)))
 }
 
 fn os_remove(args: Vec<Value>) -> Result<Value, String> {
@@ -480,7 +480,7 @@ fn path_splitext(args: Vec<Value>) -> Result<Value, String> {
         Some(i) => (path[..i].to_string(), path[i..].to_string()),
         None => (path.clone(), String::new()),
     };
-    Ok(Value::Tuple(Rc::new(vec![Value::str(root), Value::str(ext)])))
+    Ok(Value::Tuple(OroTuple::new(vec![Value::str(root), Value::str(ext)])))
 }
 
 // --- helpers -----------------------------------------------------------------
