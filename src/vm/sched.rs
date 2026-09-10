@@ -287,17 +287,27 @@ impl Vm {
                 }
             }
 
-            match self.ready.pop_front() {
-                Some(next) => self.task = next,
-                None if self.parked.is_empty() => break,
-                None => {
-                    if !self.wait_for_external() {
-                        // Main returned (or a task ended) with peers still
-                        // blocked forever: the implicit join-all can never
-                        // complete.
-                        return Err(self.deadlock_stuck(line, col));
-                    }
+            // Pick the next task. Written as a loop rather than a match so
+            // that when `wait_for_external` becomes the reactor — the only
+            // thing that can make a task runnable without another task doing
+            // it — the tasks it wakes are picked up here instead of being
+            // stranded behind a spent placeholder.
+            let next = loop {
+                if let Some(t) = self.ready.pop_front() {
+                    break Some(t);
                 }
+                if self.parked.is_empty() {
+                    break None;
+                }
+                if !self.wait_for_external() {
+                    // Main returned (or a task ended) with peers still blocked
+                    // forever: the implicit join-all can never complete.
+                    return Err(self.deadlock_stuck(line, col));
+                }
+            };
+            match next {
+                Some(t) => self.task = t,
+                None => break,
             }
         }
         // Restore the main task so `last_locals` — the module namespace — is
@@ -333,12 +343,15 @@ impl Vm {
         }
     }
 
+    /// The same failure seen from the other side: a task *ended*, and what is
+    /// left cannot proceed. Whether main is among the blocked is deliberately
+    /// not claimed — it may well be.
     fn deadlock_stuck(&self, line: u32, col: u32) -> RuntimeError {
         let mut waits: Vec<String> = self.parked.values().map(|p| p.park.what()).collect();
         waits.sort();
         RuntimeError {
             message: format!(
-                "deadlock: the main task finished but {} task(s) can never finish ({})",
+                "deadlock: nothing is runnable and {} task(s) are blocked forever ({})",
                 self.parked.len(),
                 waits.join(", ")
             ),
