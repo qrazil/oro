@@ -83,5 +83,14 @@ routes.add("GET", "/boom", boom)
 addr = "127.0.0.1:8080"
 if len(sys.argv) > 1:
     addr = sys.argv[1]
-print(f"serving on http://{addr}  — ctrl-c to stop")
-http.serve(addr, logged(req => routes.dispatch(req)))
+# `serve` sends the bound listener down `ready` before it accepts anything, so
+# the banner names the port the kernel actually gave us — and is not printed at
+# all if the bind fails.
+ready = chan()
+
+def announce():
+    ln = ready.recv()
+    print(f"serving on http://{ln.local}  — ctrl-c to stop")
+
+spawn(announce)
+http.serve(addr, logged(req => routes.dispatch(req)), ready)
