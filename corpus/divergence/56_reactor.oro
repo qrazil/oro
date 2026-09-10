@@ -1,0 +1,162 @@
+# INTENTIONAL DIVERGENCE.
+# The reactor (docs/stdlib-server-design.md §3, milestone M3b) has no CPython
+# counterpart to be diffed against. CPython's answer to this shape is asyncio,
+# where every one of these lines would be an `async def` with an `await` in
+# front of the I/O; Oro's is that there is no colour — `conn.read(64)` is the
+# same call in a task as it is at the top level, and the runtime is what knows
+# the difference. Nothing here runs under CPython, so the baseline is reviewed
+# by hand.
+#
+# Timing is also the one thing a corpus file must not print. Every line below
+# prints a *claim in words* — "the fast one finished while the slow one was
+# still waiting" — which is deterministic on any host and fails loudly when it
+# stops being true. A transcript of milliseconds would be neither.
+#
+# The two rules 42_net.oro set stand here too: ephemeral ports only (`:0`, and
+# read the port back), and a deadline on everything that could hang.
+import net
+import time
+
+# --- time.sleep parks the task, not the VM ----------------------------------
+# It was `std::thread::sleep`, which stopped every task in the process. Three
+# tasks sleeping 60 ms each therefore used to take 180 ms and now take 60 —
+# printed as the claim rather than the number, because the number is the
+# machine's and the claim is the language's.
+def nap(name):
+    time.sleep(0.06)
+    return name
+
+t0 = time.monotonic()
+a = spawn(nap, "a")
+b = spawn(nap, "b")
+c = spawn(nap, "c")
+naps = [a.join(), b.join(), c.join()]
+overlapped = time.monotonic() - t0
+print("three sleeping tasks all finished:", naps == ["a", "b", "c"])
+print("and they overlapped rather than queueing:", overlapped < 0.15)
+
+# --- Two sockets, and the second one delivers first --------------------------
+# The test that tells a scheduler from a queue. A runtime that runs each task to
+# completion in spawn order passes every echo-server demo and fails this,
+# because `first` is parked with nothing to read while `second`'s bytes are
+# already in the kernel.
+ln = net.listen("127.0.0.1:0")
+one = net.dial(ln.local)
+s_one = ln.accept()
+two = net.dial(ln.local)
+s_two = ln.accept()
+log = []
+
+def reader(name, s):
+    s.set_timeout(10)
+    log.append(name + " got " + s.read(64).to_str())
+
+r1 = spawn(reader, "first", s_one)
+r2 = spawn(reader, "second", s_two)
+two.write(b"B")
+r2.join()
+print("the second reader finished while the first was still parked:", log == ["second got B"])
+one.write(b"A")
+r1.join()
+print("and then the first one did:", log == ["second got B", "first got A"])
+
+# --- A write bigger than the send buffer parks, and still writes all of it ---
+# §2 gives `write(b)` an all-or-raises contract and no return value, so a
+# partial write is the runtime's problem and no caller can be told about it.
+# Nothing reads for the first stretch, so the buffer fills long before 8 MiB is
+# out and the write has to park in the middle.
+payload = b"x" * 1024 * 8192
+progress = []
+received = []
+
+def sender():
+    s_one.write(payload)
+    progress.append("write returned")
+    s_one.shutdown_write()
+
+def receiver():
+    got = 0
+    while true:
+        part = one.read(65536)
+        if part == b"":
+            break
+        got = got + len(part)
+    received.append(got)
+
+def meanwhile():
+    i = 0
+    while i < 3:
+        progress.append("ran while the write was parked")
+        yield_now()
+        i = i + 1
+
+snd = spawn(sender)
+mid = spawn(meanwhile)
+# Nothing drains the socket for this stretch, so the send buffer is full and the
+# write is parked mid-payload before the reader ever starts.
+time.sleep(0.05)
+rcv = spawn(receiver)
+snd.join()
+rcv.join()
+mid.join()
+print("the write parked and other tasks ran:", progress[0] == "ran while the write was parked")
+print("and every byte still arrived:", received == [len(payload)])
+
+# --- A deadline expires while another task keeps running --------------------
+# `set_timeout` used to be `SO_RCVTIMEO`, which the kernel enforced by making
+# the whole VM wait. It is a scheduler deadline now, it raises the same
+# `TimeoutError` it always did, and the ticker proves the VM was not waiting
+# with it.
+s_two.set_timeout(0.12)
+ticks = []
+
+def waiter():
+    try:
+        s_two.read(64)
+        return "the read returned, which it must not have"
+    except TimeoutError as e:
+        return str(e)
+
+def ticker():
+    i = 0
+    while i < 3:
+        ticks.append(i)
+        time.sleep(0.03)
+        i = i + 1
+
+w = spawn(waiter)
+tk = spawn(ticker)
+answer = w.join()
+tk.join()
+print("the deadline raised:", answer)
+print("and another task ran while it waited:", len(ticks) == 3)
+
+# --- Closing a stream a task is parked on raises, and does not panic --------
+# The hazard `src/net.rs` recorded: a parked read used to hold the stream's
+# interior borrow across the syscall, so a second task's `close()` was a
+# `BorrowMutError` panic — a dead process, not a catchable exception. It is
+# unreachable by construction now (`Park` has no lifetime, so a parking site
+# cannot carry the borrow and would not compile), and this is the check that
+# "unreachable by construction" is a fact rather than a claim.
+s_two.set_timeout(null)
+
+def parked_reader():
+    try:
+        s_two.read(64)
+        return "the read returned, which it must not have"
+    except ValueError as e:
+        return str(e)
+
+def closer():
+    time.sleep(0.02)
+    s_two.close()
+
+pr = spawn(parked_reader)
+cl = spawn(closer)
+print("closing under a parked reader:", pr.join())
+cl.join()
+print("and the VM is still alive to say so")
+
+one.close()
+two.close()
+ln.close()

@@ -40,9 +40,10 @@
 //! method in `crate::stream` now takes its borrow, tries the syscall and drops
 //! it before answering `Io::Block`; `close()` therefore always finds the
 //! `RefCell` free, and the scheduler raises a plain `ValueError` in whoever was
-//! parked. `close_wakes_a_parked_reader` in `crate::vm::tests` is the check,
-//! and it is written even though the compiler makes the panic unreachable,
-//! because "unreachable by construction" is a claim.
+//! parked. `closing_a_stream_a_task_is_parked_on_raises_and_never_panics` in
+//! `tests/reactor.rs` is the check, and it is written even though the compiler
+//! makes the panic unreachable, because "unreachable by construction" is a
+//! claim and this is how a claim gets checked.
 //!
 //! Not here, on purpose: UDP (not a stream, so it cannot satisfy the io
 //! protocol), Unix domain sockets, TLS, and `SO_REUSEPORT` scale-out.

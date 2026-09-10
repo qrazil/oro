@@ -1256,18 +1256,28 @@ carry two, and the second is the one that touches syscalls. That sentence should
 be rewritten deliberately, with both exceptions and both reasons in it, rather
 than quietly amended.
 
-*Done, ahead of the crate itself.* The claim is now a stated policy — minimal
-and steady library imports on the Rust side, each taken for a problem that is
-hard rather than tedious, each named with its reason — which is a thing that can
-survive a second entry, where a count could only be defended or abandoned. mio
-is described there as coming rather than present, and is deliberately still
-absent from `Cargo.toml`: a dependency declared before it is needed is a
-dependency nobody re-argues.
+*Done, ahead of the crate itself, and then done again when it landed.* The
+claim is now a stated policy — minimal and steady library imports on the Rust
+side, each taken for a problem that is hard rather than tedious, each named with
+its reason — which is a thing that can survive a second entry, where a count
+could only be defended or abandoned. mio is described there as present, with the
+reason and the measured cost.
 
-**The static-musl-linkable requirement survives intact.** `libc` is a *bindings*
-crate — declarations, not an implementation — so musl still links statically.
-That stays a release-gate check rather than an assumption, alongside the
-binary-size delta.
+**The crate table above is right about what is *built* and wrong about what a
+lockfile records.** Three crates compile on Linux — `mio`, `libc`, `log` — and
+that is the number the dependency argument turns on. `Cargo.lock` gained six
+entries, because a lockfile is platform-independent and mio names `wasi` and
+`windows-sys` (which pulls `windows-link`) as target-gated dependencies. Nothing
+in that half of the graph is ever downloaded to build, compiled, or linked on
+Linux or macOS. A future milestone reviewing the lock diff should expect six and
+count three; the discrepancy is Cargo's, not the design's.
+
+**The static-musl-linkable requirement survives intact, measured rather than
+assumed.** `libc` is a *bindings* crate — declarations, not an implementation —
+so musl still links statically: `cargo build --release --target
+x86_64-unknown-linux-musl` produces a `static-pie linked` binary that runs the
+whole reactor test suite under musl's own epoll bindings. mio cost 16 KiB, 0.6%
+of the binary, on both the gnu and musl targets.
 
 **The one real thing mio lacks is timers**, and timers are the whole of what
 tokio would have added here. They are also the piece Oro is best placed to
@@ -1284,6 +1294,39 @@ none of those concepts exist in the mio version. What replaces them is smaller
 than any of them — a `Poll`, a `Token` per registered fd mapping to a `TaskId`,
 an `Events` buffer, and one `poll(&mut events, timeout)` call at the point where
 the ready queue empties.
+
+**What the build changed about this section.** Three things, none of them the
+framing.
+
+*The reactor is smaller than the sketch above suggests, and one thing in it is
+not.* A `Poll`, a `Token` per fd, an `Events` buffer and one `poll` call is
+exactly what it is — but the token cannot be "a `TaskId`" quite as written. A
+task parks on at most one operation, so `Token(task_id)` looks sufficient; what
+breaks it is that a token identifies an *fd registration*, and a socket outlives
+the task parked on it. So the token is per-stream, handed out on the fd's first
+park and kept until the fd closes, and the reactor holds a token → *waiters* map
+with one slot per direction. That second slot is not gold-plating: §4 promises
+`io.copy(conn_out, conn_in)` is a working TCP proxy, and a proxy has a reader on
+one socket and a writer on the same socket at the same time. A second *reader*
+on one socket is refused by name, because "whose bytes are whose" has no answer
+a runtime could give.
+
+*Registration is once per stream, not once per park.* The obvious shape —
+register on park, deregister on wake — costs two syscalls on every operation
+that ever blocks. mio's epoll registration is edge-triggered, so registering for
+both directions once and leaving it costs at most one spurious retry (the
+writable edge that fires just after the fd is added) and never a spin. Closing
+the fd removes it from the kernel's epoll set on its own, so there is no
+deregistration to forget and no stale-fd hazard.
+
+*Cooperative scheduling needed one thing this document did not anticipate.*
+"`poll` at the point where the ready queue empties" is not quite enough: a task
+sleeping 10 ms while another spins on `yield_now()` never wakes, because the
+ready queue never empties. The fix is a non-blocking `poll` every 64 task
+switches — not a safepoint check in the dispatch loop, which is the thing
+"Cooperative, not preemptive" promised never to add. It is in the scheduler
+loop, it costs two `is_empty` calls when nothing is registered, and a program
+with one task switches once.
 
 ### The scheduler, as built
 
@@ -1325,9 +1368,23 @@ mio reactor replaces.** With no reactor, nothing outside the VM can make a task
 runnable, so "nothing ready, and something parked" is a genuine deadlock and is
 reported as one — naming what every blocked task is waiting for, since "recv on
 an empty unbuffered channel" and "send to a full one" are different bugs with
-the same word in front of them. When mio lands, that function blocks on
-readiness and moves woken tasks onto the ready queue, and the deadlock condition
-becomes the correct one: **nothing ready *and* nothing registered.**
+the same word in front of them. It now blocks on readiness and moves woken tasks
+onto the ready queue, and the deadlock condition is the correct one: **nothing
+ready *and* nothing registered.**
+
+Both halves turned out to be load-bearing in opposite directions, which is worth
+recording because only one of them is obvious. Dropping the check turns every
+real deadlock into a silent hang — expected. *Keeping only the old half* turns
+every server into a spurious deadlock report, because a listener parked in
+`accept` with no other task runnable is the normal state of an idle server and
+is exactly the shape M3a called a deadlock.
+
+One thing the corrected condition does *not* buy, and should not be mistaken
+for: it is a whole-VM check, not a per-task one. A task blocked forever on an
+empty channel, in a program whose other task is waiting on a socket, is a real
+deadlock that goes unreported, because something *is* registered. Detecting that
+is a reachability analysis over the wait graph, it is not what §3 asked for, and
+the program hangs the way the same program hangs in Go.
 
 ---
 
@@ -1353,14 +1410,39 @@ conn.close()
 
 That is the whole module: two constructors, two objects.
 
-**Built, and blocking.** `net` landed ahead of the scheduler rather than after
+**Built, and parking.** `net` landed ahead of the scheduler rather than after
 it, as one more implementation of the io protocol: `listen`, `dial`, `accept`,
 `read`, `write`, `peer`, `local`, `set_timeout`, `set_nodelay`,
-`shutdown_write`, `close` and the error mapping all exist and all stop the
-world. That ordering turned out to be right twice over — it proved the
-one-protocol claim of §2 against a real socket with no adaptation layer, and it
-is where the `RefCell`-across-a-syscall hazard was found and written down while
-it was still harmless. What is missing is the parking, which is M3b.
+`shutdown_write`, `close` and the error mapping. That ordering turned out to be
+right twice over — it proved the one-protocol claim of §2 against a real socket
+with no adaptation layer, and it is where the `RefCell`-across-a-syscall hazard
+was found and written down while it was still harmless. M3b added the parking,
+and the layers above the syscall — `read_until`, the lazy 8 KiB buffer,
+`io.read`, `io.copy`, `io.buffer` — did not change by one line, which is what
+that ordering was buying.
+
+**One thing the parking took away, and it is worth naming rather than
+discovering.** `read_all` — the `stat`-and-allocate-once whole-stream read
+behind `_io.read_all` — used to accept a socket by falling back to
+`read_to_end`. It cannot any more: "read until EOF" on a socket is an unbounded
+wait, and there is no park point in the middle of one Rust call. Nothing was
+lost, because `std/io.oro` has always dispatched `io.read(r)` on the type: only
+`File` and `Buffer` take the fast path, and a socket takes the `while chunk !=
+b""` loop, where every iteration is a park point and the loop survives
+suspension because it lives in Oro frames rather than Rust ones. The socket arm
+of `read_all` is now an internal error naming that, and the Oro surface is
+unchanged.
+
+**`set_timeout` changed mechanism, and got better by it.** It was
+`SO_RCVTIMEO`/`SO_SNDTIMEO`; a non-blocking socket never waits in the kernel, so
+a kernel-side deadline has nothing to expire. It is a scheduler deadline now,
+fixed when an operation first blocks and held across every re-park — which means
+it bounds the *whole* operation rather than restarting on each syscall inside
+it. `SO_RCVTIMEO` on a `read_until` granted the client the full timeout per
+packet, so a peer dribbling one byte under the limit held the socket open
+indefinitely. That is slowloris, it was reachable through the documented API,
+and it is now not. The exception type and the message are unchanged:
+`TimeoutError`, CPython's bare "timed out".
 
 Two smaller gaps, so they are not mistaken for design: `net.listen(addr)` takes
 no `reuseport=` yet — `SO_REUSEADDR` is set on every listener, because a server
@@ -1385,7 +1467,36 @@ two knobs where servers set both to the same value. Expiry raises `TimeoutError`
 which already exists under `OSError`. A listener has no timeout; use a task and a
 shutdown flag.
 
-**Blocking DNS is a trap, it is still unhandled, and mio does not solve it.**
+**Blocking DNS is a trap, and M3b's answer is: left blocking, deliberately, with
+the cost written down.** This is the paragraph §4 asked the milestone that
+touched this to write.
+
+*The decision.* `net.dial` still resolves synchronously and still connects on a
+blocking socket. Everything else in `net` parks. Both candidates below cost more
+than they buy at the reactor milestone. A resolver written in Oro over UDP needs
+UDP — a frozen public surface added for one internal use, which §4 declines
+elsewhere for better reasons than this one. A helper OS thread with a pipe the
+reactor already watches is the right answer and is the one this will become; it
+is also the first OS thread in a runtime whose entire pitch is one VM per thread
+with nothing shared, and that is a claim to spend in the milestone that has a
+server to justify it, not as a rider on the reactor. Making `connect`
+non-blocking on its own (park on writability, then `take_error`) is easy, and
+was deliberately *not* done: shipping a non-blocking connect behind a blocking
+resolve moves the stall by a millisecond and lets the limitation read as fixed.
+
+*What it costs, precisely.* A server built on `net.listen` never reaches it —
+`accept`, `read` and `write` all park, and `listen` resolves once at startup,
+before any task exists that could be starved. It is `dial` **from inside a
+running server** — a proxy, an outbound API call — that stalls its peers, and it
+stalls them for the lookup plus the handshake. Dialling a literal `ip:port`
+skips the lookup entirely, which is why every test in the tree dials
+`127.0.0.1` and why this is so easy not to notice. The limitation is now stated
+in the README's `net` section, in `net::dial`'s own doc comment and here, which
+is three places rather than the zero it was.
+
+The analysis that decision was made against is kept below.
+
+**Blocking DNS is a trap, and mio does not solve it.**
 `std::net::ToSocketAddrs` resolves synchronously and freezes the entire VM —
 every task, not just the caller — for the duration of a slow lookup. That is
 exactly what `net.listen` and `net.dial` do today.
@@ -2081,19 +2192,33 @@ No reactor, no timers, no new dependency: tasks park and wake on
 scheduler-internal events only. `Vm::wait_for_external()` returns `false`, and
 that one line is the entire seam M3b replaces.
 
-### M3b — the reactor
+### M3b — the reactor (landed)
 
-mio (`os-poll` and `net` features only, 3 crates — §3); registering fds and
-mapping readiness back to `TaskId`s; the sorted timer list feeding `poll`'s
-timeout; socket `read`/`write`/`accept` parking instead of blocking;
-`time.sleep` parking instead of `std::thread::sleep`; and an answer for blocking
-DNS (§4), which mio does not supply and tokio would have.
+mio (`os-poll` and `net` features only, 3 crates built — §3); registering fds
+and mapping readiness back to the task parked on them; the sorted timer list
+feeding `poll`'s timeout; socket `read`/`write`/`accept` parking instead of
+blocking; `time.sleep` parking instead of `std::thread::sleep`; and an answer
+for blocking DNS (§4), which mio does not supply and tokio would have.
 
-`wait_for_external` stops returning `false`, and the deadlock condition becomes
-"nothing ready *and* nothing registered". Rewrite the README's line-6
-no-dependencies sentence, record the binary-size delta, and verify the static
-musl build still links — `libc` is bindings, so it should, but that is a
-release-gate check and not an assumption.
+`wait_for_external` stopped returning `false`, and the deadlock condition is
+"nothing ready *and* nothing registered". The README's dependency policy names
+mio as present with its reason, the binary-size delta is 16 KiB (0.6%), and the
+static musl build still links — checked, not assumed.
+
+What the build corrected, all recorded in place above: the token is per-stream
+rather than per-task and carries one waiter slot per direction (§3, "What the
+build changed"); registration is once per stream, not once per park; the
+scheduler needed a periodic non-blocking sweep, which is *not* a safepoint in
+the dispatch loop; the corrected deadlock condition is a whole-VM check and not
+a per-task one; `read_all` no longer accepts a socket and nothing was lost by
+it; `set_timeout` became a scheduler deadline and closed a slowloris that was
+reachable through the documented API (§4); and DNS was left blocking on purpose,
+with the reasoning and the cost written down in three places (§4).
+
+The gaps M3b leaves, so they are not rediscovered: `net.dial`'s resolve and
+handshake still stop the world; two tasks reading one socket is refused by name
+rather than queued; and a stale timer entry for an operation that finished early
+lives until its deadline passes rather than being scrubbed on the wake.
 
 ### M4 — `net`, and the first serving demo
 

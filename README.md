@@ -17,16 +17,30 @@ one is named here with the reason.
   ReDoS an Oro program. A correct linear-time engine is a serious project and a
   hand-rolled backtracker hangs on inputs like `(a+)+b`. See [the `re`
   module](#standard-library-surface).
-- [`mio`](https://docs.rs/mio) (with `libc` and `log`) will arrive with the I/O
-  reactor, and has not landed yet. std exposes no readiness API — there is no
-  `epoll`, `kqueue` or IOCP in it — so this is one of the few places where "do
-  it yourself" means writing per-platform `unsafe` syscall bindings, and mio is
-  the same battle-tested wrapper tokio is built on with the runtime taken off
-  the top. The reasoning, including why not tokio, is in
+- [`mio`](https://docs.rs/mio) (2 transitive: `libc` and `log`), behind the I/O
+  reactor — the thing that lets a socket read park a green thread instead of
+  stopping the VM. std exposes no readiness API: there is no `epoll`, `kqueue`
+  or IOCP in it, so this is one of the few places where "do it yourself" means
+  writing per-platform `unsafe` syscall bindings, and this crate has no
+  `unsafe` in it. mio is the same battle-tested wrapper tokio is built on with
+  the runtime taken off the top — which matters, because a runtime is the one
+  thing Oro must *not* import: every Oro value is an `Rc`, so the ready queue
+  can never be `Send`, and the scheduler is therefore Oro's own by
+  construction. tokio would have been eight crates to buy a scheduler thrown
+  away on the first line of use. The reasoning is in
   [`docs/stdlib-server-design.md`](docs/stdlib-server-design.md) §3.
 
+Timers are the one thing mio does not have, and they are not imported either:
+`epoll_wait` already takes a timeout, so "wake this task in *n* ms" is a sorted
+list of deadlines whose head becomes that argument. That is a small amount of
+code with no new concepts in it, which is exactly the line the policy above
+draws — hard problems are bought, tedious ones are written.
+
 The single-file static musl build survives that: `libc` is a *bindings* crate —
-declarations, not an implementation — and musl still links statically.
+declarations, not an implementation — and musl still links statically. Checked
+rather than assumed, on every release: `cargo build --release --target
+x86_64-unknown-linux-musl` produces a `static-pie linked` binary that `ldd`
+calls `statically linked`, and mio cost it 16 KiB (0.6%).
 
 The point of Oro is not to be a bigger Python. It is to be a *smaller* one that
 never grows: one way to do each thing, a language and API that freeze, and a
@@ -723,6 +737,24 @@ growth path for the standard library, not a temporary arrangement.
   `accept()`, `close()` and `local`, and deliberately no `read` — it is not a
   stream of bytes, so it does not pretend to be one.
 
+  **Every one of those calls parks the green thread rather than the VM.**
+  `accept`, `read` and `write` are ordinary blocking-looking calls in the
+  program and readiness events underneath: the socket is non-blocking, a call
+  that cannot finish suspends only the task that made it, and one slow client
+  cannot stall a fast one. There is no `async`, no `await` and no second colour
+  of function — `conn.read(64)` is the same call inside a task as it is at the
+  top level. `set_timeout` is part of that: it is a deadline the scheduler
+  enforces, so it bounds the *whole* operation (a `read_until` spanning four
+  packets) rather than restarting on each packet the way `SO_RCVTIMEO` did.
+
+  The one call that still stops the world is `net.dial`, and only for a
+  hostname: DNS resolution and the TCP handshake are both synchronous. A server
+  built on `net.listen` never reaches it — `listen` resolves once at startup —
+  but a `dial` from inside a running server stalls its peers for the lookup.
+  Dialling a literal `ip:port` skips the lookup. See
+  [`docs/stdlib-server-design.md`](docs/stdlib-server-design.md) §4 for why
+  that is a written-down limitation rather than an oversight.
+
   Failures use CPython's classes, so the hierarchy stays one hierarchy: a
   refused connect is `ConnectionRefusedError`, a reset peer
   `ConnectionResetError`, a write to a departed one `BrokenPipeError`, a local
@@ -805,6 +837,9 @@ growth path for the standard library, not a temporary arrangement.
   manual clock changes), so `time.time() - start` can be negative.
   `monotonic()` is for **how long** (elapsed, timeouts, benchmarks) — it only
   ever increases. Use the right one. There is **no `datetime`** (see cut list).
+
+  `sleep(n)` suspends the **calling task**, not the process: other tasks keep
+  running, and three tasks sleeping a second each take a second between them.
 
 ## Migrating from 0.1
 

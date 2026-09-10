@@ -1,0 +1,10 @@
+three sleeping tasks all finished: true
+and they overlapped rather than queueing: true
+the second reader finished while the first was still parked: true
+and then the first one did: true
+the write parked and other tasks ran: true
+and every byte still arrived: true
+the deadline raised: timed out
+and another task ran while it waited: true
+closing under a parked reader: read() on a closed TcpStream
+and the VM is still alive to say so
