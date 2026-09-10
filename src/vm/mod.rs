@@ -940,6 +940,108 @@ impl Vm {
                 frame.code.ops[pc]
             };
 
+            // The instructions a loop body is made of, executed here rather
+            // than through `step`.
+            //
+            // `step` is one enormous match that returns
+            // `Result<Step, RuntimeError>` — 48 bytes, written through a
+            // hidden return pointer and read back — and it is far too large
+            // for LLVM to inline into this loop. Every `i = i + 1` therefore
+            // paid a call, a 48-byte store and a 48-byte load to move one
+            // integer between a slot and the operand stack. These arms are
+            // the same semantics with none of that protocol: the ones that
+            // always apply end in `continue`, and the ones that only apply to
+            // a shape (two `Int`s, a `Bool` condition, a bound local) leave
+            // the operand stack **untouched** when the shape is wrong and fall
+            // out of the match, so `step` below runs exactly as it always did
+            // and produces exactly the value or the diagnostic it always did.
+            // Nothing here may be the only place a case is handled.
+            match op {
+                Op::LoadFast(slot) => {
+                    let frame = self.task.frames.last_mut().expect("no active frame");
+                    let v = &frame.locals[slot as usize];
+                    if !matches!(v, Value::Unbound) {
+                        let v = v.clone();
+                        frame.stack.push(v);
+                        continue;
+                    }
+                }
+                Op::StoreFast(slot) => {
+                    let frame = self.task.frames.last_mut().expect("no active frame");
+                    let v = frame.stack.pop().expect("operand stack underflow");
+                    frame.locals[slot as usize] = v;
+                    continue;
+                }
+                Op::LoadConst(i) => {
+                    let frame = self.task.frames.last_mut().expect("no active frame");
+                    let v = frame.code.consts[i as usize].clone();
+                    frame.stack.push(v);
+                    continue;
+                }
+                Op::Jump(target) => {
+                    self.task.frames.last_mut().expect("no active frame").pc = target as usize;
+                    continue;
+                }
+                Op::BinAdd | Op::BinSub | Op::BinMul => {
+                    let frame = self.task.frames.last_mut().expect("no active frame");
+                    let n = frame.stack.len();
+                    if n >= 2 {
+                        if let (Value::Int(a), Value::Int(b)) =
+                            (&frame.stack[n - 2], &frame.stack[n - 1])
+                        {
+                            // `checked_*`: an overflow promotes to `Big`, which
+                            // is `arith`'s job, so it falls through untouched.
+                            let r = match op {
+                                Op::BinAdd => a.checked_add(*b),
+                                Op::BinSub => a.checked_sub(*b),
+                                _ => a.checked_mul(*b),
+                            };
+                            if let Some(r) = r {
+                                frame.stack.truncate(n - 1);
+                                frame.stack[n - 2] = Value::Int(r);
+                                continue;
+                            }
+                        }
+                    }
+                }
+                Op::Compare(cmp) if !matches!(cmp, CmpOp::In | CmpOp::NotIn) => {
+                    let frame = self.task.frames.last_mut().expect("no active frame");
+                    let n = frame.stack.len();
+                    if n >= 2 {
+                        if let (Value::Int(a), Value::Int(b)) =
+                            (&frame.stack[n - 2], &frame.stack[n - 1])
+                        {
+                            let (a, b) = (*a, *b);
+                            let r = match cmp {
+                                CmpOp::Eq => a == b,
+                                CmpOp::NotEq => a != b,
+                                CmpOp::Lt => a < b,
+                                CmpOp::Gt => a > b,
+                                CmpOp::LtEq => a <= b,
+                                CmpOp::GtEq => a >= b,
+                                CmpOp::In | CmpOp::NotIn => unreachable!("guarded above"),
+                            };
+                            frame.stack.truncate(n - 1);
+                            frame.stack[n - 2] = Value::Bool(r);
+                            continue;
+                        }
+                    }
+                }
+                Op::PopJumpIfFalse(target) | Op::PopJumpIfTrue(target) => {
+                    let frame = self.task.frames.last_mut().expect("no active frame");
+                    if let Some(Value::Bool(b)) = frame.stack.last() {
+                        let want = matches!(op, Op::PopJumpIfTrue(_));
+                        let take = *b == want;
+                        frame.stack.pop();
+                        if take {
+                            frame.pc = target as usize;
+                        }
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+
             // Execute one op. A failing operation or a `raise` produces an
             // exception that unwinds the block/frame stack; if nothing catches
             // it, the run ends with that error.
