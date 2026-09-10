@@ -2,7 +2,7 @@ b'alpha'
 b'\nbeta\n'
 b'gamma\n'
 b''
-True
+true
 ['alpha', 'beta', 'gamma']
 17
 b'alpha\n'
@@ -14,4 +14,4 @@ limit reached without a delimiter: ValueError
 read on a closed stream: ValueError
 write to a reader: ValueError
 read from a writer: ValueError
-False
+false

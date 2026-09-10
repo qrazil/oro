@@ -1,7 +1,7 @@
 # INTENTIONAL DIVERGENCE.
 # `sys.stdout`/`sys.stderr`/`sys.stdin` are byte streams. CPython's are text
 # streams with a `.buffer` underneath, so `sys.stdout.write` takes `str` there
-# and `bytes` here, and returns a count there and `None` here. There is one
+# and `bytes` here, and returns a count there and `null` here. There is one
 # stream protocol in Oro, not one for text and one for bytes, and the price of
 # that is this edge.
 import sys

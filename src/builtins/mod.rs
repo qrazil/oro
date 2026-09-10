@@ -221,7 +221,7 @@ fn bi_float(_args: Vec<Value>) -> VResult<Value> {
 }
 
 fn bi_bool(_args: Vec<Value>) -> VResult<Value> {
-    Err(type_name_is_not_callable("bool", "to_bool", "False"))
+    Err(type_name_is_not_callable("bool", "to_bool", "false"))
 }
 
 fn bi_type(args: Vec<Value>) -> VResult<Value> {

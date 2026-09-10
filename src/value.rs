@@ -501,8 +501,8 @@ impl Value {
     /// The `repr()` form: strings are quoted, everything else matches `str()`.
     pub fn repr(&self) -> String {
         match self {
-            Value::None => "None".to_string(),
-            Value::Bool(b) => if *b { "True" } else { "False" }.to_string(),
+            Value::None => "null".to_string(),
+            Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
             Value::Int(i) => i.to_string(),
             Value::Big(b) => b.to_string(),
             Value::Float(f) => format_float(*f),

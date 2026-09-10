@@ -1,6 +1,6 @@
 b'h\xc3\xa9llo' 5 6
-héllo True
-b'' True
+héllo true
+b'' true
 b'ab' ab
 undecodable: bytes could not be decoded as UTF-8: invalid byte 0xff at position 0
 b'\xc3' 1
@@ -13,7 +13,7 @@ b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok'
 not callable: bytes() is not callable in Oro — write `x.to_bytes()` to convert a value, or the literal `b""` to build an empty one.
 b'abc' b'' b'\x00\xc8\xff'
 1 2
-True hi
+true hi
 b'\x01\x00b'
 out of range: to_bytes(): item 1 must be in range(0, 256), got 256
 negative: to_bytes(): item 0 must be in range(0, 256), got -1

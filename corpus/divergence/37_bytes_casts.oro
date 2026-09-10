@@ -67,7 +67,7 @@ print([97, 98, 99].to_bytes(), [].to_bytes(), (0, 200, 255).to_bytes())
 print(len([200].to_bytes()), len(f"{200:c}".to_bytes()))
 print([104, 105].to_bytes() == b"hi", [104, 105].to_bytes().to_str())
 # A bool is an int here because a bool is an int everywhere else in Oro.
-print([True, False, 98].to_bytes())
+print([true, false, 98].to_bytes())
 # An element that is not an octet is refused rather than truncated or wrapped:
 # bytes built from a number that did not fit in a byte is silently wrong data.
 try:

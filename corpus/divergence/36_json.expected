@@ -1,6 +1,6 @@
-None
-True
-False
+null
+true
+false
 [1, 2, 3]
 {}
 []
@@ -28,14 +28,14 @@ bs:[]ff:[]
 Aé中
 😀
 1
-True
-True
-True
-True
+true
+true
+true
+true
 {"a":1,"b":[1,2,3]}
 ["x","y","z"]
 "a\"b\\c/d\bE\fF\nG\rH\tI"
-True
+true
 0
 0
 3.0
@@ -86,4 +86,4 @@ unterminated object at position 7
 unexpected '}' at position 16
 unpaired UTF-16 surrogate in \u escape at position 7
 unpaired UTF-16 surrogate in \u escape at position 7
-True
+true

@@ -2,7 +2,7 @@ b'hello' b'hello' b'hello'
 b'tab\tnl\ncr\rbs\\quote"apos\''
 b'\x00\x07\x08\x0c\x0b'
 b'\x00A\x7f\x80\xff'
-b'\\d+\\n' b'\\d+\\n' True
+b'\\d+\\n' b'\\d+\\n' true
 b"it's" b'say "hi"' b'both \' and "'
 b'' b'\xc3\xa9'
 11 0
@@ -16,13 +16,13 @@ b'd' b'' b'he'
 sum 294
 3 195
 b'abcd' b'ababab' b'ababab' b''
-True False True True
-True False True
-True False True True
+true false true true
+true false true
+true false true true
 [b'', b'Apple', b'apple', b'pear', b'\xff']
 empty bytes are falsy
 a zero octet is still one octet
-<class 'bytes'> True False False
+<class 'bytes'> true false false
 b'Content-Type: text/html'
 b'ab'
 b'CONTENT-TYPE: TEXT/HTML' b'content-type: text/html'
@@ -33,16 +33,16 @@ b'abc\xff' b'ABC\xff'
 b'a,b,c' b'ab' b''
 1 -1 0 -1
 b'a-b-c' b'.a.b.c.' b'abc'
-True False True
-True False True
+true false true
+true false true
 2 4 0
 ff0041 
-True b'Host' b'example.com'
+true b'Host' b'example.com'
 b'GET' 3
 b'/a?b=1' 6
 b'HTTP/1.1' 8
 {b'alpha': 1, b'beta': 2, b'gamma': 3}
-1 True False
+1 true false
 3 [b'alpha', b'beta', b'gamma']
 2 bytes key str key
 {b'a': 3, b'b': 2, b'c': 1}
@@ -50,5 +50,5 @@ name=b'oro' len=3
 b'x'
 b'\xc8' 1 200
 b'\x00\xc8\xff' 3 200
-1 2 False
+1 2 false
 [0, 200, 255] 255

@@ -4,7 +4,7 @@
 [(1, 'a'), (2, 'b')]
 [(1, 4), (2, 5)]
 []
-True False True False True
+true false true false true
 255 31 511 10
 -255 10 10 35
 0 p

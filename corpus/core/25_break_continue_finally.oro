@@ -47,7 +47,7 @@ print(nested())
 # break inside a try that also has an except.
 def with_except():
     log = []
-    while True:
+    while true:
         try:
             log.append("body")
             break

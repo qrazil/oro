@@ -3,7 +3,7 @@
 # convention, not a declared type:
 #
 #     read(n)   -> bytes     # 1..n bytes; b"" at EOF; MAY return fewer than n
-#     write(b)  -> None      # writes all of b, or raises
+#     write(b)  -> null      # writes all of b, or raises
 #
 # There is no `class Reader`, nothing to inherit from and no registration. Any
 # object with a `read` method of that shape is a Reader, whether it is a `File`
@@ -13,7 +13,7 @@
 #
 # API
 # ---
-#   io.read(r, n=None)   -> bytes   everything until EOF, or exactly n
+#   io.read(r, n=null)   -> bytes   everything until EOF, or exactly n
 #   io.copy(dst, src)    -> int     bytes copied, until src is at EOF
 #   io.buffer(b=b"")     -> Buffer  an in-memory Reader + Writer
 #
@@ -67,8 +67,8 @@ _BUFFER = "<class 'Buffer'>"
 # keep-alive) and `r.read(n)` may legally return fewer. Without it every body
 # read hand-rolls a loop, and a hand-rolled read loop is the bug that works
 # against localhost and fails under load when a request spans two packets.
-def read(r, n=None):
-    if n == None:
+def read(r, n=null):
+    if n == null:
         # `stat` and allocate once, in Rust, for the streams whose size is
         # knowable. Growing a buffer chunk by chunk holds the old and the new
         # allocation at the moment of the last doubling — a transient peak of

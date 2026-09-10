@@ -9,13 +9,13 @@
 #
 # API
 # ---
-#   http.read_request(r)                     -> Request | None at a clean EOF
-#   http.write_response(w, req, resp, keep)  -> None, in one write() call
+#   http.read_request(r)                     -> Request | null at a clean EOF
+#   http.write_response(w, req, resp, keep)  -> null, in one write() call
 #   http.should_keep_alive(req, resp)        -> bool
 #   http.serve_conn(conn, handler)           -> int, requests served
 #
 #   http.Request(method, path, query, version, headers, body)
-#   http.Response(status=200, headers=None, body=b"")
+#   http.Response(status=200, headers=null, body=b"")
 #   http.text(s, status=200)                 -> Response
 #   http.json_response(v, status=200)        -> Response
 #   http.Router().add(method, path, handler) -> Router (chains)
@@ -76,7 +76,7 @@ _TOKEN_OK = {}
 _tb = 33
 while _tb < 127:
     if f"{_tb:c}" not in _TOKEN_DELIMS:
-        _TOKEN_OK[_tb] = True
+        _TOKEN_OK[_tb] = true
     _tb = _tb + 1
 
 # Hex digit -> value, for percent-decoding and chunk sizes. Doubles as the
@@ -189,13 +189,13 @@ class Request:
         self.query = query
         self.version = version
         self.headers = headers
-        # Always a Reader, never None and never sometimes-bytes: a GET with no
+        # Always a Reader, never null and never sometimes-bytes: a GET with no
         # body gets an empty Buffer. One shape means a handler never branches
         # on it and `text()` is one line instead of three.
         self.body = body
         self.params = {}
 
-    def header(self, name, default=None):
+    def header(self, name, default=null):
         return self.headers.get(name.lower(), default)
 
     def text(self):
@@ -212,10 +212,10 @@ class Request:
 
 
 class Response:
-    def __init__(self, status=200, headers=None, body=b""):
+    def __init__(self, status=200, headers=null, body=b""):
         self.status = status
         self.headers = {}
-        if headers != None:
+        if headers != null:
             self.headers = headers
         # bytes *or* a Reader, and that choice is what selects the framing:
         # bytes gets a Content-Length, a Reader gets Transfer-Encoding:
@@ -250,11 +250,11 @@ def _is_streamed(body):
 # server must reject the message rather than trim it.
 def _is_token(b):
     if len(b) == 0:
-        return False
+        return false
     for c in b:
-        if _TOKEN_OK.get(c) == None:
-            return False
-    return True
+        if _TOKEN_OK.get(c) == null:
+            return false
+    return true
 
 
 # A header field value may hold tabs and any byte above the control range,
@@ -263,10 +263,10 @@ def _is_token(b):
 def _is_field_value(b):
     for c in b:
         if c < 32 and c != _TAB:
-            return False
+            return false
         if c == _DEL:
-            return False
-    return True
+            return false
+    return true
 
 
 # A request target is visible ASCII or above. Control characters are
@@ -274,11 +274,11 @@ def _is_field_value(b):
 # path and the strict decode below is the place to answer for it.
 def _is_target(b):
     if len(b) == 0:
-        return False
+        return false
     for c in b:
         if c < 33 or c == _DEL:
-            return False
-    return True
+            return false
+    return true
 
 
 # Percent-decode `b`. In a query string `+` also means a space; in a path it
@@ -300,7 +300,7 @@ def _percent_decode(b, plus_is_space):
                 raise BadRequest("truncated percent-escape in the request target")
             hi = _HEX_VALUE.get(b[i + 1])
             lo = _HEX_VALUE.get(b[i + 2])
-            if hi == None or lo == None:
+            if hi == null or lo == null:
                 raise BadRequest("invalid percent-escape in the request target")
             out.append(hi * 16 + lo)
             i = i + 3
@@ -318,12 +318,12 @@ def _percent_decode(b, plus_is_space):
 # to send "keep-alive, upgrade" or two Connection headers that the parser has
 # already joined with a comma.
 def _has_token(value, token):
-    if value == None:
-        return False
+    if value == null:
+        return false
     for part in value.split(","):
         if part.strip().lower() == token:
-            return True
-    return False
+            return true
+    return false
 
 
 # --- the parser -----------------------------------------------------------
@@ -401,7 +401,7 @@ class _HeadParser:
             name = raw_name.to_str().lower()
             value = raw_value.strip().to_str()
             existing = out.get(name)
-            if existing == None:
+            if existing == null:
                 out[name] = value
             elif name in _SINGLE_VALUED:
                 self.fail(f"duplicate {name} header")
@@ -428,8 +428,8 @@ def _split_target(target):
         raise BadRequest("request target is not an absolute path")
     q = target.find(b"?")
     if q < 0:
-        return _percent_decode(target, False).to_str(), {}
-    return _percent_decode(target[0:q], False).to_str(), _parse_query(target[q + 1:])
+        return _percent_decode(target, false).to_str(), {}
+    return _percent_decode(target[0:q], false).to_str(), _parse_query(target[q + 1:])
 
 
 # The path-and-query part of an absolute-form target, given everything after
@@ -457,14 +457,14 @@ def _parse_query(qs):
             continue
         e = pair.find(b"=")
         if e < 0:
-            out[_percent_decode(pair, True).to_str()] = ""
+            out[_percent_decode(pair, true).to_str()] = ""
         else:
-            key = _percent_decode(pair[0:e], True).to_str()
-            out[key] = _percent_decode(pair[e + 1:], True).to_str()
+            key = _percent_decode(pair[0:e], true).to_str()
+            out[key] = _percent_decode(pair[e + 1:], true).to_str()
     return out
 
 
-# Read one request from `r`, or None if the connection ended cleanly between
+# Read one request from `r`, or null if the connection ended cleanly between
 # requests.
 #
 # `read_until` returns what it has at EOF, delimiter or not, so the three
@@ -474,7 +474,7 @@ def _parse_query(qs):
 def read_request(r):
     raw = _read_head(r)
     if raw == b"":
-        return None
+        return null
     if not raw.endswith(b"\r\n\r\n"):
         raise BadRequest("connection ended in the middle of the header block")
     p = _HeadParser(raw)
@@ -483,7 +483,7 @@ def read_request(r):
     # An HTTP/1.1 request without a Host is a 400 by fiat of RFC 9112: it is
     # the field that makes name-based virtual hosting possible, and a request
     # that omits it cannot be routed by any server that has more than one name.
-    if version == "1.1" and headers.get("host") == None:
+    if version == "1.1" and headers.get("host") == null:
         raise BadRequest("HTTP/1.1 request without a Host header")
     path, query = _split_target(target)
     return Request(method, path, query, version, headers, _body_reader(r, headers))
@@ -513,8 +513,8 @@ def _read_head(r):
 def _body_reader(r, headers):
     te = headers.get("transfer-encoding")
     n = headers.get("content-length")
-    if te != None:
-        if n != None:
+    if te != null:
+        if n != null:
             raise BadRequest("both Content-Length and Transfer-Encoding are present")
         # Only the identity of the list matters, and the only list this
         # server implements is the one-element list "chunked". "gzip,
@@ -523,7 +523,7 @@ def _body_reader(r, headers):
         if te.lower() != "chunked":
             raise BadRequest(f"unsupported Transfer-Encoding '{te}'", 501)
         return _ChunkedReader(r)
-    if n == None:
+    if n == null:
         # Neither header: no body at all. Not "read until EOF" — on a
         # keep-alive connection there is no EOF to read to, and treating the
         # next request as this one's body is the same smuggling bug from the
@@ -574,7 +574,7 @@ class _ChunkedReader:
     def __init__(self, r):
         self.r = r
         self.remaining = 0
-        self.done = False
+        self.done = false
 
     def read(self, n):
         if n < 1:
@@ -599,7 +599,7 @@ class _ChunkedReader:
         size = _chunk_size(self.r.read_until(b"\r\n", _MAX_CHUNK_LINE))
         if size == 0:
             self.skip_trailer()
-            self.done = True
+            self.done = true
         else:
             self.remaining = size
 
@@ -645,7 +645,7 @@ def _chunk_size(line):
     size = 0
     for c in head:
         v = _HEX_VALUE.get(c)
-        if v == None:
+        if v == null:
             raise BadRequest("malformed chunk size")
         size = size * 16 + v
     return size
@@ -708,7 +708,7 @@ def _civil_from_days(z):
 # a client that believes it goes looking for a body that is not coming.
 def _is_bodiless(status):
     if status >= 100 and status < 200:
-        return True
+        return true
     return status == 204 or status == 304
 
 
@@ -745,15 +745,15 @@ def write_response(w, req, resp, keep_alive):
     # A HEAD response carries the headers the GET would have carried,
     # including its framing, and no body.
     suppress = req.method == "HEAD"
-    chunked = False
+    chunked = false
     if _is_bodiless(resp.status):
-        suppress = True
+        suppress = true
     elif streamed:
         # HTTP/1.0 has no chunked coding, so a body of unknown length can only
         # be delimited by closing the connection. `should_keep_alive` knows
         # this and has already refused to reuse it.
         if req.version != "1.0":
-            chunked = True
+            chunked = true
             h["transfer-encoding"] = "chunked"
     else:
         h["content-length"] = f"{len(body)}"
@@ -764,7 +764,7 @@ def write_response(w, req, resp, keep_alive):
         # told: without this header it closes anyway and the reuse it asked
         # for silently never happens.
         h["connection"] = "keep-alive"
-    if h.get("date") == None:
+    if h.get("date") == null:
         h["date"] = _http_date(time.time())
 
     reason = _reason(resp.status)
@@ -802,22 +802,22 @@ def _write_chunked(w, body):
 # bug if it is left out.
 def should_keep_alive(req, resp):
     if _has_token(req.header("connection"), "close"):
-        return False
+        return false
     if _has_token(resp.headers.get("connection"), "close"):
-        return False
+        return false
     if req.version == "1.0":
         # A body of unknown length on 1.0 is delimited by the close itself.
         if _is_streamed(resp.body) and not _is_bodiless(resp.status):
-            return False
+            return false
         # 1.0 closes by default and reuses only when asked to.
         return _has_token(req.header("connection"), "keep-alive")
     # 1.1 reuses by default.
-    return True
+    return true
 
 
 # Read whatever is left of a request body the handler did not read, so the
 # next request on this connection does not begin in the middle of it.
-# Returns False if there is more left than is worth reading — draining a
+# Returns false if there is more left than is worth reading — draining a
 # 100 MB upload nobody wanted is a denial-of-service assist, and closing is
 # the cheaper answer.
 def _drain(body):
@@ -827,7 +827,7 @@ def _drain(body):
         # A body that cannot be read to its end has desynchronised the stream,
         # which needs the same answer as one too large to drain: stop reading
         # this connection and say so.
-        return False
+        return false
 
 
 def _drain_loop(body):
@@ -836,9 +836,9 @@ def _drain_loop(body):
     while chunk != b"":
         left = left - len(chunk)
         if left < 1:
-            return False
+            return false
         chunk = body.read(left)
-    return True
+    return true
 
 
 def _error_response(status, message):
@@ -861,7 +861,7 @@ def serve_conn(conn, handler):
     served = 0
     while served < _MAX_REQUESTS_PER_CONN:
         req = _try_read(conn)
-        if req == None:
+        if req == null:
             return served
         resp = _dispatch(handler, req)
         # Drained before the response is written, not after, so that the
@@ -891,10 +891,10 @@ def _try_read(conn):
         return read_request(conn)
     except BadRequest as e:
         _answer(conn, e.status, f"{e}")
-        return None
+        return null
     except ValueError as e:
         _answer(conn, 400, f"{e}")
-        return None
+        return null
 
 
 # The other catch. A handler that raises is a 500 with the exception on
@@ -923,7 +923,7 @@ def _dispatch(handler, req):
 # method is not HEAD and the version is not 1.0.
 def _answer(conn, status, message):
     blank = Request("GET", "/", {}, "1.1", {}, io.buffer(b""))
-    write_response(conn, blank, _error_response(status, message), False)
+    write_response(conn, blank, _error_response(status, message), false)
 
 
 # --- routing --------------------------------------------------------------
@@ -948,14 +948,14 @@ class Router:
 
     def dispatch(self, req):
         h = self.handler_for(req.method, req)
-        if h != None:
+        if h != null:
             return h(req)
         # A HEAD is served by the GET route with the body suppressed on the
         # way out, because RFC 9110 requires HEAD wherever GET is supported
         # and because writing every route twice is not a design.
         if req.method == "HEAD":
             h = self.handler_for("GET", req)
-            if h != None:
+            if h != null:
                 return h(req)
         allowed = self.allowed(req.path)
         if len(allowed) > 0:
@@ -966,16 +966,16 @@ class Router:
 
     def handler_for(self, method, req):
         h = self.exact.get(method + " " + req.path)
-        if h != None:
+        if h != null:
             return h
         segs = req.path.split("/")
         for m, pat, fn in self.patterns:
             if m == method:
                 params = _match(pat, segs)
-                if params != None:
+                if params != null:
                     req.params = params
                     return fn
-        return None
+        return null
 
     def allowed(self, path):
         out = []
@@ -985,7 +985,7 @@ class Router:
             if key[sp + 1:] == path:
                 out.append(key[0:sp])
         for m, pat, fn in self.patterns:
-            if _match(pat, segs) != None and m not in out:
+            if _match(pat, segs) != null and m not in out:
                 out.append(m)
         if "GET" in out and "HEAD" not in out:
             out.append("HEAD")
@@ -996,16 +996,16 @@ class Router:
 # will not bind an empty one, so "/users/" does not match "/users/:id".
 def _match(pat, segs):
     if len(pat) != len(segs):
-        return None
+        return null
     params = {}
     i = 0
     while i < len(pat):
         p = pat[i]
         if len(p) > 0 and p[0] == ":":
             if len(segs[i]) == 0:
-                return None
+                return null
             params[p[1:]] = segs[i]
         elif p != segs[i]:
-            return None
+            return null
         i = i + 1
     return params

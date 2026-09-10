@@ -3,11 +3,13 @@
 # has a twin (51_string_surface.twin.py) written in CPython's spellings, and the
 # .expected below is that twin's output:
 #
-#   python3 corpus/divergence/51_string_surface.twin.py | diff - corpus/divergence/51_string_surface.expected
+#   python3 corpus/divergence/51_string_surface.twin.py \
+#     | sed -E 's/\bTrue\b/true/g; s/\bFalse\b/false/g; s/\bNone\b/null/g' \
+#     | diff - corpus/divergence/51_string_surface.expected
 #
 #   s.strip(side="left")     -> s.lstrip()
 #   s.strip(side="right")    -> s.rstrip()
-#   s.find(sub, reverse=True) -> s.rfind(sub)
+#   s.find(sub, reverse=true) -> s.rfind(sub)
 #   s.rm_prefix(p)           -> s.removeprefix(p)
 #   s.rm_suffix(p)           -> s.removesuffix(p)
 #   s.is_digit() ...         -> s.isdigit() ...
@@ -17,7 +19,7 @@
 # every case here is one the two agree on.
 
 STRS = ["  hi  ", "xxhixx", "xyxhixyx", "", "xxx", "\thi\n ", "ααhiα"]
-CUTS = ["x", "xy", "", "α", "abc", None]
+CUTS = ["x", "xy", "", "α", "abc", null]
 
 print("--- strip(side=...)")
 for s in STRS:
@@ -33,24 +35,24 @@ for b in [b"  hi  ", b"aabaa", b"", b"\x00a\xff"]:
     print(b.strip(), b.strip(side="left"), b.strip(side="right"))
     print(b.strip(b"a"), b.strip(b"a", side="left"), b.strip(b"a", side="right"))
 
-# `find(sub, reverse=True)` replaces `rfind` — one name, one keyword, and the
+# `find(sub, reverse=true)` replaces `rfind` — one name, one keyword, and the
 # same positional window from either end.
-print("--- find(sub, reverse=True)")
+print("--- find(sub, reverse=true)")
 FIND = ["abcabc", "abc", "", "haééha"]
 SUBS = ["b", "", "abc", "é", "zz"]
 for s in FIND:
     for sub in SUBS:
-        row = [s.find(sub), s.find(sub, reverse=True)]
+        row = [s.find(sub), s.find(sub, reverse=true)]
         for start in [0, 1, -2]:
-            row.append(s.find(sub, start, reverse=True))
+            row.append(s.find(sub, start, reverse=true))
         for end in [0, 3, 99]:
-            row.append(s.find(sub, 0, end, reverse=True))
+            row.append(s.find(sub, 0, end, reverse=true))
         print(repr(s), repr(sub), row)
 
 print("--- bytes find, reversed")
 for b in [b"abcabc", b"abc", b"", b"\x00a\xff"]:
     for sub in [b"b", b"", b"abc", b"\xff"]:
-        print(b.find(sub), b.find(sub, reverse=True), b.find(sub, 1, reverse=True))
+        print(b.find(sub), b.find(sub, reverse=true), b.find(sub, 1, reverse=true))
 
 # The reason these two exist: `strip(chars)` is a character *set*, and reading
 # it as a suffix is the classic Python footgun. Both spellings are printed side

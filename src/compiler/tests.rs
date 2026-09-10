@@ -53,7 +53,7 @@ fn closure_captures_outer_local() {
 fn block_scope_variable_is_function_local_not_leaked_upward() {
     // `y` is only bound inside the `if` block; referencing it afterwards must
     // resolve to a builtin/global lookup, not a local slot.
-    let code = compile_src("if True:\n    y = 5\nprint(y)\n");
+    let code = compile_src("if true:\n    y = 5\nprint(y)\n");
     // The trailing print(y) compiles to a LoadGlobal because y never leaked.
     let has_global_y = code
         .ops

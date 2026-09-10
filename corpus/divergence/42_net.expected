@@ -1,10 +1,10 @@
-<class 'TcpListener'> True True
+<class 'TcpListener'> true true
 <class 'TcpStream'> <class 'TcpStream'>
-True True True
+true true true
 b'GET / HTTP/1.1\r\nHost: example\r\n\r\n'
 b'0123' b'456789'
 23 b'HTTP/1.1 200 OK\r\n\r\nbody'
-b'' True
+b'' true
 read(0): read() size must be at least 1, not 0
 limit: read_until() found no delimiter in the first 4 bytes
 address in use: <class 'OSError'>

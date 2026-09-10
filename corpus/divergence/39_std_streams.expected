@@ -3,7 +3,7 @@ two
 three
 four and five
 <File '<stdout>' mode 'w'> <File '<stderr>' mode 'w'> <File '<stdin>' mode 'r'>
-True
+true
 hello, wørld
 str to a stream: write() argument must be bytes, not 'str'
 read from stdout: read() on a stream open for writing (mode 'w')

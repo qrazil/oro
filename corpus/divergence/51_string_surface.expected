@@ -12,31 +12,31 @@
 '  hi  ' ''   hi     hi     hi  
 '  hi  ' 'α'   hi     hi     hi  
 '  hi  ' 'abc'   hi     hi     hi  
-'  hi  ' None hi hi     hi
+'  hi  ' null hi hi     hi
 'xxhixx' 'x' hi hixx xxhi
 'xxhixx' 'xy' hi hixx xxhi
 'xxhixx' '' xxhixx xxhixx xxhixx
 'xxhixx' 'α' xxhixx xxhixx xxhixx
 'xxhixx' 'abc' xxhixx xxhixx xxhixx
-'xxhixx' None xxhixx xxhixx xxhixx
+'xxhixx' null xxhixx xxhixx xxhixx
 'xyxhixyx' 'x' yxhixy yxhixyx xyxhixy
 'xyxhixyx' 'xy' hi hixyx xyxhi
 'xyxhixyx' '' xyxhixyx xyxhixyx xyxhixyx
 'xyxhixyx' 'α' xyxhixyx xyxhixyx xyxhixyx
 'xyxhixyx' 'abc' xyxhixyx xyxhixyx xyxhixyx
-'xyxhixyx' None xyxhixyx xyxhixyx xyxhixyx
+'xyxhixyx' null xyxhixyx xyxhixyx xyxhixyx
 '' 'x'   
 '' 'xy'   
 '' ''   
 '' 'α'   
 '' 'abc'   
-'' None   
+'' null   
 'xxx' 'x'   
 'xxx' 'xy'   
 'xxx' '' xxx xxx xxx
 'xxx' 'α' xxx xxx xxx
 'xxx' 'abc' xxx xxx xxx
-'xxx' None xxx xxx xxx
+'xxx' null xxx xxx xxx
 '\thi\n ' 'x' 	hi
   	hi
   	hi
@@ -57,14 +57,14 @@
   	hi
   	hi
  
-'\thi\n ' None hi hi
+'\thi\n ' null hi hi
   	hi
 'ααhiα' 'x' ααhiα ααhiα ααhiα
 'ααhiα' 'xy' ααhiα ααhiα ααhiα
 'ααhiα' '' ααhiα ααhiα ααhiα
 'ααhiα' 'α' hi hiα ααhi
 'ααhiα' 'abc' ααhiα ααhiα ααhiα
-'ααhiα' None ααhiα ααhiα ααhiα
+'ααhiα' null ααhiα ααhiα ααhiα
 --- bytes.strip(side=...)
 b'hi' b'hi  ' b'  hi'
 b'  hi  ' b'  hi  ' b'  hi  '
@@ -74,7 +74,7 @@ b'' b'' b''
 b'' b'' b''
 b'\x00a\xff' b'\x00a\xff' b'\x00a\xff'
 b'\x00a\xff' b'\x00a\xff' b'\x00a\xff'
---- find(sub, reverse=True)
+--- find(sub, reverse=true)
 'abcabc' 'b' [1, 4, 4, 4, 4, -1, 1, 4]
 'abcabc' '' [0, 6, 6, 6, 6, 0, 3, 6]
 'abcabc' 'abc' [0, 3, 3, 3, -1, -1, 0, 3]
@@ -135,22 +135,22 @@ b'a' b'a.png' b'png'
 [0, 1, 0, 0]
 [0, 4, 0, 1]
 --- is_digit / is_alpha / is_alnum / is_space
-'123' True False True False
-'12a' False False True False
-'abc' False True True False
-'café' False True True False
-'a1' False False True False
-'' False False False False
-' ' False False False True
-' \t\n' False False False True
-'\x1c' False False False True
-'３' True False True False
-'ｄ' False True True False
-b'123' True False True False
-b'12a' False False True False
-b'abc' False True True False
-b'a1' False False True False
-b'' False False False False
-b' ' False False False True
-b' \t\x0b' False False False True
-b'\xff' False False False False
+'123' true false true false
+'12a' false false true false
+'abc' false true true false
+'café' false true true false
+'a1' false false true false
+'' false false false false
+' ' false false false true
+' \t\n' false false false true
+'\x1c' false false false true
+'３' true false true false
+'ｄ' false true true false
+b'123' true false true false
+b'12a' false false true false
+b'abc' false true true false
+b'a1' false false true false
+b'' false false false false
+b' ' false false false true
+b' \t\x0b' false false false true
+b'\xff' false false false false

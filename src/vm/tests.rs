@@ -412,15 +412,15 @@ fn match_no_default_is_noop() {
 
 #[test]
 fn match_numeric_cross_equality_first_wins() {
-    // 1 == True == 1.0; the first matching case wins, even through the table.
+    // 1 == true == 1.0; the first matching case wins, even through the table.
     let src = "def f(v):\n    match v:\n        case 1:\n            return \"one\"\n        \
-               case True:\n            return \"true\"\n        case _:\n            return \"x\"\n\
-               a = f(1)\nb = f(True)\n";
+               case true:\n            return \"hit\"\n        case _:\n            return \"x\"\n\
+               a = f(1)\nb = f(true)\n";
     let locals = run_locals(src);
     for v in locals {
         if let Value::Str(s) = v {
-            if s.s == "true" {
-                panic!("True should have matched `case 1` first, not `case True`");
+            if s.s == "hit" {
+                panic!("true should have matched `case 1` first, not `case true`");
             }
         }
     }
@@ -694,28 +694,28 @@ fn proc_rejects_bare_string() {
 
 #[test]
 fn proc_runs_and_captures() {
-    // quiet=True suppresses the live tee; the capture happens either way. The
+    // quiet=true suppresses the live tee; the capture happens either way. The
     // captured streams are octets, so decoding is explicit.
-    let src = "import proc\nr = proc.run([\"echo\", \"hi\"], quiet=True)\nout = r.returncode.to_str() + \":\" + r.stdout.strip().to_str()\n";
+    let src = "import proc\nr = proc.run([\"echo\", \"hi\"], quiet=true)\nout = r.returncode.to_str() + \":\" + r.stdout.strip().to_str()\n";
     assert_eq!(fstr(src), "0:hi");
 }
 
 #[test]
 fn proc_raises_on_nonzero_exit_by_default() {
-    let err = run_err("import proc\nproc.run([\"sh\", \"-c\", \"exit 4\"], quiet=True)\n");
+    let err = run_err("import proc\nproc.run([\"sh\", \"-c\", \"exit 4\"], quiet=true)\n");
     assert!(err.message.contains("command failed"), "got: {}", err.message);
 }
 
 #[test]
 fn proc_check_false_allows_nonzero_exit() {
-    let src = "import proc\nr = proc.run([\"sh\", \"-c\", \"exit 4\"], check=False, quiet=True)\nout = r.returncode.to_str() + \":\" + r.ok.to_str()\n";
-    assert_eq!(fstr(src), "4:False");
+    let src = "import proc\nr = proc.run([\"sh\", \"-c\", \"exit 4\"], check=false, quiet=true)\nout = r.returncode.to_str() + \":\" + r.ok.to_str()\n";
+    assert_eq!(fstr(src), "4:false");
 }
 
 #[test]
 fn proc_rejects_cpython_capture_kwargs() {
     let err = run_err(
-        "import proc\nproc.run([\"echo\", \"hi\"], capture_output=True)\n",
+        "import proc\nproc.run([\"echo\", \"hi\"], capture_output=true)\n",
     );
     assert!(err.message.contains("always captures"), "got: {}", err.message);
 }
@@ -881,7 +881,7 @@ import json
 a = json.parse('{"n": 3, "f": 2.5, "s": "hi", "b": true, "z": null, "xs": [1, 2, 3]}')
 out = f"{a['n']} {type(a['n'])} {a['f']} {type(a['f'])} {a['s']} {a['b']} {a['z']} {a['xs']}"
 "#;
-    assert_eq!(fstr(src), "3 <class 'int'> 2.5 <class 'float'> hi True None [1, 2, 3]");
+    assert_eq!(fstr(src), "3 <class 'int'> 2.5 <class 'float'> hi true null [1, 2, 3]");
 }
 
 #[test]
@@ -901,10 +901,10 @@ out = f"{s} {len(s)}"
 fn json_stringify_round_trips_through_parse() {
     let src = r#"
 import json
-data = {"a": 1, "b": [1, 2.5, "x", True, False, None]}
+data = {"a": 1, "b": [1, 2.5, "x", true, false, null]}
 out = f"{json.parse(json.stringify(data)) == data}"
 "#;
-    assert_eq!(fstr(src), "True");
+    assert_eq!(fstr(src), "true");
 }
 
 #[test]
@@ -1019,7 +1019,7 @@ fn bytes_methods_mirror_the_str_set() {
     assert!(eval("r = b\"abc\".startswith(b\"ab\")\n").truthy());
     assert!(eval("r = b\"abc\".endswith(b\"bc\")\n").truthy());
     // `find(sub, reverse=true)` is the whole of what `rfind` used to be.
-    assert_eq!(int(&eval("r = b\"abcabc\".find(b\"bc\", reverse=True)\n")), 4);
+    assert_eq!(int(&eval("r = b\"abcabc\".find(b\"bc\", reverse=true)\n")), 4);
     assert_eq!(int(&eval("r = b\"abc\".count(b\"\")\n")), 4);
     assert_eq!(eval("r = b\"a.png\".rm_suffix(b\".png\")\n").repr(), "b'a'");
     assert_eq!(eval("r = b\"a.png\".rm_suffix(b\".gif\")\n").repr(), "b'a.png'");
@@ -1049,11 +1049,11 @@ fn str_strip_takes_a_side_and_find_takes_a_reverse() {
     assert!(e.message.contains("\"both\", \"left\" or \"right\""), "got: {}", e.message);
 
     assert_eq!(int(&eval("r = \"abcabc\".find(\"bc\")\n")), 1);
-    assert_eq!(int(&eval("r = \"abcabc\".find(\"bc\", reverse=True)\n")), 4);
+    assert_eq!(int(&eval("r = \"abcabc\".find(\"bc\", reverse=true)\n")), 4);
     // The positional window still applies, from whichever end.
-    assert_eq!(int(&eval("r = \"abcabc\".find(\"bc\", 0, 4, reverse=True)\n")), 1);
-    assert_eq!(int(&eval("r = \"abcabc\".find(\"zz\", reverse=True)\n")), -1);
-    assert_eq!(int(&eval("r = \"abc\".find(\"\", reverse=True)\n")), 3);
+    assert_eq!(int(&eval("r = \"abcabc\".find(\"bc\", 0, 4, reverse=true)\n")), 1);
+    assert_eq!(int(&eval("r = \"abcabc\".find(\"zz\", reverse=true)\n")), -1);
+    assert_eq!(int(&eval("r = \"abc\".find(\"\", reverse=true)\n")), 3);
 }
 
 /// `rm_prefix`/`rm_suffix` exist because `strip(chars)` is a character *set*
@@ -1224,7 +1224,7 @@ fn a_list_of_ints_converts_to_bytes() {
     assert_eq!(eval("r = [].to_bytes()\n").repr(), "b''");
     assert_eq!(eval("r = (0, 200, 255).to_bytes()\n").repr(), "b'\\x00\\xc8\\xff'");
     // A bool is an int everywhere else in the language, so it is one here.
-    assert_eq!(eval("r = [True, 98].to_bytes()\n").repr(), "b'\\x01b'");
+    assert_eq!(eval("r = [true, 98].to_bytes()\n").repr(), "b'\\x01b'");
     // The whole point is the octet a `str` cannot reach.
     assert_eq!(int(&eval("r = len([200].to_bytes())\n")), 1);
     assert_eq!(int(&eval("r = len(f\"{200:c}\".to_bytes())\n")), 2);

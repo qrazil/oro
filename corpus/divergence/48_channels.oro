@@ -9,7 +9,7 @@
 ch = chan(2)
 ch.send(1)
 ch.send(2)
-print("two sends into a buffer of two did not block:", True)
+print("two sends into a buffer of two did not block:", true)
 print("values come out in order:", [ch.recv(), ch.recv()] == [1, 2])
 
 # --- chan() and chan(0) are the same thing ------------------------------------
@@ -94,7 +94,7 @@ except ChannelClosed as e:
 
 # --- close is idempotent ------------------------------------------------------
 work.close()
-print("closing a closed channel is a no-op:", True)
+print("closing a closed channel is a no-op:", true)
 
 # --- closing wakes everyone parked on it --------------------------------------
 # This is §3's shutdown story in miniature: closing the channel is the signal,

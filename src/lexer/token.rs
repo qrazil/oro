@@ -25,6 +25,8 @@ pub enum TokenKind {
     /// f-string literal. A single token for now: the raw inner text is kept
     /// verbatim (no escape processing, no interpolation parsing).
     FString(String),
+    /// `true`, `false` and `null`. The variants keep Python's names because
+    /// `None` is also `Option::None` here; only the source spelling moved.
     True,
     False,
     None,

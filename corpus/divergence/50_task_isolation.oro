@@ -105,7 +105,7 @@ i1 = spawn(importer, "one")
 i2 = spawn(importer, "two")
 print(i1.join())
 print(i2.join())
-print("the module body ran exactly once for both:", True)
+print("the module body ran exactly once for both:", true)
 # Read that trace: `two` reached the import while `one` was still inside the
 # module body, and did not get past it until the body finished. That is the
 # rendezvous. Keyed by path alone, `two` would have been told the module was

@@ -300,7 +300,7 @@ to stay compatible with. This is a free hand, and it will not come again.
 
 ```
 Reader:   read(n)    -> bytes     # 1..n bytes, or b"" at EOF
-Writer:   write(b)   -> None      # writes all of b, or raises
+Writer:   write(b)   -> null      # writes all of b, or raises
 ```
 
 That is the entire protocol. It is a **naming convention**, not a declared
@@ -626,7 +626,7 @@ drop-flush and nothing to lose by never calling `close()` at all.
 ### Free functions: three of them
 
 ```python
-io.read(r, n=None)     # everything until EOF, or exactly n (EOFError if short)
+io.read(r, n=null)     # everything until EOF, or exactly n (EOFError if short)
 io.copy(dst, src)      # -> int, bytes copied, until src EOF
 io.buffer(b=b"")       # an in-memory Reader + Writer
 ```
@@ -842,7 +842,7 @@ would be a slower way of calling it.
 
 **Both buffered and unbuffered channels, from one constructor.** `chan()` is a
 rendezvous, `chan(n)` has capacity `n`. This is one spelling with a parameter,
-not two functions, exactly as `json.stringify(value, indent=None)` covers both
+not two functions, exactly as `json.stringify(value, indent=null)` covers both
 compact and pretty output with one name.
 
 **A closed channel.** `send` on a closed channel raises `ChannelClosed` (a new
@@ -871,7 +871,7 @@ shutdown flag cover the rest.
 *One hole in exactly this argument, recorded here rather than left to be
 discovered:* "a cache is a `dict`" is true of a dict keyed by a string or an
 int, and false of a dict keyed by a **task, a stream or a function** — those
-types are unhashable today, and `task == task` is `False`. A connection registry
+types are unhashable today, and `task == task` is `false`. A connection registry
 is the first such dict anyone writes on top of `net`. §7 item 13.
 
 So: **`select` is not shipped.** It is additive and can arrive later if a real
@@ -947,15 +947,15 @@ Shutdown is cooperative and explicit, which in this model is easy:
 
 ```python
 # std/http.oro, sketched
-_shutting_down = False
+_shutting_down = false
 
 def shutdown():
     global _shutting_down
-    _shutting_down = True
+    _shutting_down = true
     _listener.close()          # a parked accept() raises OSError
 
 def serve(addr, handler):
-    ln = net.listen(addr, reuseport=True)
+    ln = net.listen(addr, reuseport=true)
     while not _shutting_down:
         conn = ln.accept()
         spawn(_serve_conn, conn, handler)
@@ -981,7 +981,7 @@ the reactor is not built — so channel operations and `join` are the only real
 suspension points today. That is the honest state of the milestone, and it is
 listed against M3b in §8 rather than folded into something that has shipped.
 
-Say it plainly: yes, that means a handler with an accidental `while True:` hangs
+Say it plainly: yes, that means a handler with an accidental `while true:` hangs
 that VM's other connections. Three reasons that is the right trade here, and one
 reason it is not permanent:
 
@@ -1311,7 +1311,7 @@ becomes the correct one: **nothing ready *and* nothing registered.**
 ```python
 import net
 
-ln = net.listen("0.0.0.0:8080", reuseport=True)
+ln = net.listen("0.0.0.0:8080", reuseport=true)
 conn = ln.accept()               # parks; -> TcpStream
 ln.close()
 
@@ -1321,7 +1321,7 @@ conn.write(b"...")               # Writer
 conn.peer                        # "203.0.113.7:54321"
 conn.local                       # "10.0.0.2:8080"
 conn.set_timeout(30)             # seconds; applies to read and write
-conn.set_nodelay(True)
+conn.set_nodelay(true)
 conn.shutdown_write()
 conn.close()
 ```
@@ -1355,7 +1355,7 @@ writes all of `b` or raises. Every `io` free function therefore works on a socke
 with no adaptation, and `io.copy(conn_out, conn_in)` is a working TCP proxy.
 
 **Timeouts are one knob.** `set_timeout(seconds)` sets a deadline applied to both
-directions; `set_timeout(None)` clears it. Separate read and write deadlines are
+directions; `set_timeout(null)` clears it. Separate read and write deadlines are
 two knobs where servers set both to the same value. Expiry raises `TimeoutError`,
 which already exists under `OSError`. A listener has no timeout; use a task and a
 shutdown flag.
@@ -1524,7 +1524,7 @@ class Request:
         self.body = body           # Reader, always present, possibly empty
         self.params = {}           # filled by the router
 
-    def header(self, name, default=None):
+    def header(self, name, default=null):
         return self.headers.get(name.lower(), default)
 
     def text(self):
@@ -1535,10 +1535,10 @@ class Request:
 
 
 class Response:
-    def __init__(self, status=200, headers=None, body=b""):
+    def __init__(self, status=200, headers=null, body=b""):
         self.status = status
         self.headers = {}          # dict, str -> str
-        if headers != None:
+        if headers != null:
             self.headers = headers
         self.body = body           # bytes, or a Reader for a streamed body
 
@@ -1551,7 +1551,7 @@ def json_response(v, status=200):
     return Response(status, {"content-type": "application/json"}, json.stringify(v).to_bytes())
 ```
 
-`body` is **always a Reader**, never `None` and never sometimes-bytes. A GET with
+`body` is **always a Reader**, never `null` and never sometimes-bytes. A GET with
 no body gets an empty `Buffer`. One shape means handlers never branch on it, and
 `req.text()` is one line instead of three.
 
@@ -1598,7 +1598,7 @@ class _HeadParser:
             name = line[0:c].to_str().lower()
             value = line[c + 1:].strip().to_str()
             existing = out.get(name)
-            if existing == None:
+            if existing == null:
                 out[name] = value
             else:
                 out[name] = existing + ", " + value
@@ -1643,10 +1643,10 @@ vector, and supporting it costs parser complexity forever.
 ```python
 def _body_reader(r, headers):
     te = headers.get("transfer-encoding")
-    if te != None and te.lower().endswith("chunked"):
+    if te != null and te.lower().endswith("chunked"):
         return _ChunkedReader(r)
     n = headers.get("content-length")
-    if n == None:
+    if n == null:
         return io.buffer(b"")
     return _LimitReader(r, n.to_int())
 ```
@@ -1725,8 +1725,8 @@ def _serve_conn(conn, handler):
     n = 0
     while n < _MAX_REQUESTS_PER_CONN:
         conn.set_timeout(_IDLE_TIMEOUT)
-        req = _try_read(conn)               # None on clean EOF
-        if req == None:
+        req = _try_read(conn)               # null on clean EOF
+        if req == null:
             return
         conn.set_timeout(_REQUEST_TIMEOUT)
         resp = _dispatch(handler, req)
@@ -1758,7 +1758,7 @@ Rules, each of which is a bug if omitted:
 - Two catches, with two scopes, for the reason given under the parser above.
   `_try_read` wraps the parse and nothing else: `BadRequest` or `ValueError`
   from it means the client sent something malformed, so it answers 400 and
-  closes, and it returns `None` only on a clean EOF. `_dispatch` wraps the
+  closes, and it returns `null` only on a clean EOF. `_dispatch` wraps the
   handler call: any `Exception` → 500 with the traceback on stderr, and
   `BaseException` (i.e. `SystemExit`) re-raised.
 
@@ -1779,13 +1779,13 @@ class Router:
 
     def dispatch(self, req):
         h = self.exact.get(req.method + " " + req.path)
-        if h != None:
+        if h != null:
             return h(req)
         segs = req.path.split("/")
         for m, pat, fn in self.patterns:
             if m == req.method:
                 params = _match(pat, segs)
-                if params != None:
+                if params != null:
                     req.params = params
                     return fn(req)
         return Response(404, {}, b"not found")
@@ -1831,7 +1831,7 @@ These are the load-bearing spellings. Getting one wrong is expensive forever.
   meaning.
 - **`read_until(delim, limit)`** as a method on every reader, delimiter included
   in the result, `ValueError` at the limit.
-- **The three names in `io`**: `io.read(r, n=None)`, `io.copy(dst, src)`,
+- **The three names in `io`**: `io.read(r, n=null)`, `io.copy(dst, src)`,
   `io.buffer(b=b"")`. A module this small is only defensible if it stays this
   small; every addition after 1.0 is permanent.
 - **`open(path, mode)`** with `"r"` / `"w"` / `"a"`, all three returning byte
@@ -1959,7 +1959,7 @@ because none of them is fixed yet.
     anything greps for it.
 13. **Identity equality and hashing are missing, and it undercuts §3's own best
     argument.** Measured: `f == f`, `gen == gen`, `task == task` and
-    `buf == buf` are all **`False`**, and all four types are **unhashable** —
+    `buf == buf` are all **`false`**, and all four types are **unhashable** —
     where CPython has functions, generators and file objects hashable by
     identity and equal to themselves. §3's strongest claim is that tasks share
     plain mutable state with no locks, and that "a cache is a `dict`". The first
@@ -2071,8 +2071,8 @@ def handle(conn):
     conn.read_until(b"\r\n\r\n", 8192)
     conn.write(RESP)
 
-ln = net.listen("0.0.0.0:8080", reuseport=True)
-while True:
+ln = net.listen("0.0.0.0:8080", reuseport=true)
+while true:
     spawn(handle, ln.accept())
 ```
 
@@ -2158,7 +2158,7 @@ three mode letters and returns a byte stream from all of them.
 **Methods on streams:** `read(n)`, `write(b)`, `read_until(delim, limit)`,
 `close()`, and `shutdown_write()` on `TcpStream` only.
 
-**Modules:** `io` — `read(r, n=None)`, `copy(dst, src)`, `buffer(b=b"")`, and
+**Modules:** `io` — `read(r, n=null)`, `copy(dst, src)`, `buffer(b=b"")`, and
 nothing else; `net` (Rust); `http` (Oro, provisional).
 
 **Exceptions:** `EOFError`, `ConnectionError` + `ConnectionRefusedError` /

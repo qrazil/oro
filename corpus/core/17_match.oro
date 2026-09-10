@@ -49,7 +49,7 @@ print(only_two(4))
 print(only_two(5))
 
 # Literal patterns match by equality, so Python's cross-type numeric equality
-# holds: 1 == True == 1.0, and the first matching case wins.
+# holds: 1 == true == 1.0, and the first matching case wins.
 def numeric(v):
     match v:
         case 1:
@@ -60,7 +60,7 @@ def numeric(v):
             return "other"
 
 print(numeric(1))
-print(numeric(True))
+print(numeric(true))
 print(numeric(1.0))
 print(numeric(2))
 

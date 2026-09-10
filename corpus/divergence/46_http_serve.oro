@@ -103,7 +103,7 @@ huge.append(b"x" * 200000)
 huge.append(b"GET /second HTTP/1.1\r\nHost: h\r\n\r\n")
 c = Conn(huge.join(b""))
 check("requests served", http.serve_conn(c, echo_path), 1)
-check("the response says the connection is ending", scrub(c.sent()).find(b"connection: close") > 0, True)
+check("the response says the connection is ending", scrub(c.sent()).find(b"connection: close") > 0, true)
 
 print("--- a connection cannot be reused forever")
 capped = []
@@ -113,7 +113,7 @@ while i < 1200:
     i = i + 1
 c = Conn(capped.join(b""))
 check("requests served before the cap", http.serve_conn(c, req => http.Response(200, {}, b"")), 1000)
-check("the last response says the connection is ending", scrub(c.sent()).endswith(b"connection: close\r\ndate: <clock>\r\n\r\n"), True)
+check("the last response says the connection is ending", scrub(c.sent()).endswith(b"connection: close\r\ndate: <clock>\r\n\r\n"), true)
 
 print("--- a handler that raises is a 500, and says so on stderr")
 c = Conn(b"GET / HTTP/1.1\r\nHost: h\r\n\r\n")

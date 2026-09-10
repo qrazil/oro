@@ -255,8 +255,7 @@ impl Lexer {
         } else if c == '\'' || c == '"' {
             self.scan_string(false, false)
         } else if c == '_' || c.is_ascii_alphabetic() {
-            self.scan_ident();
-            Ok(())
+            self.scan_ident()
         } else {
             self.scan_operator()
         }
@@ -451,15 +450,29 @@ impl Lexer {
         Ok(())
     }
 
-    fn scan_ident(&mut self) {
+    fn scan_ident(&mut self) -> Result<(), LexError> {
         let (sl, sc) = (self.line, self.col);
         let mut s = String::new();
         while matches!(self.peek(), Some(c) if c == '_' || c.is_ascii_alphanumeric()) {
             s.push(self.advance().unwrap());
         }
+        // The three literals are lowercase. Python capitalised them because
+        // they are singleton *objects* and its classes are capitalised — a
+        // naming convention for the implementation that leaked into the syntax.
+        // The old spellings are rejected here rather than left to become
+        // ordinary names, so `x = None` is a message and not a `NameError`
+        // three lines later.
+        if let Some(replacement) = renamed_literal(&s) {
+            return Err(LexError::new(
+                format!("`{s}` is not a keyword in Oro — the literal is spelled `{replacement}`"),
+                sl,
+                sc,
+            ));
+        }
         let kind = keyword_kind(&s).unwrap_or(TokenKind::Ident(s));
         self.push_at(kind, sl, sc);
         self.line_has_tokens = true;
+        Ok(())
     }
 
     fn scan_operator(&mut self) -> Result<(), LexError> {
@@ -647,6 +660,17 @@ impl Lexer {
     }
 }
 
+/// Python's spelling of the three literals, mapped to Oro's. Rejected at the
+/// lexer, so the message arrives at the word itself.
+fn renamed_literal(s: &str) -> Option<&'static str> {
+    Some(match s {
+        "True" => "true",
+        "False" => "false",
+        "None" => "null",
+        _ => return Option::None,
+    })
+}
+
 /// Map an identifier string to its keyword token, or `None` if it is an
 /// ordinary identifier.
 fn keyword_kind(s: &str) -> Option<TokenKind> {
@@ -675,9 +699,9 @@ fn keyword_kind(s: &str) -> Option<TokenKind> {
         "not" => Not,
         "is" => Is,
         "pass" => Pass,
-        "True" => True,
-        "False" => False,
-        "None" => None,
+        "true" => True,
+        "false" => False,
+        "null" => None,
         _ => return Option::None,
     })
 }

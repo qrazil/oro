@@ -50,7 +50,7 @@ except ValueError as e:
 # --- nothing is double-reported ------------------------------------------------
 # `bad` was joined, so when its handle dies at the end of this program it will
 # print nothing. Only the unjoined one below prints.
-print("a joined failure prints nothing at drop:", True)
+print("a joined failure prints nothing at drop:", true)
 
 # --- a task that fails cannot take its peers with it ---------------------------
 survivors = []

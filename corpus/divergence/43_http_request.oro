@@ -32,7 +32,7 @@ def parse(raw):
 def outcome(raw):
     try:
         req = parse(raw)
-        if req == None:
+        if req == null:
             return "clean EOF"
         return "accepted"
     except http.BadRequest as e:

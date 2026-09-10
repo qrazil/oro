@@ -2,7 +2,13 @@
 # translated one for one into CPython's. Run it and diff against the reviewed
 # .expected; an empty diff is the review.
 #
-#   python3 corpus/divergence/51_string_surface.twin.py | diff - corpus/divergence/51_string_surface.expected
+# The one thing that is not a name: this file prints Python's `True`/`False`/
+# `None`, so its output goes through the same outbound rename `oracle.sh`
+# applies before it is the expectation.
+#
+#   python3 corpus/divergence/51_string_surface.twin.py \
+#     | sed -E 's/\bTrue\b/true/g; s/\bFalse\b/false/g; s/\bNone\b/null/g' \
+#     | diff - corpus/divergence/51_string_surface.expected
 
 STRS = ["  hi  ", "xxhixx", "xyxhixyx", "", "xxx", "\thi\n ", "ααhiα"]
 CUTS = ["x", "xy", "", "α", "abc", None]
@@ -23,7 +29,7 @@ for b in [b"  hi  ", b"aabaa", b"", b"\x00a\xff"]:
 
 # `find(sub, reverse=True)` replaces `rfind` — one name, one keyword, and the
 # same positional window from either end.
-print("--- find(sub, reverse=True)")
+print("--- find(sub, reverse=true)")
 FIND = ["abcabc", "abc", "", "haééha"]
 SUBS = ["b", "", "abc", "é", "zz"]
 for s in FIND:

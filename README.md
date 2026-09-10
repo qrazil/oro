@@ -108,7 +108,7 @@ redefined: a dotted import must use `as` (`import a.b.c as c`).
 Implemented and working today:
 
 - **Values:** `int` (inline `i64`, promoting to arbitrary-precision bignum on
-  overflow), `float`, `bool`, `str`, `bytes`, `None`, `list`, `tuple`, `dict`,
+  overflow), `float`, `bool`, `str`, `bytes`, `null`, `list`, `tuple`, `dict`,
   `set`, `range`, and functions (including closures over *read* access).
 - **`bytes`, a second type and not a redefinition of `str`.** `b"..."` (and
   `rb"..."`) is a sequence of octets: `b[i]` is an `int`, `b[i:j]` is `bytes`,
@@ -166,7 +166,7 @@ Implemented and working today:
   `rm_suffix` `upper` `lower` `join` `replace` `is_digit` `is_alpha`
   `is_alnum` `is_space`
 
-  Two of them take a keyword, and only their own. `strip(chars=None,
+  Two of them take a keyword, and only their own. `strip(chars=null,
   side="both")` takes `side="left"` / `"right"` — which is why there is no
   `lstrip`/`rstrip` — and `chars` is a character *set*, CPython's cutset
   semantics unchanged. `find(sub, start, end, reverse=false)` takes
@@ -224,7 +224,7 @@ Implemented and working today:
   process exiting 1. Neither Go's answer (kill the process) nor Python's (print
   and exit 0 anyway). The reasoning is `docs/stdlib-server-design.md` §3.
 - **Python truthiness** and Python's cross-type numeric equality (`1 == 1.0 ==
-  True`).
+  true`).
 
 ### What is cut, and why
 
@@ -271,7 +271,7 @@ Each of these is omitted on purpose. The reason matters more than the list.
   write a block, and together they are much of why Python needs autoformatters
   at all. One statement per line; one block form.
 - **No sets.** A set is a dict with no values, and the uses that matter are
-  already covered: `{k: True}` with `k in d` gives O(1) membership, and a dedup
+  already covered: `{k: true}` with `k in d` gives O(1) membership, and a dedup
   loop keeps insertion order (unlike `set()`, whose arbitrary order is a real
   bug source). Only set *algebra* (union/intersection/difference) is a genuine
   gap, and that is rare in scripting — when wanted, it belongs in a stdlib `Set`
@@ -343,10 +343,46 @@ depends on an interpreter flag — `raise` is the one way to fail.)
 
 ## Deliberate divergences from Python
 
-Oro is a subset, but in four places it deliberately behaves *differently* from
+Oro is a subset, but in five places it deliberately behaves *differently* from
 Python. Each divergence is a place where Python made a choice it could not later
 reverse, and Oro — starting fresh, with a single implementation — makes the
 choice Python would arguably prefer.
+
+### `true`, `false`, `null` — the three literals are lowercase
+
+```python
+print(1 < 2)        # true
+print([1 == 1, x.get("missing")])   # [true, null]
+```
+
+Python capitalised these because they are singleton *objects*, and Python
+capitalises class and singleton names. That is a convention about the
+implementation, and it leaked into the syntax: nothing about a boolean literal
+wants to look like a class. Nearly every other language spells them lowercase,
+and Oro already did too, in the one place it had to — `json.stringify` has
+always emitted `true` and `null`, because that is what the wire format says. The
+language disagreed with the format its own standard library writes.
+
+**This changes output, not just source.** `repr` and `str` of a bool and of
+`null` change everywhere they appear: at the top level, inside containers, in
+f-strings, and in `json`. In exchange, `std/json.oro`'s translation layer is
+gone — `_bool_word` and a hard-coded `"null"` collapsed into `v.to_str()`,
+because the value's own text *is* the wire form now, in both directions.
+
+`True`, `False` and `None` are rejected at the word, by the lexer, naming the
+replacement — never quietly treated as ordinary names that fail as a `NameError`
+somewhere else. The type name is unchanged: `type(null)` is still
+`<class 'NoneType'>`, because that is CPython's name for the type and the corpus
+oracles it.
+
+The corpus keeps its oracle through the rename: `corpus/oracle.sh` translates
+in both directions — Oro's literals into Python's before CPython sees the
+source, CPython's back into Oro's before the output is written. Both mappings
+are total and 1:1, so no blind spot is introduced. The one thing it cannot
+survive is a program that prints the *string* `"True"`, since that is
+indistinguishable from a printed bool in the output; the oracle tokenises every
+program and refuses one that puts those words in a string literal, which is
+written up in the script's own header.
 
 ### Block scope on `if` / `for` / `while`
 
@@ -393,7 +429,7 @@ methods, and there are only two:
 
 ```
 read(n)   -> bytes      # 1..n bytes; b"" at EOF; MAY return fewer than n
-write(b)  -> None       # writes all of b, or raises
+write(b)  -> null       # writes all of b, or raises
 ```
 
 That is a **naming convention, not a declared type**: there is no `class
@@ -477,7 +513,7 @@ match command:
         ...
 ```
 
-Allowed patterns are literals (`int`, `float`, `str`, `True`, `False`, `None`),
+Allowed patterns are literals (`int`, `float`, `str`, `true`, `false`, `null`),
 dotted names (`Color.RED`), and the `_` wildcard. There is **no fall-through** —
 one case runs and control leaves the `match`. When every case is a literal, the
 whole thing compiles to an O(1) jump table rather than a comparison chain; that
@@ -549,7 +585,7 @@ growth path for the standard library, not a temporary arrangement.
   an unbounded header block. Missing files and permission errors raise
   `FileNotFoundError` / `PermissionError`.
 - **`io`** — written in Oro, and exactly three functions:
-  `io.read(r, n=None)` (everything until EOF, or exactly `n` with `EOFError` if
+  `io.read(r, n=null)` (everything until EOF, or exactly `n` with `EOFError` if
   the stream ends short), `io.copy(dst, src)` (returns the count), and
   `io.buffer(b=b"")` (an in-memory Reader and Writer, and the only way to get a
   Reader you can feed literal bytes to). There is deliberately no `io.write`:
@@ -579,7 +615,7 @@ growth path for the standard library, not a temporary arrangement.
   convenience; it is the reason the protocol was fixed before the stdlib
   existed. On top of the four it adds `shutdown_write()` (a half-close: send
   FIN, keep reading — not `close()`, which would drop the answer with it),
-  `set_timeout(seconds)` (one deadline for both directions, `None` to clear;
+  `set_timeout(seconds)` (one deadline for both directions, `null` to clear;
   expiry raises `TimeoutError`), `set_nodelay(on)`, and `peer` / `local` as
   plain address strings.
 
@@ -604,14 +640,14 @@ growth path for the standard library, not a temporary arrangement.
   a stream, so it cannot satisfy the protocol), Unix domain sockets, TLS, and
   `SO_REUSEPORT`. The reasoning is `docs/stdlib-server-design.md` §4.
 - **`json`** — also written in Oro: `json.parse(text)` and
-  `json.stringify(value, indent=None)`. `stringify` requires `str` dict keys
+  `json.stringify(value, indent=null)`. `stringify` requires `str` dict keys
   rather than silently stringifying an int one.
 - **`http`** — HTTP/1.1 for servers, written in Oro on top of `io` and the
   `bytes` methods, with **no HTTP-specific Rust primitive anywhere**:
   `read_until` for the header block, `bytes.split` for the lines and
   `bytes.find` for the colon are generic building blocks that earn their place
   on their own, and everything above them is per *request* rather than per
-  *byte*. `http.read_request(r)` parses one request off any Reader (`None` at a
+  *byte*. `http.read_request(r)` parses one request off any Reader (`null` at a
   clean EOF); `http.write_response(w, req, resp, keep_alive)` sends the head
   and a sized body in **one** `write`; `http.serve_conn(conn, handler)` is the
   keep-alive loop; `http.Router().add(method, path, handler)` chains routes and
@@ -639,10 +675,10 @@ growth path for the standard library, not a temporary arrangement.
   The defaults are for orchestration scripts, not for CPython parity — which is
   why the module has a different name (see [Migrating](#migrating-from-01)).
   Output is **both** streamed live and captured, so no script has to choose
-  between watching a build and grepping its output; `quiet=True` drops the live
+  between watching a build and grepping its output; `quiet=true` drops the live
   tee. A nonzero exit **raises** `CommandError` with the tail of stderr in the
   message, because a failed command nobody checked is one of the great sources
-  of silent breakage; `check=False` allows one.
+  of silent breakage; `check=false` allows one.
 
   `.stdout` and `.stderr` are **`bytes`**: a child emits octets, and it may well
   emit a JPEG. Decode with `.to_str()` at the point your program knows it is
@@ -688,12 +724,13 @@ different.
 | `sys.stdout` as a name | `sys.stdout.write(b"…")` | It is a real stream on fd 1 now |
 | `import subprocess` | `import proc` | Different defaults deserve a different name |
 | `subprocess.run(a, capture_output=True, text=True)` | `proc.run(a)` | Capture is always on, and the output streams live as well |
-| `r.stdout` after a failed command | `proc.run(a, check=False)` first | A nonzero exit now raises `CommandError` |
+| `r.stdout` after a failed command | `proc.run(a, check=false)` first | A nonzero exit now raises `CommandError` |
 | `str(x)`, `int(s)`, `float(s)`, `bool(x)` | `x.to_str()`, `s.to_int()`, `s.to_float()`, `x.to_bool()` | Conversion is a method; it chains, and has no confusable empty form |
 | `int(s, 16)` | `s.to_int(16)` | as above |
 | `list(xs)`, `dict(pairs)` | `xs.to_list()`, `pairs.to_dict()` | as above |
 | `list()`, `dict()`, `str()`, `int()` | `[]`, `{}`, `""`, `0` | Literals build; type names are not callable |
 | `lambda x: x * 2` | `x => x * 2` | Shorter, and the point of a lambda is brevity |
+| `True` / `False` / `None` | `true` / `false` / `null` | Capitalisation was Python's class-naming convention leaking into syntax |
 | `s.lstrip(…)` / `s.rstrip(…)` | `s.strip(…, side="left")` / `side="right"` | One strip with a named end, not three methods |
 | `s.rfind(sub)` | `s.find(sub, reverse=true)` | One find with a named direction; `reverse=` as in `sorted` |
 | `s.index(sub)` | `s.find(sub)` | Two spellings of one search, one of which raises; `-1` is the answer |
@@ -730,7 +767,7 @@ Stated plainly:
 - **`proc.run` retains at most 64 MiB per stream.** Capture is no longer
   optional, so an unbounded buffer would let a chatty child exhaust memory. Past
   the cap the stream still flows to the terminal in full, only the retained copy
-  stops growing, and `.truncated` on the result is `True`.
+  stops growing, and `.truncated` on the result is `true`.
 - **`map`/`filter` are eager.** Each step allocates a new collection, so a long
   chain over a large list allocates once per step. Generators remain the lazy
   escape hatch.
@@ -776,6 +813,16 @@ Stated plainly:
 Crucially, **those `.expected` files are generated by running the program under
 CPython 3.12, not by running Oro** (`corpus/oracle.sh` regenerates them). That
 makes the corpus an *independent* check on correctness.
+
+Two mechanical renames sit on either side of that run, because Oro spells the
+three literals `true`/`false`/`null`: the program's literals become Python's
+before CPython sees the source, and CPython's become Oro's before the output is
+saved. Both are total and 1:1, so they add nothing a reviewer has to trust — but
+they do impose one rule, which `oracle.sh` enforces by tokenising every program
+and refusing it otherwise: **an oracled program may not put the words
+`True`/`False`/`None` inside a string literal**, because `print("True")` and
+`print(True)` produce the same bytes and the outbound rename cannot tell them
+apart. Write the word lowercase, or move the program to `divergence/`.
 
 This matters because Oro's own unit-test fixtures are generated from Oro's own
 output — they can catch a *regression* (output changed) but can never catch Oro

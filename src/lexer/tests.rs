@@ -54,18 +54,39 @@ fn no_trailing_newline_still_terminates_line() {
 #[test]
 fn keywords_are_recognised() {
     assert_eq!(
-        kinds("if True and not False:\n    pass\n"),
+        kinds("if true and not false:\n    pass\n"),
         vec![
             If, True, And, Not, False, Colon, Newline, Indent, Pass, Newline, Dedent, Eof
         ]
     );
 }
 
+/// The three literals are lowercase, and Python's spellings are rejected at the
+/// word itself — not left to become ordinary names and fail as a `NameError`
+/// somewhere else. The message names the replacement, which is the rule every
+/// removal in this language follows.
+#[test]
+fn pythons_capitalised_literals_are_rejected_by_name() {
+    for (src, want) in [
+        ("x = True\n", "`True` is not a keyword in Oro — the literal is spelled `true`"),
+        ("x = False\n", "`False` is not a keyword in Oro — the literal is spelled `false`"),
+        ("x = None\n", "`None` is not a keyword in Oro — the literal is spelled `null`"),
+        ("if True:\n    pass\n", "the literal is spelled `true`"),
+    ] {
+        let e = Lexer::new(src).tokenize().expect_err("should be rejected");
+        assert!(e.message.contains(want), "{src:?} gave: {}", e.message);
+    }
+    // Only the bare word. A string or a longer name is untouched.
+    assert!(Lexer::new("x = \"True\"\n").tokenize().is_ok());
+    assert!(Lexer::new("Truely = 1\n").tokenize().is_ok());
+    assert!(Lexer::new("NoneType = 1\n").tokenize().is_ok());
+}
+
 #[test]
 fn none_literal_and_identifier_named_like_prefix() {
-    // `f` alone is an identifier, `None` is a literal.
+    // `f` alone is an identifier, `null` is a literal.
     assert_eq!(
-        kinds("f = None\n"),
+        kinds("f = null\n"),
         vec![ident("f"), Eq, None, Newline, Eof]
     );
 }

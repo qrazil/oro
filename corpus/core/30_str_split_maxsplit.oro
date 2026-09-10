@@ -5,8 +5,8 @@ print("a=b=c".split("=", 1))
 print("a=b=c".split("="))
 print("a b c".split(" ", 2))
 print("x:y".split(":", 0))
-print(" a  b  c ".split(None, 1))
-print(" a  b  c ".split(None))
+print(" a  b  c ".split(null, 1))
+print(" a  b  c ".split(null))
 print("one".split(",", 5))
 # What `zfill` used to spell. `{:05d}` pads a number, `{:0>5}` pads a string,
 # and `{:0>{w}}` takes the width at run time — none of which `zfill` could do.

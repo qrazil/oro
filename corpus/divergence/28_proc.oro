@@ -5,25 +5,25 @@
 # runnable under CPython, so this is checked against a reviewed .expected rather
 # than against the oracle.
 #
-# Every run here passes quiet=True. Streaming is what the default does, but the
+# Every run here passes quiet=true. Streaming is what the default does, but the
 # order in which a *streamed* child's output interleaves with this script's own
 # prints depends on buffering, which would make the baseline flaky. Streaming is
 # covered by the unit tests instead; this file pins the values.
 import proc
 
-r = proc.run(["echo", "hello world"], quiet=True)
+r = proc.run(["echo", "hello world"], quiet=true)
 print("rc", r.returncode, "ok", r.ok, "truncated", r.truncated)
 print("captured", repr(r.stdout))
 print("decoded", repr(r.stdout.strip().to_str()))
 print("split", r.stdout.strip().split(b" "))
 
-f = proc.run(["sh", "-c", "echo oops >&2; exit 3"], check=False, quiet=True)
+f = proc.run(["sh", "-c", "echo oops >&2; exit 3"], check=false, quiet=true)
 print("rc", f.returncode, "ok", f.ok, "stderr", repr(f.stderr))
 
 # A child is free to emit octets that are not text at all. They arrive intact
 # rather than mangled into replacement characters, which is the whole reason
 # the streams are bytes.
-raw = proc.run(["printf", "\\377\\376"], quiet=True)
+raw = proc.run(["printf", "\\377\\376"], quiet=true)
 print("raw", repr(raw.stdout), len(raw.stdout))
 try:
     raw.stdout.to_str()
@@ -31,16 +31,16 @@ except ValueError as e:
     print("undecodable:", e)
 
 try:
-    proc.run(["sh", "-c", "exit 9"], quiet=True)
+    proc.run(["sh", "-c", "exit 9"], quiet=true)
 except CommandError as e:
     print("raised:", e)
 
 try:
-    proc.run(["definitely-not-a-real-program-xyz"], quiet=True)
+    proc.run(["definitely-not-a-real-program-xyz"], quiet=true)
 except FileNotFoundError as e:
     print("missing program raises FileNotFoundError")
 
 try:
-    proc.run(["echo", "hi"], capture_output=True, quiet=True)
+    proc.run(["echo", "hi"], capture_output=true, quiet=true)
 except Exception as e:
     print("cpython-era kwarg rejected")

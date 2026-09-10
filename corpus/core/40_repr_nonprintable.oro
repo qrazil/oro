@@ -73,7 +73,7 @@ print(repr(("\xad", {"k": "\u2028"})))
 
 # Round-trip, checked rather than eyeballed. Second argument: the exact text
 # repr must produce. Third: that same text written back into this file as a
-# literal. If repr is round-trip-safe both comparisons are True — the escape it
+# literal. If repr is round-trip-safe both comparisons are true — the escape it
 # printed is one the lexer reads back as the character it started from.
 def rt(built, spelled, reparsed):
     print(repr(built) == spelled, built == reparsed, spelled)

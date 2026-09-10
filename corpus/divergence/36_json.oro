@@ -51,9 +51,9 @@ print(len(json.parse("\"\\ud83d\\ude00\"")))
 
 sample = {
     "name": "Oro",
-    "stable": True,
-    "cut": False,
-    "extra": None,
+    "stable": true,
+    "cut": false,
+    "extra": null,
     "count": 7,
     "big": 123456789012345678901234567890,
     "ratio": 0.5,

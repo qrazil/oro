@@ -90,7 +90,7 @@ pub struct ClassSpec {
 pub enum Op {
     /// Push a constant from the pool.
     LoadConst(u32),
-    /// Push `None`.
+    /// Push `null`.
     LoadNone,
     /// Read/write a plain local slot.
     LoadFast(u16),

@@ -59,10 +59,10 @@ requests served -> 2
     b'/second\n'
 --- a body too large to be worth draining closes the connection instead
 requests served -> 1
-the response says the connection is ending -> True
+the response says the connection is ending -> true
 --- a connection cannot be reused forever
 requests served before the cap -> 1000
-the last response says the connection is ending -> True
+the last response says the connection is ending -> true
 --- a handler that raises is a 500, and says so on stderr
 http: handler raised <class 'ValueError'>: a bug in the handler, not in the request
 requests served -> 1

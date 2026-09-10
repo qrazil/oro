@@ -36,6 +36,6 @@ TypeError: upper() takes no keyword arguments
 TypeError: strip() got an unexpected keyword argument 'bogus'
 TypeError: find() got an unexpected keyword argument 'bogus'
 ---
-True CPython: False (U+0345 is a combining mark)
-True CPython: False (½ is numeric but not a digit)
-True CPython: False (Ⅷ is a Roman numeral)
+true U+0345 COMBINING YPOGEGRAMMENI; CPython: False
+true U+00BD VULGAR FRACTION ONE HALF; CPython: False
+true U+2167 ROMAN NUMERAL EIGHT; CPython: False

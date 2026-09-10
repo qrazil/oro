@@ -66,7 +66,7 @@ for s in STRS:
 print("--- str.strip([chars])")
 for s in ["  hi  ", "xxhixx", "xyxhixyx", "", "xxx", "\thi\n ", "ααhiα", "a\x1cb\x1d", "\x1c\x1e hi \x1f"]:
     row = [s.strip()]
-    for chars in ["x", "xy", "", "α", "abc", None]:
+    for chars in ["x", "xy", "", "α", "abc", null]:
         row.append(s.strip(chars))
     print(repr(s), row, s.split())
 
@@ -117,7 +117,7 @@ for s in BYTES:
 print("--- bytes.strip([chars])")
 for s in BYTES:
     row = [s.strip()]
-    for chars in [b"a", b"ab", b"", b"\xff\x00", None]:
+    for chars in [b"a", b"ab", b"", b"\xff\x00", null]:
         row.append(s.strip(chars))
     print(repr(s), row)
 

@@ -1,14 +1,14 @@
-two sends into a buffer of two did not block: True
-values come out in order: True
+two sends into a buffer of two did not block: true
+values come out in order: true
 chan()  is <channel cap=0>
 chan(0) is <channel cap=0>
-round trip through two channels: True
-and again on the same pair: True
-values arrived in order: True
+round trip through two channels: true
+and again on the same pair: true
+values arrived in order: true
 the handshake: ['recv', 'send 0', 'sent 0', 'send 1', 'got 0', 'got 1', 'sent 1']
-a closed channel hands out its buffer first, then ends the loop: True
+a closed channel hands out its buffer first, then ends the loop: true
 recv on a drained closed channel raises ChannelClosed: channel is closed
 send on a closed channel raises ChannelClosed: channel is closed
-closing a closed channel is a no-op: True
-one receiver got the value, the other got the close: True
+closing a closed channel is a no-op: true
+one receiver got the value, the other got the close: true
 except Exception catches it: <class 'ChannelClosed'>

@@ -53,7 +53,7 @@ fn sexp(e: &Expr) -> String {
         Expr::Bytes { value, .. } => format!("b\"{}\"", String::from_utf8_lossy(value)),
         Expr::FString { value, .. } => format!("f\"{value}\""),
         Expr::Bool { value, .. } => value.to_string(),
-        Expr::NoneLit { .. } => "None".to_string(),
+        Expr::NoneLit { .. } => "null".to_string(),
         Expr::Name { name, .. } => name.clone(),
         Expr::Unary { op, operand, .. } => {
             let o = match op {
@@ -337,9 +337,9 @@ fn literals() {
     assert!(matches!(parse_expr("3.14"), Expr::Float { .. }));
     assert!(matches!(parse_expr("'hi'"), Expr::Str { .. }));
     assert!(matches!(parse_expr("f'x'"), Expr::FString { .. }));
-    assert!(matches!(parse_expr("True"), Expr::Bool { value: true, .. }));
-    assert!(matches!(parse_expr("False"), Expr::Bool { value: false, .. }));
-    assert!(matches!(parse_expr("None"), Expr::NoneLit { .. }));
+    assert!(matches!(parse_expr("true"), Expr::Bool { value: true, .. }));
+    assert!(matches!(parse_expr("false"), Expr::Bool { value: false, .. }));
+    assert!(matches!(parse_expr("null"), Expr::NoneLit { .. }));
 }
 
 #[test]
@@ -523,7 +523,7 @@ def f(a, b, c=1, d=2):
 fn def_with_annotations_and_return_type() {
     let src = "\
 def f(a: int, b: str = 'x') -> bool:
-    return True
+    return true
 ";
     match parse_one(src) {
         Stmt::Def { params, ret, .. } => {
@@ -1017,8 +1017,8 @@ fn match_parses_literals_dotted_and_wildcard() {
 #[test]
 fn match_accepts_negative_and_special_literals() {
     let stmt = parse_one(
-        "match n:\n    case -1:\n        pass\n    case True:\n        pass\n    \
-         case None:\n        pass\n",
+        "match n:\n    case -1:\n        pass\n    case true:\n        pass\n    \
+         case null:\n        pass\n",
     );
     if let Stmt::Match { cases, .. } = stmt {
         assert!(matches!(cases[0].pattern, Pattern::Literal(Expr::Unary { .. })));

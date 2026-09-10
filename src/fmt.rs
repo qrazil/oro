@@ -733,8 +733,8 @@ fn expr_inner(lb: &LineBreaks, e: &Expr) -> (String, u8) {
         Expr::Str { value, raw, .. } => (quote_str_maybe_raw(value, *raw), ATOM),
         Expr::Bytes { value, raw, .. } => (quote_bytes_maybe_raw(value, *raw), ATOM),
         Expr::FString { value, .. } => (quote_fstring(value), ATOM),
-        Expr::Bool { value, .. } => ((if *value { "True" } else { "False" }).to_string(), ATOM),
-        Expr::NoneLit { .. } => ("None".to_string(), ATOM),
+        Expr::Bool { value, .. } => ((if *value { "true" } else { "false" }).to_string(), ATOM),
+        Expr::NoneLit { .. } => ("null".to_string(), ATOM),
         Expr::Name { name, .. } => (name.clone(), ATOM),
         Expr::Lambda { data, .. } => {
             let params = lambda_params_str(&data.params);

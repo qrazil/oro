@@ -298,7 +298,7 @@ pub struct MatchCase {
 /// pattern grammar — only what makes `match` a switch, nothing that binds.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
-    /// A literal: int / float / str / `True` / `False` / `None`, with an
+    /// A literal: int / float / str / `true` / `false` / `null`, with an
     /// optional leading `-` on numbers. Matched by equality. The inner `Expr`
     /// is guaranteed by the parser to be one of those literal forms.
     Literal(Expr),
@@ -327,9 +327,9 @@ pub enum Expr {
     Bytes { value: Vec<u8>, raw: bool, line: usize, col: usize },
     /// f-string literal (raw inner text; interpolation parsed later).
     FString { value: String, line: usize, col: usize },
-    /// `True` / `False`.
+    /// `true` / `false`.
     Bool { value: bool, line: usize, col: usize },
-    /// `None`.
+    /// `null`. (The variant keeps the old name; only the spelling moved.)
     NoneLit { line: usize, col: usize },
     /// `x => expr` — an anonymous single-expression function.
     Lambda { data: Box<LambdaData>, line: usize, col: usize },

@@ -193,6 +193,9 @@ print("---")
 # of ASCII and on the letters and digits of every script; they differ on 12,194
 # code points — combining marks and non-decimal numerals — and every difference
 # runs in this direction, Oro true where CPython is false, never the reverse.
-print("\u0345".is_alpha(), "CPython: False (U+0345 is a combining mark)")
-print("\u00bd".is_digit(), "CPython: False (\u00bd is numeric but not a digit)")
-print("\u2167".is_digit(), "CPython: False (\u2167 is a Roman numeral)")
+# Built with `chr` rather than written literally: U+0345 has no visible glyph,
+# and a source line whose meaning depends on an invisible character is exactly
+# the kind of thing this corpus exists to make legible.
+print(chr(837).is_alpha(), "U+0345 COMBINING YPOGEGRAMMENI; CPython: False")
+print(chr(189).is_digit(), "U+00BD VULGAR FRACTION ONE HALF; CPython: False")
+print(chr(8551).is_digit(), "U+2167 ROMAN NUMERAL EIGHT; CPython: False")

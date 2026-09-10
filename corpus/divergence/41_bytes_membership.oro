@@ -33,10 +33,10 @@ except TypeError as e:
 # The spellings that mean it, and do work.
 print(b"abc".find([5].to_bytes()), b"abc".find([97].to_bytes()))
 print(b"abc"[0] == 97, b"abc"[0] == 5)
-found = False
+found = false
 for octet in b"abc":
     if octet == 97:
-        found = True
+        found = true
 print("found by iteration:", found)
 
 # `str` on the left is a TypeError in both runtimes — there is no encoding

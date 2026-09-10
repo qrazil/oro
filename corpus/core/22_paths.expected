@@ -4,8 +4,8 @@ oro
 /usr/local/bin
 ('report.tar', '.gz')
 ('plain', '')
-True True False
-True
-False
+true true false
+true
+false
 FileNotFoundError caught
 remove of a missing file raises

@@ -60,7 +60,7 @@ print(line.strip().upper(), line.strip().lower())
 # Case folding is ASCII-only: an octet is not a character.
 print(b"AbC\xff".lower(), b"AbC\xff".upper())
 print(b"a,b,,c".split(b","), b"a,b,c".split(b",", 1))
-print(b"a b\x0bc  d".split(), b" a b c ".split(None, 1))
+print(b"a b\x0bc  d".split(), b" a b c ".split(null, 1))
 print(b"".split(b","), b"x".split(b","))
 print(b",".join([b"a", b"b", b"c"]), b"".join([b"a", b"b"]), b",".join([]))
 print(b"abc".find(b"b"), b"abc".find(b"z"), b"abc".find(b""), b"abc".find(b"abcd"))

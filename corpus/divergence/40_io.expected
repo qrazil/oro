@@ -5,7 +5,7 @@ b'' b''
 b'whole stream'
 b''
 b'0123' b'456789'
-True
+true
 short stream: stream ended after 2 bytes, expected 5
 caught as Exception: <class 'EOFError'>
 b''

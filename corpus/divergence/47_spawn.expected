@@ -1,9 +1,9 @@
-spawn returned before the task ran: True
+spawn returned before the task ran: true
 the handle is a <class 'Task'>
-join returns the return value: True
-the task ran when main blocked: True
-joining twice gives the same value: True
-three tasks summed into one dict: True
-nothing interleaved a task that never blocks: True
+join returns the return value: true
+the task ran when main blocked: true
+joining twice gives the same value: true
+three tasks summed into one dict: true
+nothing interleaved a task that never blocks: true
 main's last statement
 a spawned task still ran after main's last statement

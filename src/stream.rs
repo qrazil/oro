@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! read(n)   -> bytes    # 1..n bytes; b"" at EOF; may return fewer than n
-//! write(b)  -> None     # writes all of b, or raises
+//! write(b)  -> null     # writes all of b, or raises
 //! ```
 //!
 //! Everything here is bytes in both directions; no stream in the language
@@ -251,7 +251,7 @@ impl OroStream {
         }
     }
 
-    /// `conn.set_nodelay(True)` — disable Nagle's algorithm.
+    /// `conn.set_nodelay(true)` — disable Nagle's algorithm.
     pub fn set_nodelay(&self, on: bool) -> VResult<()> {
         let inner = self.borrow_open("set_nodelay")?;
         match &inner.back {

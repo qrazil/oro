@@ -5,14 +5,14 @@
 #
 # API
 # ---
-#   json.parse(text)                   -> dict | list | str | int | float | bool | None
-#   json.stringify(value, indent=None) -> str
+#   json.parse(text)                   -> dict | list | str | int | float | bool | null
+#   json.stringify(value, indent=null) -> str
 #
 # `stringify` takes one optional `indent` rather than shipping a second
 # `stringify_pretty` (or `dumps`/`dumps_pretty`) function: pretty-printing is
 # a formatting *detail* of the single operation "turn a value into JSON
 # text", not a second operation, the same way `sorted(key=, reverse=)` stays
-# one function instead of growing a `sorted_by`. `indent=None` (the default)
+# one function instead of growing a `sorted_by`. `indent=null` (the default)
 # is the compact form — no incidental whitespace at all, not even the
 # `", "`/`": "` CPython's `json.dumps()` inserts by default — because
 # "compact" was asked for directly and a genuinely minimal wire format is a
@@ -122,15 +122,17 @@ class _Parser:
             return self.parse_string()
         if c == "-" or c in _DIGITS:
             return self.parse_number()
+        # The three JSON words are spelled exactly as Oro spells its literals,
+        # so this is a scan and no longer a translation.
         if self.text[self.pos:self.pos + 4] == "true":
             self.pos = self.pos + 4
-            return True
+            return true
         if self.text[self.pos:self.pos + 5] == "false":
             self.pos = self.pos + 5
-            return False
+            return false
         if self.text[self.pos:self.pos + 4] == "null":
             self.pos = self.pos + 4
-            return None
+            return null
         self.fail(f"unexpected '{c}'")
 
     def parse_object(self):
@@ -140,7 +142,7 @@ class _Parser:
         if self.pos < self.len and self.text[self.pos] == "}":
             self.pos = self.pos + 1
             return result
-        while True:
+        while true:
             self.skip_ws()
             if self.pos >= self.len or self.text[self.pos] != '"':
                 self.fail("expected a string key")
@@ -170,7 +172,7 @@ class _Parser:
         if self.pos < self.len and self.text[self.pos] == "]":
             self.pos = self.pos + 1
             return result
-        while True:
+        while true:
             self.skip_ws()
             result.append(self.parse_value())
             self.skip_ws()
@@ -188,7 +190,7 @@ class _Parser:
     def parse_string(self):
         self.pos = self.pos + 1
         out = []
-        while True:
+        while true:
             if self.pos >= self.len:
                 self.fail("unterminated string")
             c = self.text[self.pos]
@@ -211,7 +213,7 @@ class _Parser:
         if e == "u":
             return self.parse_unicode_escape()
         simple = _SIMPLE_UNESCAPES.get(e)
-        if simple == None:
+        if simple == null:
             self.fail(f"invalid escape '\\{e}'")
         self.pos = self.pos + 1
         return simple
@@ -256,16 +258,16 @@ class _Parser:
         else:
             while self.pos < self.len and self.text[self.pos] in _DIGITS:
                 self.pos = self.pos + 1
-        is_float = False
+        is_float = false
         if self.pos < self.len and self.text[self.pos] == ".":
-            is_float = True
+            is_float = true
             self.pos = self.pos + 1
             if self.pos >= self.len or self.text[self.pos] not in _DIGITS:
                 self.fail("invalid number: expected a digit after '.'")
             while self.pos < self.len and self.text[self.pos] in _DIGITS:
                 self.pos = self.pos + 1
         if self.pos < self.len and (self.text[self.pos] == "e" or self.text[self.pos] == "E"):
-            is_float = True
+            is_float = true
             self.pos = self.pos + 1
             if self.pos < self.len and (self.text[self.pos] == "+" or self.text[self.pos] == "-"):
                 self.pos = self.pos + 1
@@ -291,18 +293,12 @@ def parse(text):
 
 # --- stringify --------------------------------------------------------
 
-def stringify(value, indent=None):
+def stringify(value, indent=null):
     return _stringify_value(value, indent, 0)
 
 
-def _bool_word(v):
-    if v:
-        return "true"
-    return "false"
-
-
 def _colon_sep(indent):
-    if indent == None:
+    if indent == null:
         return ":"
     return ": "
 
@@ -314,11 +310,11 @@ def _escape_string(s):
     while i < n:
         c = s[i]
         esc = _NAMED_ESCAPES.get(c)
-        if esc != None:
+        if esc != null:
             out.append(esc)
         else:
             hexcode = _CONTROL_HEX.get(c)
-            if hexcode != None:
+            if hexcode != null:
                 out.append(f"\\u{hexcode}")
             else:
                 out.append(c)
@@ -338,7 +334,7 @@ def _stringify_float(x):
 def _wrap(open_ch, close_ch, parts, indent, level):
     if len(parts) == 0:
         return open_ch + close_ch
-    if indent == None:
+    if indent == null:
         return open_ch + parts.join(",") + close_ch
     pad_in = " " * (indent * (level + 1))
     pad_out = " " * (indent * level)
@@ -366,10 +362,12 @@ def _stringify_object(d, indent, level):
 
 def _stringify_value(v, indent, level):
     t = type(v)
-    if t == "<class 'NoneType'>":
-        return "null"
-    if t == "<class 'bool'>":
-        return _bool_word(v)
+    # `null`, `true` and `false` are Oro's literals *and* JSON's words, so
+    # there is nothing left to translate in either direction: the value's own
+    # to_str() is already the wire form. This used to be a `_bool_word` helper
+    # and a hard-coded "null".
+    if t == "<class 'NoneType'>" or t == "<class 'bool'>":
+        return v.to_str()
     if t == "<class 'int'>":
         return f"{v}"
     if t == "<class 'float'>":
