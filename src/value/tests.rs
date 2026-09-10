@@ -223,12 +223,12 @@ fn freeing_deeply_nested_values_never_recurses() {
         let class = Rc::new(Class {
             name: Rc::from("Node"),
             base: None,
-            members: RefCell::new(HashMap::new()),
+            members: RefCell::new(Fields::new()),
             is_exception: false,
         });
         let mut v = Value::None;
         for _ in 0..DEEP {
-            let mut fields = HashMap::new();
+            let mut fields = Fields::new();
             fields.insert(Rc::from("next"), v);
             v = Value::Instance(Rc::new(Instance { class: class.clone(), fields: RefCell::new(fields) }));
         }

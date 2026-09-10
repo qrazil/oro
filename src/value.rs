@@ -671,6 +671,14 @@ impl Fields {
         }
         self.entries.push((name, value));
     }
+
+    /// The values, consuming the map — the `HashMap` method this replaced, kept
+    /// under the same name so the teardown call site reads the same for every
+    /// container. The keys are `Rc<str>` and hold no `Value`, so dropping them
+    /// here cannot reach another container and start recursing.
+    pub fn into_values(self) -> impl Iterator<Item = Value> {
+        self.entries.into_iter().map(|(_, v)| v)
+    }
 }
 
 /// Whether an interned field name is the name being looked up. Pointer-equal
