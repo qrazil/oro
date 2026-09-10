@@ -734,9 +734,9 @@ pub fn method_exists(recv: &Value, name: &str) -> bool {
     }
     match recv {
         Value::Str(_) => is_str_method(name),
-        // The same sixteen names `str` carries, plus `hex`, which only bytes
-        // needs.
-        Value::Bytes(_) => is_str_method(name) || name == "hex",
+        // The same sixteen names `str` carries, plus `hex` and `scan`, which
+        // only bytes needs.
+        Value::Bytes(_) => is_str_method(name) || matches!(name, "hex" | "scan"),
         Value::List(_) => {
             matches!(name, "append" | "pop" | "extend" | "sort" | "reverse" | "map" | "filter")
         }
@@ -2089,6 +2089,42 @@ fn bytes_method(
     kwargs: &[(String, Value)],
 ) -> VResult<Value> {
     match name {
+        // `b.scan(allowed)`: how many bytes at the front of `b` are all in
+        // `allowed`. `len(b)` means every one of them was.
+        //
+        // The generic primitive `docs/stdlib-server-design.md` §5 said to reach
+        // for when Oro-level parsing crossed its threshold — though not quite
+        // the one it predicted. §5 guessed a multi-delimiter scan; what the
+        // HTTP parser was actually spending its time on is the opposite
+        // question, "is every byte of this field in the set the grammar
+        // allows", which no `find` can answer. This spelling answers both: a
+        // multi-delimiter find is `b.scan(everything_but_the_delimiters)`,
+        // which returns the first delimiter's index.
+        //
+        // Nothing here knows what a header is. The set is the caller's, built
+        // once from whatever grammar the caller is implementing.
+        "scan" => {
+            exactly(&args, 1, "scan")?;
+            let Some(Value::Bytes(allowed)) = args.first() else {
+                return Err(format!(
+                    "scan() argument must be bytes, not '{}'",
+                    args[0].type_name()
+                ));
+            };
+            // A 256-bit membership table, built per call. It costs one pass
+            // over `allowed` and then every byte of `b` is one shift and one
+            // test — which is the whole point, because the Oro spelling costs
+            // a dict lookup and a loop iteration per byte instead.
+            let mut set = [0u64; 4];
+            for &c in allowed.iter() {
+                set[(c >> 6) as usize] |= 1u64 << (c & 63);
+            }
+            let n = b
+                .iter()
+                .take_while(|&&c| set[(c >> 6) as usize] & (1u64 << (c & 63)) != 0)
+                .count();
+            Ok(Value::Int(n as i64))
+        }
         "upper" => {
             exactly(&args, 0, "upper")?;
             Ok(Value::bytes(b.to_ascii_uppercase()))

@@ -1064,6 +1064,33 @@ fn bytes_methods_mirror_the_str_set() {
     assert_eq!(eval("r = b\"\\xff\\x00A\".hex()\n").repr(), "'ff0041'");
 }
 
+/// `bytes.scan(allowed)` — the length of the longest prefix whose every byte is
+/// in `allowed`. The generic primitive `docs/stdlib-server-design.md` §5 said
+/// to reach for when Oro-level parsing crossed its threshold; `std/http.oro`'s
+/// three grammar checks are its first caller.
+#[test]
+fn bytes_scan_measures_the_prefix_inside_a_byte_class() {
+    assert_eq!(int(&eval("r = b\"abc\".scan(b\"abc\")\n")), 3);
+    assert_eq!(int(&eval("r = b\"abc\".scan(b\"ab\")\n")), 2);
+    assert_eq!(int(&eval("r = b\"abc\".scan(b\"xyz\")\n")), 0);
+    // An empty set admits nothing; an empty subject has no prefix to measure.
+    assert_eq!(int(&eval("r = b\"abc\".scan(b\"\")\n")), 0);
+    assert_eq!(int(&eval("r = b\"\".scan(b\"abc\")\n")), 0);
+    // The whole octet range, high bytes and NUL included — this is a set of
+    // numbers, not of characters.
+    assert_eq!(int(&eval("r = b\"\\xff\\x00\\x80\".scan(b\"\\x00\\x80\\xff\")\n")), 3);
+    assert_eq!(int(&eval("r = b\"\\xff\\x00\".scan(b\"\\xff\")\n")), 1);
+    // A repeated member is still one member.
+    assert_eq!(int(&eval("r = b\"aaa\".scan(b\"aaaa\")\n")), 3);
+    // `== len(b)` is "every byte is in the class", which is the question a
+    // grammar asks; anything less is where the first offending byte is.
+    assert_eq!(int(&eval("r = b\"Content Type\".scan(b\"ContenTyp\")\n")), 7);
+    let e = run_err("r = b\"a\".scan(\"a\")\n");
+    assert!(e.message.contains("scan() argument must be bytes, not 'str'"), "got: {}", e.message);
+    let e = run_err("r = \"a\".scan(b\"a\")\n");
+    assert!(e.message.contains("has no attribute 'scan'"), "got: {}", e.message);
+}
+
 /// The `str` surface after the strip/find fold: one `strip` with a `side=`
 /// keyword, one `find` with a `reverse=` keyword, and the four `is_*`
 /// predicates. Every CPython-shaped answer here is oracled by

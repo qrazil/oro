@@ -1,0 +1,97 @@
+# INTENTIONAL DIVERGENCE. `bytes.scan` has no CPython counterpart at all — the
+# closest thing is `re` or a hand-rolled loop — so the oracle cannot generate
+# this baseline. Reviewed by hand.
+#
+# `b.scan(allowed)` is how many bytes at the front of `b` are all in the set
+# `allowed`. It is the one generic primitive `docs/stdlib-server-design.md` §5
+# said to reach for if Oro-level protocol parsing crossed its threshold, and
+# §5 was tested and it had: the three grammar checks in `std/http.oro` were
+# 58% of `read_request` on a realistic 430-byte head, against a stated
+# threshold of 30%.
+#
+# It is not the primitive §5 predicted. §5 guessed a multi-delimiter scan; the
+# question the parser was actually spending its time on is the opposite one,
+# "is every byte of this field in the class the grammar allows", which no
+# `find` can answer. This spelling answers both — see the last block.
+
+# --- the shape ------------------------------------------------------------
+
+print(b"abc".scan(b"abc"))
+print(b"abc".scan(b"ab"))
+print(b"abc".scan(b"xyz"))
+print(b"abc".scan(b""))
+print(b"".scan(b"abc"))
+print(b"aaa".scan(b"aaaa"))
+
+# The set is a set of *numbers*, not of characters: NUL and the high half of
+# the octet range are ordinary members.
+print(b"\xff\x00\x80".scan(b"\x00\x80\xff"))
+print(b"\xff\x00".scan(b"\xff"))
+print(b"\x00\x00".scan(b"\x00"))
+
+# --- "every byte is in the class" -----------------------------------------
+# Which is what a grammar asks, and what `std/http.oro` asks three times per
+# request. Anything short of `len(b)` is where the first offending byte is.
+
+TCHAR_DELIMS = '"(),/:;<=>?@[\\]{}'
+_t = []
+_i = 33
+while _i < 127:
+    if f"{_i:c}" not in TCHAR_DELIMS:
+        _t.append(_i)
+    _i = _i + 1
+TCHAR = _t.to_bytes()
+
+
+def is_token(b):
+    return len(b) > 0 and b.scan(TCHAR) == len(b)
+
+
+print(is_token(b"Content-Type"))
+print(is_token(b"Content Type"))
+print(is_token(b"Content:Type"))
+print(is_token(b""))
+print(is_token(b"X"))
+print(b"Content Type".scan(TCHAR))
+
+# --- a multi-delimiter find is the complement -----------------------------
+# `find` takes one subsequence. Scanning the complement of a delimiter set
+# returns the index of the first delimiter, whichever one it is — the thing
+# §5 asked for, out of the same primitive.
+
+_all = []
+_b = 0
+while _b < 256:
+    _all.append(_b)
+    _b = _b + 1
+
+
+def without(cut):
+    out = []
+    for x in _all:
+        if x not in cut:
+            out.append(x)
+    return out.to_bytes()
+
+
+NOT_SEP = without([32, 9, 59, 44])
+print(b"name=value; other".scan(NOT_SEP))
+print(b"a,b".scan(NOT_SEP))
+print(b"nodelimiters".scan(NOT_SEP))
+print(b";leading".scan(NOT_SEP))
+
+# --- errors ---------------------------------------------------------------
+# The set is octets, like every other `bytes` argument in the language.
+
+try:
+    b"a".scan("a")
+except TypeError as e:
+    print("TypeError:", e)
+try:
+    "a".scan(b"a")
+except AttributeError as e:
+    print("AttributeError:", e)
+try:
+    b"a".scan(b"a", b"b")
+except TypeError as e:
+    print("TypeError:", e)

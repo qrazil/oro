@@ -205,8 +205,14 @@ Implemented and working today:
   choice `dict.keys()` already makes. Type names (`str`, `int`, `list`, …) are
   deliberately *not* callable; see the `to_` casts below.
 - **Methods:** the `str`/`bytes` surface — sixteen names, the same sixteen on
-  both types (`bytes` adds `hex`) — plus the `list`/`dict` methods, the `to_`
-  conversions on every value, and the collection protocol below.
+  both types (`bytes` adds `hex` and `scan`) — plus the `list`/`dict` methods,
+  the `to_` conversions on every value, and the collection protocol below.
+  `b.scan(allowed)` is how many bytes at the front of `b` are all in the
+  `allowed` set, so `b.scan(set) == len(b)` asks "is every byte of this field
+  in the class my grammar allows" in one call into Rust, and
+  `b.scan(everything_but_the_delimiters)` is a multi-delimiter find. It is on
+  `bytes` and not on `str` because that is where per-octet protocol work
+  lives.
 
   `strip` `split` `find` `count` `startswith` `endswith` `rm_prefix`
   `rm_suffix` `upper` `lower` `join` `replace` `is_digit` `is_alpha`
@@ -807,15 +813,20 @@ growth path for the standard library, not a temporary arrangement.
   process, with not one line of Oro different. Also absent on purpose: UDP (not
   a stream, so it cannot satisfy the protocol), Unix domain sockets, TLS, and
   `SO_REUSEPORT`. The reasoning is `docs/stdlib-server-design.md` §4.
-- **`json`** — also written in Oro: `json.parse(text)` and
-  `json.stringify(value, indent=null)`. `stringify` requires `str` dict keys
-  rather than silently stringifying an int one.
+- **`json`** — `json.parse(text)` and `json.stringify(value, indent=null)`.
+  `stringify` requires `str` dict keys rather than silently stringifying an int
+  one, and `parse` takes `str`, not octets — the decode is a step the program
+  takes, in the open, with `.to_str()`. The module is Oro; the codec under it
+  is Rust, because parsing JSON is a per-byte loop and per-byte loops are the
+  Rust half of the boundary (`docs/stdlib-server-design.md` §5). Nesting is
+  capped at 10 000 containers, which nothing real approaches and which bounds
+  what a client can make a server allocate.
 - **`http`** — HTTP/1.1 for servers, written in Oro on top of `io` and the
   `bytes` methods, with **no HTTP-specific Rust primitive anywhere**:
-  `read_until` for the header block, `bytes.split` for the lines and
-  `bytes.find` for the colon are generic building blocks that earn their place
-  on their own, and everything above them is per *request* rather than per
-  *byte*. `http.read_request(r)` parses one request off any Reader (`null` at a
+  `read_until` for the header block, `bytes.split` for the lines, `bytes.find`
+  for the colon and `bytes.scan` for the three grammar classes are generic
+  building blocks that earn their place on their own, and everything above them
+  is per *request* rather than per *byte*. `http.read_request(r)` parses one request off any Reader (`null` at a
   clean EOF); `http.write_response(w, req, resp, keep_alive)` sends the head
   and a sized body in **one** `write`; `http.serve_conn(conn, handler)` is the
   keep-alive loop; `http.Router().add(method, path, handler)` chains routes and

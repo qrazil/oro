@@ -70,14 +70,40 @@ _BYTES = "<class 'bytes'>"
 # table with more than a handful of entries has to be assembled by statement
 # to stay readable.
 
+# The three grammar classes the parser checks a whole field against, as sets
+# of octets for `bytes.scan`. Each is built once at import; `scan` then
+# answers "is every byte of this field in the class" in one call into Rust,
+# where the loop belongs — see the note above `_is_token`.
+
 # tchar: the characters a method or a header field name may contain.
 _TOKEN_DELIMS = '"(),/:;<=>?@[\\]{}'
-_TOKEN_OK = {}
+_tchars = []
 _tb = 33
 while _tb < 127:
     if f"{_tb:c}" not in _TOKEN_DELIMS:
-        _TOKEN_OK[_tb] = true
+        _tchars.append(_tb)
     _tb = _tb + 1
+_TOKEN_OK = _tchars.to_bytes()
+
+# A field value: HTAB, and every octet from 0x20 up except DEL. Bytes above
+# 127 are allowed here and answered for at the strict decode below.
+_vchars = [9]
+_vb = 32
+while _vb < 256:
+    if _vb != 127:
+        _vchars.append(_vb)
+    _vb = _vb + 1
+_FIELD_VALUE_OK = _vchars.to_bytes()
+
+# A request target: visible ASCII or above. Control characters are rejected;
+# bytes above 127 are not, because clients do send raw UTF-8 in a path.
+_gchars = []
+_gb = 33
+while _gb < 256:
+    if _gb != 127:
+        _gchars.append(_gb)
+    _gb = _gb + 1
+_TARGET_OK = _gchars.to_bytes()
 
 # Hex digit -> value, for percent-decoding and chunk sizes. Doubles as the
 # "is this a hex digit" test, so a malformed escape is one lookup rather than
@@ -97,7 +123,6 @@ _SPACE = 32
 _TAB = 9
 _PERCENT = 37
 _PLUS = 43
-_DEL = 127
 
 # Headers that may not repeat. RFC 9110 lets a recipient join duplicates of a
 # list-valued field with a comma; Host and Content-Length are not list-valued,
@@ -244,41 +269,36 @@ def _is_streamed(body):
 
 # --- byte helpers ---------------------------------------------------------
 
+# The three grammar checks, each one `bytes.scan` call.
+#
+# They used to be `for c in b` loops with a dict lookup per byte, and they
+# were 58% of `read_request` on a realistic 430-byte head — nearly twice
+# `docs/stdlib-server-design.md` §5's own 30% threshold for reaching for a
+# generic primitive. `scan` is that primitive: it knows nothing about HTTP,
+# takes the caller's set of allowed octets, and answers how many bytes at the
+# front are in it. `== len(b)` is "all of them", which is the question the
+# grammar asks.
+
 # A method or header field name: at least one character, all of them tchar.
 # The header case is the load-bearing one — a name with a space before its
 # colon ("Foo : bar") is a request-smuggling vector and RFC 9112 says a
 # server must reject the message rather than trim it.
 def _is_token(b):
-    if len(b) == 0:
-        return false
-    for c in b:
-        if _TOKEN_OK.get(c) == null:
-            return false
-    return true
+    return len(b) > 0 and b.scan(_TOKEN_OK) == len(b)
 
 
 # A header field value may hold tabs and any byte above the control range,
 # and nothing else. Rejecting bare CR and bare LF here is what stops a
 # response-splitting payload arriving in a request and being echoed back.
 def _is_field_value(b):
-    for c in b:
-        if c < 32 and c != _TAB:
-            return false
-        if c == _DEL:
-            return false
-    return true
+    return b.scan(_FIELD_VALUE_OK) == len(b)
 
 
 # A request target is visible ASCII or above. Control characters are
 # rejected; bytes above 127 are not, because clients do send raw UTF-8 in a
 # path and the strict decode below is the place to answer for it.
 def _is_target(b):
-    if len(b) == 0:
-        return false
-    for c in b:
-        if c < 33 or c == _DEL:
-            return false
-    return true
+    return len(b) > 0 and b.scan(_TARGET_OK) == len(b)
 
 
 # Percent-decode `b`. In a query string `+` also means a space; in a path it
