@@ -1,0 +1,271 @@
+# INTENTIONAL DIVERGENCE FROM PYTHON. Reviewed by hand; see 43_http_request.oro.
+#
+# The client's seam — `parse_url`, `write_request`, `read_response` — driven
+# over `io.buffer()` with no socket anywhere, which is the whole point of the
+# seam taking a Reader and a Writer rather than a connection. There is nothing
+# to diff this against: CPython's nearest equivalents are `urllib.parse` (which
+# accepts relative URLs, resolves `https` happily, and returns a 6-tuple) and
+# `http.client` (which owns its socket and cannot be handed a buffer).
+#
+# The file is in two halves. The first is the URL parser and the request
+# writer, which are the client's own; the second is the response *framing
+# table*, which is the part the server does not have and the part where a
+# client actually breaks. 62_http_client_socket.oro then runs the same code
+# against Oro's own server over real sockets.
+import http
+import io
+import json
+
+
+def check(label, got, want):
+    if got == want:
+        print(f"{label} -> {want}")
+    else:
+        print(f"{label} -> MISMATCH: got {got}, want {want}")
+
+
+def show(label, raw):
+    print(f"--- {label}")
+    for line in raw.split(b"\r\n"):
+        print(f"    {line}")
+
+
+# --- URLs -------------------------------------------------------------------
+# `target` is what goes on the wire and is never re-encoded; `path` and `query`
+# are the same bytes percent-decoded, for a program that wants to look. Both,
+# because a client that keeps only the decoded form silently changes the
+# request it was asked to make.
+def parsed(url):
+    u = http.parse_url(url)
+    return f"{u.scheme} host={u.host} port={u.port} path={u.path} query={u.query} target={u.target}"
+
+
+print("--- a URL is scheme, host, port, path and query, and the raw target too")
+check("the whole shape", parsed("http://example.com:8080/a/b?x=1&y=2"), "http host=example.com port=8080 path=/a/b query={'x': '1', 'y': '2'} target=/a/b?x=1&y=2")
+check("no port is port 80", parsed("http://example.com/"), "http host=example.com port=80 path=/ query={} target=/")
+check("no path at all is '/'", parsed("http://example.com"), "http host=example.com port=80 path=/ query={} target=/")
+check("a query with no path keeps both", parsed("http://example.com?q=1"), "http host=example.com port=80 path=/ query={'q': '1'} target=/?q=1")
+check("the scheme is case-insensitive", parsed("HTTP://Example.com/x"), "http host=Example.com port=80 path=/x query={} target=/x")
+check("an escape is decoded in path and query, not in the target", parsed("http://h/a%2Fb?k=hello%20world"), "http host=h port=80 path=/a/b query={'k': 'hello world'} target=/a%2Fb?k=hello%20world")
+check("'+' is a space in a query and not in a path", parsed("http://h/a+b?k=a+b"), "http host=h port=80 path=/a+b query={'k': 'a b'} target=/a+b?k=a+b")
+check("an IPv6 literal", parsed("http://[::1]:9000/x"), "http host=::1 port=9000 path=/x query={} target=/x")
+check("a fragment is parsed and dropped, never sent", parsed("http://h/p?q=1#section-2"), "http host=h port=80 path=/p query={'q': '1'} target=/p?q=1")
+check("an empty query value", parsed("http://h/p?a=&b"), "http host=h port=80 path=/p query={'a': '', 'b': ''} target=/p?a=&b")
+
+# The two spellings a socket and a Host header want, which differ by exactly
+# the default port.
+u = http.parse_url("http://example.com/x")
+check("dial takes host and port", u.authority(), "example.com:80")
+check("Host omits the default port", u.host_header(), "example.com")
+check("and keeps a non-default one", http.parse_url("http://example.com:8080/x").host_header(), "example.com:8080")
+check("an IPv6 literal is bracketed for both", http.parse_url("http://[::1]:80/x").authority(), "[::1]:80")
+check("a Url prints as a URL", f"{http.parse_url('http://h:81/p?q=1#f')}", "http://h:81/p?q=1")
+
+
+def url_error(url):
+    try:
+        return _url_error(url)
+    except ValueError as e:
+        return f"{e}"
+
+
+def _url_error(url):
+    return f"no error: {parsed(url)}"
+
+
+print("--- and the URLs a client must refuse")
+# THE line. Oro has no TLS, and the only two things a library can do with an
+# https URL are refuse it and connect to port 443 in the clear. The second one
+# sends whatever the caller put in an Authorization header across the wire in
+# plaintext because a scheme was quietly ignored, so it is not a behaviour that
+# exists here: the refusal is at the parse, before a socket could be opened.
+print(url_error("https://example.com/secret"))
+check("a relative URL", url_error("/just/a/path"), "'/just/a/path' is not an absolute URL — it needs a scheme, as in 'http://host/path'")
+check("a scheme this client does not speak", url_error("ftp://h/f"), "'ftp://h/f' has the scheme 'ftp', and this client speaks only http")
+check("userinfo before the host", url_error("http://user:pw@h/x"), "'http://user:pw@h/x' carries userinfo before the host, which RFC 9110 deprecates and this client will not send")
+check("no host", url_error("http:///path"), "'http:///path' has no host")
+check("an empty bracketed host", url_error("http://[]/x"), "'http://[]/x' has no host")
+check("a port that is not a number", url_error("http://h:80x/"), "'http://h:80x/' has a port that is not a number")
+check("an empty port", url_error("http://h:/"), "'http://h:/' has a port that is not a number")
+check("a port out of range", url_error("http://h:70000/"), "'http://h:70000/' has a port outside 1-65535")
+check("a raw space in the path", url_error("http://h/a b"), "'http://h/a b' has a character in its path or query that cannot be sent unescaped")
+check("a truncated escape", url_error("http://h/a%4"), "truncated percent-escape in the URL")
+check("a bad escape", url_error("http://h/a%zz"), "invalid percent-escape in the URL")
+
+# --- writing a request ------------------------------------------------------
+# The mirror of `write_response`: head and a sized body in one `write`, the
+# framing chosen by the *type* of the body and by nothing else.
+print("--- a request goes out in one write, framed by the body's type")
+w = io.buffer()
+http.write_request(w, "GET", "/health", {"host": "h"})
+show("GET, no body, so no Content-Length at all", w.bytes())
+
+w = io.buffer()
+http.write_request(w, "POST", "/echo", {"Host": "h", "Content-Type": "application/json"}, json.stringify({"n": 1}).to_bytes())
+show("POST, bytes body, so Content-Length", w.bytes())
+
+w = io.buffer()
+http.write_request(w, "PUT", "/upload", {"host": "h"}, io.buffer(b"streamed"))
+show("PUT, Reader body, so chunked", w.bytes())
+
+
+def write_error(method, target, headers, body):
+    try:
+        return _write_error(method, target, headers, body)
+    except ValueError as e:
+        return f"ValueError: {e}"
+    except TypeError as e:
+        return f"TypeError: {e}"
+
+
+def _write_error(method, target, headers, body):
+    http.write_request(io.buffer(), method, target, headers, body)
+    return "no error"
+
+
+print("--- and the requests it will not write")
+check("no Host", write_error("GET", "/", {}, b""), "ValueError: a request needs a Host header — `fetch` fills it in from the URL, and a caller using `write_request` directly has to say")
+check("a header in two spellings is one header, twice", write_error("GET", "/", {"Host": "a", "host": "b"}, b""), "ValueError: header 'host' was given twice, in two spellings")
+check("framing is the body's job, not a header's", write_error("GET", "/", {"host": "h", "Content-Length": "5"}, b""), "ValueError: 'content-length' is set by the body argument, not by a header")
+check("and so is the transfer coding", write_error("GET", "/", {"host": "h", "transfer-encoding": "chunked"}, b""), "ValueError: 'transfer-encoding' is set by the body argument, not by a header")
+check("a header value cannot end the block early", write_error("GET", "/", {"host": "h", "x": "a\r\nx-injected: yes"}, b""), "ValueError: illegal character in request header value for 'x'")
+check("a method that is not a token", write_error("GE T", "/", {"host": "h"}, b""), "ValueError: 'GE T' is not a valid HTTP method")
+check("a target with a space in it", write_error("GET", "/a b", {"host": "h"}, b""), "ValueError: '/a b' is not a valid request target")
+check("a str body", write_error("POST", "/", {"host": "h"}, "not bytes"), "TypeError: a request body is bytes or a Reader, not str — call .to_bytes() on it")
+
+# --- the two halves agreeing ------------------------------------------------
+# The reason both directions live in one module: what the client writes, the
+# server parses, with no adapter between them. A `Buffer` is a queue, so this
+# is literally the client's bytes handed to `read_request`.
+print("--- what the client writes is what the server reads")
+wire = io.buffer()
+http.write_request(wire, "POST", "/users?active=1", {"host": "example.com:8080", "content-type": "text/plain"}, b"payload")
+req = http.read_request(wire)
+check("method and path", f"{req}", "POST /users HTTP/1.1")
+check("query", f"{req.query}", "{'active': '1'}")
+check("host", req.header("host"), "example.com:8080")
+check("body", req.text(), "payload")
+
+wire = io.buffer()
+http.write_request(wire, "PUT", "/big", {"host": "h"}, io.buffer(b"x" * 20000))
+req = http.read_request(wire)
+check("a chunked request body round-trips", len(req.text()), 20000)
+
+# And the same the other way: `write_response` then `read_response`.
+wire = io.buffer()
+http.write_response(wire, http.Request("GET", "/", {}, "1.1", {}, io.buffer(b"")), http.json_response({"ok": true}, 201), false)
+resp = http.read_response(wire, "GET")
+check("a response round-trips", f"{resp.status} {resp.json()}", "201 {'ok': true}")
+
+# --- reading a response -----------------------------------------------------
+print("--- the status line, which is not a request line")
+
+
+def status_of(head):
+    resp = http.read_response(io.buffer(head), "GET")
+    return f"{resp.version} {resp.status} '{resp.reason}' -> '{resp}'"
+
+
+check("the ordinary one", status_of(b"HTTP/1.1 200 OK\r\n\r\n"), "1.1 200 'OK' -> '200 OK'")
+check("a reason phrase may contain spaces", status_of(b"HTTP/1.1 404 Not Found Here\r\n\r\n"), "1.1 404 'Not Found Here' -> '404 Not Found Here'")
+check("a reason phrase may be empty", status_of(b"HTTP/1.1 200 \r\n\r\n"), "1.1 200 '' -> '200 '")
+check("a reason phrase may be missing entirely", status_of(b"HTTP/1.1 200\r\n\r\n"), "1.1 200 '' -> '200 '")
+check("an unknown status keeps the peer's words", status_of(b"HTTP/1.1 599 Weather Balloon\r\n\r\n"), "1.1 599 'Weather Balloon' -> '599 Weather Balloon'")
+check("HTTP/1.0", status_of(b"HTTP/1.0 200 OK\r\n\r\n"), "1.0 200 'OK' -> '200 OK'")
+check("a leading blank line is ignored", status_of(b"\r\nHTTP/1.1 200 OK\r\n\r\n"), "1.1 200 'OK' -> '200 OK'")
+
+
+def resp_error(raw, method="GET"):
+    try:
+        return _resp_error(raw, method)
+    except http.BadResponse as e:
+        return f"{e}"
+
+
+def _resp_error(raw, method):
+    resp = http.read_response(io.buffer(raw), method)
+    return f"no error: {resp.status} {io.read(resp.body)}"
+
+
+print("--- and the status lines it refuses")
+check("nothing at all", resp_error(b""), "the connection closed before any response arrived")
+check("a head that never ends", resp_error(b"HTTP/1.1 200 OK\r\nx: y"), "the connection ended in the middle of the response header block")
+check("one word", resp_error(b"HELLO\r\n\r\n"), "malformed status line")
+check("not HTTP at all", resp_error(b"HELLO THERE\r\n\r\n"), "unrecognised protocol in the status line")
+check("a version this module does not speak", resp_error(b"HTTP/2.0 200 OK\r\n\r\n"), "unsupported HTTP version '2.0' in the status line")
+check("a two-digit status", resp_error(b"HTTP/1.1 20 OK\r\n\r\n"), "malformed status code")
+check("a status that is not a number", resp_error(b"HTTP/1.1 2x0 OK\r\n\r\n"), "malformed status code")
+check("two spaces where one belongs", resp_error(b"HTTP/1.1  200 OK\r\n\r\n"), "malformed status code")
+check("a header name with a space before its colon", resp_error(b"HTTP/1.1 200 OK\r\nx : y\r\n\r\n"), "malformed header name")
+check("obsolete line folding", resp_error(b"HTTP/1.1 200 OK\r\nx: y\r\n z\r\n\r\n"), "obsolete line folding is not supported")
+
+# --- the framing table ------------------------------------------------------
+# The half of the client the server has no counterpart for. A request says what
+# it is; a response only says what it is *given what was asked*, and every line
+# below is a way a client hangs or truncates if it gets that wrong.
+print("--- a response body is framed by four things, and two of them are not in the response")
+
+
+def body_of(raw, method="GET"):
+    resp = http.read_response(io.buffer(raw), method)
+    return f"{resp.status} {io.read(resp.body)}"
+
+
+_CL = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"
+check("Content-Length says how much", body_of(_CL), "200 b'hello'")
+check("chunked says it in pieces", body_of(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"), "200 b'hello world'")
+check("a chunk extension is ignored", body_of(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2;a=b\r\nhi\r\n0\r\n\r\n"), "200 b'hi'")
+check("a trailer is read and discarded", body_of(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nhi\r\n0\r\nx-checksum: 7\r\n\r\n"), "200 b'hi'")
+
+# The inversion. On a *request*, neither header means no body; on a *response*
+# it means the body runs to the close. A client that reuses the request rule
+# here returns an empty body for every HTTP/1.0-style response it ever sees.
+check("neither header on a response means 'until the connection closes'", body_of(b"HTTP/1.1 200 OK\r\n\r\neverything after the head"), "200 b'everything after the head'")
+check("and that is the same rule for a 1.0 response", body_of(b"HTTP/1.0 200 OK\r\n\r\nold"), "200 b'old'")
+
+# The two the response cannot tell you about itself.
+check("a HEAD has no body however framed", body_of(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n", "HEAD"), "200 b''")
+check("a HEAD is not fooled by chunked either", body_of(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n", "HEAD"), "200 b''")
+check("204 has no body", body_of(b"HTTP/1.1 204 No Content\r\n\r\n"), "204 b''")
+check("304 has no body even carrying a Content-Length", body_of(b"HTTP/1.1 304 Not Modified\r\nContent-Length: 99\r\n\r\n"), "304 b''")
+check("204 likewise", body_of(b"HTTP/1.1 204 No Content\r\nContent-Length: 42\r\n\r\n"), "204 b''")
+check("a 1xx is stepped over, not returned", body_of(b"HTTP/1.1 103 Early Hints\r\nlink: </s.css>\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"), "200 b'ok'")
+check("101 is a final answer and is not stepped over", body_of(b"HTTP/1.1 101 Switching Protocols\r\nupgrade: h\r\n\r\n"), "101 b''")
+
+print("--- and the responses that are lying")
+check("a body shorter than its Content-Length", resp_error(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort"), "the response body ended 5 bytes short of its Content-Length")
+check("both framing headers at once", resp_error(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\nhello"), "the response has both Content-Length and Transfer-Encoding")
+check("a coding this module cannot decode", resp_error(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\nxx"), "unsupported Transfer-Encoding 'gzip' in the response")
+check("gzip then chunked is still not chunked", resp_error(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n"), "unsupported Transfer-Encoding 'gzip, chunked' in the response")
+check("a Content-Length that is not a number", resp_error(b"HTTP/1.1 200 OK\r\nContent-Length: 5x\r\n\r\nhello"), "malformed Content-Length '5x'")
+check("two Content-Lengths", resp_error(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhello"), "duplicate content-length header")
+check("a chunked body that stops mid-chunk", resp_error(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n9\r\nab"), "connection ended in the middle of a chunk")
+check("a chunk size that is not hex", resp_error(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nab\r\n0\r\n\r\n"), "malformed chunk size")
+check("interim responses forever", resp_error(b"HTTP/1.1 100 Continue\r\n\r\n" * 12), "more than 8 interim responses in a row")
+
+# The error a client must not be able to confuse with its own caller's.
+print("--- a broken peer is a BadResponse, not a BadRequest")
+caught = "nothing"
+try:
+    http.read_response(io.buffer(b"HELLO THERE\r\n\r\n"), "GET")
+except http.BadRequest as e:
+    caught = "BadRequest"
+except http.BadResponse as e:
+    caught = f"BadResponse: {e!r}"
+check("the class", caught, "BadResponse: BadResponse(unrecognised protocol in the status line)")
+
+# --- the Response type, in both directions ----------------------------------
+print("--- one Response class, read or written")
+resp = http.read_response(io.buffer(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 14\r\n\r\n{"answer": 42}'), "GET")
+check("header lookup is case-insensitive", resp.header("CONTENT-TYPE"), "application/json")
+check("a missing header has a default", resp.header("x-nope", "-"), "-")
+check("json()", f"{resp.json()}", "{'answer': 42}")
+check("close() on a response that owns nothing is a no-op", f"{resp.close()}", "null")
+
+# A response read off one connection can be written straight to another, reason
+# phrase and all, which is the whole reason the class is shared.
+relayed = io.buffer()
+upstream = http.read_response(io.buffer(b"HTTP/1.1 418 I am a teapot\r\nContent-Length: 3\r\n\r\nbrb"), "GET")
+upstream.body = upstream.bytes()
+http.write_response(relayed, http.Request("GET", "/", {}, "1.1", {}, io.buffer(b"")), upstream, false)
+show("relayed verbatim, peer's reason phrase intact", relayed.bytes().split(b"\r\ndate:")[0])

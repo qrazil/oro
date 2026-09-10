@@ -1,0 +1,115 @@
+# An HTTP client, in one screen of Oro, talking to Oro's own server.
+#
+#     oro examples/client.oro                    # dials a server it starts itself
+#     oro examples/client.oro http://a-url/path  # dials that instead
+#
+# With no argument this program is self-contained: it starts `http.serve` on an
+# ephemeral port in one green thread and fetches from it in another, which is
+# the same shape `corpus/divergence/62_http_client_socket.oro` uses to test the
+# client with no network. With a URL it is an ordinary client.
+#
+# There is no `http.get`, no session object and no `Client` to construct. One
+# call is one connection: `fetch` dials, sends `Connection: close`, reads the
+# whole answer, hangs up, and hands back a `Response` with the body already in
+# memory. `stream` is the same call that leaves the connection open for a body
+# too large to hold — and hands you the obligation to close it.
+import http
+import io
+import json
+import sys
+
+
+def report(label, resp):
+    print(f"{label}")
+    print(f"    {resp}    ({len(resp.body)} bytes of {resp.header('content-type', 'nothing in particular')})")
+
+
+# --- the server, for the no-argument case ----------------------------------
+def index(req):
+    return http.text("oro http client demo\n")
+
+
+def status(req):
+    return http.json_response({"server": "oro", "path": req.path, "query": req.query})
+
+
+def echo(req):
+    return http.json_response({"you_sent": req.json()}, 201)
+
+
+def stream_out(req):
+    # A Reader body has no length to declare, so this goes out chunked — the
+    # framing a client cannot know the size of in advance.
+    return http.Response(200, {"content-type": "text/plain"}, io.buffer(b"a chunk of it\n" * 4096))
+
+
+routes = http.Router()
+routes.add("GET", "/", index)
+routes.add("GET", "/json", status)
+routes.add("POST", "/echo", echo)
+routes.add("GET", "/stream", stream_out)
+
+if len(sys.argv) > 1:
+    # An ordinary one-shot client. `parse_url` raises here, before a socket
+    # exists, if the URL is https — Oro has no TLS, and dialling 443 in
+    # plaintext is the one behaviour worse than refusing.
+    url = sys.argv[1]
+    print(f"GET {url}")
+    resp = http.fetch("GET", url)
+    report("", resp)
+    print(resp.text())
+    sys.exit(0)
+
+ready = chan()
+srv = spawn(http.serve, "127.0.0.1:0", req => routes.dispatch(req), ready)
+ln = ready.recv()
+base = f"http://{ln.local}"
+print(f"serving on {base}, and dialling it from this same VM\n")
+
+# --- a GET, and the fields of a response -----------------------------------
+resp = http.fetch("GET", base + "/json?who=ada")
+report("GET /json?who=ada", resp)
+print(f"    status {resp.status}, HTTP/{resp.version}, reason '{resp.reason}'")
+print(f"    decoded: {resp.json()}")
+
+# --- a POST with a body ----------------------------------------------------
+# A body is bytes or a Reader, never `str`: Oro takes `.to_bytes()` at every
+# other boundary in the language and this is not the one place that guesses.
+resp = http.fetch("POST", base + "/echo", {"content-type": "application/json"}, json.stringify({"n": 41}).to_bytes())
+report("POST /echo", resp)
+print(f"    the server saw: {resp.json()}")
+
+# --- a HEAD, which has no body however it is framed ------------------------
+resp = http.fetch("HEAD", base + "/")
+report("HEAD /", resp)
+print(f"    and it still says content-length: {resp.header('content-length')}")
+
+# --- a route that is not there ---------------------------------------------
+# A 404 is an answer. Nothing here raises on a status: only a broken peer, a
+# broken connection or a URL this client will not send does that.
+resp = http.fetch("GET", base + "/nope")
+report("GET /nope", resp)
+
+# --- and the streaming form ------------------------------------------------
+# `stream` returns with the body still on the wire. The `finally` is the price
+# of that, and it is the whole difference from `fetch`.
+resp = http.stream("GET", base + "/stream")
+sink = io.buffer()
+copied = 0
+try:
+    copied = io.copy(sink, resp.body)
+finally:
+    resp.close()
+print("GET /stream (chunked)")
+print(f"    {copied} bytes copied out chunk by chunk, never held twice")
+print(f"    framed as: {resp.header('transfer-encoding')}, content-length: {resp.header('content-length')}")
+
+# --- the refusal that matters ----------------------------------------------
+try:
+    http.fetch("GET", "https://example.com/")
+except ValueError as e:
+    print(f"\nhttps://example.com/ was refused at the parse:\n    {e}")
+
+ln.close()
+tally = srv.join()
+print(f"\nserver stopped: {tally['accepted']} connections, one per call, none left open")

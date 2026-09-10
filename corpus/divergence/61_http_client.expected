@@ -1,0 +1,122 @@
+--- a URL is scheme, host, port, path and query, and the raw target too
+the whole shape -> http host=example.com port=8080 path=/a/b query={'x': '1', 'y': '2'} target=/a/b?x=1&y=2
+no port is port 80 -> http host=example.com port=80 path=/ query={} target=/
+no path at all is '/' -> http host=example.com port=80 path=/ query={} target=/
+a query with no path keeps both -> http host=example.com port=80 path=/ query={'q': '1'} target=/?q=1
+the scheme is case-insensitive -> http host=Example.com port=80 path=/x query={} target=/x
+an escape is decoded in path and query, not in the target -> http host=h port=80 path=/a/b query={'k': 'hello world'} target=/a%2Fb?k=hello%20world
+'+' is a space in a query and not in a path -> http host=h port=80 path=/a+b query={'k': 'a b'} target=/a+b?k=a+b
+an IPv6 literal -> http host=::1 port=9000 path=/x query={} target=/x
+a fragment is parsed and dropped, never sent -> http host=h port=80 path=/p query={'q': '1'} target=/p?q=1
+an empty query value -> http host=h port=80 path=/p query={'a': '', 'b': ''} target=/p?a=&b
+dial takes host and port -> example.com:80
+Host omits the default port -> example.com
+and keeps a non-default one -> example.com:8080
+an IPv6 literal is bracketed for both -> [::1]:80
+a Url prints as a URL -> http://h:81/p?q=1
+--- and the URLs a client must refuse
+'https://example.com/secret' is https, and Oro has no TLS — it cannot make this request. Nothing in the standard library speaks TLS, so there is no option to turn on: use http:// for a service you control, or put a TLS-terminating proxy in front of the one you do not. Oro will not open a plaintext connection to a URL that asked for an encrypted one.
+a relative URL -> '/just/a/path' is not an absolute URL — it needs a scheme, as in 'http://host/path'
+a scheme this client does not speak -> 'ftp://h/f' has the scheme 'ftp', and this client speaks only http
+userinfo before the host -> 'http://user:pw@h/x' carries userinfo before the host, which RFC 9110 deprecates and this client will not send
+no host -> 'http:///path' has no host
+an empty bracketed host -> 'http://[]/x' has no host
+a port that is not a number -> 'http://h:80x/' has a port that is not a number
+an empty port -> 'http://h:/' has a port that is not a number
+a port out of range -> 'http://h:70000/' has a port outside 1-65535
+a raw space in the path -> 'http://h/a b' has a character in its path or query that cannot be sent unescaped
+a truncated escape -> truncated percent-escape in the URL
+a bad escape -> invalid percent-escape in the URL
+--- a request goes out in one write, framed by the body's type
+--- GET, no body, so no Content-Length at all
+    b'GET /health HTTP/1.1'
+    b'host: h'
+    b''
+    b''
+--- POST, bytes body, so Content-Length
+    b'POST /echo HTTP/1.1'
+    b'host: h'
+    b'content-type: application/json'
+    b'content-length: 7'
+    b''
+    b'{"n":1}'
+--- PUT, Reader body, so chunked
+    b'PUT /upload HTTP/1.1'
+    b'host: h'
+    b'transfer-encoding: chunked'
+    b''
+    b'8'
+    b'streamed'
+    b'0'
+    b''
+    b''
+--- and the requests it will not write
+no Host -> ValueError: a request needs a Host header — `fetch` fills it in from the URL, and a caller using `write_request` directly has to say
+a header in two spellings is one header, twice -> ValueError: header 'host' was given twice, in two spellings
+framing is the body's job, not a header's -> ValueError: 'content-length' is set by the body argument, not by a header
+and so is the transfer coding -> ValueError: 'transfer-encoding' is set by the body argument, not by a header
+a header value cannot end the block early -> ValueError: illegal character in request header value for 'x'
+a method that is not a token -> ValueError: 'GE T' is not a valid HTTP method
+a target with a space in it -> ValueError: '/a b' is not a valid request target
+a str body -> TypeError: a request body is bytes or a Reader, not str — call .to_bytes() on it
+--- what the client writes is what the server reads
+method and path -> POST /users HTTP/1.1
+query -> {'active': '1'}
+host -> example.com:8080
+body -> payload
+a chunked request body round-trips -> 20000
+a response round-trips -> 201 {'ok': true}
+--- the status line, which is not a request line
+the ordinary one -> 1.1 200 'OK' -> '200 OK'
+a reason phrase may contain spaces -> 1.1 404 'Not Found Here' -> '404 Not Found Here'
+a reason phrase may be empty -> 1.1 200 '' -> '200 '
+a reason phrase may be missing entirely -> 1.1 200 '' -> '200 '
+an unknown status keeps the peer's words -> 1.1 599 'Weather Balloon' -> '599 Weather Balloon'
+HTTP/1.0 -> 1.0 200 'OK' -> '200 OK'
+a leading blank line is ignored -> 1.1 200 'OK' -> '200 OK'
+--- and the status lines it refuses
+nothing at all -> the connection closed before any response arrived
+a head that never ends -> the connection ended in the middle of the response header block
+one word -> malformed status line
+not HTTP at all -> unrecognised protocol in the status line
+a version this module does not speak -> unsupported HTTP version '2.0' in the status line
+a two-digit status -> malformed status code
+a status that is not a number -> malformed status code
+two spaces where one belongs -> malformed status code
+a header name with a space before its colon -> malformed header name
+obsolete line folding -> obsolete line folding is not supported
+--- a response body is framed by four things, and two of them are not in the response
+Content-Length says how much -> 200 b'hello'
+chunked says it in pieces -> 200 b'hello world'
+a chunk extension is ignored -> 200 b'hi'
+a trailer is read and discarded -> 200 b'hi'
+neither header on a response means 'until the connection closes' -> 200 b'everything after the head'
+and that is the same rule for a 1.0 response -> 200 b'old'
+a HEAD has no body however framed -> 200 b''
+a HEAD is not fooled by chunked either -> 200 b''
+204 has no body -> 204 b''
+304 has no body even carrying a Content-Length -> 304 b''
+204 likewise -> 204 b''
+a 1xx is stepped over, not returned -> 200 b'ok'
+101 is a final answer and is not stepped over -> 101 b''
+--- and the responses that are lying
+a body shorter than its Content-Length -> the response body ended 5 bytes short of its Content-Length
+both framing headers at once -> the response has both Content-Length and Transfer-Encoding
+a coding this module cannot decode -> unsupported Transfer-Encoding 'gzip' in the response
+gzip then chunked is still not chunked -> unsupported Transfer-Encoding 'gzip, chunked' in the response
+a Content-Length that is not a number -> malformed Content-Length '5x'
+two Content-Lengths -> duplicate content-length header
+a chunked body that stops mid-chunk -> connection ended in the middle of a chunk
+a chunk size that is not hex -> malformed chunk size
+interim responses forever -> more than 8 interim responses in a row
+--- a broken peer is a BadResponse, not a BadRequest
+the class -> BadResponse: BadResponse(unrecognised protocol in the status line)
+--- one Response class, read or written
+header lookup is case-insensitive -> application/json
+a missing header has a default -> -
+json() -> {'answer': 42}
+close() on a response that owns nothing is a no-op -> null
+--- relayed verbatim, peer's reason phrase intact
+    b'HTTP/1.1 418 I am a teapot'
+    b'content-length: 3'
+    b'connection: close'

@@ -1,0 +1,33 @@
+--- a client that dials the server in the same VM
+a GET with a Content-Length body came back whole: true true
+and the length it declared is the length it sent: true
+the reason phrase survived the round trip: true
+a POST with a body was echoed: true true
+the path and query reached the router intact: true
+a chunked response was decoded: true true
+and it never had a Content-Length to go by: true true
+a HEAD came back with headers and no body: true true
+and it still declared the length the GET would have sent: true
+a 204 has no body and no framing header: true true true
+a 404 is an answer, not an exception: true true
+a caller's own header went out: true
+a one-megabyte body arrived in one piece: true
+--- a body delimited by the connection closing
+no Content-Length and no chunks, and the body still arrived: true true
+and there was nothing in the response that said how long it was: true true
+--- a head that arrives one packet at a time
+a head split across five reads parsed as one head: true true true
+--- and the failures a caller has to be able to tell apart
+a peer that never answers hits the deadline: true
+a peer that hangs up without answering says so: true
+a body shorter than its Content-Length is not quietly truncated: true
+a body larger than max_body is refused before it is held: true
+nothing is listening: true
+https is refused before a socket exists: true
+--- stream() hands back a live connection
+a body was copied out chunk by chunk, never held twice: true true
+and close() is safe to call again: true
+streaming works on a close-delimited body too: true
+--- every call was its own connection, and every one of them closed
+the server accepted one connection per fetch: true true
+and none of them was still open at the shutdown: true true

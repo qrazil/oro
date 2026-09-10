@@ -1,0 +1,230 @@
+# INTENTIONAL DIVERGENCE.
+# The client, dialling Oro's own server — two tasks in one VM, one of them
+# `http.serve` and the other `http.fetch`, over a real loopback socket. There
+# is nothing to diff this against and no network to depend on: the listener the
+# client dials is the listener this same program is serving, which is the whole
+# reason a client test can live in a corpus at all.
+#
+# The rules 42_net.oro and 60_http_serve.oro set hold here too, and they are
+# what keep a socket test honest: **ephemeral ports only** (`:0`, and read the
+# port back off the listener `serve` hands over), **a deadline on everything
+# that blocks**, and **every line prints a claim in words** rather than a
+# transcript of bytes and milliseconds.
+#
+# Two servers, because Oro's server is too well behaved to test a client
+# against on its own. `http.serve` always frames a response with a
+# Content-Length or with chunks; the third framing — a body delimited by the
+# connection closing — only exists if something less careful is on the other
+# end, and so does a head that arrives one line per packet, and so does a peer
+# that never answers at all. `raw_conn` below is that something.
+import http
+import io
+import json
+import net
+import time
+
+_DEADLINE = 5
+_BIG = 1000000
+
+# How many calls this file makes to the Oro server (not the raw one). One
+# connection each, because `fetch` and `stream` say `Connection: close` and
+# mean it — the tally at the bottom is the proof there is no pool hiding here.
+_CALLS = 11
+
+
+# --- the server half --------------------------------------------------------
+def text(req):
+    return http.text("hello from oro\n")
+
+
+def echo(req):
+    return http.json_response({"you_sent": req.json()}, 201)
+
+
+def chunked(req):
+    # A Reader body has no length to declare, so `write_response` frames it as
+    # chunks. This is the only way to get a chunked response out of this
+    # module, and it is the response the client's `_ResponseChunkedReader` is
+    # for.
+    return http.Response(200, {"content-type": "text/plain"}, io.buffer(b"chunk " * 5000))
+
+
+def empty(req):
+    return http.Response(204)
+
+
+def big(req):
+    return http.text("y" * _BIG)
+
+
+def named(req):
+    return http.text(f"{req.params['name']} {req.query}\n")
+
+
+routes = http.Router()
+routes.add("GET", "/text", text)
+routes.add("POST", "/echo", echo)
+routes.add("GET", "/chunked", chunked)
+routes.add("GET", "/empty", empty)
+routes.add("GET", "/big", big)
+routes.add("GET", "/hello/:name", named)
+
+ready = chan()
+srv = spawn(http.serve, "127.0.0.1:0", req => routes.dispatch(req), ready)
+ln = ready.recv()
+base = f"http://{ln.local}"
+
+
+# --- the raw half -----------------------------------------------------------
+# One connection, answered with bytes chosen by hand. Everything here is
+# something a well-behaved server will not do to you and a real one eventually
+# will.
+def raw_conn(conn):
+    conn.set_timeout(_DEADLINE)
+    head = conn.read_until(b"\r\n\r\n", 65536)
+    target = head.split(b"\r\n")[0].split(b" ")[1]
+    if target == b"/close-delimited":
+        # No Content-Length and no Transfer-Encoding. On a *request* that means
+        # no body at all; on a response it means the body is everything up to
+        # the FIN, and a client that reuses the request rule reads nothing.
+        conn.write(b"HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\n\r\n")
+        conn.write(b"delimited by the close, with no length anywhere")
+    elif target == b"/dribbled":
+        # A head in five packets, with the terminating CRLFCRLF split across
+        # two of them. `read_until` is what makes this a non-event; a
+        # hand-rolled `read(n)` loop is what makes it a heisenbug.
+        for piece in [b"HTTP/1.1 2", b"00 OK\r\ncontent-len", b"gth: 5\r\nx-slow: yes\r", b"\n\r", b"\nfive!"]:
+            conn.write(piece)
+            time.sleep(0.01)
+    elif target == b"/silent":
+        # Accepts, reads the request, and never answers. The client's deadline
+        # is the only thing that ends this.
+        time.sleep(1.0)
+    elif target == b"/truncated":
+        conn.write(b"HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\nonly this much")
+    elif target == b"/no-answer":
+        # Accepts and hangs up without a byte.
+        conn.write(b"")
+    else:
+        conn.write(b"HTTP/1.1 500 raw\r\ncontent-length: 0\r\n\r\n")
+    conn.close()
+
+
+def raw_accept(rln):
+    try:
+        return rln.accept()
+    except ValueError as e:
+        return null
+
+
+def raw_serve(rln):
+    while true:
+        conn = raw_accept(rln)
+        if conn == null:
+            return
+        spawn(raw_conn, conn)
+
+
+rln = net.listen("127.0.0.1:0")
+raw = spawn(raw_serve, rln)
+rawbase = f"http://{rln.local}"
+
+# --- the ordinary cases -----------------------------------------------------
+print("--- a client that dials the server in the same VM")
+r = http.fetch("GET", base + "/text")
+print("a GET with a Content-Length body came back whole:", r.status == 200, r.body == b"hello from oro\n")
+print("and the length it declared is the length it sent:", r.header("content-length") == f"{len(r.body)}")
+print("the reason phrase survived the round trip:", f"{r}" == "200 OK")
+
+r = http.fetch("POST", base + "/echo", {"Content-Type": "application/json"}, json.stringify({"n": 1}).to_bytes())
+print("a POST with a body was echoed:", r.status == 201, f"{r.json()}" == "{'you_sent': {'n': 1}}")
+
+r = http.fetch("GET", base + "/hello/ada?x=1&y=two")
+print("the path and query reached the router intact:", r.text() == "ada {'x': '1', 'y': 'two'}\n")
+
+r = http.fetch("GET", base + "/chunked")
+print("a chunked response was decoded:", r.status == 200, len(r.body) == 30000)
+print("and it never had a Content-Length to go by:", r.header("transfer-encoding") == "chunked", r.header("content-length") == null)
+
+r = http.fetch("HEAD", base + "/text")
+print("a HEAD came back with headers and no body:", r.status == 200, r.body == b"")
+print("and it still declared the length the GET would have sent:", r.header("content-length") == "15")
+
+r = http.fetch("GET", base + "/empty")
+print("a 204 has no body and no framing header:", r.status == 204, r.body == b"", r.header("content-length") == null)
+
+r = http.fetch("GET", base + "/missing")
+print("a 404 is an answer, not an exception:", r.status == 404, r.text() == "not found\n")
+
+r = http.fetch("GET", base + "/text", {"x-custom": "sent"}, null, _DEADLINE)
+print("a caller's own header went out:", r.status == 200)
+
+r = http.fetch("GET", base + "/big")
+print("a one-megabyte body arrived in one piece:", len(r.body) == _BIG)
+
+# --- the three framings, and the one only a rude server produces ------------
+print("--- a body delimited by the connection closing")
+r = http.fetch("GET", rawbase + "/close-delimited")
+print("no Content-Length and no chunks, and the body still arrived:", r.status == 200, r.text() == "delimited by the close, with no length anywhere")
+print("and there was nothing in the response that said how long it was:", r.header("content-length") == null, r.header("transfer-encoding") == null)
+
+print("--- a head that arrives one packet at a time")
+r = http.fetch("GET", rawbase + "/dribbled")
+print("a head split across five reads parsed as one head:", r.status == 200, r.header("x-slow") == "yes", r.body == b"five!")
+
+# --- what a client does when the other end is broken ------------------------
+print("--- and the failures a caller has to be able to tell apart")
+
+
+def failure(f):
+    try:
+        return f()
+    except TimeoutError as e:
+        return f"TimeoutError: {e}"
+    except http.BadResponse as e:
+        return f"BadResponse: {e}"
+    except ValueError as e:
+        return f"ValueError: {e}"
+    except ConnectionError as e:
+        return "ConnectionError"
+
+
+print("a peer that never answers hits the deadline:", failure(() => http.fetch("GET", rawbase + "/silent", null, null, 0.2)) == "TimeoutError: timed out")
+print("a peer that hangs up without answering says so:", failure(() => http.fetch("GET", rawbase + "/no-answer")) == "BadResponse: the connection closed before any response arrived")
+print("a body shorter than its Content-Length is not quietly truncated:", failure(() => http.fetch("GET", rawbase + "/truncated")) == "BadResponse: the response body ended 86 bytes short of its Content-Length")
+print("a body larger than max_body is refused before it is held:", failure(() => http.fetch("GET", base + "/big", null, null, _DEADLINE, 1024)).startswith("BadResponse: the response body is larger than max_body"))
+print("nothing is listening:", failure(() => http.fetch("GET", "http://127.0.0.1:1/x")) == "ConnectionError")
+
+# The one that matters most, and the one a client gets wrong silently.
+print("https is refused before a socket exists:", failure(() => http.fetch("GET", "https://127.0.0.1/x")).startswith("ValueError: 'https://127.0.0.1/x' is https, and Oro has no TLS"))
+
+# --- streaming --------------------------------------------------------------
+# The second entry point, and the whole of its difference from `fetch`: the
+# connection is still open when it returns, and the caller closes it.
+print("--- stream() hands back a live connection")
+resp = http.stream("GET", base + "/big")
+sink = io.buffer()
+# Bound out here because a name first bound in a `try` body does not survive
+# it, and the claim below is outside the block that does the copying.
+copied = 0
+try:
+    copied = io.copy(sink, resp.body)
+finally:
+    resp.close()
+print("a body was copied out chunk by chunk, never held twice:", copied == _BIG, len(sink.bytes()) == _BIG)
+print("and close() is safe to call again:", f"{resp.close()}" == "null")
+
+resp = http.stream("GET", rawbase + "/close-delimited")
+try:
+    print("streaming works on a close-delimited body too:", io.read(resp.body) == b"delimited by the close, with no length anywhere")
+finally:
+    resp.close()
+
+# --- shutdown ---------------------------------------------------------------
+ln.close()
+rln.close()
+tally = srv.join()
+raw.join()
+print("--- every call was its own connection, and every one of them closed")
+print("the server accepted one connection per fetch:", tally["accepted"] == _CALLS, tally["refused"] == 0)
+print("and none of them was still open at the shutdown:", tally["drained"] == 0, tally["forced"] == 0)

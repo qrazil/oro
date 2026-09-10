@@ -856,12 +856,12 @@ measurement, and the reason the same argument does not move `http`.
   Rust half of the boundary (`docs/stdlib-server-design.md` §5). Nesting is
   capped at 10 000 containers, which nothing real approaches and which bounds
   what a client can make a server allocate.
-- **`http`** — HTTP/1.1 for servers, written in Oro on top of `io` and the
-  `bytes` methods, with **no HTTP-specific Rust primitive anywhere**:
+- **`http`** — HTTP/1.1 in both directions, written in Oro on top of `io` and
+  the `bytes` methods, with **no HTTP-specific Rust primitive anywhere**:
   `read_until` for the header block, `bytes.split` for the lines, `bytes.find`
-  for the colon and `bytes.scan` for the three grammar classes are generic
+  for the colon and `bytes.scan` for the grammar classes are generic
   building blocks that earn their place on their own, and everything above them
-  is per *request* rather than per *byte*.
+  is per *message* rather than per *byte*.
 
   ```python
   import http
@@ -882,6 +882,40 @@ measurement, and the reason the same argument does not move `http`.
   `http.serve_conn(conn, handler)` is the keep-alive loop;
   `http.Router().add(method, path, handler)` chains routes and binds
   `/users/:id` segments into `req.params`.
+
+  **The client is the same module read backwards.** `http.fetch(method, url)`
+  dials, sends, reads the whole answer and hangs up, and hands back the same
+  `Response` class a handler builds:
+
+  ```python
+  resp = http.fetch("GET", "http://127.0.0.1:8080/health")
+  print(resp.status, resp.text())
+
+  http.fetch("POST", url, {"content-type": "application/json"},
+             json.stringify(payload).to_bytes())
+  ```
+
+  There is no `http.get`/`http.post`/`http.put`: the method is an argument
+  because it *is* an argument, and a wrapper per verb is a set of names that is
+  wrong the moment somebody needs `PROPFIND`. There is no session object and no
+  pool — one call is one connection, which says `Connection: close` and means
+  it — and no redirects, cookies, authentication or retries, because each of
+  those is a policy the caller has to own and `resp.header("location")` is
+  right there. `http.stream(...)` is the same call that leaves the body on the
+  wire for something too large to hold in memory, and hands the caller the
+  obligation to `resp.close()`; `fetch` is six lines written on top of it, and
+  those six lines are a `max_body` cap and that `close()`.
+
+  **`https://` raises at `http.parse_url`, before a socket exists.** Oro has no
+  TLS, and the only alternative to refusing is opening a plaintext connection
+  to port 443 and sending whatever the caller put in an `Authorization` header
+  in the clear. Underneath `fetch`: `http.write_request(w, method, target,
+  headers, body)` and `http.read_response(r, method)` are the seam, and they
+  take a Reader and a Writer rather than a socket, exactly as `read_request`
+  and `write_response` do. `read_response` takes the method because **a
+  response is not self-describing** — the reply to a `HEAD` carries the
+  `Content-Length` the `GET` would have carried and no body at all, and a
+  parser that does not know what was asked will block waiting for one.
 
   **Shutdown is closing the listener, and nothing else.** `serve` takes an
   optional `ready` channel and sends the bound listener down it before
@@ -1194,6 +1228,14 @@ Run the CPython differential corpus:
 
 `examples/server.oro` is a working HTTP server in one screen: five routes, a
 logging middleware written as a function, and no framework holding any of it.
+`examples/client.oro` is the other half — with no argument it starts a server
+on an ephemeral port in one green thread and fetches from it in another, so it
+needs no network at all:
+
+```sh
+./target/release/oro examples/client.oro            # dials a server it starts
+./target/release/oro examples/client.oro http://a-url/path
+```
 
 ```sh
 ./target/release/oro examples/server.oro            # 127.0.0.1:8080
@@ -1356,7 +1398,8 @@ checks that the first was answered and the second was not waited for.
 - `src/value.rs` — the runtime `Value` type and its containers.
 - `std/` — the Oro-written half of the standard library (`io`, `json`, `http`),
   baked into the binary by `src/vm/stdlib.rs`.
-- `examples/` — runnable programs; `examples/server.oro` is the HTTP server.
+- `examples/` — runnable programs; `examples/server.oro` is the HTTP server and
+  `examples/client.oro` is the client dialling one it started itself.
 - `corpus/` — the CPython-generated differential test suite.
 
 ## License
