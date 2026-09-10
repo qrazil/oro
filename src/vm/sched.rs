@@ -264,12 +264,33 @@ impl Vm {
         drop(handle);
     }
 
-    /// Render an uncaught-in-a-task exception the way an uncaught top-level one
-    /// is rendered (§3 rule 3), including the script path the CLI prepends.
+    /// Render an uncaught-in-a-task exception for §3 rule 3: the location, the
+    /// exception and the script path the CLI prepends, behind two words that
+    /// say whose failure it is.
+    ///
+    /// §3 asked for "the same rendering an uncaught top-level exception gets",
+    /// and that was implemented literally, so an unjoined failed task printed
+    ///
+    /// ```text
+    /// app.oro:42:9: KeyError: 'user'
+    /// ```
+    ///
+    /// which is the line a program prints *as it dies*. Here the program did
+    /// not die — it is still serving the other 9,999 connections, which is the
+    /// property §3 exists to guarantee — and in a server log, the only place
+    /// this line will ever be read, it says the wrong thing about the most
+    /// important fact in it. §7 item 12 recorded the fix rather than patching
+    /// it in passing, because it is a user-visible output format.
+    ///
+    /// `task failed: ` and nothing more. Not the task's id, which appears
+    /// nowhere else in a log unless the program printed a `Task` itself; not
+    /// "unjoined", which describes why you are *seeing* the line rather than
+    /// what happened. The location, the exception text and the exit code are
+    /// unchanged.
     fn render_report(&self, err: &RuntimeError) -> String {
         match self.argv.first() {
-            Some(script) => format!("{script}:{err}"),
-            None => err.to_string(),
+            Some(script) => format!("task failed: {script}:{err}"),
+            None => format!("task failed: {err}"),
         }
     }
 

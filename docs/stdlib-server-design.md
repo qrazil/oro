@@ -906,15 +906,17 @@ Oro's rule:
 2. If the task is joined — then or later — the exception is **re-raised in the
    joiner**. The joiner owns it; nothing is printed.
 3. If the `Task` handle is dropped without ever being joined, the exception is
-   **printed to stderr** at that moment, with the same rendering an uncaught
-   top-level exception gets, and the process exit code is set to 1.
+   **printed to stderr** at that moment, as `task failed: ` followed by the
+   rendering an uncaught top-level exception gets, and the process exit code is
+   set to 1.
 
 Rule 3 uses Oro's deterministic refcount drop, which is exactly the property
 that removed `with`. Nothing is ever silently swallowed, and nothing is
 double-reported.
 
-**"The same rendering an uncaught top-level exception gets" was a mistake, and
-it shipped.** It was written as a consistency argument, and it was implemented
+**"The same rendering an uncaught top-level exception gets" was a mistake, it
+shipped, and it has since been corrected — the paragraph below is the record of
+why.** It was written as a consistency argument, and it was implemented
 literally, so an unjoined failed task prints exactly this and nothing else:
 
 ```
@@ -928,7 +930,10 @@ will actually be read, it says the wrong thing about the most important fact in
 it. One word of prefix fixes it — `task failed: app.oro:42:9: KeyError:
 'user'` — with the location, the exception and the exit code all unchanged.
 Recorded in §7 rather than patched in passing, because it is a user-visible
-output format and it should be chosen on purpose.
+output format and it should be chosen on purpose. *Chosen, and shipped exactly
+as written here:* two words, not the task's id (which appears nowhere else in a
+log unless the program printed a `Task` itself) and not "unjoined" (which
+describes why you are seeing the line, not what happened).
 
 This is the single most important property of a server runtime: a `KeyError` in
 one request handler must return 500 for that request and must not take down the
@@ -1962,7 +1967,9 @@ because none of them is fixed yet.
     recommendation rather than a risk attached: **reopen it.** It is a builtin,
     it is small, it is additive, and it is easier to add now than after a
     release where the idiom above has appeared in someone's code.
-12. **The drop-report rendering is misleading, and it shipped that way.** §3
+12. **~~The drop-report rendering is misleading~~, and it shipped that way.**
+    *Fixed: the line now reads `task failed: app.oro:42:9: KeyError: 'user'`,
+    with the location, the exception and the exit code unchanged.* §3
     asked for "the same rendering an uncaught top-level exception gets", which
     was implemented literally, so an unjoined failed task prints
     `app.oro:42:9: KeyError: 'user'` — a line that says *the program died* when

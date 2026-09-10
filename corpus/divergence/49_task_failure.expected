@@ -6,4 +6,4 @@ a joined failure prints nothing at drop: true
 every task ran: true
 two of four failed, and only those two: ['caught: a died', 'b', 'caught: c died', 'd']
 main is done; the unjoined failure is reported below, on stderr
-divergence/49_task_failure.oro:15:5: ValueError: nobody joined me
+task failed: divergence/49_task_failure.oro:18:5: ValueError: nobody joined me

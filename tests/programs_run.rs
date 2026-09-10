@@ -151,8 +151,33 @@ fn sys_exit_outranks_a_dropped_task_failure() {
         "import sys\ndef boom():\n    raise ValueError('x')\ndef nothing():\n    return 0\nspawn(boom)\nspawn(nothing).join()\nprint('the task already died')\nsys.exit(0)\n",
     );
     assert_eq!(stdout, "the task already died\n");
-    assert!(stderr.contains("ValueError: x"), "the drop report still happens: {stderr}");
+    assert!(
+        stderr.contains("task failed: ") && stderr.contains("ValueError: x"),
+        "the drop report still happens, and still says a *task* died: {stderr}"
+    );
     assert_eq!(code, 0, "sys.exit(0) is deliberate and wins");
+}
+
+/// The unjoined-failure line says a **task** failed, and the exit code is
+/// unchanged by it saying so.
+///
+/// The prefix is the whole content of §7 item 12: without it the line is
+/// byte-for-byte what a program prints as it dies, in a runtime whose central
+/// promise is that one handler's `KeyError` does not take down the other 9,999
+/// connections.
+#[test]
+fn an_unjoined_task_failure_says_a_task_failed() {
+    let (stdout, stderr, code) = run_source(
+        "taskfailedline",
+        "def boom():\n    d = {}\n    return d['user']\nspawn(boom)\nprint('still serving')\n",
+    );
+    assert_eq!(stdout, "still serving\n");
+    let line = stderr.trim_end();
+    assert!(line.starts_with("task failed: "), "stderr was: {stderr}");
+    // Everything after the prefix is what it always was: path, line, column,
+    // exception class and message.
+    assert!(line.ends_with(":3:12: KeyError: 'user'"), "stderr was: {stderr}");
+    assert_eq!(code, 1, "an unjoined failure still exits 1");
 }
 
 /// `sys.exit` from inside a task ends the *program*, not just that task — §3's

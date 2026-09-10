@@ -230,8 +230,10 @@ Implemented and working today:
   which is why there is no `select` and no locks — a shutdown flag is a
   variable, a cache is a `dict`, and sharing them is free. And **an uncaught
   exception in a task kills only that task**: it is re-raised in whoever joins
-  it, or, if nobody ever does, printed when the handle is dropped, with the
-  process exiting 1. Neither Go's answer (kill the process) nor Python's (print
+  it, or, if nobody ever does, printed when the handle is dropped — as
+  `task failed: app.oro:42:9: KeyError: 'user'`, because in a server log the
+  fact that the *program* is still running is the most important thing on the
+  line — with the process exiting 1. Neither Go's answer (kill the process) nor Python's (print
   and exit 0 anyway). The reasoning is `docs/stdlib-server-design.md` §3.
 - **Python truthiness** and Python's cross-type numeric equality (`1 == 1.0 ==
   true`).

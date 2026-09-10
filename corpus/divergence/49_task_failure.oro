@@ -6,9 +6,12 @@
 #
 # THE LAST LINE OF THE EXPECTED OUTPUT IS ON STDERR, and it is the point of the
 # whole file: an unjoined failure is reported, at the moment its handle dies,
-# with the same rendering an uncaught top-level exception gets. The run also
-# exits 1 — `tests/programs_run.rs` asserts that half, since a `.expected` file
-# cannot see an exit code.
+# with the location and the exception text an uncaught top-level exception gets
+# — behind `task failed: `, which is the part that says the program is still
+# running. It printed without that prefix once, and read as though the process
+# had died; §7 item 12 is the record. The run also exits 1 —
+# `tests/programs_run.rs` asserts that half, since a `.expected` file cannot see
+# an exit code.
 
 # --- rule 1: the task dies, the program does not ------------------------------
 def boom(msg):
