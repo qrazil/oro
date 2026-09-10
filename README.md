@@ -709,8 +709,15 @@ Locked design decisions, and what each one buys:
   recursion depth is therefore bounded by heap, not by the native C stack, so
   deep recursion does not overflow. This flat design is also what makes
   generators implementable later without stackful coroutines.
-- **`Rc` reference counting, not `Arc`.** The runtime is single-threaded, so it
-  pays for no atomic operations.
+- **`Rc` reference counting, not `Arc`.** No Oro value ever crosses a thread, so
+  no Oro value pays for an atomic. This used to read "the runtime is
+  single-threaded", which was a stronger claim than the design ever needed and
+  stopped being true when DNS moved onto helper threads: `getaddrinfo` is
+  blocking-only, so a resolver has to wait *somewhere*. What holds, and is what
+  the decision actually rests on, is that the boundary carries a hostname in and
+  an IP address out — never a `Value`. `Value` is `!Send` and stays `!Send`,
+  which is precisely why the VM has to own its own scheduler rather than borrow
+  one.
 - **`i64` inline, bignum on overflow.** Small integers are unboxed `i64`;
   arithmetic that would overflow transparently promotes to an arbitrary-
   precision integer. You never silently wrap.
@@ -797,13 +804,16 @@ measurement, and the reason the same argument does not move `http`.
   enforces, so it bounds the *whole* operation (a `read_until` spanning four
   packets) rather than restarting on each packet the way `SO_RCVTIMEO` did.
 
-  The one call that still stops the world is `net.dial`, and only for a
-  hostname: DNS resolution and the TCP handshake are both synchronous. A server
-  built on `net.listen` never reaches it — `listen` resolves once at startup —
-  but a `dial` from inside a running server stalls its peers for the lookup.
-  Dialling a literal `ip:port` skips the lookup. See
-  [`docs/stdlib-server-design.md`](docs/stdlib-server-design.md) §4 for why
-  that is a written-down limitation rather than an oversight.
+  **`net.dial` parks too, and that was the last one.** It used to stop the world
+  twice for a hostname — once in the DNS lookup, once in the TCP handshake —
+  which froze every task in the VM for anything from microseconds to the five
+  seconds a retrying resolver takes. It now parks the calling task for both.
+  `getaddrinfo` is blocking-only, so the lookup runs on a small pool of helper
+  threads that exchange a hostname for an address and touch nothing else;
+  dialling a literal `ip:port` still starts no thread and does no lookup at all.
+  See [`docs/stdlib-server-design.md`](docs/stdlib-server-design.md) §4 for why
+  the OS resolver rather than one written in Oro, and for the architectural
+  claim that had to be corrected to make room for a helper thread.
 
   Failures use CPython's classes, so the hierarchy stays one hierarchy: a
   refused connect is `ConnectionRefusedError`, a reset peer

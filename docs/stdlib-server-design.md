@@ -29,12 +29,15 @@ Four decisions are already settled and are not re-argued here, only built on:
 - **Green threads, not `async`/`await`.** No function coloring. `spawn(f)` and
   channels; I/O looks blocking and parks the Oro task instead of the thread.
 - **The reactor is invisible in the language — and it is mio, not tokio.** One
-  VM per OS thread, nothing shared between threads. Every `Value` is
-  `Rc`/`RefCell` — there is not one `Arc` in the codebase — so values are
-  `!Send`. Scale out with `SO_REUSEPORT` across N single-threaded VMs. This
-  bullet said "tokio is the engine" until the scheduler was actually built;
-  §3 records why the engine turned out to be one whole layer smaller than
-  that.
+  VM per OS thread, and **no Oro value ever crosses a thread**. Every `Value` is
+  `Rc`/`RefCell` — there is not one `Arc` around an Oro value — so values are
+  `!Send`, and a ready queue of `!Send` tasks is why the VM must own its own
+  scheduling. Scale out with `SO_REUSEPORT` across N VMs. This bullet has been
+  wrong twice and been corrected in place both times: it said "tokio is the
+  engine" until the scheduler was built (§3 records why the engine turned out
+  to be a layer smaller), and it said "nothing shared between threads" across N
+  "single-threaded VMs" until DNS needed a helper thread (§4 records why the
+  claim was overstated and what the real invariant is).
 - **Errors are exceptions**, using the existing
   `BaseException`→`Exception`→`OSError`/`ValueError` hierarchy.
 - **Go's `io` philosophy**: one-method interfaces that everything composes
@@ -1040,7 +1043,7 @@ that VM's other connections. Three reasons that is the right trade here, and one
 reason it is not permanent:
 
 1. **The deployment model already bounds the blast radius.** The architecture is
-   N single-threaded VMs behind `SO_REUSEPORT`. A stuck task removes 1/N of
+   N VMs behind `SO_REUSEPORT`, one Oro task queue each. A stuck task removes 1/N of
    capacity — exactly what a blocked OS thread does in a thread-per-core server,
    which is the standard the industry already accepts.
 2. **Preemption costs the interpreter, and the interpreter is the problem.** A
@@ -1258,7 +1261,10 @@ the split is:
 - The **VM** owns the ready queue and decides which task runs next. Its run loop
   is unchanged and stays synchronous.
 - The **reactor** provides one thing: *tell me when this fd is readable.*
-- Nothing crosses a thread boundary, so `!Send` values are never a problem.
+- No Oro value crosses a thread boundary, so `!Send` values are never a
+  problem. (This line read "*nothing* crosses a thread boundary" until §4's
+  DNS decision put helper threads in the process. The correction is recorded
+  there; the word that was doing the work is **value**.)
 
 That `!Send` argument is worth keeping in full, because it is not an
 inconvenience the design works around — it is precisely *why* the VM must own
@@ -1407,7 +1413,9 @@ reported as one — naming what every blocked task is waiting for, since "recv o
 an empty unbuffered channel" and "send to a full one" are different bugs with
 the same word in front of them. It now blocks on readiness and moves woken tasks
 onto the ready queue, and the deadlock condition is the correct one: **nothing
-ready *and* nothing registered.**
+ready *and* nothing registered.** (§4's DNS work added a third clause — *and no
+lookup in flight* — for the same reason the second one exists: a resolver thread
+is outside the VM exactly as the kernel is.)
 
 Both halves turned out to be load-bearing in opposite directions, which is worth
 recording because only one of them is obvious. Dropping the check turns every
@@ -1504,57 +1512,189 @@ two knobs where servers set both to the same value. Expiry raises `TimeoutError`
 which already exists under `OSError`. A listener has no timeout; use a task and a
 shutdown flag.
 
-**Blocking DNS is a trap, and M3b's answer is: left blocking, deliberately, with
-the cost written down.** This is the paragraph §4 asked the milestone that
-touched this to write.
+**Blocking DNS is a trap, and it is now sprung.** `net.dial` parks from start
+to finish. This is the paragraph §4 asked whichever milestone touched this to
+write, and it is written as a decision with its reasoning rather than as a note
+that something changed.
 
-*The decision.* `net.dial` still resolves synchronously and still connects on a
-blocking socket. Everything else in `net` parks. Both candidates below cost more
-than they buy at the reactor milestone. A resolver written in Oro over UDP needs
-UDP — a frozen public surface added for one internal use, which §4 declines
-elsewhere for better reasons than this one. A helper OS thread with a pipe the
-reactor already watches is the right answer and is the one this will become; it
-is also the first OS thread in a runtime whose entire pitch is one VM per thread
-with nothing shared, and that is a claim to spend in the milestone that has a
-server to justify it, not as a rider on the reactor. Making `connect`
-non-blocking on its own (park on writability, then `take_error`) is easy, and
-was deliberately *not* done: shipping a non-blocking connect behind a blocking
-resolve moves the stall by a millisecond and lets the limitation read as fixed.
+*The decision.* **A helper OS thread — the system resolver — not a resolver
+written in Oro.**
 
-*What it costs, precisely.* A server built on `net.listen` never reaches it —
-`accept`, `read` and `write` all park, and `listen` resolves once at startup,
-before any task exists that could be starved. It is `dial` **from inside a
-running server** — a proxy, an outbound API call — that stalls its peers, and it
-stalls them for the lookup plus the handshake. Dialling a literal `ip:port`
-skips the lookup entirely, which is why every test in the tree dials
-`127.0.0.1` and why this is so easy not to notice. The limitation is now stated
-in the README's `net` section, in `net::dial`'s own doc comment and here, which
-is three places rather than the zero it was.
+*Why.* `getaddrinfo` is blocking-only. POSIX has no async form of it, so
+*someone* has to wait on a thread and the only question is whose. Given that,
+using the OS resolver inherits `/etc/hosts`, `resolv.conf`, search domains, VPN
+split-DNS, IPv6/IPv4 preference, system caching and NSS plugins: decades of
+accumulated correctness about networks nobody testing this will ever see. The
+alternative needs **UDP added to the frozen surface for one internal caller** —
+which §4 declines elsewhere for better reasons than this one — plus
+re-implementations of `resolv.conf` parsing, search domains, `/etc/hosts`,
+retries, truncation-to-TCP fallback and CNAME chains, and every case missed
+becomes "works on my machine" inside a container or behind a VPN.
 
-The analysis that decision was made against is kept below.
+The deciding evidence is that someone already ran the experiment. **Go ships
+both** a pure-Go resolver and a cgo one that calls `getaddrinfo`, and switches
+to the OS resolver whenever the system configuration looks non-trivial. The
+pure route was tried by people with more resources than this project has, and
+it still needs the OS as a fallback. Node and tokio use a thread pool and do not
+attempt it.
 
-**Blocking DNS is a trap, and mio does not solve it.**
-`std::net::ToSocketAddrs` resolves synchronously and freezes the entire VM —
-every task, not just the caller — for the duration of a slow lookup. That is
-exactly what `net.listen` and `net.dial` do today.
+*The connect went with it, and that is §4's own argument read the other way.*
+This section used to say that making `connect` non-blocking on its own was
+easy and was deliberately not done, because "shipping a non-blocking connect
+behind a blocking resolve moves the stall by a millisecond and lets the
+limitation read as fixed". Exactly so — which is why, once the lookup parks,
+the connect has to park too or the sentence simply inverts. A `dial` is one
+suspension from the call to the connected socket.
 
-The answer here used to be tokio's `lookup_host`, which is a wrapper around the
-same blocking call, moved onto tokio's blocking thread pool. mio has no DNS at
-all, so choosing mio (§3) means choosing to *build* the answer rather than
-import it. That cost belongs on mio's side of the ledger and it is recorded
-here.
+*What it is made of.* A `Park::Dns` variant carrying a lookup id and the
+address; a pool of helper threads that receive a `String` and send back a
+`Vec<SocketAddr>` or an error `String`; a `mio::Waker` on a reserved token, so
+the answer arrives through the reactor the VM already owns. Then an
+`IoOp::Connect` that parks on writability and checks `SO_ERROR`, walking the
+resolved address list — `getaddrinfo` puts `::1` before `127.0.0.1`, and the
+blocking `TcpStream::connect(&addrs[..])` walked that list for free.
 
-There are two candidates and neither is free. Resolve on a helper OS thread and
-park the task on a pipe the reactor is already watching — correct, and it is the
-first OS thread in a runtime whose entire pitch is one VM per thread with
-nothing shared. Or write a resolver in Oro over UDP — which needs UDP, which §4
-deliberately declines to add. The milestone that picks one should say which and
-why, in this document, rather than settling it in a commit message.
+*The decisions inside the decision*, since none of them are forced:
 
-`net.listen` is the easy half: it resolves once, at startup, before any task
-that could be starved exists. It is `dial` from inside a running server that
-matters. This is easy to get wrong and easy not to notice when every test dials
-`127.0.0.1`, which is why it is written down here twice.
+- **Threads start lazily and the pool grows to fit**, one worker per concurrent
+  lookup, capped at 8. A program that never dials a name starts none; one that
+  dials names one at a time runs one. Eight is between Node's 4 and tokio's 512
+  and is deliberately a number that can move — §7 has it under "deliberately
+  left unfrozen" with the other sizes.
+- **Past the cap, lookups queue rather than failing or spawning.** A queued
+  lookup blocks nothing but itself, which is the property the whole change is
+  for; unbounded spawning would turn a flood of dials into thread exhaustion.
+- **Nothing is joined at shutdown.** A VM tearing down must not wait out a
+  five-second resolver timeout — that is the stall this exists to remove.
+  Dropping the pool closes the queue, workers exit, and a worker still inside
+  `getaddrinfo` finishes, finds the answer channel gone and returns.
+- **The exception hierarchy does not move**, because the error is the same
+  `String` it always was, produced by the same function and moved across a
+  channel: `OSError` for a name that does not resolve (`[Errno -2]`, through the
+  general `[Errno …]` rule), `ValueError` for a malformed address. The
+  malformed-address check stays *synchronous*, at the call site — no lookup can
+  change the answer, and parking a task to tell it that it made a programming
+  error would deliver the exception from somewhere the program cannot see.
+
+*What is still true about the cost.* `net.listen` was always the easy half: it
+resolves once at startup, before any task exists that could be starved.
+Dialling a literal `ip:port` still does no lookup, starts no thread and — on
+loopback — finishes inside `connect(2)` without reaching the reactor. That last
+fact is why the old blocking implementation was invisible to every test in this
+tree, and it is why the tests for this change had to be built around ordering
+rather than timing: `localhost` comes out of `/etc/hosts` in microseconds, so no
+wall-clock margin separates "parked" from "blocked", but the scheduler's
+behaviour separates them completely.
+
+### The correction: "one VM per thread, nothing shared"
+
+This is the part worth keeping, and it is a correction rather than an edit.
+
+**What was claimed.** Throughout this document, the README and the module docs,
+Oro's concurrency model was stated as *one VM per OS thread, nothing shared
+between threads*, and §3 put it as "nothing crosses a thread boundary". The
+paragraph this section replaced treated spending that claim as a *cost* of the
+helper thread — "it is the first OS thread in a runtime whose entire pitch is
+one VM per thread with nothing shared, and that is a claim to spend in the
+milestone that has a server to justify it".
+
+**Why it was overstated.** The unqualified form is now false: there are helper
+threads in the process. But it was never doing the work its wording suggested.
+Everywhere the claim was load-bearing — the case for `Rc` over `Arc`, the case
+for mio over tokio, the reason the ready queue lives in the VM — what it was
+actually asserting is this:
+
+> `Value` is `Rc`-based and therefore `!Send`, so the VM must own its own
+> scheduling.
+
+That is the premise. A ready queue of `Rc`-shaped tasks cannot live in a
+work-stealing runtime; `tokio::spawn` requires `Send` and every Oro value is an
+`Rc`; so Oro schedules for itself, and what is left for a library is readiness
+notification. "No threads exist" was a *consequence* that happened to be true
+while the runtime had no blocking-only syscall to wait on, and it got written
+down as though it were the premise. It stopped being true the moment one
+appeared.
+
+**What is actually true, stated so it can be checked.** *No Oro value ever
+crosses a thread.* Concretely, and this is the whole list:
+
+- The resolver threads receive a `String` and send back a
+  `Result<Vec<SocketAddr>, String>`. Both are `Send`, neither is a `Value`, and
+  there is no third message.
+- `Value` is still `Rc`-based and still `!Send`. There is still not one `Arc`
+  around an Oro value in the codebase; the two `Arc`s that exist hold a
+  `mio::Waker` and a queue of strings.
+- The VM still owns its ready queue, its parked map and every decision about
+  who runs next. A resolver thread cannot wake a task. It can put an answer in
+  a queue and poke an fd, and the VM decides what that means — which is exactly
+  the contract the kernel already has through `epoll`.
+
+That is why the architecture survives the change intact rather than being
+compromised by it. Nothing in it ever rested on the number of OS threads in the
+process; it rested on what may cross between them. Stating the invariant that
+way is what makes it something a reader can check against the code, and it is
+the form every future milestone should hold itself to — a second helper thread
+for something else would be a design question about *what it carries*, not a
+re-litigation of a slogan.
+
+### What the build changed about the two sections above
+
+Five things, and the first is the one worth reading.
+
+**A lazy feature can be paid for by programs that never use it, through struct
+layout.** §3's promise is "the reactor must not cost anything in programs that
+never touch I/O", and it has always been checked as *behaviour*: nothing
+allocated, no epoll fd, two `is_empty` calls per task switch. The resolver was
+built to the same rule and passed it — no thread, no `Waker`, no channel until a
+name is dialled. It was still **3% slower on the builtin-call benchmark**, in a
+program with no sockets in it at all.
+
+The cause is that `Reactor` is a field of `Vm` *by value*, and `Vm` is the
+struct the interpreter loop touches on every instruction. The pool's
+bookkeeping — two channel ends, two `Arc`s, a `HashMap` and two counters —
+inline, put about 120 bytes between `Vm`'s hot fields. Behind a `Box` it is one
+null pointer and the regression is gone (measured −0.2%, inside an A/A control's
+noise). Nothing in §3 or §4 anticipated this, and the general form is worth
+carrying forward: **laziness is about what runs, and the cost that survived it
+is about what the struct measures.** Anything added to `Vm` or `Reactor` from
+here should be a pointer unless it is small and hot.
+
+**The resume protocol had no vocabulary for a two-phase wait.** §3's protocol is
+"the waker pushes the value onto the sleeping task's own operand stack", and
+every wake it describes ends with the task becoming *runnable*. A finished
+lookup does not: it has to become a `connect`, and the task must not run in
+between — there is one value its `dial` call can be handed and that value is the
+connected socket, so the addresses can never be pushed for the program to do
+something with. That needed a park → park transition, done entirely by the
+scheduler while the task is not current. The constraint that shapes `Park` held
+without modification (everything owned, nothing borrowed across the hand-off),
+which is the good news; but §3's description of waking was incomplete rather
+than merely brief.
+
+**The deadlock condition needed a third clause.** §3 corrected "nothing ready"
+to "nothing ready **and** nothing registered". A task waiting on a resolver
+thread has nothing registered *of its own* — the `Waker` is one fd shared by the
+whole pool — so the condition had to become "…and no lookup in flight". A
+resolver thread is outside the VM in exactly the way the kernel is, and
+reporting a task waiting on one as deadlocked would be the same mistake §3
+records for an idle server sitting in `accept`.
+
+**The blocking `connect` was doing an address walk for free, and nobody had
+noticed.** `std::net::TcpStream::connect(&addrs[..])` tries every resolved
+address in turn. `net::dial`'s doc comment waved this away — "with one address —
+every literal `ip:port`, which is the case that matters for the error mapping".
+That is true of literals and false of the case that now exists: `getaddrinfo`
+answers `localhost` with `::1` *before* `127.0.0.1`, so a listener on `127.0.0.1`
+is reached only by trying the first address, being refused, and falling through.
+Making `connect` non-blocking means re-implementing that walk across parks. It
+is not optional and it is not rare — it is on the test path of this very tree.
+
+**"A pipe the reactor already watches" is a `mio::Waker`, and it needs a
+reserved token.** §4 sketched the mechanism as a self-pipe. mio supplies the
+same thing properly (an eventfd on Linux), which costs no new dependency and no
+`unsafe`; what it needs is a token no stream can collide with. Token 0 was free
+by construction, because `Reactor::arm` pre-increments before handing one out —
+an accident, now a documented invariant.
 
 **Error mapping**, using CPython's class names throughout so the hierarchy stays
 one hierarchy:
@@ -2342,7 +2482,18 @@ These are the load-bearing spellings. Getting one wrong is expensive forever.
   is allocated are Rust-side properties with no Oro-visible handle (§2). That is
   what makes them safe to change; it is also why exposing any of them later would
   be a new API rather than a tuning knob.
-- **Buffer sizes and timeout defaults** — tunable, not API.
+- **Buffer sizes, timeout defaults and the resolver pool's size** — tunable, not
+  API. The DNS pool's cap of 8 threads, and that it grows one worker per
+  concurrent lookup, are implementation properties with no Oro-visible handle
+  (§4).
+- **How many OS threads the process has, and what they do.** This is on the list
+  because it was, for a while, informally treated as frozen — "one VM per
+  thread, nothing shared" was quoted as a design constraint (§4 records the
+  correction). It is not one. What *is* frozen, and is the thing that was
+  actually being protected, is that **no Oro value ever crosses a thread**:
+  `Value` is `!Send`, the VM owns its own scheduling, and a helper thread may
+  only exchange plain `Send` data over a channel. Any future thread is a design
+  question about what it carries.
 - **The underscored built-in modules** (`_io`, `_json`) — they resolve only from
   inside a stdlib module body, so they are not language surface and nothing can
   depend on them. That is the whole point of the underscore rule: it lets the
@@ -2549,7 +2700,9 @@ mio (`os-poll` and `net` features only, 3 crates built — §3); registering fds
 and mapping readiness back to the task parked on them; the sorted timer list
 feeding `poll`'s timeout; socket `read`/`write`/`accept` parking instead of
 blocking; `time.sleep` parking instead of `std::thread::sleep`; and an answer
-for blocking DNS (§4), which mio does not supply and tokio would have.
+for blocking DNS (§4), which mio does not supply and tokio would have. That
+answer turned out to be "left blocking, deliberately"; the milestone after it
+made the real decision, and §4 carries both.
 
 `wait_for_external` stopped returning `false`, and the deadlock condition is
 "nothing ready *and* nothing registered". The README's dependency policy names
@@ -2566,17 +2719,21 @@ it; `set_timeout` became a scheduler deadline and closed a slowloris that was
 reachable through the documented API (§4); and DNS was left blocking on purpose,
 with the reasoning and the cost written down in three places (§4).
 
-The gaps M3b leaves, so they are not rediscovered: `net.dial`'s resolve and
-handshake still stop the world; two tasks reading one socket is refused by name
-rather than queued; and a stale timer entry for an operation that finished early
-lives until its deadline passes rather than being scrubbed on the wake.
+The gaps M3b leaves, so they are not rediscovered: two tasks reading one socket
+is refused by name rather than queued; and a stale timer entry for an operation
+that finished early lives until its deadline passes rather than being scrubbed
+on the wake. The third gap — `net.dial`'s resolve and handshake still stopping
+the world — is closed; §4 has the decision, and the claim it had to correct on
+the way.
 
 ### M4 — `net`, and the first serving demo
 
 `net.listen`/`dial`, `TcpListener.accept`, `TcpStream` as Reader/Writer,
 timeouts and error mapping — **all of which have already landed, blocking** (see
-the status note above). What M4 still owes is the M3b half: those three calls
-parking instead of stopping the VM, plus `SO_REUSEPORT` and non-blocking DNS.
+the status note above). What M4 still owes is `SO_REUSEPORT`. The M3b half —
+`accept`, `read` and `write` parking instead of stopping the VM — landed with
+the reactor, and non-blocking DNS (with a non-blocking `connect` alongside it,
+for the reason §4 gives) landed after it.
 
 **The demo is here**, roughly thirty lines of Oro on `net` + `io` alone:
 
