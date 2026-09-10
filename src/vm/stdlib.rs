@@ -14,6 +14,7 @@
 const MODULES: &[(&str, &str)] = &[
     ("io", include_str!("../../std/io.oro")),
     ("json", include_str!("../../std/json.oro")),
+    ("http", include_str!("../../std/http.oro")),
 ];
 
 /// Look up the embedded source for stdlib module `path`, or `None` if `path`
