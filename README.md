@@ -461,7 +461,7 @@ depends on an interpreter flag — `raise` is the one way to fail.)
 
 ## Deliberate divergences from Python
 
-Oro is a subset, but in five places it deliberately behaves *differently* from
+Oro is a subset, but in seven places it deliberately behaves *differently* from
 Python. Each divergence is a place where Python made a choice it could not later
 reverse, and Oro — starting fresh, with a single implementation — makes the
 choice Python would arguably prefer.
@@ -610,6 +610,34 @@ family of stream types.
 
 The full reasoning, including what was cut and why, is in
 `docs/stdlib-server-design.md` §2.
+
+### `dict.keys()` / `.values()` / `.items()` answer lists
+
+```python
+d = {"a": 1}
+print(d.keys())        # ['a'] here; dict_keys(['a']) in Python
+print(d.keys()[0])     # 'a' here; TypeError in Python — a view is not indexable
+```
+
+Eagerness is not the divergence — that is settled and stated above, and
+`enumerate` and `zip` make the same choice. The divergence is only the *repr*,
+and the question is whether a type should exist whose entire job is to print
+differently.
+
+It should not, because a CPython view is not a list in three visible ways: it is
+not subscriptable, it compares as a *set* (`d.keys() == ["a"]` is `False` there,
+and Oro has no sets to compare against), and it is *live*, seeing keys added
+after it was taken. A repr-only view would match CPython on the one line that
+prints it and differ on all three — a costume, and worse than either having
+views or not having them, because it would look like the thing it is not.
+
+So Oro answers a list, prints a list, and the whole collection protocol works on
+it with no second type to learn: `d.keys().sorted()`, `d.values().sum()`,
+`d.keys().join("-")`. Recorded, with all three behavioural differences shown,
+in `corpus/divergence/59_dict_views.oro`. The related case is already settled the
+same way: CPython's repr of an `enumerate` or a `zip` carries a heap address
+(`<enumerate object at 0x7f…>`), which is not reproducible output and could not
+be matched even in principle.
 
 ### Tabs rejected in leading whitespace
 
@@ -901,9 +929,6 @@ Stated plainly:
   state on an object, or restructure. Assigning to a name that also exists at
   module scope makes it *local* (exactly as in Python) — Oro turns the resulting
   unbound-variable error into a message that explains the fix.
-- **`dict.keys()` / `dict.values()` return lists, not view objects.** So
-  `print(d.keys())` shows `['a']` where CPython shows `dict_keys(['a'])`. Tracked
-  in `corpus/known-failing/` (see [The corpus](#the-corpus-cpython-as-an-oracle)).
 - **Consuming an infinite generator hangs.** A generator passed to a builtin
   (`sum`, `sorted`, `join`, …) or used to start a chain is drained eagerly, so
   `sum(forever())` never returns rather than failing. Inside a `for` loop it

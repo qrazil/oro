@@ -1,0 +1,50 @@
+# `dict.keys()` / `.values()` / `.items()` answer lists, and print as lists.
+#
+# CPython answers *views* — `dict_keys(['a'])` — and this was filed as a bug to
+# fix. It is not one; it is a deliberate divergence, and the reason is that only
+# the repr was ever in question. Eagerness is settled and documented: `enumerate`
+# and `zip` return lists here for the same reason, and CPython's own reprs for
+# those two carry a heap address (`<enumerate object at 0x7f…>`), which is not
+# reproducible output and could not be matched even in principle.
+#
+# So the choice was a type whose only job is to print differently. It would be a
+# costume, because a CPython view is not a list in three visible ways, and this
+# file is the record of all three:
+#
+#   1. a view is not subscriptable — `d.keys()[0]` is a TypeError there;
+#   2. a view compares as a *set* — `d.keys() == ["a", "b"]` is false there, and
+#      Oro has no sets to compare against;
+#   3. a view is *live* — it sees keys added after it was taken.
+#
+# A repr-only view would match CPython on the one line that prints it and differ
+# on all three of those, which is worse than either having views or not: it
+# would look like the thing it is not. Oro answers a list, prints a list, and
+# says so here.
+#
+# Reviewed by hand: every line below is what Oro means to do, and the CPython
+# answer is named beside it.
+
+d = {"a": 1, "b": 2}
+
+# CPython: dict_keys(['a', 'b']) / dict_values([1, 2]) / dict_items([...])
+print(d.keys())
+print(d.values())
+print(d.items())
+
+# 1. Indexable, where a view is not (CPython: TypeError, not subscriptable).
+print(d.keys()[0], d.values()[-1], d.items()[1])
+
+# 2. Equal to the list it is (CPython: false; a view compares as a set).
+print(d.keys() == ["a", "b"], d.values() == [1, 2])
+
+# 3. A snapshot, not a window (CPython: the view would show `c` too).
+k = d.keys()
+d["c"] = 3
+print(k, d.keys())
+
+# And being a list is the point: the whole collection protocol is available on
+# one, with no second type to learn and no conversion to remember.
+print(d.keys().sorted(), d.values().sum(), d.keys().join("-"))
+print(d.items().map(pair => pair[0]))
+for key in d.keys():
+    print("key", key)
