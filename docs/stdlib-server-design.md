@@ -1782,6 +1782,20 @@ and it still knows nothing about HTTP: the set is the caller's.
 
     read_request   199.6 µs → 76.4 µs   (−62%)
 
+**And one more thing the table says that §5 did not want to hear.** The
+paragraph under the rule argues that per-request Oro work is "roughly three
+Oro-level operations per line — about two dozen per request", and that "at those
+counts the interpreter's constant factor is irrelevant next to the syscalls".
+The first half was a guess about the sketch, not about the parser that got
+built: the real one validates three grammar classes, rejects line folding,
+lowercases names, joins duplicate headers and splits the target. And the second
+half is simply false at the measured numbers. 199.6 µs before, 76.4 µs after,
+against a loopback syscall round trip of a few microseconds — the head parse is
+an order of magnitude *more* than the syscalls, not irrelevant beside them.
+Nothing in §5's conclusion depends on that sentence, but it is the kind of
+comfortable estimate that stops a profile from being run, and this one stopped
+two.
+
 Two lessons, and the second is the transferable one. First, the threshold worked
 exactly as designed: it named a number, the number was measured, it fired, and
 the answer was a building block rather than a protocol module. Second, **a
