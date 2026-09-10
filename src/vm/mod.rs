@@ -1079,6 +1079,95 @@ impl Vm {
                         continue;
                     }
                 }
+                Op::Pop => {
+                    let frame = self.task.frames.last_mut().expect("no active frame");
+                    frame.stack.pop().expect("operand stack underflow");
+                    continue;
+                }
+                Op::LoadNone => {
+                    self.task
+                        .frames
+                        .last_mut()
+                        .expect("no active frame")
+                        .stack
+                        .push(Value::None);
+                    continue;
+                }
+                Op::LoadGlobal(n) => {
+                    // The resolved-builtin cache hit. A miss (or an exception
+                    // class, which is never cached) falls through and resolves
+                    // exactly as before.
+                    let frame = self.task.frames.last_mut().expect("no active frame");
+                    let hit = frame.code.builtin_cache.borrow()[n as usize].clone();
+                    if let Some(v) = hit {
+                        frame.stack.push(v);
+                        continue;
+                    }
+                }
+                Op::LoadAttr(n) => {
+                    // An instance *field*. A method, a class attribute, a
+                    // module member or anything that is not an instance at all
+                    // declines, and `step` then repeats this same lookup — the
+                    // one it always did first — before going on.
+                    let frame = self.task.frames.last_mut().expect("no active frame");
+                    let hit = match frame.stack.last() {
+                        Some(Value::Instance(inst)) => {
+                            inst.fields.borrow().get(&frame.code.names[n as usize]).cloned()
+                        }
+                        _ => None,
+                    };
+                    if let Some(v) = hit {
+                        *frame.stack.last_mut().expect("the receiver") = v;
+                        continue;
+                    }
+                }
+                Op::LoadSubscript => {
+                    // `xs[i]` for a list and a non-negative in-range index. A
+                    // negative index, a dict, a string, a slice or an
+                    // out-of-range index declines to `subscript_get`.
+                    let frame = self.task.frames.last_mut().expect("no active frame");
+                    let n = frame.stack.len();
+                    if n >= 2 {
+                        if let (Value::List(l), Value::Int(i)) =
+                            (&frame.stack[n - 2], &frame.stack[n - 1])
+                        {
+                            let l = l.borrow();
+                            let i = *i;
+                            if i >= 0 && (i as usize) < l.len() {
+                                let v = l[i as usize].clone();
+                                drop(l);
+                                frame.stack.truncate(n - 1);
+                                frame.stack[n - 2] = v;
+                                continue;
+                            }
+                        }
+                    }
+                }
+                Op::StoreSubscript => {
+                    // `xs[i] = v`, same shape and the same declines.
+                    let frame = self.task.frames.last_mut().expect("no active frame");
+                    let n = frame.stack.len();
+                    let ok = n >= 3
+                        && match (&frame.stack[n - 2], &frame.stack[n - 1]) {
+                            (Value::List(l), Value::Int(i)) => {
+                                *i >= 0 && (*i as usize) < l.borrow().len()
+                            }
+                            _ => false,
+                        };
+                    if ok {
+                        let i = match frame.stack.pop() {
+                            Some(Value::Int(i)) => i as usize,
+                            _ => unreachable!("checked above"),
+                        };
+                        let list = match frame.stack.pop() {
+                            Some(Value::List(l)) => l,
+                            _ => unreachable!("checked above"),
+                        };
+                        let value = frame.stack.pop().expect("operand stack underflow");
+                        list.borrow_mut()[i] = value;
+                        continue;
+                    }
+                }
                 _ => {}
             }
 
