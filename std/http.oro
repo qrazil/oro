@@ -1208,11 +1208,15 @@ def _conn_task(handler, live, entry, max_requests):
             sys.stderr.write(f"http: connection {entry.peer} closed under it: {e}\n".to_bytes())
     except Exception as e:
         sys.stderr.write(f"http: connection {entry.peer} failed: {type(e)}: {e}\n".to_bytes())
-    entry.conn.close()
-    # The last statement, and there is no park point after it, so under
-    # cooperative scheduling "gone from the registry" and "the task has
-    # finished" are the same instant to every other task in the VM.
-    live.pop(entry.conn, null)
+    finally:
+        # In a `finally` because the registry is what `serve`'s drain counts,
+        # and a connection that leaves it behind is one a shutdown waits the
+        # whole drain for. The last statement of the task, with no park point
+        # after it, so under cooperative scheduling "gone from the registry"
+        # and "the task has finished" are the same instant to every other
+        # task in the VM.
+        entry.conn.close()
+        live.pop(entry.conn, null)
 
 
 # Stop accepting, then finish what is in flight, then close the rest.
