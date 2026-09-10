@@ -252,14 +252,17 @@ fn net_listen(args: Vec<Value>) -> Result<Value, String> {
     Ok(Value::Stream(Rc::new(crate::net::listen(&addr)?)))
 }
 
-fn net_dial(args: Vec<Value>) -> Result<Value, String> {
-    let addr = one_addr(&args, "dial")?;
-    Ok(Value::Stream(Rc::new(crate::net::dial(&addr)?)))
+/// `net.dial` is finished in the VM: it *parks* the calling task, first on the
+/// system resolver and then on the handshake, and a `Builtin` can only answer
+/// with a `Value`. This entry exists so the name resolves and is callable; the
+/// dispatch in [`super::Vm::invoke`] takes it before it can ever run.
+fn net_dial(_args: Vec<Value>) -> Result<Value, String> {
+    Err("internal: net.dial must be dispatched by the VM (it parks)".to_string())
 }
 
 /// The one argument both constructors take: an address, as a string. No
 /// `Address` type — see §4.
-fn one_addr(args: &[Value], who: &str) -> Result<String, String> {
+pub(super) fn one_addr(args: &[Value], who: &str) -> Result<String, String> {
     match args {
         [Value::Str(s)] => Ok(s.s.clone()),
         [other] => Err(format!(

@@ -2295,6 +2295,12 @@ impl Vm {
                     // stopped every task in the VM, so it too has to answer
                     // with a `Step` rather than a `Value`.
                     "time.sleep" => return self.do_sleep(args, kwargs),
+                    // `net.dial` parks twice: on the system resolver, and then
+                    // on the handshake. It was a plain native builtin, which
+                    // is how it came to stop the whole VM for both — a
+                    // `Builtin` answers with a `Value` and has no way to say
+                    // "wait". See `sched::Vm::do_dial`.
+                    "net.dial" => return self.do_dial(args, kwargs),
                     "print" => return self.do_print(args, kwargs).map(|()| Step::Next),
                     // `sorted` and `min`/`max` decide with `<`, which may be
                     // a user `__lt__` — so they are driven from the VM, which

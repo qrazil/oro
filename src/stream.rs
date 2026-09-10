@@ -244,6 +244,72 @@ impl OroStream {
         Ok(OroStream::new(StreamKind::TcpStream { peer, local }, Backing::Socket(sock)))
     }
 
+    /// A socket whose `connect(2)` is still in flight — `net.dial`'s result
+    /// before the handshake finishes.
+    ///
+    /// It cannot go through [`socket`](Self::socket), which reads `peer_addr`
+    /// and would fail with `ENOTCONN` on a socket that is still connecting. The
+    /// peer is taken from the address being dialled instead, which is not a
+    /// substitute for `getpeername(2)` but *the same answer*: a connect either
+    /// reaches that address or never becomes a stream at all.
+    ///
+    /// Infallible, where [`socket`](Self::socket) is not. On Linux and macOS
+    /// `connect(2)` binds the socket before it returns, so `local_addr` is
+    /// available the moment this is called; the fallback is there because a
+    /// `repr()` field is not worth failing a dial over.
+    pub fn connecting(sock: TcpStream, target: std::net::SocketAddr) -> OroStream {
+        let local = match sock.local_addr() {
+            Ok(a) => a.to_string(),
+            Err(_) => match target {
+                std::net::SocketAddr::V4(_) => "0.0.0.0:0".to_string(),
+                std::net::SocketAddr::V6(_) => "[::]:0".to_string(),
+            },
+        };
+        OroStream::new(
+            StreamKind::TcpStream { peer: target.to_string(), local },
+            Backing::Socket(sock),
+        )
+    }
+
+    /// Has the connect finished, and did it succeed?
+    ///
+    /// **Where the green-thread swap landed (4 of 4).** The other three are
+    /// `accept`, `read` and `write`; this one arrived a milestone later, with
+    /// non-blocking DNS, because a non-blocking connect behind a blocking
+    /// resolve would have moved the stall by a millisecond and let the
+    /// limitation read as fixed (`docs/stdlib-server-design.md` §4).
+    ///
+    /// Two checks, in this order, and the order is the correctness. `SO_ERROR`
+    /// is where a *failed* connect is reported — the fd becomes writable either
+    /// way, so "writable" alone means "the kernel has an answer", not "it
+    /// worked". `take_error` also clears it, which is why it is read once per
+    /// readiness and the answer acted on immediately. Only then does
+    /// `peer_addr` distinguish "connected" from "still in flight": a spurious
+    /// writable edge answers `ENOTCONN`, and re-parking on it is right.
+    ///
+    /// Like every other method here it takes its borrow, asks the kernel and
+    /// drops it before answering `Io::Block` — the rule `src/net.rs`'s module
+    /// docs record.
+    pub fn connect_check(&self) -> VResult<Io<()>> {
+        let inner = self.borrow_open("connect")?;
+        let Backing::Socket(s) = &inner.back else {
+            return Err(format!(
+                "connect() on a '{}', which is not a socket",
+                self.kind.type_name()
+            ));
+        };
+        if let Some(e) = s.take_error().map_err(|e| crate::net::err_msg(&e))? {
+            return Err(crate::net::err_msg(&e));
+        }
+        match s.peer_addr() {
+            Ok(_) => Ok(Io::Ready(())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotConnected || would_block(&e) => {
+                Ok(Io::Block(mio::Interest::WRITABLE))
+            }
+            Err(e) => Err(crate::net::err_msg(&e)),
+        }
+    }
+
     /// A listening TCP socket — `net.listen`'s result.
     pub fn listener(ln: TcpListener) -> std::io::Result<OroStream> {
         let local = ln.local_addr()?.to_string();

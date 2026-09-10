@@ -50,9 +50,7 @@
 //! [`Reactor`] is the M3b addition and the only place `mio` is named. The
 //! division of labour is §3's, unchanged by the build: the VM owns the ready
 //! queue and decides who runs next; the reactor answers exactly one question,
-//! *when is this fd ready*. Nothing crosses a thread boundary, so `!Send`
-//! `Rc`-shaped tasks are never a problem — and that is not a workaround, it is
-//! the reason the ready queue has to live here in the first place.
+//! *when is this fd ready*.
 //!
 //! Timers are ours because mio has none, and they are four lines of idea: a
 //! sorted list of deadlines whose head becomes `poll`'s timeout, where an
@@ -61,9 +59,50 @@
 //! [`Vm::wait_for_external`] was the one-line seam and is now the reactor's
 //! entry point. The deadlock condition moved with it, from "nothing ready" to
 //! §3's corrected "nothing ready **and** nothing registered".
+//!
+//! ## A correction: "one VM per thread, nothing shared"
+//!
+//! This section used to end "Nothing crosses a thread boundary, so `!Send`
+//! `Rc`-shaped tasks are never a problem", and §3 and the README said the same
+//! thing as "one VM per OS thread, nothing shared between threads". Since
+//! [`Resolver`] landed, the unqualified sentence is **false**: this process has
+//! helper OS threads in it, right here in this file.
+//!
+//! **What the claim was overstating.** Everywhere it was load bearing, the work
+//! it was actually doing is this: *`Value` is `Rc`-based and therefore `!Send`,
+//! so the VM must own its own scheduling.* A ready queue of `Rc`-shaped tasks
+//! cannot live in a work-stealing runtime; that is why Oro has a scheduler at
+//! all instead of importing one, and it is why §3's split — VM schedules, mio
+//! notifies — is forced rather than chosen. "No threads exist" was a stronger
+//! statement that happened to be true at the time, and it got written down as
+//! though it were the premise. It was not. It was a consequence, and it stopped
+//! being true the moment a blocking-only syscall had to be waited on.
+//!
+//! **The invariant, stated so it can be checked.** *No Oro value ever crosses a
+//! thread.* Concretely, and this is the whole list:
+//!
+//! * The resolver threads receive a `String` and send back a
+//!   `Result<Vec<std::net::SocketAddr>, String>`. Both are `Send`, neither is a
+//!   `Value`, and there is no third message.
+//! * `Value` is still `Rc`-based and still `!Send`; there is still not one
+//!   `Arc` around an Oro value in the codebase. The two `Arc`s that exist hold
+//!   a `mio::Waker` and an `mpsc::Receiver<Lookup>` — an eventfd and a queue of
+//!   strings.
+//! * The VM still owns `ready`, `parked` and every decision about who runs
+//!   next. A resolver thread cannot wake a task; it can only put an answer in a
+//!   queue and poke an fd, and the VM decides what that means — which is the
+//!   same contract the kernel has through `epoll`.
+//!
+//! Nothing in the architecture rested on the number of OS threads in the
+//! process. Stating the invariant in terms of what crosses the boundary, rather
+//! than in terms of how many boundaries there are, is what makes it something a
+//! reader can check against the code.
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::rc::Rc;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::stream::{Io, OroStream};
@@ -101,6 +140,20 @@ pub(super) enum Park {
     /// `time.sleep(secs)`. Carries the park's sequence number, which is how its
     /// timer entry knows it is still the one this task is waiting on.
     Sleep(u64),
+    /// `net.dial("host:port")`, waiting on the system resolver.
+    ///
+    /// The one park that is not waiting on the kernel: a helper thread is
+    /// inside `getaddrinfo` on this task's behalf. Both fields are owned — an
+    /// integer and an `Rc<str>` — so this variant is `'static` like every other
+    /// one, and the address is kept because a diagnostic that says which name
+    /// is being looked up is worth two words of payload.
+    Dns {
+        /// Which lookup. Checked against the answer the same way [`Timer`]'s
+        /// `seq` is checked, so a result can never land on a task that has
+        /// moved on.
+        id: u64,
+        addr: Rc<str>,
+    },
     /// `yield_now()` — the odd one out, and deliberately in this enum anyway.
     ///
     /// Every other variant names something the task is *waiting for*; this one
@@ -134,6 +187,11 @@ impl Park {
             // Spelled anyway, for the same reason `Park::Yield` is.
             Park::Io(w) => format!("{} on {}", w.op.what(), w.stream.repr()),
             Park::Sleep(_) => "time.sleep()".to_string(),
+            // Unreachable through the deadlock diagnostic for the same reason
+            // the two above are: a task waiting on a lookup has one registered
+            // with the reactor, which is exactly the condition that says this
+            // is not a deadlock.
+            Park::Dns { addr, .. } => format!("dial() resolving '{addr}'"),
             // Not reachable through the deadlock diagnostic: a yielding task is
             // requeued, never filed under `parked`, and the yield arm in
             // `run_loop` runs before the deadlock check. Spelled rather than
@@ -179,7 +237,7 @@ pub(super) struct IoWait {
     seq: u64,
 }
 
-/// The four operations that can meet `EWOULDBLOCK`, each carrying its own
+/// The five operations that can meet `EWOULDBLOCK`, each carrying its own
 /// partial progress.
 ///
 /// The progress is here rather than in a Rust local because there is no Rust
@@ -187,6 +245,16 @@ pub(super) struct IoWait {
 /// second task must be able to use the stream meanwhile.
 pub(super) enum IoOp {
     Accept,
+    /// A `connect(2)` in flight, and the addresses left to try if it fails.
+    ///
+    /// The list is the whole reason this carries anything. The blocking
+    /// `std::net::TcpStream::connect(&addrs[..])` walked it for free, and
+    /// walking it matters: `getaddrinfo` puts the AAAA record first on a
+    /// dual-stack host, so a machine with no IPv6 route reaches the A record
+    /// only by falling through. `localhost` is the case in this tree —
+    /// `::1` first, `127.0.0.1` second — so the fallback is exercised by the
+    /// test suite rather than only by other people's networks.
+    Connect { addrs: Vec<SocketAddr>, next: usize },
     Read(i64),
     ReadUntil { delim: Rc<Vec<u8>>, limit: i64, acc: Vec<u8> },
     /// `done` bytes of `buf` have gone. §2's `write(b)` writes all of `b` or
@@ -203,6 +271,7 @@ impl IoOp {
     fn what(&self) -> &'static str {
         match self {
             IoOp::Accept => "accept()",
+            IoOp::Connect { .. } => "connect()",
             IoOp::Read(_) => "read()",
             IoOp::ReadUntil { .. } => "read_until()",
             IoOp::Write { .. } => "write()",
@@ -221,6 +290,16 @@ fn attempt(w: &mut IoWait) -> VResult<Io<Value>> {
     match &mut w.op {
         IoOp::Accept => Ok(match stream.accept()? {
             Io::Ready(s) => Io::Ready(Value::Stream(Rc::new(s))),
+            Io::Block(i) => Io::Block(i),
+        }),
+        // The stream already exists — it was made by `start_connect`, which is
+        // where the socket and the `connect(2)` call live. All that is left
+        // here is to ask whether the handshake finished, and to hand the caller
+        // the very stream the attempt was made on. A *failure* is the one case
+        // this cannot finish alone: it has to move to the next address, and
+        // that needs a new socket, so `retry_io` takes it.
+        IoOp::Connect { .. } => Ok(match stream.connect_check()? {
+            Io::Ready(()) => Io::Ready(Value::Stream(Rc::clone(stream))),
             Io::Block(i) => Io::Block(i),
         }),
         IoOp::Read(n) => Ok(match stream.read(*n)? {
@@ -297,6 +376,118 @@ pub(super) struct Reactor {
     /// read on every poll and the list is short — it holds one entry per
     /// *sleeping or deadlined* task, not one per connection.
     timers: Vec<Timer>,
+    /// The resolver pool, or `None` if no program has dialled a name yet.
+    ///
+    /// Lazy like everything else in here, and **boxed**, which is not tidiness.
+    /// [`Reactor`] is a field of [`Vm`] by value, so every byte added here is a
+    /// byte added to the struct the interpreter loop touches on every
+    /// instruction. Inline, the pool's bookkeeping — two channel ends, two
+    /// `Arc`s, a `HashMap` and two counters — put about 120 bytes between
+    /// `Vm`'s hot fields and cost a measurable 3% on the builtin-call
+    /// benchmark, in a program that never resolves anything. Behind a `Box` it
+    /// is one null pointer until the first name is dialled.
+    dns: Option<Box<Resolver>>,
+}
+
+/// The reserved token the resolver's [`mio::Waker`] is registered under.
+///
+/// Zero is free by construction: [`Reactor::arm`] pre-increments `next_token`,
+/// so the first fd ever registered gets 1 and no stream can collide with this.
+const DNS_TOKEN: usize = 0;
+
+/// The most resolver threads that will ever exist.
+///
+/// Node's libuv pool defaults to 4 and DNS is what it is known for; tokio's
+/// blocking pool defaults to 512, which is a number for a general-purpose
+/// offload pool and not for this. Eight is the compromise: enough that a
+/// handful of simultaneous outbound dials overlap instead of serialising,
+/// small enough that a flood of `dial`s cannot turn into a thread-exhaustion
+/// bug. Past eight, lookups queue — and a queued lookup still blocks nothing
+/// but itself, which is the property the whole change is for.
+///
+/// Tunable, not API: §7 puts buffer sizes and pool sizes under "deliberately
+/// left unfrozen" precisely so this number can move without breaking anyone.
+const MAX_DNS_THREADS: usize = 8;
+
+/// A lookup on its way to a helper thread.
+struct Lookup {
+    id: u64,
+    /// The whole `"host:port"` string, not a bare host: `resolve` wants the
+    /// port too, and re-splitting it on the far side would be a second parser.
+    addr: String,
+}
+
+/// A lookup on its way back.
+struct Resolved {
+    id: u64,
+    /// Exactly what `crate::net::resolve` returned, error string and all. The
+    /// message is the whole of the error mapping — a failed lookup raises the
+    /// same class from a helper thread as it did when this call was made
+    /// inline, because it is the same `String`.
+    result: VResult<Vec<SocketAddr>>,
+}
+
+/// The work queue, shared by every resolver thread.
+///
+/// One `Mutex` around one `Receiver` rather than a queue per worker: a worker
+/// holds the lock only across its own `recv`, so the next idle worker takes it
+/// the instant a job is handed over, and a worker that is *busy* inside
+/// `getaddrinfo` is holding nothing at all. A queue per worker would let one
+/// slow lookup strand the jobs behind it while another worker sat idle.
+type Jobs = Arc<Mutex<Receiver<Lookup>>>;
+
+/// Name resolution, on helper OS threads.
+///
+/// **Why threads at all.** `getaddrinfo` is blocking-only — POSIX has no async
+/// form — so someone has to wait on a thread; the choice is only whose. Using
+/// the OS resolver inherits `/etc/hosts`, `resolv.conf`, search domains, VPN
+/// split-DNS, IPv6/IPv4 preference, system caching and NSS plugins. The
+/// alternative, a resolver written in Oro, needs UDP added to a frozen surface
+/// for one internal caller plus re-implementations of all of the above, and Go
+/// is the evidence that this does not end well: it ships a pure-Go resolver
+/// *and* a cgo one, and switches to the OS resolver whenever the system
+/// configuration looks non-trivial. `crate::net::plan_dial` carries the long
+/// form of the argument.
+///
+/// **Lifetime.** Threads start lazily — the first `dial` of a name starts the
+/// first one — and the pool grows one thread per concurrent lookup up to
+/// [`MAX_DNS_THREADS`], then stops. A program that dials one name at a time
+/// runs one helper thread; a program that never dials a name runs none and
+/// never even creates the `Waker`. Threads are never retired: a parked
+/// `recv` costs a stack and nothing else, and reaping idle workers would be
+/// bookkeeping in exchange for memory nobody is short of.
+///
+/// **Shutdown.** Nothing is joined, deliberately. Dropping this drops `queue`,
+/// the only [`Sender<Lookup>`], so every worker's `recv` returns `Err` and it
+/// exits; a worker that is *inside* `getaddrinfo` finishes, finds `answers`'
+/// receiver gone, and returns without waking anything. Joining instead would
+/// mean a VM shutting down could wait out a five-second resolver timeout —
+/// which is precisely the stall this whole mechanism exists to remove. The
+/// threads hold a `String` and an eventfd, so there is nothing for a late one
+/// to corrupt and nothing for the process to wait on.
+struct Resolver {
+    /// Hand a lookup to the pool. The only `Sender`, which is what makes
+    /// dropping this the pool's shutdown signal.
+    queue: Sender<Lookup>,
+    /// Take an answer back. Drained by [`Vm::drain_dns`] after every poll.
+    answers: Receiver<Resolved>,
+    /// The far end of `answers`, kept so a newly spawned worker can be given a
+    /// clone of it.
+    answers_tx: Sender<Resolved>,
+    /// The far end of `queue`, likewise — and the thing that makes `queue` the
+    /// *only* sender, since this side never sends.
+    jobs: Jobs,
+    /// Poke the reactor: an answer is waiting. This is the whole of how a
+    /// helper thread reaches the VM, and it carries no data — the answer went
+    /// through the channel, and this only says "poll returned for a reason".
+    waker: Arc<mio::Waker>,
+    /// Workers started. Never decreases.
+    threads: usize,
+    /// Who is waiting on each lookup in flight. Its length is how many lookups
+    /// are outstanding, which is what decides whether the pool grows.
+    waiters: HashMap<u64, TaskId>,
+    /// Lookup ids. Monotonic and never reused, for the same reason tokens are.
+    next_lookup: u64,
 }
 
 struct Os {
@@ -337,10 +528,22 @@ struct ReadyFd {
 }
 
 impl Reactor {
-    /// Nothing registered and no deadline: nobody outside the VM can make a
-    /// task runnable, which is the corrected deadlock condition from §3.
+    /// Nothing registered, no deadline and no lookup in flight: nobody outside
+    /// the VM can make a task runnable, which is the corrected deadlock
+    /// condition from §3.
+    ///
+    /// A lookup counts. A resolver thread is outside the VM exactly the way the
+    /// kernel is, so a task parked on one is waiting for something that *can*
+    /// arrive — and reporting that as a deadlock would be the same mistake §3
+    /// records for an idle server sitting in `accept`.
     fn is_idle(&self) -> bool {
-        self.waiters.is_empty() && self.timers.is_empty()
+        self.waiters.is_empty() && self.timers.is_empty() && self.no_lookups()
+    }
+
+    /// Nothing is out with the resolver — which, for a program that never
+    /// dialled a name, is a null check.
+    fn no_lookups(&self) -> bool {
+        self.dns.as_ref().is_none_or(|d| d.waiters.is_empty())
     }
 
     fn os(&mut self) -> VResult<&mut Os> {
@@ -414,6 +617,69 @@ impl Reactor {
         w.read.into_iter().chain(w.write).collect()
     }
 
+    /// Hand `addr` to the resolver pool on `task`'s behalf, and answer with the
+    /// lookup's id.
+    ///
+    /// Growing the pool here rather than up front is what keeps the common
+    /// shape honest: one thread for a program that dials one name at a time,
+    /// none at all for a program that never dials one. The rule is one worker
+    /// per *concurrent* lookup, capped — `dns_waiters` is exactly the count of
+    /// lookups already outstanding, so `+ 1` is this one.
+    fn lookup(&mut self, addr: String, task: TaskId) -> VResult<u64> {
+        self.start_resolver()?;
+        let r = self.dns.as_mut().expect("just started");
+        let want = (r.waiters.len() + 1).min(MAX_DNS_THREADS);
+        r.next_lookup += 1;
+        let id = r.next_lookup;
+        while r.threads < want {
+            match spawn_resolver_thread(
+                Arc::clone(&r.jobs),
+                r.answers_tx.clone(),
+                Arc::clone(&r.waker),
+            ) {
+                Ok(()) => r.threads += 1,
+                // The pool already has a worker: it will get to this lookup,
+                // just without the extra parallelism. Failing the dial because
+                // the *second* thread could not start would turn a resource
+                // shortage into an exception at an unrelated call site.
+                Err(_) if r.threads > 0 => break,
+                Err(e) => return Err(crate::net::err_msg(&e)),
+            }
+        }
+        // Cannot fail: `jobs` holds the receiver for as long as the `Resolver`
+        // lives, so the channel outlives every send made through it.
+        r.queue
+            .send(Lookup { id, addr })
+            .map_err(|_| "internal: the DNS resolver pool has stopped".to_string())?;
+        r.waiters.insert(id, task);
+        Ok(id)
+    }
+
+    /// Build the resolver — channels, `Waker`, no threads yet — the first time
+    /// a name is dialled.
+    fn start_resolver(&mut self) -> VResult<()> {
+        if self.dns.is_some() {
+            return Ok(());
+        }
+        // The `Waker` registers itself, which is why this is the one place
+        // outside `arm` that forces the epoll instance into existence.
+        let waker = mio::Waker::new(self.os()?.poll.registry(), mio::Token(DNS_TOKEN))
+            .map_err(|e| crate::net::err_msg(&e))?;
+        let (queue, jobs) = channel::<Lookup>();
+        let (answers_tx, answers) = channel::<Resolved>();
+        self.dns = Some(Box::new(Resolver {
+            queue,
+            answers,
+            answers_tx,
+            jobs: Arc::new(Mutex::new(jobs)),
+            waker: Arc::new(waker),
+            threads: 0,
+            waiters: HashMap::new(),
+            next_lookup: 0,
+        }));
+        Ok(())
+    }
+
     fn add_timer(&mut self, at: Instant, task: TaskId, seq: u64) {
         let i = self.timers.partition_point(|t| t.at <= at);
         self.timers.insert(i, Timer { at, task, seq });
@@ -424,10 +690,15 @@ impl Reactor {
     /// `timeout` of `None` blocks until something happens, which is exactly
     /// what a server sitting in `accept` should do.
     fn poll(&mut self, timeout: Option<Duration>) -> VResult<Vec<ReadyFd>> {
-        if self.waiters.is_empty() {
+        if self.waiters.is_empty() && self.no_lookups() {
             // Nothing but deadlines: there is no fd to wait on, so waiting on
             // one would mean creating an epoll instance to sleep in. A program
             // whose only concurrency is `time.sleep` never makes one.
+            //
+            // A lookup in flight excludes this path. The resolver's `Waker` is
+            // an fd and is registered, so there *is* something to wait on, and
+            // sleeping through it instead would add the lookup's own latency to
+            // every answer.
             if let Some(d) = timeout {
                 std::thread::sleep(d);
             }
@@ -456,10 +727,127 @@ impl Reactor {
             .collect())
     }
 
+    /// How many resolver threads this VM has started. Zero until a name is
+    /// dialled, and the observable end of "a literal `ip:port` takes no lookup
+    /// path at all" — see `resolving_only_happens_for_a_name` in
+    /// `super::tests`.
+    ///
+    /// Test-only, and deliberately not a runtime accessor: nothing in the
+    /// language should be able to see how many helper threads exist, because
+    /// the number is an implementation property §7 leaves unfrozen.
+    #[cfg(test)]
+    pub(super) fn resolver_threads(&self) -> usize {
+        self.dns.as_ref().map_or(0, |r| r.threads)
+    }
+
     /// The soonest deadline, or `None` if nothing is on a clock.
     fn next_deadline(&self) -> Option<Instant> {
         self.timers.first().map(|t| t.at)
     }
+}
+
+/// Start one resolver thread.
+///
+/// The whole of what crosses the boundary is in this function's signature: a
+/// queue of `String`s in, a queue of `SocketAddr`s or error `String`s out, and
+/// an eventfd to poke. No `Value`, no `Rc`, no reference to the VM — which is
+/// the invariant the module docs' correction states, expressed as a type.
+///
+/// The loop is `recv` → resolve → `send` → `wake`, and every exit is the
+/// channel closing. `send` before `wake` is the ordering that matters: the
+/// answer is in the queue before the VM is told to look, so a wake can be
+/// spurious but never empty-handed.
+fn spawn_resolver_thread(
+    jobs: Jobs,
+    answers: Sender<Resolved>,
+    waker: Arc<mio::Waker>,
+) -> std::io::Result<()> {
+    std::thread::Builder::new().name("oro-dns".to_string()).spawn(move || loop {
+        let job = {
+            // Poisoning cannot happen — the guarded value is a `Receiver` and
+            // nothing in this block can panic — but `into_inner` is the honest
+            // answer to it anyway. An `unwrap` here would turn a panic in one
+            // worker into a hang in every other one.
+            let rx = jobs.lock().unwrap_or_else(|e| e.into_inner());
+            match rx.recv() {
+                Ok(j) => j,
+                // The `Resolver` was dropped: the VM is going away.
+                Err(_) => return,
+            }
+        };
+        let result = crate::net::resolve(&job.addr, "dial");
+        if answers.send(Resolved { id: job.id, result }).is_err() {
+            return;
+        }
+        // A failed wake means the reactor is gone, which the next `recv` will
+        // say properly. There is nothing useful to do about it here.
+        let _ = waker.wake();
+    })?;
+    Ok(())
+}
+
+/// What starting a connect produced.
+enum Connecting {
+    /// It finished inside `connect(2)`. Loopback usually does, which is why
+    /// every test in this tree that dials `127.0.0.1` never reaches the
+    /// reactor at all.
+    Done(Value),
+    /// `EINPROGRESS`: park on this.
+    Wait(Box<IoWait>),
+}
+
+/// Open a socket and start connecting, walking `addrs` from `from` until one
+/// gets as far as being in flight.
+///
+/// A free function taking no `&mut Vm`, for the same reason [`attempt`] is one:
+/// it is called from the parking site, where the dialling task is current, and
+/// from the resolver wake, where it is not. Everything that differs between
+/// those two — arming the reactor, pushing the result — is the caller's.
+///
+/// `from` is not always zero. A connect that fails re-enters here at the next
+/// address, which is how the address list gets walked at all now that the
+/// walking is spread across parks instead of happening inside one blocking
+/// `TcpStream::connect(&addrs[..])`.
+fn start_connect(addrs: Vec<SocketAddr>, from: usize) -> VResult<Connecting> {
+    let mut last: Option<String> = None;
+    for i in from..addrs.len() {
+        let target = addrs[i];
+        // `mio::TcpStream::connect` is `socket` + `set_nonblocking` +
+        // `connect`, and it never waits: an `Ok` here means the handshake has
+        // *started*, not that it finished.
+        let sock = match mio::net::TcpStream::connect(target) {
+            Ok(s) => s,
+            // Some failures are immediate and local — `ENETUNREACH` for an
+            // IPv6 address on a host with no IPv6 route is the one that
+            // matters here. Next address.
+            Err(e) => {
+                last = Some(crate::net::err_msg(&e));
+                continue;
+            }
+        };
+        let stream = Rc::new(OroStream::connecting(sock, target));
+        match stream.connect_check() {
+            Ok(Io::Ready(())) => return Ok(Connecting::Done(Value::Stream(stream))),
+            Ok(Io::Block(interest)) => {
+                return Ok(Connecting::Wait(Box::new(IoWait {
+                    stream,
+                    op: IoOp::Connect { addrs, next: i + 1 },
+                    interest,
+                    token: 0,
+                    deadline: None,
+                    seq: 0,
+                })))
+            }
+            Err(msg) => {
+                last = Some(msg);
+                continue;
+            }
+        }
+    }
+    // `last` is `None` only for an empty list, which `crate::net::resolve`
+    // already refuses — it is spelled rather than `unreachable!` because a
+    // panic is a worse answer than a slightly generic exception.
+    Err(last.unwrap_or_else(|| "[Errno -2] Name or service not known".to_string()))
 }
 
 impl Vm {
@@ -751,6 +1139,7 @@ impl Vm {
             // into a hang.
             Err(msg) => self.fail_all_io(&msg),
         }
+        self.drain_dns();
         self.fire_timers();
         true
     }
@@ -784,10 +1173,19 @@ impl Vm {
             }
             Err(msg) => self.fail_all_io(&msg),
         }
+        self.drain_dns();
         self.fire_timers();
     }
 
     /// An fd is ready: hand the news to whoever is parked on that side of it.
+    ///
+    /// [`DNS_TOKEN`] falls out of this on its own — nothing is ever filed under
+    /// it in `waiters` — and is handled by [`drain_dns`](Self::drain_dns),
+    /// which runs after every poll rather than off this event. That is
+    /// deliberate: an answer can land in the queue without a wake being seen
+    /// (a `poll` that returned for another fd first), and draining
+    /// unconditionally means such an answer is never held until the next one
+    /// arrives to fetch it.
     fn io_ready(&mut self, r: &ReadyFd) {
         let Some(w) = self.reactor.waiters.get(&r.token) else { return };
         let (rd, wr) = (w.read, w.write);
@@ -820,9 +1218,11 @@ impl Vm {
                 return;
             }
         };
+        // Read before the failure path can move out of `w.op`.
+        let token = w.token;
         match attempt(&mut w) {
             Ok(Io::Ready(v)) => {
-                self.reactor.disarm(w.token, id);
+                self.reactor.disarm(token, id);
                 p.task
                     .frames
                     .last_mut()
@@ -846,7 +1246,104 @@ impl Vm {
                     Err(msg) => self.resume_failed(p, id, w.token, &msg),
                 }
             }
-            Err(msg) => self.resume_failed(p, id, w.token, &msg),
+            Err(msg) => {
+                // A failed connect is the one failure that may not be final:
+                // there can be another address to try, and trying it needs a
+                // fresh socket, which `attempt` has no way to produce.
+                if let IoOp::Connect { addrs, next } = w.op {
+                    self.reactor.disarm(token, id);
+                    // Back into `parked` with a placeholder, because
+                    // `connect_woken` settles the task through the same
+                    // `wake_*`/`repark_io` protocol every other waker uses and
+                    // those all expect to find it there.
+                    p.park = Park::Yield;
+                    self.parked.insert(id, p);
+                    self.connect_woken(id, addrs, next, msg);
+                    return;
+                }
+                self.resume_failed(p, id, token, &msg)
+            }
+        }
+    }
+
+    /// Everything the resolver threads have finished, handed to the tasks that
+    /// asked for it.
+    ///
+    /// Answers are matched by lookup id against the park, the same way
+    /// [`fire_timers`](Self::fire_timers) matches a deadline by `seq`. A task
+    /// parked on a lookup cannot run, so it cannot re-park on something else
+    /// and there is no known way for an answer to arrive late — the check is
+    /// here because "cannot happen" is a claim, and a mismatched wake would
+    /// push a `TcpStream` onto some unrelated task's operand stack.
+    fn drain_dns(&mut self) {
+        // Taken out of the reactor whole, so the borrow is over before anything
+        // below touches the VM.
+        let mut done: Vec<(TaskId, u64, VResult<Vec<SocketAddr>>)> = Vec::new();
+        if let Some(r) = self.reactor.dns.as_mut() {
+            while let Ok(d) = r.answers.try_recv() {
+                if let Some(task) = r.waiters.remove(&d.id) {
+                    done.push((task, d.id, d.result));
+                }
+            }
+        }
+        for (task, lookup, result) in done {
+            match self.parked.get(&task).map(|p| &p.park) {
+                Some(Park::Dns { id, .. }) if *id == lookup => {}
+                _ => continue,
+            }
+            match result {
+                // The lookup is over and the connect begins, without the task
+                // running in between. It has to be this way round: the task's
+                // `dial` call has one value to be handed, and that value is the
+                // connected stream, so the addresses can never be pushed onto
+                // its stack for it to do something with.
+                Ok(addrs) => self.connect_woken(task, addrs, 0, String::new()),
+                Err(msg) => {
+                    let exc = self.error_to_exception(&self.err(msg));
+                    self.wake_with_raise(task, exc);
+                }
+            }
+        }
+    }
+
+    /// Start (or continue) a connect on behalf of a task that is parked, and
+    /// settle it: woken with the stream, re-parked on the handshake, or woken
+    /// with the exception.
+    ///
+    /// `last` is the failure that sent us to `from`, and is what gets raised if
+    /// there is nothing left to try. It is carried rather than regenerated
+    /// because "connection refused" from the address that actually refused is a
+    /// better exception than anything this function could synthesise once the
+    /// socket is gone.
+    fn connect_woken(&mut self, task: TaskId, addrs: Vec<SocketAddr>, from: usize, last: String) {
+        let started =
+            if from < addrs.len() { start_connect(addrs, from) } else { Err(last) };
+        match started {
+            Ok(Connecting::Done(v)) => self.wake_with_value(task, v),
+            Ok(Connecting::Wait(w)) => self.repark_io(task, w),
+            Err(msg) => {
+                let exc = self.error_to_exception(&self.err(msg));
+                self.wake_with_raise(task, exc);
+            }
+        }
+    }
+
+    /// Move an already-parked task from whatever it was waiting on to this I/O.
+    ///
+    /// The one park transition that does not go through `Vm::step`, because the
+    /// task is not current and cannot be made current to do it — a lookup
+    /// finishing has to become a connect without the program in between. It
+    /// still holds the shape the module docs demand: `w` is owned, nothing
+    /// borrowed from the stream crosses the transition, and the resume protocol
+    /// is untouched.
+    fn repark_io(&mut self, task: TaskId, mut w: Box<IoWait>) {
+        if let Err(msg) = self.arm_io(task, &mut w) {
+            let exc = self.error_to_exception(&self.err(msg));
+            self.wake_with_raise(task, exc);
+            return;
+        }
+        if let Some(p) = self.parked.get_mut(&task) {
+            p.park = Park::Io(w);
         }
     }
 
@@ -859,11 +1356,16 @@ impl Vm {
     }
 
     /// The reactor itself failed. Every task waiting on it learns why.
+    ///
+    /// Lookups are in this too. The answer comes back through the reactor, so a
+    /// dead `epoll` strands a task parked on a name exactly as surely as one
+    /// parked on a socket, and leaving it out would turn the one failure the
+    /// program cannot handle into the one thing it cannot even see.
     fn fail_all_io(&mut self, msg: &str) {
         let ids: Vec<TaskId> = self
             .parked
             .iter()
-            .filter(|(_, p)| matches!(p.park, Park::Io(_)))
+            .filter(|(_, p)| matches!(p.park, Park::Io(_) | Park::Dns { .. }))
             .map(|(id, _)| *id)
             .collect();
         for id in ids {
@@ -871,6 +1373,9 @@ impl Vm {
             self.wake_with_raise(id, exc);
         }
         self.reactor.waiters.clear();
+        if let Some(d) = self.reactor.dns.as_mut() {
+            d.waiters.clear();
+        }
     }
 
     /// Wake everything whose deadline has passed.
@@ -1392,13 +1897,26 @@ impl Vm {
     /// scheduler ever sees the `Park`.
     fn park_io(&mut self, mut w: IoWait) -> Result<Step, RuntimeError> {
         let task = self.task.id;
-        w.token = match self.reactor.arm(&w.stream, w.interest, task) {
-            Ok(t) => t,
-            Err(msg) => return Err(self.err(msg)),
-        };
-        // The deadline is fixed on the *first* block and kept across every
-        // re-park, so `set_timeout(5)` bounds the whole `read_until` rather
-        // than granting five seconds per packet.
+        if let Err(msg) = self.arm_io(task, &mut w) {
+            return Err(self.err(msg));
+        }
+        Ok(Step::Park(Box::new(Park::Io(Box::new(w)))))
+    }
+
+    /// Register `w`'s stream with the reactor on `task`'s behalf, and arm its
+    /// deadline the first time it blocks.
+    ///
+    /// Split out of [`park_io`](Self::park_io) because a connect that begins
+    /// when a *lookup* finishes has to be armed for a task that is not the
+    /// current one. Nothing else about it changed.
+    ///
+    /// The deadline is fixed on the *first* block and kept across every
+    /// re-park, so `set_timeout(5)` bounds the whole `read_until` rather than
+    /// granting five seconds per packet. A connect never has one: the stream is
+    /// made inside the dial, so there was nowhere for the program to have put a
+    /// `set_timeout` on it, and the kernel's own connect timeout stands.
+    fn arm_io(&mut self, task: TaskId, w: &mut IoWait) -> VResult<()> {
+        w.token = self.reactor.arm(&w.stream, w.interest, task)?;
         if w.seq == 0 {
             self.park_seq += 1;
             w.seq = self.park_seq;
@@ -1407,7 +1925,60 @@ impl Vm {
                 self.reactor.add_timer(at, task, w.seq);
             }
         }
-        Ok(Step::Park(Box::new(Park::Io(Box::new(w)))))
+        Ok(())
+    }
+
+    /// `net.dial(addr)` — connect, and hand back a stream, without stopping
+    /// anything but the calling task.
+    ///
+    /// Like `time.sleep` and `yield_now` it cannot be a plain native builtin:
+    /// the whole content of it is the `Step` it returns. It used to be one,
+    /// which is exactly how it came to freeze the VM twice over — once in
+    /// `getaddrinfo` and once in `connect(2)` — with no way to say so, because
+    /// a `Builtin` has no vocabulary for "wait".
+    ///
+    /// Three outcomes, and which one you get is decided by
+    /// [`crate::net::plan_dial`] without touching the network:
+    ///
+    /// 1. A malformed address raises **here**, synchronously, at the call site,
+    ///    because it is a programming error and no lookup can change the
+    ///    answer.
+    /// 2. A literal `ip:port` goes straight to `connect(2)`, which on loopback
+    ///    usually finishes inside the call — so `net.dial("127.0.0.1:8080")`
+    ///    still costs one syscall and never reaches the reactor. That is why
+    ///    the old blocking implementation was invisible to every test in this
+    ///    tree, and it is preserved on purpose rather than routed through the
+    ///    resolver for uniformity's sake.
+    /// 3. A hostname parks on the resolver pool, and the connect that follows
+    ///    is started by [`drain_dns`](Self::drain_dns) when the answer lands.
+    pub(super) fn do_dial(
+        &mut self,
+        args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
+    ) -> Result<Step, RuntimeError> {
+        // Character for character what the generic builtin path said when
+        // `net.dial` was one, so moving the dispatch changed no diagnostic.
+        if !kwargs.is_empty() {
+            return Err(self.err("net.dial() takes no keyword arguments"));
+        }
+        let addr = self.wrap(super::modules::one_addr(&args, "dial"))?;
+        match self.wrap(crate::net::plan_dial(&addr))? {
+            crate::net::DialPlan::Connect(addrs) => match self.wrap(start_connect(addrs, 0))? {
+                Connecting::Done(v) => {
+                    self.push(v);
+                    Ok(Step::Next)
+                }
+                Connecting::Wait(w) => self.park_io(*w),
+            },
+            crate::net::DialPlan::Lookup(addr) => {
+                let task = self.task.id;
+                let id = match self.reactor.lookup(addr.clone(), task) {
+                    Ok(id) => id,
+                    Err(msg) => return Err(self.err(msg)),
+                };
+                Ok(Step::Park(Box::new(Park::Dns { id, addr: Rc::from(addr) })))
+            }
+        }
     }
 
     /// `time.sleep(secs)` — park this task for `secs`, and let every other one

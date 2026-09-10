@@ -1852,3 +1852,45 @@ fn a_failed_module_body_releases_its_path() {
     assert!(vm.importing.is_empty(), "the path must not survive a failed body");
     assert!(vm.import_waiters.is_empty());
 }
+
+/// Resolving happens for a name and for nothing else.
+///
+/// The half of `net.dial` a program cannot see. A literal `ip:port` must leave
+/// the resolver pool completely untouched — no thread started, no `Waker` fd
+/// created, no park — because it has nothing to look up; a hostname must start
+/// exactly the machinery that a literal does not. This is asserted against the
+/// reactor rather than through behaviour because there is no behaviour to
+/// assert on: `/etc/hosts` answers `localhost` in microseconds, so a lookup
+/// that happened and a lookup that did not look identical from the outside.
+///
+/// It is also the standing check on the cost claim. A program that never
+/// resolves a name pays for none of this, and "pays for none of it" means the
+/// number below is zero.
+#[test]
+fn resolving_only_happens_for_a_name() {
+    // A real listener, so the dials connect rather than failing for an
+    // unrelated reason. Loopback only, and the port is the kernel's.
+    let ln = crate::net::listen("127.0.0.1:0").expect("bind an ephemeral port");
+    let addr = ln.addr_attr("local").expect("read the port back");
+    let port = addr.rsplit(':').next().expect("an address has a port").to_string();
+
+    fn resolver_threads(src: &str) -> usize {
+        let mut vm = Vm::new(Vec::new());
+        vm.push_module_frame(compile_module(src));
+        vm.run_loop().expect("run");
+        vm.reactor.resolver_threads()
+    }
+
+    assert_eq!(
+        resolver_threads(&format!("import net\nc = net.dial(\"{addr}\")\n")),
+        0,
+        "dialling a literal ip:port started a resolver thread — it has no name to look up, \
+         and this is the path every test in this tree took while DNS was blocking"
+    );
+    assert_eq!(
+        resolver_threads(&format!("import net\nc = net.dial(\"localhost:{port}\")\n")),
+        1,
+        "dialling a name should start exactly one resolver thread: the pool grows one \
+         worker per *concurrent* lookup, and there is one"
+    );
+}

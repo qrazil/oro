@@ -558,3 +558,293 @@ ch.recv()
     assert!(err.contains("deadlock: every task is blocked"), "{err}");
     assert!(err.contains("recv (channel cap 0, 0 buffered)"), "{err}");
 }
+
+// --- DNS: the last thing in `net` that stopped the world -----------------------
+//
+// The rules at the top of this file apply here with one addition that matters
+// more than all of them: **no test may resolve a public hostname.** A DNS test
+// that needs the network is a test that fails on a plane, and a test that fails
+// on a plane is worse than no test. Everything below resolves either
+// `localhost` — which `/etc/hosts` answers without a packet — or a name that
+// cannot be put on the wire at all.
+
+/// A name that fails to resolve *without leaving the machine*.
+///
+/// A DNS label is at most 63 bytes on the wire, so a 300-byte label cannot be
+/// encoded into a query at all: the resolver rejects it while building the
+/// packet and answers `EAI_NONAME` having sent nothing. That is what makes it
+/// usable here — a name like `nonesuch.invalid` would *also* fail, but only
+/// after a round trip to whatever nameserver the machine is configured with,
+/// which on a disconnected laptop is a five-second timeout and on a plane is a
+/// failing test.
+const UNRESOLVABLE: &str = "\"a\" * 300";
+
+/// The load-bearing test: a `dial` on a hostname **parks**, and the VM keeps
+/// scheduling while the lookup is out.
+///
+/// This is the property the whole change exists for, and the one every previous
+/// test in this tree was structurally unable to see: they all dial
+/// `127.0.0.1`, which does no lookup, so a resolver that froze the VM for five
+/// seconds passed all of them.
+///
+/// It is checked by **order, not by time**, and that is deliberate. `localhost`
+/// comes out of `/etc/hosts` in microseconds, so no wall-clock margin could
+/// separate "parked" from "blocked" — but the scheduler's behaviour separates
+/// them completely. A parked lookup means the dialling task is off the ready
+/// queue, so the peer runs to completion before the answer is ever drained; a
+/// blocking one means `lookup finished` lands second, before the peer has had a
+/// single turn. Nothing about that depends on how fast the machine is, which
+/// makes it a stronger check than the timing tests above rather than a weaker
+/// one.
+#[test]
+fn a_hostname_dial_parks_and_the_vm_keeps_scheduling() {
+    let out = run(
+        "dns_parks",
+        r#"
+import net
+
+ln = net.listen("127.0.0.1:0")
+host = "localhost:" + ln.local.split(":")[1]
+
+log = []
+
+def dialer():
+    log.append("lookup started")
+    c = net.dial(host)
+    log.append("lookup finished")
+    c.close()
+
+def worker():
+    # Four turns. Every one of them is a scheduling decision the VM could only
+    # have made with the dialling task suspended.
+    i = 0
+    while i < 4:
+        log.append("worker " + i.to_str())
+        yield_now()
+        i = i + 1
+
+d = spawn(dialer)
+w = spawn(worker)
+d.join()
+w.join()
+ln.close()
+
+for line in log:
+    print(line)
+"#,
+    );
+    assert_eq!(
+        out,
+        "lookup started\nworker 0\nworker 1\nworker 2\nworker 3\nlookup finished\n",
+        "the lookup did not park — `lookup finished` should come after every turn the \
+         peer took, and with a blocking resolve it comes second"
+    );
+}
+
+/// A failed lookup raises in the task that asked for it, with the exception it
+/// has always raised, and does not disturb anyone else.
+///
+/// Two things are being checked at once. The class and the message must be
+/// unchanged now that the error is produced on a helper thread and delivered
+/// through a channel — it is `OSError` with `[Errno -2]`, the same string
+/// `crate::net::resolve` has always returned, because it is literally the same
+/// `String` moved across. And the failure must be *local to one task*: a
+/// resolver error arriving from outside the VM is exactly the shape that, done
+/// carelessly, takes down the peer that was in the middle of its own dial.
+#[test]
+fn a_failed_lookup_raises_in_its_own_task_and_leaves_the_others_alone() {
+    let out = run(
+        "dns_failure_is_local",
+        &format!(
+            r#"
+import net
+
+ln = net.listen("127.0.0.1:0")
+host = "localhost:" + ln.local.split(":")[1]
+bad = ({UNRESOLVABLE}) + ":80"
+
+def doomed():
+    try:
+        net.dial(bad)
+        return "resolved, which cannot happen"
+    except OSError as e:
+        return "raised " + e.to_str().split(":")[0]
+
+def fine():
+    c = net.dial(host)
+    peer = c.peer
+    c.close()
+    return "dialled " + peer.split(":")[0]
+
+a = spawn(doomed)
+b = spawn(fine)
+print(a.join())
+print(b.join())
+ln.close()
+"#
+        ),
+    );
+    assert_eq!(
+        out,
+        "raised [Errno -2] Name or service not known\ndialled 127.0.0.1\n",
+        "a failed lookup must raise OSError in its own task and nowhere else"
+    );
+}
+
+/// Several lookups at once, more than the pool has threads.
+///
+/// Twelve against a cap of eight, so the last four queue behind the first eight
+/// rather than each getting a thread — which is the behaviour under test as
+/// much as the parallelism is. A queued lookup still blocks nothing but itself:
+/// every one of the twelve tasks completes, and the program finishes.
+#[test]
+fn many_lookups_run_at_once_and_the_rest_queue() {
+    let out = run(
+        "dns_concurrent",
+        r#"
+import net
+
+ln = net.listen("127.0.0.1:0")
+host = "localhost:" + ln.local.split(":")[1]
+
+def dial_one(n):
+    c = net.dial(host)
+    c.close()
+    return n
+
+tasks = []
+i = 0
+while i < 12:
+    tasks.append(spawn(dial_one, i))
+    i = i + 1
+
+total = 0
+for t in tasks:
+    total = total + t.join()
+ln.close()
+print("resolved", len(tasks), "sum", total)
+"#,
+    );
+    assert_eq!(out, "resolved 12 sum 66\n");
+}
+
+/// A lookup in flight when the program ends, both ways it can end.
+///
+/// The resolver threads are never joined — a VM shutting down must not wait out
+/// a five-second resolver timeout, which is the very stall this mechanism
+/// exists to remove — so "an answer arriving for a VM that has gone" is a state
+/// that has to be safe rather than avoided. It is: the worker finds the answer
+/// channel's receiver dropped and returns without waking anything.
+///
+/// The other direction is the one a program can observe. Main returning with a
+/// task still resolving is §3's implicit join-all, and it has to wait for the
+/// lookup like any other park — a lookup is not an excuse to abandon a task.
+#[test]
+fn a_lookup_in_flight_at_shutdown_neither_hangs_nor_is_abandoned() {
+    // `sys.exit` from under a lookup: the documented way to abandon in-flight
+    // work on purpose. It must exit promptly and cleanly.
+    let (out, took) = run_timed(
+        "dns_exit_in_flight",
+        r#"
+import net
+import sys
+
+def dialer():
+    net.dial("localhost:9")
+    print("unreachable: the program exits first")
+
+spawn(dialer)
+# Hand over, so the dialler reaches its park before main runs again.
+yield_now()
+print("exiting with a lookup still out")
+sys.exit(0)
+"#,
+    );
+    assert_eq!(out, "exiting with a lookup still out\n");
+    assert!(
+        took < Duration::from_secs(5),
+        "shutting down took {took:?} — a VM must not wait for a resolver thread"
+    );
+
+    // Main returning, with a task still resolving. The implicit join-all owes
+    // that task the same wait it owes any other park.
+    let out = run(
+        "dns_join_all_waits",
+        r#"
+import net
+
+ln = net.listen("127.0.0.1:0")
+host = "localhost:" + ln.local.split(":")[1]
+
+def dialer():
+    c = net.dial(host)
+    print("the join-all waited for the lookup")
+    c.close()
+    ln.close()
+
+spawn(dialer)
+"#,
+    );
+    assert_eq!(out, "the join-all waited for the lookup\n");
+}
+
+/// Dialling a literal `ip:port` takes no lookup path at all.
+///
+/// The observable end of that claim: a literal dial behaves exactly as it did
+/// before any of this, and in particular still finishes inside `connect(2)` on
+/// loopback rather than going near the reactor. That it starts no resolver
+/// thread — the part a program cannot see — is asserted directly against the
+/// reactor in `crate::vm::tests`, and the decision itself is checked in
+/// `crate::net::tests`.
+#[test]
+fn a_literal_ip_dials_exactly_as_it_always_did() {
+    let out = run(
+        "dns_literal_unchanged",
+        r#"
+import net
+
+ln = net.listen("127.0.0.1:0")
+c = net.dial(ln.local)
+s = ln.accept()
+c.write(b"no lookup here")
+print(s.read(32).to_str())
+c.close()
+s.close()
+ln.close()
+"#,
+    );
+    assert_eq!(out, "no lookup here\n");
+}
+
+/// The connect walks the resolved address list instead of trying only the first.
+///
+/// `getaddrinfo("localhost")` answers `::1` before `127.0.0.1` on a dual-stack
+/// host, and the listener here is on `127.0.0.1` — so reaching it means the
+/// first address was tried, refused, and fallen through from. The blocking
+/// `TcpStream::connect(&addrs[..])` did that walk for free; doing it across
+/// parks is code, and this is the check that the code is there.
+///
+/// On a host with no IPv6 the list has one entry and this asserts the same
+/// thing about a shorter walk, which is why the assertion is on where the
+/// connection *landed* rather than on how many addresses were tried.
+#[test]
+fn a_dial_falls_through_to_the_next_address() {
+    let out = run(
+        "dns_address_fallback",
+        r#"
+import net
+
+ln = net.listen("127.0.0.1:0")
+host = "localhost:" + ln.local.split(":")[1]
+
+c = net.dial(host)
+s = ln.accept()
+c.write(b"fell through")
+print(c.peer.split(":")[0], s.read(32).to_str())
+c.close()
+s.close()
+ln.close()
+"#,
+    );
+    assert_eq!(out, "127.0.0.1 fell through\n");
+}

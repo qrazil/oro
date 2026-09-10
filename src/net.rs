@@ -17,15 +17,41 @@
 //! without one line of special-casing, which is the whole claim the io protocol
 //! was making.
 //!
-//! **Nothing here blocks any more, with two named exceptions.** Every socket is
-//! non-blocking from birth; `accept`, `read` and `write` answer
-//! `stream::Io::Block` instead of waiting, and the scheduler
-//! (`crate::vm::sched`) parks the task on the mio reactor. The three places
-//! that changed are still marked "where the green-thread swap landed" in
-//! `crate::stream`, and nothing outside them needed to know.
+//! **Nothing here blocks any more, and there are no longer any exceptions.**
+//! Every socket is non-blocking from birth; `accept`, `read`, `write` and now
+//! `connect` answer `stream::Io::Block` instead of waiting, and the scheduler
+//! (`crate::vm::sched`) parks the task on the mio reactor. The four places that
+//! changed are marked "where the green-thread swap landed" in `crate::stream`,
+//! and nothing outside them needed to know.
 //!
-//! The two exceptions are both in [`dial`] and both are DNS-shaped: name
-//! resolution and `connect(2)`. See that function.
+//! The two that held out longest were both in [`dial`] and both DNS-shaped:
+//! name resolution and `connect(2)`. They are closed together, on purpose —
+//! see [`plan_dial`].
+//!
+//! ## A correction: "one VM per thread, nothing shared"
+//!
+//! **What this module used to claim.** [`dial`]'s doc comment called a helper
+//! OS thread "the first OS thread in a runtime whose entire pitch is *one VM
+//! per thread, nothing shared*", and treated spending that claim as the reason
+//! to leave DNS blocking.
+//!
+//! **Why that was overstated.** The unqualified sentence is now false: there
+//! are helper threads in this process, started by [`plan_dial`]'s lookup path
+//! and living in `crate::vm::sched`. But the claim was never doing the work its
+//! wording suggested. What it was actually asserting — everywhere it was load
+//! bearing — is that **`Value` is `!Send`, so the VM must own its own
+//! scheduling**: an `Rc`-shaped ready queue cannot live in a work-stealing
+//! runtime, which is why Oro has a scheduler at all rather than importing one.
+//! "No threads exist" is a stronger statement that happened to be true, and it
+//! got written down as though it were the premise.
+//!
+//! **What is true, and is the invariant to hold.** *No Oro value ever crosses a
+//! thread.* The resolver threads exchange a `String` for a
+//! `Vec<std::net::SocketAddr>` over an `std::sync::mpsc` channel and touch
+//! nothing else; `Value` is still `Rc`-based and still `!Send`; the VM still
+//! owns its ready queue, its parked map and every decision about who runs next.
+//! Nothing in the architecture rests on the count of OS threads in the process,
+//! and stating it that way is what makes it checkable.
 //!
 //! **The hazard this module recorded, and what became of it.** All three of
 //! those calls used to hold a `RefCell` borrow of the stream's interior *across*
@@ -50,7 +76,7 @@
 
 use std::net::ToSocketAddrs;
 
-use mio::net::{TcpListener, TcpStream};
+use mio::net::TcpListener;
 
 use crate::stream::OroStream;
 use crate::value::VResult;
@@ -76,74 +102,122 @@ pub fn listen(addr: &str) -> VResult<OroStream> {
     OroStream::listener(TcpListener::from_std(ln)).map_err(|e| err_msg(&e))
 }
 
-/// `net.dial(addr)`: connect, and hand back a stream.
+/// What a `net.dial(addr)` has to do before it can connect: a name to look up,
+/// or an address to connect to right now.
 ///
-/// **This is the one call in `net` that still stops the world, and it does so
-/// twice: the DNS lookup and the TCP handshake.** M3b made that a deliberate,
-/// written-down limitation rather than closing it, and §4 asked whichever
-/// milestone touched it to say which answer it picked and why. This is that
-/// paragraph.
+/// **This is where DNS stopped stopping the world.** `dial` used to resolve
+/// through `ToSocketAddrs` on the calling thread, which freezes the *entire
+/// VM* — every task, not the caller — for the length of the lookup. Cached,
+/// that is microseconds; uncached, 1–50 ms; against a resolver that is timing
+/// out and retrying, 5 seconds or more, during which a thousand live
+/// connections make no progress. `net.listen` is the easy half and always was:
+/// it resolves once, at startup, before any task exists that could be starved.
+/// A literal `ip:port` does no lookup at all, which is exactly why every test
+/// in this tree dialled `127.0.0.1` and why the gap was so easy not to notice.
 ///
-/// *What is wrong.* `ToSocketAddrs` resolves synchronously, so a hostname that
-/// takes two seconds to resolve is two seconds in which this VM runs nothing
-/// else — every task, not only the caller. `connect(2)` on a blocking socket
-/// then adds the handshake RTT on top, and to a host that is dropping packets
-/// that is the full TCP connect timeout.
+/// **The decision: a helper OS thread, not a resolver written in Oro.**
+/// `docs/stdlib-server-design.md` §4 left both candidates open and asked the
+/// milestone that closed it to say which and why. The reasoning, short form:
 ///
-/// *Why it is still here.* §4 offered two answers and both cost more than they
-/// buy at this milestone. A resolver written in Oro over UDP needs UDP, which
-/// §4 declines to add and which would be a frozen public surface bought for one
-/// internal use. A helper OS thread with a pipe the reactor already watches is
-/// the right answer and is the one this will become — but it is the first OS
-/// thread in a runtime whose entire pitch is "one VM per thread, nothing
-/// shared", and that is a claim to spend deliberately, in the milestone that
-/// has a server to justify it, rather than as a rider on the reactor. Making
-/// `connect` non-blocking is easy (park on writability, then `take_error`) and
-/// is deliberately not done separately: shipping a non-blocking connect behind
-/// a blocking resolve would move the stall by a millisecond and let the
-/// limitation read as fixed.
+/// * `getaddrinfo` is blocking-only — POSIX has no async form — so *someone*
+///   must wait on a thread. The only question is whose.
+/// * Using the OS resolver inherits `/etc/hosts`, `resolv.conf`, search
+///   domains, VPN split-DNS, IPv6/IPv4 preference, system caching and NSS
+///   plugins: decades of accumulated correctness about networks nobody testing
+///   this will ever see.
+/// * A pure-Oro resolver would need **UDP added to the frozen surface for one
+///   internal caller**, plus re-implementations of `resolv.conf` parsing,
+///   search domains, `/etc/hosts`, retries, truncation-to-TCP fallback and
+///   CNAME chains — and every case missed becomes "works on my machine" inside
+///   a container or behind a VPN.
+/// * The deciding evidence: **Go ships both** a pure-Go resolver and a cgo one
+///   calling `getaddrinfo`, and switches to the OS one whenever the system
+///   configuration looks non-trivial. The pure route was tried by people with
+///   more resources and still needs the OS as a fallback. Node and tokio use a
+///   thread pool and do not attempt it.
 ///
-/// *What it costs today, precisely.* A server built on `net.listen` never
-/// reaches this function: `accept`, `read` and `write` all park, and `listen`
-/// resolves once at startup before any task exists that could be starved. It is
-/// `dial` **from inside a running server** — a proxy, an outbound API call —
-/// that stalls its peers, and it stalls them for the lookup plus the handshake.
-/// Dialling a literal `ip:port` skips the lookup entirely and leaves only the
-/// handshake, which is why every test in this tree dials `127.0.0.1` and why
-/// that is exactly the thing that makes the gap easy not to notice.
-pub fn dial(addr: &str) -> VResult<OroStream> {
-    let addrs = resolve(addr, "dial")?;
-    // `TcpStream::connect` over a slice tries each resolved address in turn and
-    // reports the *last* failure. With one address — every literal `ip:port`,
-    // which is the case that matters for the error mapping — that is the only
-    // failure, so `ConnectionRefusedError` survives the loop.
-    let sock = std::net::TcpStream::connect(&addrs[..]).map_err(|e| err_msg(&e))?;
-    // Non-blocking from here on: the handshake is over, and everything the
-    // stream does from now on goes through the reactor.
-    sock.set_nonblocking(true).map_err(|e| err_msg(&e))?;
-    OroStream::socket(TcpStream::from_std(sock)).map_err(|e| err_msg(&e))
+/// The thread pool, its size, its shutdown behaviour and the parking are in
+/// `crate::vm::sched`; the claim that had to be corrected to make room for it
+/// is in this module's docs, above.
+///
+/// **The connect is fixed in the same change, and that is not incidental.** §4
+/// declined to make `connect(2)` non-blocking on its own, on the grounds that
+/// "shipping a non-blocking connect behind a blocking resolve would move the
+/// stall by a millisecond and let the limitation read as fixed". With the
+/// lookup parking, that argument runs the other way: a `dial` now parks from
+/// start to finish, and [`DialPlan::Connect`] is handed straight to the
+/// scheduler's non-blocking connect rather than to `std::net::TcpStream`.
+pub enum DialPlan {
+    /// A literal `ip:port`. There is no name here, so there is nothing to look
+    /// up and nothing to park on — the scheduler connects immediately.
+    Connect(Vec<std::net::SocketAddr>),
+    /// A hostname. The scheduler hands this whole `"host:port"` string to a
+    /// resolver thread and parks the task until it comes back.
+    Lookup(String),
 }
 
-/// `"host:port"` -> socket addresses, with Go's bracket form for IPv6.
+/// `net.dial(addr)`, up to the point where it would touch the network.
 ///
-/// The parsing is `ToSocketAddrs`', which already accepts `"127.0.0.1:8080"`,
+/// Everything this does is string work: the `host:port` shape check, then one
+/// `SocketAddr` parse to sort a literal from a name. Both are pure and both are
+/// therefore still synchronous, which is what keeps a malformed address a
+/// `ValueError` raised *at the call site* rather than an exception delivered
+/// from a resolver a millisecond later.
+///
+/// The literal test is `str::parse::<SocketAddr>` rather than a hand-written
+/// one on purpose. `impl ToSocketAddrs for str` starts with exactly that parse
+/// and only calls `getaddrinfo` when it fails, so this function splits the
+/// input on precisely the line std does — there is no address that std would
+/// resolve without a lookup and this sends to the resolver, and none the other
+/// way.
+pub fn plan_dial(addr: &str) -> VResult<DialPlan> {
+    check_host_port(addr, "dial")?;
+    match addr.parse::<std::net::SocketAddr>() {
+        Ok(sa) => Ok(DialPlan::Connect(vec![sa])),
+        Err(_) => Ok(DialPlan::Lookup(addr.to_string())),
+    }
+}
+
+/// The `"host:port"` shape check, and the diagnostic for getting it wrong.
+///
+/// `ToSocketAddrs`' own parsing already accepts `"127.0.0.1:8080"`,
 /// `"[::1]:8080"` and `"example.com:80"`. What it does not do is explain
 /// itself, so a missing port — by far the most common mistake, and one that
 /// otherwise surfaces as "invalid socket address" — is caught here and named.
-fn resolve(addr: &str, who: &str) -> VResult<Vec<std::net::SocketAddr>> {
+///
+/// Separated from [`resolve`] so that it can run on the VM thread while the
+/// lookup runs on a helper: a bad address is a programming error and belongs at
+/// the call site, and a task should not be parked to be told it made one.
+fn check_host_port(addr: &str, who: &str) -> VResult<()> {
     let port_sep = match addr.rfind(']') {
         Some(b) => addr[b..].find(':').map(|i| b + i),
         None => addr.rfind(':'),
     };
     match port_sep {
-        Some(i) if i + 1 < addr.len() => {}
-        _ => {
-            return Err(format!(
-                "{who}() address must be 'host:port', not '{addr}' — a port is required \
-                 (use ':0' for any free port, and brackets for IPv6, as in '[::1]:8080')"
-            ))
-        }
+        Some(i) if i + 1 < addr.len() => Ok(()),
+        _ => Err(format!(
+            "{who}() address must be 'host:port', not '{addr}' — a port is required \
+             (use ':0' for any free port, and brackets for IPv6, as in '[::1]:8080')"
+        )),
     }
+}
+
+/// `"host:port"` -> socket addresses, with Go's bracket form for IPv6.
+///
+/// **This blocks, and that is now the point rather than a defect.** It is the
+/// system resolver, called in the one place that is allowed to wait for it: on
+/// a `net.listen` at startup, before any task exists that could be starved, and
+/// on the resolver threads in `crate::vm::sched`, where waiting is the job.
+/// Nothing else may call it, and nothing else does.
+///
+/// The error strings are load-bearing and are why this is one function rather
+/// than two. A failed lookup raises the same exception whichever side of the
+/// channel it happened on, because it is the same `String` either way:
+/// `ValueError` for an address that cannot be parsed, `OSError` for a name that
+/// does not resolve (`[Errno -2]`, through the general `[Errno …]` rule in
+/// `classify_error`). See [`classify`].
+pub(crate) fn resolve(addr: &str, who: &str) -> VResult<Vec<std::net::SocketAddr>> {
+    check_host_port(addr, who)?;
     let addrs: Vec<_> = addr
         .to_socket_addrs()
         .map_err(|e| match e.kind() {

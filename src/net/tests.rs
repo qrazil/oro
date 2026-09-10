@@ -78,6 +78,48 @@ fn ac(s: &OroStream) -> VResult<OroStream> {
     spin(|| s.accept())
 }
 
+/// `net.dial`, at this layer: the scheduler's flow with the parking spun out.
+///
+/// There is no longer a `net::dial` function to call. A dial stopped being one
+/// call when it stopped being able to finish on its own — it is a *plan*
+/// ([`plan_dial`]), then a lookup, then a non-blocking connect, and the thing
+/// that stitches those together across two parks is `crate::vm::sched`. So this
+/// stitches them together with [`spin`], exactly as `rd`, `wr` and `ac` above
+/// do for the operations that were already non-blocking, and for the same
+/// reason: the semantics under test here are one layer below the scheduler.
+///
+/// The address walk is reproduced rather than skipped, because it is part of
+/// what these tests check. `getaddrinfo` puts `::1` before `127.0.0.1` for
+/// `localhost`, so on a host with no IPv6 the first address failing is the
+/// normal path and not an error.
+fn dial(addr: &str) -> VResult<OroStream> {
+    let addrs = match plan_dial(addr)? {
+        DialPlan::Connect(a) => a,
+        // Blocking here is exactly right: what the scheduler does instead is
+        // park, and there is no scheduler at this layer to park on.
+        DialPlan::Lookup(a) => resolve(&a, "dial")?,
+    };
+    let mut last = String::new();
+    for target in addrs {
+        let sock = match mio::net::TcpStream::connect(target) {
+            Ok(s) => s,
+            Err(e) => {
+                last = err_msg(&e);
+                continue;
+            }
+        };
+        let s = OroStream::connecting(sock, target);
+        match spin(|| s.connect_check()) {
+            Ok(()) => return Ok(s),
+            Err(e) => {
+                last = e;
+                continue;
+            }
+        }
+    }
+    Err(last)
+}
+
 /// A connected pair on the loopback, plus the listener that made it.
 ///
 /// No thread is needed to build one: `connect` completes into the listen
@@ -429,4 +471,56 @@ fn the_types_name_themselves() {
     assert!(ln.repr().starts_with("<TcpListener 127.0.0.1:"));
     assert!(server.repr().starts_with("<TcpStream 127.0.0.1:"));
     assert!(server.repr().contains(" -> "));
+}
+
+// --- DNS: which addresses need a lookup, and which do not ----------------------
+
+/// `plan_dial` is the whole of the decision, and it makes it without touching
+/// the network.
+///
+/// This is the seam the non-blocking dial hangs on: everything `plan_dial`
+/// answers `Connect` to connects immediately, and everything it answers
+/// `Lookup` to parks a task on a helper thread. Getting the line wrong in one
+/// direction sends `127.0.0.1` through a thread pool for nothing; getting it
+/// wrong in the other puts `getaddrinfo` back on the VM thread, which is the
+/// bug being fixed.
+///
+/// The line is `str::parse::<SocketAddr>`, which is exactly where
+/// `impl ToSocketAddrs for str` decides the same thing — so these cases are
+/// checking that Oro's split and std's are one split, not two that agree today.
+#[test]
+fn only_a_name_needs_a_lookup() {
+    for literal in ["127.0.0.1:8080", "0.0.0.0:0", "[::1]:8080", "[::]:80"] {
+        match plan_dial(literal).expect("a well-formed literal") {
+            DialPlan::Connect(addrs) => assert_eq!(addrs.len(), 1, "{literal}"),
+            DialPlan::Lookup(_) => panic!("{literal} was sent to the resolver"),
+        }
+    }
+    for name in ["localhost:80", "example.com:443", "sub.domain.example:8080"] {
+        match plan_dial(name).expect("a well-formed name") {
+            // Note what is *not* asserted: that the name resolves. `plan_dial`
+            // does no lookup, which is why `example.com` can appear in a test
+            // that never touches the network.
+            DialPlan::Lookup(addr) => assert_eq!(addr, name),
+            DialPlan::Connect(_) => panic!("{name} skipped the resolver"),
+        }
+    }
+}
+
+/// A malformed address is refused at the call site, before any lookup.
+///
+/// It has to be. A missing port is a programming error, no resolver can change
+/// the answer, and parking a task in order to tell it that it made one would
+/// deliver the `ValueError` from somewhere the program cannot see. The class
+/// and the message are the ones this module has always produced.
+#[test]
+fn a_malformed_address_never_reaches_the_resolver() {
+    for bad in ["127.0.0.1", "localhost", "", "example.com:"] {
+        let e = match plan_dial(bad) {
+            Err(e) => e,
+            Ok(_) => panic!("{bad} was accepted"),
+        };
+        assert!(e.contains("must be 'host:port'"), "{bad}: {e}");
+        assert_eq!(classify(&e), Some("ValueError"));
+    }
 }
