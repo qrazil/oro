@@ -4789,71 +4789,78 @@ fn slice_indices(len: usize, lower: Option<i64>, upper: Option<i64>, step: i64) 
 /// Attribute read for any value. Instances, classes, and `super` proxies are
 /// handled here (no `__getattr__` hook exists, so this never runs Oro code);
 /// everything else falls back to builtin-method binding.
-fn get_attr(obj: &Value, name: &str) -> Result<Value, String> {
+fn get_attr(obj: &Value, name: &Rc<str>) -> Result<Value, String> {
+    // `name` arrives as the code object's *interned* `Rc<str>` rather than as
+    // a `&str` for one reason: every native method access — `xs.append`,
+    // `s.split`, `ys.map` — used to rebuild that string with `Rc::from`, a
+    // heap allocation and a copy per access, to store a name the code object
+    // already owned. Taking the `Rc` makes each of those a refcount bump.
+    // `key` is the same string as a `&str`, for the lookups.
+    let key: &str = name;
     match obj {
         Value::Instance(inst) => {
-            if let Some(v) = inst.fields.borrow().get(name) {
+            if let Some(v) = inst.fields.borrow().get(key) {
                 return Ok(v.clone());
             }
-            match Class::find(&inst.class, name) {
+            match Class::find(&inst.class, key) {
                 Some((member, defclass)) => Ok(bind_member(member, obj.clone(), defclass)),
                 // The conversion methods exist on every value, instances
                 // included — `to_str` runs the class's `__str__` if it has one.
-                None if crate::builtins::is_cast_method(name) => Ok(Value::Method(Rc::new(
-                    BoundMethod { receiver: obj.clone(), kind: MethodKind::Native(Rc::from(name)) },
+                None if crate::builtins::is_cast_method(key) => Ok(Value::Method(Rc::new(
+                    BoundMethod { receiver: obj.clone(), kind: MethodKind::Native(name.clone()) },
                 ))),
-                None => Err(format!("'{}' object has no attribute '{}'", inst.class.name, name)),
+                None => Err(format!("'{}' object has no attribute '{}'", inst.class.name, key)),
             }
         }
-        Value::Class(class) => match Class::find(class, name) {
+        Value::Class(class) => match Class::find(class, key) {
             // A method accessed on the class itself stays an unbound function.
             Some((member, _)) => Ok(member),
-            None => Err(format!("type object '{}' has no attribute '{}'", class.name, name)),
+            None => Err(format!("type object '{}' has no attribute '{}'", class.name, key)),
         },
-        Value::Module(m) => match m.members.borrow().get(name) {
+        Value::Module(m) => match m.members.borrow().get(key) {
             Some(v) => Ok(v.clone()),
-            None => Err(format!("module '{}' has no attribute '{}'", m.name, name)),
+            None => Err(format!("module '{}' has no attribute '{}'", m.name, key)),
         },
         Value::Super(sp) => {
             let mut cur = sp.start.clone();
             while let Some(c) = cur {
-                if let Some(member) = c.members.borrow().get(name).cloned() {
+                if let Some(member) = c.members.borrow().get(key).cloned() {
                     return Ok(bind_member(member, sp.instance.clone(), c.clone()));
                 }
                 cur = c.base.clone();
             }
-            Err(format!("'super' object has no attribute '{name}'"))
+            Err(format!("'super' object has no attribute '{key}'"))
         }
         // A socket's `peer` and `local` are data attributes, not methods
         // (§4): they are strings read once when the socket was opened.
-        Value::Stream(s) if s.has_addr_attr(name) => Ok(Value::str(s.addr_attr(name)?)),
+        Value::Stream(s) if s.has_addr_attr(key) => Ok(Value::str(s.addr_attr(key)?)),
         // The concurrency surface is exactly four methods (§3). They bind here
         // rather than through `builtins::method_exists` because the VM, not
         // `call_method`, has to run them: each one may park.
-        Value::Task(_) if name == "join" => Ok(native_method(obj, name)),
-        Value::Channel(_) if matches!(name, "send" | "recv" | "close") => {
+        Value::Task(_) if key == "join" => Ok(native_method(obj, name)),
+        Value::Channel(_) if matches!(key, "send" | "recv" | "close") => {
             Ok(native_method(obj, name))
         }
         _ => {
-            if crate::builtins::method_exists(obj, name) {
+            if crate::builtins::method_exists(obj, key) {
                 Ok(Value::Method(Rc::new(BoundMethod {
                     receiver: obj.clone(),
-                    kind: MethodKind::Native(Rc::from(name)),
+                    kind: MethodKind::Native(name.clone()),
                 })))
-            } else if let Some(msg) = crate::builtins::cut_method_message(obj, name) {
+            } else if let Some(msg) = crate::builtins::cut_method_message(obj, key) {
                 Err(msg.to_string())
             } else {
-                Err(format!("'{}' object has no attribute '{}'", obj.type_name(), name))
+                Err(format!("'{}' object has no attribute '{}'", obj.type_name(), key))
             }
         }
     }
 }
 
 /// A bound native method — one the VM or `builtins::call_method` will run.
-fn native_method(receiver: &Value, name: &str) -> Value {
+fn native_method(receiver: &Value, name: &Rc<str>) -> Value {
     Value::Method(Rc::new(BoundMethod {
         receiver: receiver.clone(),
-        kind: MethodKind::Native(Rc::from(name)),
+        kind: MethodKind::Native(name.clone()),
     }))
 }
 
