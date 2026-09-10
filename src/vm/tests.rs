@@ -1511,7 +1511,9 @@ r = out
 ",
         "r",
     );
-    assert_eq!(v.repr(), "['KeyError k', 'KeyError k']");
+    // `KeyError`'s message is the repr of its argument, as CPython's is — this
+    // fixture used to ratify the unquoted `KeyError k` Oro produced before.
+    assert_eq!(v.repr(), "[\"KeyError 'k'\", \"KeyError 'k'\"]");
 }
 
 /// A task that fails does not touch its peers, and the program keeps running.

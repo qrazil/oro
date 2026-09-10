@@ -945,6 +945,34 @@ impl Value {
     }
 }
 
+/// The field an internally-raised exception carries to record that its single
+/// "argument" is an already-rendered *message*, not a constructor argument.
+///
+/// A runtime fault travels as a `String` — `key error: 'nope'` — and is turned
+/// into an exception instance at the point it is raised, by which time the key
+/// itself is gone and only its rendering survives. `KeyError` is the one class
+/// whose `str()` reprs its argument, so without this flag that rendering would
+/// be quoted a second time and `d["nope"]` would print `"'nope'"`.
+///
+/// The name is unreachable from Oro: attribute access needs an identifier and a
+/// NUL is not one, the same trick the `sys.exit` sentinel uses.
+pub const RENDERED_MESSAGE: &str = "\u{0}rendered";
+
+/// Whether `class` is `KeyError` or descends from it — the one built-in
+/// exception CPython gives a `__str__` of its own.
+fn is_key_error(class: &Rc<Class>) -> bool {
+    let mut cur = class;
+    loop {
+        if &*cur.name == "KeyError" {
+            return true;
+        }
+        match cur.base.as_ref() {
+            Some(b) => cur = b,
+            None => return false,
+        }
+    }
+}
+
 /// The constructor arguments stored on an exception instance (empty if none).
 pub fn exception_args(inst: &Instance) -> Vec<Value> {
     match inst.fields.borrow().get("args") {
@@ -954,11 +982,26 @@ pub fn exception_args(inst: &Instance) -> Vec<Value> {
 }
 
 /// An exception's `str()`: no args → ""; one arg → that arg's str; several → the
-/// args tuple's repr. Matches CPython's `BaseException.__str__`.
+/// args tuple's repr. Matches CPython's `BaseException.__str__` — and its one
+/// override, `KeyError`'s.
+///
+/// `KeyError` is the only built-in exception in CPython that defines a `__str__`
+/// of its own, and it reprs its single argument: `KeyError('user')` prints
+/// `'user'`, not `user`. The quotes are load-bearing — they are what separates
+/// a missing key `user` from a missing key `user ` with a trailing space — and
+/// the rule stops at one argument, so `KeyError('a', 'b')` falls back to the
+/// args tuple exactly as every other class does. Nothing else in the hierarchy
+/// has such a rule; checked against CPython 3.12 across `ValueError`,
+/// `IndexError`, `LookupError`, `AttributeError`, `NameError`, `TypeError` and
+/// `StopIteration`, all of which are plain `str()`.
 pub fn exception_message(inst: &Instance) -> String {
+    // An internally-raised exception's argument is already the rendered
+    // message, so the `KeyError` rule has been applied to it once already.
+    let pre_rendered = inst.fields.borrow().contains_key(RENDERED_MESSAGE);
     let args = exception_args(inst);
     match args.as_slice() {
         [] => String::new(),
+        [one] if !pre_rendered && is_key_error(&inst.class) => one.repr(),
         [one] => one.display(),
         many => {
             let parts: Vec<String> = many.iter().map(|v| v.repr()).collect();

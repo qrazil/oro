@@ -1,0 +1,12 @@
+missing str: 'nope'
+missing int: 7
+missing tuple: ('h', 80)
+raised str: 'user'
+raised str with a space: 'user '
+raised int: 7
+raised none:  0
+raised two: ('a', 'b')
+subclass: 'timeout'
+v t i l a n z r s e 
+index: list index out of range
+divzero: integer division or modulo by zero

@@ -1,0 +1,95 @@
+# `str(e)` for every exception in the hierarchy, and the one class that has a
+# rule of its own.
+#
+# CPython gives `KeyError` — and only `KeyError` — a `__str__` that reprs its
+# single argument, so `KeyError("user")` prints `'user'` and not `user`. The
+# quotes are load-bearing: they are what separates a missing key `user` from a
+# missing key `user ` with a trailing space. Oro used to print the raised one
+# unquoted while quoting its own `d[missing]`, which was divergent and
+# internally inconsistent at the same time.
+
+d = {"a": 1}
+
+# The one Oro raises itself, on both a str and a non-str key.
+try:
+    d["nope"]
+except KeyError as e:
+    print("missing str:", f"{e}")
+
+try:
+    d[7]
+except KeyError as e:
+    print("missing int:", f"{e}")
+
+try:
+    d[("h", 80)]
+except KeyError as e:
+    print("missing tuple:", f"{e}")
+
+# The one a program raises, which must render identically.
+try:
+    raise KeyError("user")
+except KeyError as e:
+    print("raised str:", f"{e}")
+
+try:
+    raise KeyError("user ")
+except KeyError as e:
+    print("raised str with a space:", f"{e}")
+
+try:
+    raise KeyError(7)
+except KeyError as e:
+    print("raised int:", f"{e}")
+
+# The rule stops at one argument: zero and two fall back to
+# `BaseException.__str__` like every other class.
+try:
+    raise KeyError()
+except KeyError as e:
+    print("raised none:", f"{e}", len(f"{e}"))
+
+try:
+    raise KeyError("a", "b")
+except KeyError as e:
+    print("raised two:", f"{e}")
+
+# A subclass inherits the rule.
+
+
+class MissingSetting(KeyError):
+    pass
+
+
+try:
+    raise MissingSetting("timeout")
+except KeyError as e:
+    print("subclass:", f"{e}")
+
+# Nothing else in the hierarchy reprs anything: every one of these is the plain
+# argument, quotes and all if the argument carries them.
+for exc in [
+    ValueError("v"),
+    TypeError("t"),
+    IndexError("i"),
+    LookupError("l"),
+    AttributeError("a"),
+    NameError("n"),
+    ZeroDivisionError("z"),
+    RuntimeError("r"),
+    StopIteration("s"),
+    Exception("e"),
+]:
+    print(f"{exc}", end=" ")
+print()
+
+# And the ones Oro raises itself in that family stay sentences.
+try:
+    [1, 2][9]
+except IndexError as e:
+    print("index:", f"{e}")
+
+try:
+    1 // 0
+except ZeroDivisionError as e:
+    print("divzero:", f"{e}")

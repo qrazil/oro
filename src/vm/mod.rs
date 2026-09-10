@@ -3844,7 +3844,15 @@ impl Vm {
             "KeyError" => e.message.strip_prefix("key error: ").unwrap_or(&e.message).to_string(),
             _ => e.message.clone(),
         };
-        self.make_exception_instance(class, vec![Value::str(msg)])
+        let exc = self.make_exception_instance(class, vec![Value::str(msg)]);
+        // Flag it: the argument above is a rendered message, not a constructor
+        // argument, so `str()` must not apply `KeyError`'s repr rule to it a
+        // second time. See [`crate::value::RENDERED_MESSAGE`].
+        if let Value::Instance(i) = &exc {
+            let key = Rc::from(crate::value::RENDERED_MESSAGE);
+            i.fields.borrow_mut().insert(key, Value::Bool(true));
+        }
+        exc
     }
 
     /// Return `value` from the current frame, but first run any pending
