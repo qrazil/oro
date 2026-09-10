@@ -1621,40 +1621,43 @@ impl Vm {
             _ => return Ok(None),
         };
         if !kwargs.is_empty() {
-            return Err(self.err(format!("{name}() takes no keyword arguments")));
+            return Ok(Some(
+                self.raise("TypeError", format!("{name}() takes no keyword arguments")),
+            ));
         }
-        let arity = |vm: &Self, want: usize| -> Result<(), RuntimeError> {
+        let arity = |vm: &Self, want: usize| -> Result<(), Step> {
             if args.len() == want {
-                Ok(())
-            } else {
-                Err(vm.err(format!(
-                    "{name}() takes exactly {want} argument(s) ({} given)",
-                    args.len()
-                )))
+                return Ok(());
             }
+            let expected = match want {
+                0 => "no arguments".to_string(),
+                1 => "exactly 1 argument".to_string(),
+                n => format!("exactly {n} arguments"),
+            };
+            Err(vm.raise("TypeError", format!("{name}() takes {expected} ({} given)", args.len())))
         };
         if let Some(handle) = task_recv {
             if name != "join" {
                 return Ok(None);
             }
-            arity(self, 0)?;
+            if let Err(step) = arity(self, 0) {
+                return Ok(Some(step));
+            }
             return self.task_join(handle).map(Some);
         }
         let ch = chan_recv.expect("one of the two");
+        let want = match name {
+            "send" => 1,
+            "recv" | "close" => 0,
+            _ => return Ok(None),
+        };
+        if let Err(step) = arity(self, want) {
+            return Ok(Some(step));
+        }
         match name {
-            "send" => {
-                arity(self, 1)?;
-                self.chan_send(ch, args[0].clone()).map(Some)
-            }
-            "recv" => {
-                arity(self, 0)?;
-                self.chan_recv(ch).map(Some)
-            }
-            "close" => {
-                arity(self, 0)?;
-                self.chan_close(ch).map(Some)
-            }
-            _ => Ok(None),
+            "send" => self.chan_send(ch, args[0].clone()).map(Some),
+            "recv" => self.chan_recv(ch).map(Some),
+            _ => self.chan_close(ch).map(Some),
         }
     }
 
@@ -3488,9 +3491,9 @@ pub fn iterate_to_vec(v: &Value) -> Result<Vec<Value>, String> {
     // native helper cannot do — the same rule that stops a builtin from
     // draining a generator. `for msg in ch` is the way.
     if matches!(v, Value::Channel(_)) {
-        return Err(
-            "a channel can only be iterated with `for`, because receiving may block".to_string()
-        );
+        return Err("'Channel' object is not iterable here: receiving may block, so `for msg in \
+                    ch` is the only way to drain one"
+            .to_string());
     }
     let it = get_iter(v)?;
     let mut out = Vec::new();

@@ -1520,6 +1520,31 @@ fn chan_capacity_is_checked() {
     assert!(run_err("r = chan(\"x\")\n").message.contains("must be an int"));
 }
 
+/// The new surface's misuse diagnostics are ordinary typed exceptions, so a
+/// program can catch them. They name their class outright rather than hoping
+/// `classify_error`'s substring table recognises a brand-new message.
+#[test]
+fn the_concurrency_diagnostics_are_catchable_by_class() {
+    let v = eval_var(
+        "\
+out = []
+def f():
+    return 0
+for thunk in [() => chan(-1), () => chan(\"x\"), () => spawn(len, []), () => chan().send()]:
+    try:
+        thunk()
+        out.append(\"no raise\")
+    except ValueError:
+        out.append(\"ValueError\")
+    except TypeError:
+        out.append(\"TypeError\")
+r = out
+",
+        "r",
+    );
+    assert_eq!(v.repr(), "['ValueError', 'TypeError', 'TypeError', 'TypeError']");
+}
+
 /// Two tasks importing one module is a rendezvous, not a cycle — but a module
 /// that imports itself still is.
 #[test]

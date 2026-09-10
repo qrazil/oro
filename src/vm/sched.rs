@@ -185,6 +185,17 @@ impl Vm {
         }
     }
 
+    /// Raise `class` with `msg`.
+    ///
+    /// The concurrency surface names its exception classes rather than
+    /// spelling a message that `classify_error` will recognise. Everything
+    /// here is new, so there is no reason to route a brand-new diagnostic
+    /// through a substring table built for the old ones.
+    pub(super) fn raise(&self, class: &str, msg: impl Into<String>) -> Step {
+        let class = self.excs[class].clone();
+        Step::Raise(self.make_exception_instance(class, vec![Value::str(msg.into())]))
+    }
+
     fn channel_closed_exc(&self) -> Value {
         let class = self.excs["ChannelClosed"].clone();
         self.make_exception_instance(class, vec![Value::str("channel is closed")])
@@ -349,10 +360,10 @@ impl Vm {
         kwargs: Vec<(String, Value)>,
     ) -> Result<Step, RuntimeError> {
         if !kwargs.is_empty() {
-            return Err(self.err("spawn() takes no keyword arguments"));
+            return Ok(self.raise("TypeError", "spawn() takes no keyword arguments"));
         }
         if args.is_empty() {
-            return Err(self.err("spawn() takes at least 1 argument (0 given)"));
+            return Ok(self.raise("TypeError", "spawn() takes at least 1 argument (0 given)"));
         }
         let callee = args.remove(0);
 
@@ -362,7 +373,10 @@ impl Vm {
         let frame = match &callee {
             Value::Func(f) if !f.code.is_generator => self.bind_call(f, None, args, Vec::new())?,
             Value::Func(_) => {
-                return Err(self.err("spawn() cannot start a generator function as a task"))
+                return Ok(self.raise(
+                    "TypeError",
+                    "spawn() cannot start a generator function as a task",
+                ))
             }
             Value::Method(m) => match &m.kind {
                 MethodKind::User { func, defclass } if !func.code.is_generator => {
@@ -371,13 +385,19 @@ impl Vm {
                     frame.super_ctx = Some((defclass.clone(), m.receiver.clone()));
                     frame
                 }
-                _ => return Err(self.err("spawn() needs a function defined in Oro")),
+                _ => {
+                    return Ok(self
+                        .raise("TypeError", "spawn() needs a function defined in Oro"))
+                }
             },
             other => {
-                return Err(self.err(format!(
-                    "spawn() needs a function defined in Oro, not '{}'",
-                    other.type_label()
-                )))
+                return Ok(self.raise(
+                    "TypeError",
+                    format!(
+                        "spawn() needs a function defined in Oro, not '{}'",
+                        other.type_label()
+                    ),
+                ))
             }
         };
 
@@ -395,7 +415,7 @@ impl Vm {
     /// `t.join()` — §3's rules 1 and 2.
     pub(super) fn task_join(&mut self, handle: Rc<TaskHandle>) -> Result<Step, RuntimeError> {
         if handle.id == self.task.id {
-            return Err(self.err("a task cannot join itself"));
+            return Ok(self.raise("RuntimeError", "a task cannot join itself"));
         }
         // Taking the outcome and re-publishing it are two borrows, never one
         // held across the `raise` — a joined failure mutates the handle.
@@ -433,19 +453,22 @@ impl Vm {
         kwargs: Vec<(String, Value)>,
     ) -> Result<Step, RuntimeError> {
         if !kwargs.is_empty() {
-            return Err(self.err("chan() takes no keyword arguments"));
+            return Ok(self.raise("TypeError", "chan() takes no keyword arguments"));
         }
         let cap = match args.as_slice() {
             [] => 0,
             [Value::Int(n)] if *n >= 0 => *n as usize,
-            [Value::Int(_)] => return Err(self.err("chan() capacity must not be negative")),
-            [other] => {
-                return Err(self.err(format!(
-                    "chan() capacity must be an int, not '{}'",
-                    other.type_label()
-                )))
+            [Value::Int(n)] => {
+                return Ok(self
+                    .raise("ValueError", format!("chan() capacity must not be negative ({n})")))
             }
-            _ => return Err(self.err("chan() takes at most 1 argument")),
+            [other] => {
+                return Ok(self.raise(
+                    "TypeError",
+                    format!("chan() capacity must be an int, not '{}'", other.type_label()),
+                ))
+            }
+            _ => return Ok(self.raise("TypeError", "chan() takes at most 1 argument")),
         };
         self.push(Value::Channel(Rc::new(Channel::new(cap))));
         Ok(Step::Next)
