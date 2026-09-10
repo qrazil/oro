@@ -1007,10 +1007,7 @@ impl Vm {
     /// what happened. The location, the exception text and the exit code are
     /// unchanged.
     fn render_report(&self, err: &RuntimeError) -> String {
-        match self.argv.first() {
-            Some(script) => format!("task failed: {script}:{err}"),
-            None => format!("task failed: {err}"),
-        }
+        format!("task failed: {err}")
     }
 
     // --- The scheduler loop --------------------------------------------------
@@ -1026,7 +1023,11 @@ impl Vm {
         let mut finished_main: Option<Task> = None;
         loop {
             let slice = self.run_slice();
+            // Captured together, from the same task, before anything switches:
+            // a deadlock is reported from the site that caused it, and the file
+            // has to come from the same place the line and column do.
             let (line, col) = (self.task.line, self.task.col);
+            let source = self.err_source();
             match slice {
                 Slice::Parked(park) if matches!(*park, Park::Yield) => {
                     // A yield is not a wait. The task goes to the back of the
@@ -1047,7 +1048,7 @@ impl Vm {
                     // site is still the current task, which is what makes the
                     // line and column the useful ones.
                     if self.ready.is_empty() && self.reactor.is_idle() {
-                        return Err(self.deadlock(&park, line, col));
+                        return Err(self.deadlock(&park, source, line, col));
                     }
                     self.park_current(*park);
                 }
@@ -1092,7 +1093,7 @@ impl Vm {
                 if !self.wait_for_external() {
                     // Main returned (or a task ended) with peers still blocked
                     // forever: the implicit join-all can never complete.
-                    return Err(self.deadlock_stuck(line, col));
+                    return Err(self.deadlock_stuck(source, line, col));
                 }
             };
             match next {
@@ -1405,7 +1406,7 @@ impl Vm {
         }
     }
 
-    fn deadlock(&self, park: &Park, line: u32, col: u32) -> RuntimeError {
+    fn deadlock(&self, park: &Park, source: Rc<str>, line: u32, col: u32) -> RuntimeError {
         let mut waits: Vec<String> = self.parked.values().map(|p| p.park.what()).collect();
         waits.push(park.what());
         waits.sort();
@@ -1413,16 +1414,18 @@ impl Vm {
             message: format!(
                 "deadlock: every task is blocked and nothing can wake them ({})",
                 waits.join(", ")
-            ),
-            line: line as usize,
-            col: col as usize,
+            )
+            .into_boxed_str(),
+            source,
+            line,
+            col,
         }
     }
 
     /// The same failure seen from the other side: a task *ended*, and what is
     /// left cannot proceed. Whether main is among the blocked is deliberately
     /// not claimed — it may well be.
-    fn deadlock_stuck(&self, line: u32, col: u32) -> RuntimeError {
+    fn deadlock_stuck(&self, source: Rc<str>, line: u32, col: u32) -> RuntimeError {
         let mut waits: Vec<String> = self.parked.values().map(|p| p.park.what()).collect();
         waits.sort();
         RuntimeError {
@@ -1430,9 +1433,11 @@ impl Vm {
                 "deadlock: nothing is runnable and {} task(s) are blocked forever ({})",
                 self.parked.len(),
                 waits.join(", ")
-            ),
-            line: line as usize,
-            col: col as usize,
+            )
+            .into_boxed_str(),
+            source,
+            line,
+            col,
         }
     }
 

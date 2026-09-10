@@ -38,17 +38,46 @@ use crate::value::{
 use std::collections::{HashMap, VecDeque};
 use std::cell::Cell;
 
-/// A runtime error carrying the source position of the faulting instruction.
+/// A runtime error carrying the full source position of the faulting
+/// instruction — **file, line and column**, not line and column alone.
+///
+/// The file is here rather than prepended by the CLI because the CLI only ever
+/// knew one file: the script it was handed. A frame running inside an imported
+/// module — a user's `helpers.oro`, or `http` from inside the binary — reports
+/// a line from *that* file, and pairing it with the script's path produced a
+/// location that pointed at nothing while looking exactly like one that did.
+///
+/// **This struct must stay 40 bytes.** It is the `E` of the
+/// `Result<Step, RuntimeError>` that [`Vm::step`] returns on *every*
+/// instruction, through a hidden return pointer that is written and read back
+/// once per dispatch (see [`Vm::run_slice`]). An `Rc<str>` next to the two
+/// `usize`s that were here takes it to 56 bytes and the `Result` to 64, and
+/// that alone is **+6.3% across the suite, +10% on `loop`** — measured by
+/// building exactly this change and nothing else. The two fields that paid for
+/// the file instead: `message` is built once and never appended to, so it is a
+/// `Box<str>` rather than a `String`, and a line and a column are `u32` in the
+/// span table and `u32` on the task, so they are `u32` here too instead of
+/// being widened at this boundary and narrowed back at the next.
+/// `vm::tests` asserts the size.
+///
+/// This cost and the inlining one in [`Vm::err_source`] are independent, and
+/// each hid the other: fixing only the width measured no better than the naive
+/// version, and fixing only the inlining measured no better either. Both, and
+/// it drops from +7.3% to +1.6%. Neither is safe to undo on the grounds that
+/// undoing it "made no difference" — that is precisely what each one does
+/// while the other is still wrong.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeError {
-    pub message: String,
-    pub line: usize,
-    pub col: usize,
+    pub message: Box<str>,
+    /// The file the faulting frame was compiled from. See [`CodeObject::source`].
+    pub source: Rc<str>,
+    pub line: u32,
+    pub col: u32,
 }
 
 impl std::fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}: {}", self.line, self.col, self.message)
+        write!(f, "{}:{}:{}: {}", self.source, self.line, self.col, self.message)
     }
 }
 
@@ -666,7 +695,19 @@ pub struct Vm {
     exit_code: Option<i32>,
     /// Directory user modules are resolved against — the single search-path
     /// rule (the main script's directory). No runtime mutation.
+    ///
+    /// Empty when the script is in the working directory, rather than `"."`.
+    /// The two resolve identically (`fs` treats `helpers.oro` and
+    /// `./helpers.oro` the same), but this path is now also *shown*: it is what
+    /// a diagnostic from inside `helpers.oro` names, and `./helpers.oro` is
+    /// not how anyone writes that file's name.
     import_root: std::path::PathBuf,
+    /// What to call the file when a diagnostic is built with no frame left to
+    /// ask. Set from the top-level module's own code object, so it is the
+    /// script path the user typed. The one case that reaches it is the
+    /// implicit join-all's deadlock report, raised after the main task has
+    /// already been retired and its frames released.
+    main_source: Rc<str>,
     /// Imported user modules by dotted path (module identity), run once.
     module_cache: HashMap<String, Value>,
     /// Module bodies that are currently running, and **which task** is running
@@ -768,7 +809,8 @@ impl Vm {
             excs: exceptions::build_registry(),
             argv,
             exit_code: None,
-            import_root: std::path::PathBuf::from("."),
+            import_root: std::path::PathBuf::new(),
+            main_source: Rc::from("<unknown>"),
             module_cache: HashMap::new(),
             importing: HashMap::new(),
             import_waiters: HashMap::new(),
@@ -844,6 +886,7 @@ impl Vm {
     }
 
     fn push_module_frame(&mut self, code: Rc<CodeObject>) {
+        self.main_source = code.source.clone();
         let frame = Frame {
             locals: vec![Value::Unbound; code.nlocals],
             cells: (0..code.ncells).map(|_| Rc::new(RefCell::new(Value::Unbound))).collect(),
@@ -879,9 +922,55 @@ impl Vm {
         stack.split_off(stack.len() - n)
     }
 
+    /// The file the running frame was compiled from — the other half of the
+    /// location `self.task.line`/`col` already hold.
+    ///
+    /// A load through `frame.code`, an `Rc` clone, and it happens **only when a
+    /// diagnostic is being built**. Nothing about it is on the dispatch path:
+    /// the per-instruction fetch still writes exactly the two `u32`s it always
+    /// did, and reads nothing new.
+    ///
+    /// # The attributes are load-bearing
+    ///
+    /// `#[cold]` and `#[inline(never)]`, here and on [`Vm::err`], are worth
+    /// **4.7% across the benchmark suite** and were measured, not assumed.
+    ///
+    /// "Off the hot path" is not the same as "not in the hot function".
+    /// `Vm::err` is called from something like a hundred places inside
+    /// `Vm::step`, which is the largest function in the system and the one the
+    /// dispatch loop calls per instruction. Left inlinable, three extra
+    /// instructions in `err` become three hundred inside `step`, and `step` is
+    /// already at the size where growing it changes what LLVM will do with the
+    /// loop around it: the naive version of this change measured **+7.3%** with
+    /// nothing added to any instruction's execution. Out of line, each site is
+    /// a call it never makes, and the cost falls to ~1.5%.
+    ///
+    /// The converse was measured too and is not an invitation: pushing
+    /// `unwind`, `uncaught_error` and `error_to_exception` out of line as well
+    /// took it back to **+5.6%**, and hoisting the `err_source()` call out of
+    /// `unwind` into `run_slice` — the loop itself — cost **+12.6%**. The rule
+    /// this leaves is narrow and worth keeping: the *error constructors* stay
+    /// out of line, and everything else stays where it was.
+    #[cold]
+    #[inline(never)]
+    fn err_source(&self) -> Rc<str> {
+        match self.task.frames.last() {
+            Some(f) => f.code.source.clone(),
+            None => self.main_source.clone(),
+        }
+    }
+
+    /// Build a diagnostic at the running instruction. See [`Vm::err_source`]
+    /// for why this is `#[cold]` and out of line.
+    #[cold]
+    #[inline(never)]
     fn err(&self, message: impl Into<String>) -> RuntimeError {
-        let (line, col) = (self.task.line as usize, self.task.col as usize);
-        RuntimeError { message: message.into(), line, col }
+        RuntimeError {
+            message: message.into().into_boxed_str(),
+            source: self.err_source(),
+            line: self.task.line,
+            col: self.task.col,
+        }
     }
 
     fn wrap<T>(&self, r: Result<T, String>) -> Result<T, RuntimeError> {
@@ -920,8 +1009,8 @@ impl Vm {
         // instructions, never inside one — the same guarantee that lets a task
         // suspend at all.
         if let Some(exc) = self.task.pending_raise.take() {
-            if let Some(uncaught) = self.unwind(exc) {
-                let err = self.uncaught_error(&uncaught);
+            if let Some((uncaught, source)) = self.unwind(exc) {
+                let err = self.uncaught_error(&uncaught, source);
                 return sched::Slice::Failed(uncaught, err);
             }
         }
@@ -1278,8 +1367,8 @@ impl Vm {
                     None => self.error_to_exception(&e),
                 },
             };
-            if let Some(uncaught) = self.unwind(to_raise) {
-                let err = self.uncaught_error(&uncaught);
+            if let Some((uncaught, source)) = self.unwind(to_raise) {
+                let err = self.uncaught_error(&uncaught, source);
                 return sched::Slice::Failed(uncaught, err);
             }
         }
@@ -4256,8 +4345,14 @@ impl Vm {
         // Embedded stdlib modules (written in Oro, baked into the binary)
         // resolve next; a same-named user file is never consulted, so a user
         // file can never shadow a stdlib name.
-        let source = if let Some(src) = stdlib::source_for(path) {
-            src.to_string()
+        //
+        // `origin` is what a diagnostic raised inside the module will name.
+        // For a user's file it is the very path this resolution just opened,
+        // so it is a location the reader can act on; for an embedded module it
+        // is a bracketed name, because there is no file (see
+        // [`stdlib::display_name`]).
+        let (source, origin) = if let Some(src) = stdlib::source_for(path) {
+            (src.to_string(), stdlib::display_name(path))
         } else {
             // Resolve `a.b.c` to `<root>/a/b/c.oro`.
             let mut file = self.import_root.clone();
@@ -4267,7 +4362,7 @@ impl Vm {
             file.set_extension("oro");
 
             match std::fs::read_to_string(&file) {
-                Ok(s) => s,
+                Ok(s) => (s, file.to_string_lossy().into_owned()),
                 Err(_) => {
                     let class = self.excs["ModuleNotFoundError"].clone();
                     let msg = Value::str(if path == "subprocess" {
@@ -4283,7 +4378,7 @@ impl Vm {
                 }
             }
         };
-        let code = match compile_source(&source) {
+        let code = match compile_source(&source, Rc::from(origin.as_str())) {
             Ok(c) => c,
             Err(e) => {
                 let class = self.excs["ImportError"].clone();
@@ -4423,7 +4518,7 @@ impl Vm {
         // str(KeyError) matches CPython ("'z'").
         let msg = match kind {
             "KeyError" => e.message.strip_prefix("key error: ").unwrap_or(&e.message).to_string(),
-            _ => e.message.clone(),
+            _ => e.message.to_string(),
         };
         let exc = self.make_exception_instance(class, vec![Value::str(msg)]);
         // Flag it: the argument above is a rendered message, not a constructor
@@ -4648,7 +4743,17 @@ impl Vm {
     /// rule 2 has to re-raise the very same exception object in whoever joins
     /// the task; the diagnostic string is derived from it afterwards, for the
     /// one case (rule 3) that prints instead.
-    fn unwind(&mut self, exc: Value) -> Option<Value> {
+    ///
+    /// Alongside the value it returns **the file the raise came from**, read
+    /// once here before the first frame is popped. `self.task.line`/`col` still
+    /// name the raising instruction when this returns — unwinding executes no
+    /// instructions — but the frame that gives those numbers a file is gone by
+    /// then, so the file has to be taken on the way in. Taking it here also
+    /// makes it agree with the line and the column in the one case where they
+    /// move: a `finally` that re-raises reports its own `EndFinally`, and this
+    /// is re-entered from that frame, so all three come from the same place.
+    fn unwind(&mut self, exc: Value) -> Option<(Value, Rc<str>)> {
+        let source = self.err_source();
         loop {
             let block = self.task.frames.last_mut().and_then(|f| f.blocks.pop());
             match block {
@@ -4699,7 +4804,7 @@ impl Vm {
                                 self.exit_code = Some(code);
                             }
                         }
-                        return Some(exc);
+                        return Some((exc, source));
                     }
                 }
             }
@@ -4707,7 +4812,11 @@ impl Vm {
     }
 
     /// Format an uncaught exception as `TypeName: message` at the current line.
-    fn uncaught_error(&self, exc: &Value) -> RuntimeError {
+    ///
+    /// `source` is the file that was running when the exception was raised,
+    /// taken by [`Vm::unwind`] before it popped the frame it came from — by the
+    /// time an exception is known to be uncaught, its frame is gone.
+    fn uncaught_error(&self, exc: &Value, source: Rc<str>) -> RuntimeError {
         let (name, msg) = match exc {
             Value::Instance(i) => {
                 (i.class.name.to_string(), crate::value::exception_message(i))
@@ -4715,8 +4824,12 @@ impl Vm {
             other => ("Exception".to_string(), other.display()),
         };
         let message = if msg.is_empty() { name } else { format!("{name}: {msg}") };
-        let (line, col) = (self.task.line as usize, self.task.col as usize);
-        RuntimeError { message, line, col }
+        RuntimeError {
+            message: message.into_boxed_str(),
+            source,
+            line: self.task.line,
+            col: self.task.col,
+        }
     }
 
     /// Bind arguments to a fresh frame's slots and cells.
@@ -5452,10 +5565,10 @@ fn run_process(
 
 /// Lex, parse, and compile module source (for `import`). Errors are flattened
 /// to a string for the ImportError message.
-fn compile_source(source: &str) -> Result<Rc<CodeObject>, String> {
+fn compile_source(source: &str, origin: Rc<str>) -> Result<Rc<CodeObject>, String> {
     let tokens = crate::lexer::Lexer::new(source).tokenize().map_err(|e| e.to_string())?;
     let program = crate::parser::Parser::new(tokens).parse().map_err(|e| e.message.clone())?;
-    crate::compiler::compile(&program).map_err(|e| e.message.clone())
+    crate::compiler::compile(&program, origin).map_err(|e| e.message.clone())
 }
 
 /// Map an internal error message to the CPython exception type it should raise.

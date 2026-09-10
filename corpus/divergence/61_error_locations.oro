@@ -1,0 +1,41 @@
+# Which file a diagnostic names.
+#
+# A location is a file, a line and a column. Oro used to know two of the three:
+# the line and the column came from the running frame, and the file was
+# whatever the CLI had been handed — so an exception raised inside an imported
+# module was reported as `yourscript.oro` at the *module's* line. That is worse
+# than no location, because it points at a real line of a real file.
+#
+# CPython cannot run this (it would print a traceback, not a one-line
+# diagnostic), which is why it lives in divergence/ and is reviewed by hand.
+
+import errmods.boom as boom
+
+# Caught: the exception value carries a message and no location, exactly as
+# before. Nothing about catching changed.
+try:
+    boom.explode()
+except ValueError as e:
+    print("caught:", e)
+
+# A user function called *from* the module raises: the raise is in this file,
+# so this file is what a reader needs.
+def raiser():
+    raise KeyError("from the script")
+
+try:
+    boom.call_back(raiser)
+except KeyError as e:
+    print("caught from the callback:", e)
+
+# An unjoined task that dies inside the module reports the module's file, in
+# front of the two words that say it was a task rather than the program.
+t = spawn(boom.explode)
+yield_now()
+t = null
+print("the task above failed inside the module")
+
+# And the uncaught one, which ends the program: `divergence/errmods/boom.oro`
+# and the line inside it, not this script and not this script's line.
+boom.explode()
+print("UNREACHABLE")

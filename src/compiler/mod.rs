@@ -309,6 +309,17 @@ pub struct FuncProto {
 #[derive(Debug)]
 pub struct CodeObject {
     pub name: String,
+    /// The source this code was compiled from, as a diagnostic should name it:
+    /// the script path exactly as the user typed it, the resolved path of an
+    /// imported user module, or a bracketed `<std/http.oro>` for a module that
+    /// ships inside the binary and has no file to open.
+    ///
+    /// It lives here, once per code object, rather than on the frame or in the
+    /// span table, because it is a property of the *code* and never changes
+    /// while it runs. That is what keeps it off the dispatch path: the fetch
+    /// still writes only a line and a column, and the source is read from
+    /// `frame.code` at the moment a diagnostic is built and at no other time.
+    pub source: Rc<str>,
     pub ops: Vec<Op>,
     /// Parallel to `ops`: the 1-based `(line, col)` each instruction came from,
     /// used to position runtime errors.
@@ -382,10 +393,15 @@ impl std::fmt::Debug for Value {
 }
 
 /// Compile a parsed module into its top-level [`CodeObject`].
-pub fn compile(program: &[Stmt]) -> Result<Rc<CodeObject>, CompileError> {
+///
+/// `source` names the file the program came from and is stamped onto every
+/// code object this compilation produces — the module body and every function,
+/// method and lambda nested in it. A diagnostic raised anywhere inside them can
+/// then name the right file without the VM tracking anything per instruction.
+pub fn compile(program: &[Stmt], source: Rc<str>) -> Result<Rc<CodeObject>, CompileError> {
     let mut table = symbols::SymTable::new();
     table.build_module(program)?;
     table.resolve_module(program);
     table.allocate();
-    codegen::compile_module(&table, program)
+    codegen::compile_module(&table, program, source)
 }

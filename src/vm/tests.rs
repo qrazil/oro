@@ -11,7 +11,7 @@ use crate::parser::Parser;
 fn compile_module(src: &str) -> Rc<CodeObject> {
     let tokens = Lexer::new(src).tokenize().expect("lex");
     let program = Parser::new(tokens).parse().expect("parse");
-    compile(&program).expect("compile")
+    compile(&program, Rc::from("test.oro")).expect("compile")
 }
 
 /// Run `src` and return the module's local slots.
@@ -59,14 +59,14 @@ fn eval_var(src: &str, name: &str) -> Value {
 fn run_err(src: &str) -> RuntimeError {
     let tokens = Lexer::new(src).tokenize().expect("lex");
     let program = Parser::new(tokens).parse().expect("parse");
-    let code = compile(&program).expect("compile");
+    let code = compile(&program, Rc::from("test.oro")).expect("compile");
     run(code).expect_err("expected a runtime error")
 }
 
 fn compile_err(src: &str) -> crate::compiler::CompileError {
     let tokens = Lexer::new(src).tokenize().expect("lex");
     let program = Parser::new(tokens).parse().expect("parse");
-    compile(&program).expect_err("expected a compile error")
+    compile(&program, Rc::from("test.oro")).expect_err("expected a compile error")
 }
 
 fn int(v: &Value) -> i64 {
@@ -1459,6 +1459,25 @@ fn step_stayed_small() {
          `Vm::step` returns on every instruction",
         std::mem::size_of::<Step>()
     );
+
+    // `Step` alone was never the thing the hot path returns — `Vm::step`
+    // returns `Result<Step, RuntimeError>`, and the error half is just as able
+    // to widen it. This test asserted only the half that had been shrunk on
+    // purpose, and so said nothing when adding the source file to
+    // `RuntimeError` (an `Rc<str>` beside two `usize`s) took the `Result` from
+    // 48 bytes to 64: **+14% on `loop`, +6.6% across the suite**, from a change
+    // that touches no instruction. That is the same wall the reverted
+    // lazy-spans attempt hit, reached from the other side. Assert the whole
+    // return value, which is what the dispatch loop actually moves.
+    assert!(
+        std::mem::size_of::<Result<Step, RuntimeError>>() <= 48,
+        "Result<Step, RuntimeError> grew to {} bytes — `Vm::step` returns one of \
+         these on every instruction, through a hidden return pointer that is \
+         written and read back each time. Shrink the payload (a message that is \
+         never appended to is a `Box<str>`; a line and a column are `u32`) \
+         rather than paying for the width once per dispatch",
+        std::mem::size_of::<Result<Step, RuntimeError>>()
+    );
 }
 
 /// Two tasks alternate, and the alternation is decided by the channel rather
@@ -1893,4 +1912,93 @@ fn resolving_only_happens_for_a_name() {
         "dialling a name should start exactly one resolver thread: the pool grows one \
          worker per *concurrent* lookup, and there is one"
     );
+}
+
+// --- Which file a diagnostic names -------------------------------------------
+//
+// A location is a file, a line and a column, and for as long as `std/` was two
+// short modules nobody noticed that Oro only ever knew two of the three: the
+// line and the column came from the running frame's span table, and the file
+// was whatever the CLI had been handed. An exception raised inside an embedded
+// stdlib module was therefore reported as the *user's script* at the
+// *library's* line — a pair that points at a real line of a real file and is
+// wrong about both. `std/http.oro` is ~1300 lines, so the number it invents is
+// usually past the end of the script; on a script long enough it is not, which
+// is worse.
+//
+// These assert the file only. The lines inside `std/*.oro` belong to those
+// modules and will move; that a diagnostic names the module at all is the
+// property under test, and it is the one that was broken.
+
+#[test]
+fn an_error_in_an_embedded_stdlib_module_names_that_module() {
+    let err = run_err("import json\njson.stringify({1: 2})\n");
+    assert_eq!(
+        &*err.source, "<std/json.oro>",
+        "an error raised inside std/json.oro was reported against `{}`",
+        err.source
+    );
+
+    let err = run_err("import io\nio.read(io.buffer(b\"ab\"), 5)\n");
+    assert_eq!(&*err.source, "<std/io.oro>", "got: {}", err.source);
+}
+
+#[test]
+fn an_error_in_the_script_still_names_the_script() {
+    // The other half of the fix, and the half a differential would catch: a
+    // program that never imports anything must report exactly what it always
+    // reported. `run_err` compiles under the name "test.oro".
+    let err = run_err("x = 1\ny = x + \"z\"\n");
+    assert_eq!(&*err.source, "test.oro");
+    assert_eq!((err.line, err.col), (2, 5));
+}
+
+#[test]
+fn an_error_in_a_user_callback_names_the_callers_file_not_the_librarys() {
+    // The boundary crossed the other way: `io.copy` is a frame in
+    // `std/io.oro`, and the `write` it calls is the user's. The exception is
+    // raised in the user's frame, so the user's file is what a reader needs.
+    let err = run_err(
+        "import io\n\
+         class W:\n\
+         \x20   def write(self, b):\n\
+         \x20       raise OSError(\"disk on fire\")\n\
+         io.copy(W(), io.buffer(b\"hello\"))\n",
+    );
+    assert_eq!(&*err.source, "test.oro", "got: {}", err.source);
+    assert_eq!(err.line, 4, "the raise, not the call into io.copy");
+}
+
+#[test]
+fn a_stdlib_error_caught_in_user_code_is_still_the_users_to_re_raise() {
+    // Catching is unaffected — the file rides on the *diagnostic*, not on the
+    // exception value — and a `raise` in the handler is reported where the
+    // handler is.
+    let err = run_err(
+        "import json\n\
+         try:\n\
+         \x20   json.stringify({1: 2})\n\
+         except TypeError:\n\
+         \x20   raise ValueError(\"mine now\")\n",
+    );
+    assert_eq!(&*err.source, "test.oro", "got: {}", err.source);
+    assert_eq!(err.line, 5);
+}
+
+#[test]
+fn the_file_and_the_line_always_come_from_the_same_frame() {
+    // The invariant behind the fix, stated as a test: whatever frame supplies
+    // `line`, supplies `source`. A `finally` that re-raises reports its own
+    // `EndFinally` — that is pre-existing behaviour and not what is under test
+    // here; what is under test is that the *file* moved with it, so the pair
+    // still names somewhere that exists.
+    let err = run_err(
+        "import json\n\
+         try:\n\
+         \x20   json.stringify({1: 2})\n\
+         finally:\n\
+         \x20   x = 1\n",
+    );
+    assert_eq!(&*err.source, "test.oro", "got: {}", err.source);
+    assert_eq!(err.line, 2, "the try statement's EndFinally, in the script's own frame");
 }

@@ -1,0 +1,14 @@
+# A user module that raises, so a diagnostic has somewhere other than the
+# script to point at. The line numbers here are load-bearing: they are what
+# `61_error_locations.expected` asserts, and the bug this file exists to guard
+# against was reporting them against the *script's* path.
+
+
+def explode():
+    raise ValueError("raised on line 8 of boom.oro")
+
+
+def call_back(f):
+    # The boundary crossed the other way: the raise happens in the caller's
+    # file, not in this one, so this file must *not* be named.
+    return f()

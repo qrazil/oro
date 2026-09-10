@@ -1,0 +1,5 @@
+caught: raised on line 8 of boom.oro
+caught from the callback: 'from the script'
+task failed: divergence/errmods/boom.oro:8:5: ValueError: raised on line 8 of boom.oro
+the task above failed inside the module
+divergence/errmods/boom.oro:8:5: ValueError: raised on line 8 of boom.oro

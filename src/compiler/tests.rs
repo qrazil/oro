@@ -9,7 +9,7 @@ use crate::parser::Parser;
 fn compile_src(src: &str) -> Rc<CodeObject> {
     let tokens = Lexer::new(src).tokenize().expect("lex");
     let program = Parser::new(tokens).parse().expect("parse");
-    compile(&program).expect("compile")
+    compile(&program, Rc::from("test.oro")).expect("compile")
 }
 
 /// Find the first `MakeFunction` prototype in a code object.

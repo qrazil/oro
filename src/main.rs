@@ -90,7 +90,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let code = match compiler::compile(&program) {
+    let code = match compiler::compile(&program, std::rc::Rc::from(path.as_str())) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("{path}:{e}");
@@ -102,7 +102,11 @@ fn main() -> ExitCode {
         Ok(0) => ExitCode::SUCCESS,
         Ok(code) => ExitCode::from(code as u8),
         Err(e) => {
-            eprintln!("{path}:{e}");
+            // No `{path}:` prefix here, unlike the front-end errors above. A
+            // lex, parse or compile error is always *this* file; a runtime one
+            // can come from any module the program imported, so the error names
+            // its own file (`RuntimeError`).
+            eprintln!("{e}");
             ExitCode::FAILURE
         }
     }

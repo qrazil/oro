@@ -33,6 +33,10 @@ struct LoopCtx;
 
 struct Codegen<'a> {
     table: &'a SymTable,
+    /// The file every code object this pass emits is stamped with. Cloned into
+    /// each nested `Codegen`, so a lambda five scopes deep names the same file
+    /// as the module body around it.
+    source: Rc<str>,
     scope: usize,
     func: usize,
     ops: Vec<Op>,
@@ -53,9 +57,13 @@ struct Codegen<'a> {
 }
 
 /// Compile the module body into its top-level code object.
-pub fn compile_module(table: &SymTable, body: &[Stmt]) -> CResult<Rc<CodeObject>> {
+pub fn compile_module(
+    table: &SymTable,
+    body: &[Stmt],
+    source: Rc<str>,
+) -> CResult<Rc<CodeObject>> {
     let module = table.module;
-    let mut cg = Codegen::new(table, module);
+    let mut cg = Codegen::new(table, module, source);
     cg.emit_body(body)?;
     cg.emit(Op::LoadNone, 1, 1);
     cg.emit(Op::Return, 1, 1);
@@ -63,10 +71,11 @@ pub fn compile_module(table: &SymTable, body: &[Stmt]) -> CResult<Rc<CodeObject>
 }
 
 impl<'a> Codegen<'a> {
-    fn new(table: &'a SymTable, scope: usize) -> Codegen<'a> {
+    fn new(table: &'a SymTable, scope: usize, source: Rc<str>) -> Codegen<'a> {
         let func = scope; // callers pass a function/module scope
         Codegen {
             table,
+            source,
             scope,
             func,
             ops: Vec::new(),
@@ -86,6 +95,7 @@ impl<'a> Codegen<'a> {
     fn finish(self, name: String, params: Vec<ParamInfo>) -> CodeObject {
         CodeObject {
             name,
+            source: self.source,
             ops: self.ops,
             spans: self.spans,
             consts: self.consts,
@@ -876,7 +886,7 @@ impl<'a> Codegen<'a> {
         child: usize,
     ) -> CResult<FuncProto> {
         // Build the child function's code object with its own Codegen.
-        let mut inner = Codegen::new(self.table, child);
+        let mut inner = Codegen::new(self.table, child, self.source.clone());
         inner.func = child;
         inner.scope = child;
         // A `yield` anywhere in the body (but not in nested defs) makes this a

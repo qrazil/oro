@@ -24,3 +24,20 @@ const MODULES: &[(&str, &str)] = &[
 pub fn source_for(path: &str) -> Option<&'static str> {
     MODULES.iter().find(|(name, _)| *name == path).map(|(_, src)| *src)
 }
+
+/// How a diagnostic names a frame from embedded module `path`.
+///
+/// `<std/http.oro>` rather than `std/http.oro`, for the reason the brackets
+/// already mean everywhere else in this codebase (`<module>`, `<stdout>`,
+/// `<stdin>`): what is inside them is a name, not a path you can open. The
+/// module ships *inside the binary* — there is no `std/http.oro` next to the
+/// user's script, and a bare path would be the same species of lie as the bug
+/// this naming exists to fix: a location that looks openable and either misses
+/// or, worse, hits an unrelated file that happens to sit at that relative path.
+/// The text between the brackets is still the module's real home in the Oro
+/// repository, so a reader who wants to see line 1117 knows exactly where it
+/// is. CPython names its frozen modules the same way (`<frozen
+/// importlib._bootstrap>`).
+pub fn display_name(path: &str) -> String {
+    format!("<std/{path}.oro>")
+}
