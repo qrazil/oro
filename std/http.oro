@@ -105,46 +105,50 @@ _DEL = 127
 _SINGLE_VALUED = ["host", "content-length"]
 
 # --- status reasons -------------------------------------------------------
-# Built by assignment for the formatter reason given above.
+# One entry per line because that is how the author wrote it: `oro fmt`
+# keeps the line breaks it finds after an opening bracket. This table used
+# to be 37 separate subscript assignments purely to stop the formatter
+# collapsing it onto one 1,200-character line.
 
-_REASONS = {}
-_REASONS[100] = "Continue"
-_REASONS[101] = "Switching Protocols"
-_REASONS[200] = "OK"
-_REASONS[201] = "Created"
-_REASONS[202] = "Accepted"
-_REASONS[204] = "No Content"
-_REASONS[206] = "Partial Content"
-_REASONS[301] = "Moved Permanently"
-_REASONS[302] = "Found"
-_REASONS[303] = "See Other"
-_REASONS[304] = "Not Modified"
-_REASONS[307] = "Temporary Redirect"
-_REASONS[308] = "Permanent Redirect"
-_REASONS[400] = "Bad Request"
-_REASONS[401] = "Unauthorized"
-_REASONS[403] = "Forbidden"
-_REASONS[404] = "Not Found"
-_REASONS[405] = "Method Not Allowed"
-_REASONS[406] = "Not Acceptable"
-_REASONS[408] = "Request Timeout"
-_REASONS[409] = "Conflict"
-_REASONS[410] = "Gone"
-_REASONS[411] = "Length Required"
-_REASONS[413] = "Content Too Large"
-_REASONS[414] = "URI Too Long"
-_REASONS[415] = "Unsupported Media Type"
-_REASONS[417] = "Expectation Failed"
-_REASONS[422] = "Unprocessable Content"
-_REASONS[426] = "Upgrade Required"
-_REASONS[429] = "Too Many Requests"
-_REASONS[431] = "Request Header Fields Too Large"
-_REASONS[500] = "Internal Server Error"
-_REASONS[501] = "Not Implemented"
-_REASONS[502] = "Bad Gateway"
-_REASONS[503] = "Service Unavailable"
-_REASONS[504] = "Gateway Timeout"
-_REASONS[505] = "HTTP Version Not Supported"
+_REASONS = {
+    100: "Continue",
+    101: "Switching Protocols",
+    200: "OK",
+    201: "Created",
+    202: "Accepted",
+    204: "No Content",
+    206: "Partial Content",
+    301: "Moved Permanently",
+    302: "Found",
+    303: "See Other",
+    304: "Not Modified",
+    307: "Temporary Redirect",
+    308: "Permanent Redirect",
+    400: "Bad Request",
+    401: "Unauthorized",
+    403: "Forbidden",
+    404: "Not Found",
+    405: "Method Not Allowed",
+    406: "Not Acceptable",
+    408: "Request Timeout",
+    409: "Conflict",
+    410: "Gone",
+    411: "Length Required",
+    413: "Content Too Large",
+    414: "URI Too Long",
+    415: "Unsupported Media Type",
+    417: "Expectation Failed",
+    422: "Unprocessable Content",
+    426: "Upgrade Required",
+    429: "Too Many Requests",
+    431: "Request Header Fields Too Large",
+    500: "Internal Server Error",
+    501: "Not Implemented",
+    502: "Bad Gateway",
+    503: "Service Unavailable",
+    504: "Gateway Timeout",
+    505: "HTTP Version Not Supported",
+}
 
 
 # The reason phrase for a status code. HTTP/1.1 lets it be anything at all —
