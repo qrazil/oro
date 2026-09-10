@@ -536,7 +536,7 @@ indistinguishable from a printed bool in the output; the oracle tokenises every
 program and refuses one that puts those words in a string literal, which is
 written up in the script's own header.
 
-### Block scope on `if` / `for` / `while`
+### Block scope on `if` / `for` / `while` / `try`
 
 Names bound inside a block do **not** leak out of it:
 
@@ -552,6 +552,25 @@ longer leak) but could not retrofit the fix to `for`/`while`/`if` without
 breaking decades of code that relies on the leak. Oro has no such legacy, so it
 gives every block real lexical scope. This is intentional and correct; it is not
 a bug.
+
+**`try` is a block too**, and this is the one that surprises people, because a
+`try` body usually exists to *produce* something:
+
+```python
+conn = null                 # bind it first — see below
+try:
+    conn = ln.accept()
+except OSError:
+    pass
+print(conn)                 # without the first line: NameError
+```
+
+Since a name is created by assigning to it — Oro has no `let` or `int x;` to
+declare one without a value — carrying a result out of a block means binding it
+beforehand, to `null` or to whatever the failure case should look like. That
+placeholder is the tax this rule charges, and it is worth knowing that it can
+hide a failure: if the block does not run, the placeholder flows on instead of
+the `NameError` that would have told you. Choose it so the wrong path is loud.
 
 ### No `with` — deterministic cleanup instead
 

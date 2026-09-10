@@ -1952,7 +1952,7 @@ contains, applied honestly to each:
 | | is it a per-byte loop? | does it carry policy? |
 |---|---|---|
 | `json` | **yes** — dispatch per byte, all the way down | **no** — a document has exactly one reading |
-| `http` | **no** — the head decomposes into three generic `bytes` calls plus per-*line* Oro work | **yes** — keep-alive, framing, what to reject, what a 400 says |
+| `http` | **no** — the head decomposes into four generic `bytes` calls (`read_until`, `split`, `find`, `scan`) plus per-*line* Oro work | **yes** — keep-alive, framing, what to reject, what a 400 says |
 
 Both answers have to point the same way before a thing moves. JSON passes both:
 it is the loop the rule names, and there is no decision in it a program could
@@ -2460,10 +2460,24 @@ http.serve("0.0.0.0:8080", req => r.dispatch(req))
 ### What is deliberately not in `http`
 
 `Expect: 100-continue` (answer `417` and move on), HTTP/2, HTTP/3, WebSocket
-upgrade, multipart parsing, cookie jars, sessions, static file serving,
-compression, and a client. Several of those are worth having; none of them is
-worth having *before* the server works, and each is expressible in Oro
-afterwards on the primitives above.
+upgrade, multipart parsing, cookie jars, sessions, static file serving, and
+compression. Several of those are worth having; none of them is worth having
+*before* the server works, and each is expressible in Oro afterwards on the
+primitives above.
+
+**A client was on this list and has since been built**, in Oro, on the same
+primitives — `fetch`, `stream`, `write_request`, `read_response`, `parse_url`.
+It reused the framing machinery whole (`_HeadParser.headers`, `_LimitReader`,
+`_ChunkedReader`) through one overridable failure hook per class, duplicating
+four lines. The prediction that it would be "expressible in Oro afterwards" was
+the right call and is worth recording as one, since most of this section's
+predictions have been corrected rather than confirmed. What it did *not*
+anticipate: a response is not self-describing (the reply to a `HEAD` carries the
+`Content-Length` the `GET` would have and no body), status beats headers for
+1xx/204/304, and neither framing header means *no body* on a request but *read
+until close* on a response — so `_body_reader` could not be shared, and reusing
+it would have returned an empty body for every HTTP/1.0-style response,
+silently.
 
 ---
 
