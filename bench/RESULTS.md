@@ -21,6 +21,7 @@ harness checks oro and CPython agree before reporting a time.
 | `loop` | raw dispatch: a 3M-iteration `while` with integer arithmetic |
 | `strjoin` | 200k f-string formats into a list, then `join` |
 | `dictops` | 500k integer-keyed dict writes, then a full iteration + lookup scan |
+| `dictstr` | string-keyed dicts: 200k distinct keys, then 500k hits on one small record |
 | `oo` | attribute load/store, method calls, construction, `super()` |
 | `genpipe` | three chained generators over 300k elements (frame suspend/resume) |
 | `exc` | raise/catch on 2/3 of 200k iterations, with a `finally` on every one |
@@ -30,6 +31,36 @@ harness checks oro and CPython agree before reporting a time.
 | `json` | `json.parse` + `json.stringify` over five payload shapes — oro-only, CPython twin in `json_twin.py` |
 
 ## Where things stand
+
+Two optimization passes have run. Pass two is measured against pass one's
+result, interleaved A/B and pinned to one core, best-of-13:
+
+| bench | after pass one | after pass two | improvement | vs CPython (pass one → now) |
+|---|---|---|---|---|
+| fib | 0.1919s | **0.0913s** | **-52%** | 3.80x → **1.87x** |
+| loop | 0.7392s | **0.2351s** | **-68%** | 1.39x → **0.48x** |
+| strjoin | 0.1376s | **0.1105s** | **-20%** | 1.92x → **1.59x** |
+| strops | 0.3327s | **0.2355s** | **-29%** | 1.73x → **1.34x** |
+| dictops | 0.4076s | **0.2785s** | **-32%** | 1.81x → **1.31x** |
+| dictstr | 0.5565s | **0.3773s** | **-32%** | new → **1.25x** |
+| oo | 0.3729s | **0.2039s** | **-45%** | 2.53x → **1.32x** |
+| genpipe | 0.1871s | **0.1089s** | **-42%** | 2.61x → **1.59x** |
+| exc | 0.1530s | **0.0833s** | **-46%** | 1.30x → **0.81x** |
+| listbuild | 0.3457s | **0.1707s** | **-51%** | 1.72x → **0.86x** |
+| builtins | 0.2748s | **0.1788s** | **-35%** | 0.98x → **0.63x** |
+| chain | 0.1745s | **0.1303s** | **-25%** | 2.41x → **1.91x** |
+| **mean** | | | **-39.8%** | |
+
+Four benchmarks are now faster than CPython 3.12 outright — `loop` at 0.48x,
+`builtins` at 0.63x, `exc` at 0.81x, `listbuild` at 0.86x — and nothing in the
+suite is worse than 1.91x. The A/A control for the session that produced the
+table above (the final binary against a byte-identical copy of itself, same
+harness, same pinning) was **mean -0.07%, worst single benchmark 2.76%**.
+
+Pass two is the branch `perf/pass-two`; its log is "Pass two — per-optimization
+log" below.
+
+## Where pass one left things
 
 Best-of-5, against the pre-optimization baseline further down.
 
@@ -74,7 +105,7 @@ Binary: 2.12 MB → 2.59 MB, all of it from `opt-level = 3`.
 `size_of::<Op>()` = 48, `size_of::<Value>()` = 16.
 (`builtins` did not exist yet — see step 10.)
 
-## Per-optimization log
+## Pass one — per-optimization log
 
 Each step is best-of-3, compared against the step above it. Regressions and
 no-ops are kept in the log on purpose.
@@ -557,7 +588,392 @@ change, possibly a small win from the slice path" rather than a claimed 1.2%.
 (That was measured before the iterative teardown below, which is the other half
 of the bill. "The branch, end to end" further down is the number that counts.)
 
-## What is left, ranked
+## Pass two — per-optimization log
+
+Method, and it is not the same as pass one's. Every number below is an
+**interleaved A/B**: the two binaries alternate on every repetition and which
+goes first alternates too, so neither owns the warm slot, and the whole thing
+is pinned to one core. Each session opens with an **A/A control** — a binary
+against a byte-identical copy of itself — to establish that session's noise
+floor before any claim is read against it. The floors measured were **mean
+-0.14%, worst 2.14%** at the start and **mean -0.07%, worst 2.76%** at the end.
+A single-benchmark move under about 3% is not reported as real.
+
+Every commit was gated on: `cargo test` (387), `./corpus/run.sh` (71 pass, 0
+fail, 2 known-failing), `cargo clippy --all-targets -- -D warnings`, the
+`size_of` tripwires, and a **byte-for-byte diagnostic differential** — stdout,
+stderr and exit code of a set of error-producing programs, compared against the
+pass's base binary. That set grew from 28 programs to **90** as the pass went
+on, with new programs written for each change that could plausibly move a
+message: integer overflow promoting to `Big`, mixed-type and dunder
+comparisons, negative and out-of-range subscripts on load and on store, an
+unhashable dict key, a list mutated during iteration, `super()` with and
+without arguments, a `yield` inside a method, method arity and not-callable
+errors, recursion through a method caught and uncaught.
+
+### 13. `Instance.fields`: an association list, not a `HashMap`
+
+Instances carry a handful of attributes and their names are short identifiers,
+so hashing one with SipHash costs more than comparing it against every entry
+there is. `Fields` is a `Vec<(Rc<str>, Value)>` scanned linearly, leading with
+a pointer comparison because a field is usually stored under the very
+`Rc<str>` the code object interned. Nothing anywhere iterates an instance's
+fields — only `get` and `insert`, and Oro has no `del obj.x` — so the order is
+unobservable.
+
+| bench | before | after | delta |
+|---|---|---|---|
+| oo | 0.3687 | 0.3213 | **-12.9%** |
+| exc | 0.1488 | 0.1412 | **-5.1%** |
+| loop | 0.7217 | 0.6908 | **-4.3%** |
+| genpipe | 0.1830 | 0.1761 | **-3.8%** |
+| listbuild | 0.3380 | 0.3276 | **-3.1%** |
+| **mean** | | | **-3.4%** |
+
+`exc` moves because every raise builds an exception instance with an `args`
+field.
+
+### 14. REJECTED — an inline `LoadAttr` fast path in `step`
+
+**Tried and reverted.** Reading the instance field directly in `step`'s
+`LoadAttr` arm — no `Rc<str>` clone, receiver overwritten in place, no call
+into the large `get_attr` — measured, on top of step 13, as a **+2.6%
+regression**, and bought nothing on `oo` (-0.5%, inside the floor):
+
+| bench | without | with | delta |
+|---|---|---|---|
+| genpipe | 0.1801 | 0.1903 | **+5.7%** |
+| listbuild | 0.3293 | 0.3477 | **+5.6%** |
+| loop | 0.6981 | 0.7235 | **+3.6%** |
+| exc | 0.1427 | 0.1479 | **+3.6%** |
+| oo | 0.3261 | 0.3244 | -0.5% |
+
+The benchmarks that got slower execute the arm zero times. Once the map lookup
+was no longer the cost, the arm was pure code growth in the function every
+instruction passes through — the layout hazard this project keeps rediscovering.
+
+### 15. `Class.members`: the same association list
+
+The other `HashMap` on the attribute path, and on a hotter one: `obj.m()`
+reaches the class table only *after* missing in the instance. `Module.members`
+is deliberately left a `HashMap` — a module has an order of magnitude more
+members and is not on any loop's critical path.
+
+| bench | before | after | delta |
+|---|---|---|---|
+| oo | 0.3251 | 0.3041 | **-6.4%** |
+| chain | 0.1687 | 0.1666 | -1.3% |
+| **mean** | | | **-0.5%** |
+
+Only `oo` moves, and it is the only benchmark that calls user methods in a loop.
+
+### 16. Execute the loop-body instructions in the dispatch loop itself
+
+**The largest single change either pass has produced, and it was not on
+anyone's list.**
+
+`Vm::step` is one enormous match returning `Result<Step, RuntimeError>` — 48
+bytes, written through a hidden return pointer and read back — and far too
+large for LLVM to inline into `run_slice`. Every `i = i + 1` paid a call, a
+48-byte store and a 48-byte load to move one integer between a local slot and
+the operand stack. On `loop`, that protocol was about two thirds of the total
+runtime.
+
+`run_slice` now executes `LoadFast`, `StoreFast`, `LoadConst`, `Jump`,
+`BinAdd`/`Sub`/`Mul` on two `Int`s, `Compare` on two `Int`s, and the two
+conditional jumps on a `Bool` before it reaches `step`. The discipline that
+makes it a speed change and not a semantic one: **an arm that applies only to a
+shape leaves the operand stack untouched when the shape is wrong and falls out
+of the match**, so `step` below runs exactly as it always did. Integer
+overflow, a `Big`, a `Float`, a string, a user `__add__`, an unbound local,
+`in`/`not in`, a non-`Bool` condition — every one declines. Nothing here is the
+only place a case is handled.
+
+This is *not* the superinstruction fusion pass one ranked third. No instruction
+is fused, no instruction index moves, and no jump target — nor any op index
+stored inside a `MatchDispatch` table constant — needs relocating. The win was
+never the number of instructions; it was the cost of dispatching one.
+
+| bench | before | after | delta |
+|---|---|---|---|
+| loop | 0.6848 | 0.2446 | **-64%** |
+| listbuild | 0.3171 | 0.1861 | **-41%** |
+| fib | 0.1793 | 0.1073 | **-40%** |
+| genpipe | 0.1724 | 0.1070 | **-38%** |
+| exc | 0.1388 | 0.0858 | **-38%** |
+| strops | 0.3177 | 0.2202 | **-31%** |
+| builtins | 0.2526 | 0.1781 | **-29%** |
+| dictops | 0.3796 | 0.2846 | **-25%** |
+| chain | 0.1644 | 0.1250 | **-24%** |
+| oo | 0.2997 | 0.2332 | **-22%** |
+| strjoin | 0.1292 | 0.1044 | **-19%** |
+| **mean** | | | **-34%** |
+
+### 17. The ordinary call and the ordinary return, in the dispatch loop too
+
+The same treatment for the two instructions `fib` is made of. `fast_call_target`
+already decides whether a call site is a plain Oro function bindable straight
+off the operand stack; a return is plain when there is no `finally` to run on
+the way out, an outer frame to return into, and nothing for the VM to do with
+the value but push it.
+
+| bench | before | after | delta |
+|---|---|---|---|
+| fib | 0.1169 | 0.1015 | **-13.1%** |
+| exc | 0.0940 | 0.0882 | **-6.1%** |
+| loop | 0.2726 | 0.2623 | **-3.8%** |
+| strops | 0.2436 | 0.2541 | **+4.3%** |
+| **mean** | | | **-1.3%** |
+
+`strops` executes no user calls; its +4.3% is the loop getting larger. Step 18
+took it back.
+
+### 18. No arm guards in the dispatch loop's fast-path match
+
+**One `if` on one arm of a `match` costs the whole `match` its jump table.**
+LLVM cannot lay out a dense switch when reaching an arm depends on a runtime
+predicate; it falls back to a compare chain, and *every* instruction in the
+program pays. Two arms had picked one up — `Compare` guarded against
+`in`/`not in`, `Call` against the frame limit. Both conditions moved inside the
+arm body, where they decline by falling out of the fast path rather than by
+never entering it.
+
+| bench | before | after | delta |
+|---|---|---|---|
+| loop | 0.2829 | 0.2677 | **-5.4%** |
+| listbuild | 0.2282 | 0.2197 | **-3.7%** (median) |
+| oo | 0.2915 | 0.2809 | **-3.6%** (median) |
+| chain | 0.1508 | 0.1461 | **-3.1%** |
+| **mean** | | | **-0.9%** min, **-1.9%** median |
+
+Ten of eleven benchmarks improve on the median.
+
+### 19. Bind native methods to the interned name
+
+`get_attr` took a `&str`, so every native method access rebuilt the string with
+`Rc::from(name)` — a heap allocation and a copy per `xs.append`, `s.split`,
+`ys.map`, to store a name the code object already owned. It takes the
+`Rc<str>` now.
+
+| bench | before | after | delta |
+|---|---|---|---|
+| strops | 0.2511 | 0.2332 | **-7.1%** |
+| chain | 0.1460 | 0.1410 | **-3.4%** (median) |
+| listbuild | 0.1977 | 0.1938 | -2.0% |
+| strjoin | 0.1117 | 0.1096 | -1.8% |
+| exc | 0.0874 | 0.0898 | +2.7% |
+| builtins | 0.1915 | 0.1972 | +3.0% |
+| **mean** | | | **-0.4%** min, **+0.3%** median |
+
+Kept despite a mean of roughly zero. The four benchmarks that make native
+method calls all improve, the one that makes the most of them improves 7%, and
+the ones that move the other way execute none of the changed code.
+
+### 20. Attributes, subscripts, globals and the stack ops, in the dispatch loop
+
+`Pop`, `LoadNone`, a `LoadGlobal` that hits the resolved-builtin cache, a
+`LoadAttr` that finds an instance field, and `xs[i]` / `xs[i] = v` on a list
+with a non-negative in-range integer index.
+
+| bench | before | after | delta |
+|---|---|---|---|
+| listbuild | 0.2033 | 0.1765 | **-13.2%** |
+| oo | 0.2653 | 0.2364 | **-10.9%** |
+| builtins | 0.2048 | 0.1946 | **-5.0%** |
+| loop | 0.2715 | 0.2813 | **+3.6%** |
+| **mean** | | | **-2.7%** |
+
+Worth setting beside step 14: the *same* `LoadAttr` fast path that was a
+regression inside `step` is part of a 10.9% gain on `oo` inside `run_slice`.
+Pass one ranked a `LoadAttr` inline cache second and estimated 10% on `oo`.
+`oo` got its 10% — from an association list and a fast path, with no cache, no
+class-pointer key and no version counter to invalidate.
+
+### 21. Dict subscripts, iteration and the last stack ops, in the dispatch loop
+
+`d[k]` and `d[k] = v` for the four key shapes that are hashable by
+construction, `ForIter` on an ordinary iterator, `Dup`, `RotTwo`, `LoadCell`,
+`LoadFree`, `ListAppend`. Every benchmark in the suite improved.
+
+| bench | before | after | delta |
+|---|---|---|---|
+| dictops | 0.3397 | 0.3114 | **-8.3%** |
+| loop | 0.2691 | 0.2482 | **-7.8%** |
+| fib | 0.1019 | 0.0947 | **-7.1%** |
+| exc | 0.0917 | 0.0865 | **-5.6%** |
+| strjoin | 0.1160 | 0.1116 | **-3.8%** |
+| strops | 0.2359 | 0.2287 | **-3.1%** |
+| **mean** | | | **-4.0%** |
+
+`loop` executes none of these arms and is 7.8% faster anyway: steps 17 and 20
+had cost it 3.6% on layout between them, and a fuller fast-path match hands it
+back.
+
+### 22. A `LoadMethod` / `CallMethod` pair
+
+Pass one's item 1. `LoadMethod` pops the receiver and pushes three slots — a
+tag, an auxiliary value and the receiver-or-callable — which `CallMethod`
+consumes along with the arguments above them. The tag distinguishes an Oro
+method (`Value::Class(defclass)`, function beneath, receiver which is also its
+`self`), a native method (`Value::Unbound`; the name rides on the instruction
+through `CodeObject::pairs`), and something that is not a method at all
+(`Value::None`).
+
+Codegen emits one instruction for one instruction, so no index moves and
+nothing needs relocating; `LoadMethod` carries the attribute's own position, so
+a missing attribute still reports where the attribute is written.
+`resolve_method` agrees with `get_attr` case for case and defers to it outright
+for the two receivers that never yield a method.
+
+| bench | before | after | delta |
+|---|---|---|---|
+| oo | 0.2329 | 0.2119 | **-9.0%** |
+| strops | 0.2588 | 0.2465 | **-4.8%** |
+| exc | 0.0908 | 0.0874 | **-3.7%** |
+| loop | 0.2653 | 0.2558 | **-3.6%** |
+| fib | 0.0976 | 0.0947 | **-3.0%** |
+| strjoin | 0.1219 | 0.1183 | **-3.0%** |
+| **mean** | | | **-2.9%** |
+
+**Removing the `Rc<BoundMethod>` is not where the win is.** A native method
+call — `xs.append(i)`, which builds no frame — did not measurably change at
+all: glibc hands back a hot 56-byte block for about what three extra
+operand-stack slots cost. The win is that a method call can now bind its
+arguments straight off the stack, the way a plain function call has since pass
+one, because there is no longer a wrapper in the way. Pass one's step 12
+rejected exactly that binding when it had to be bolted onto `Value::Method`; as
+its own instruction it costs the native path nothing.
+
+### 23. REJECTED — `LoadMethod` / `CallMethod` in the dispatch loop
+
+**Tried and reverted, and it is the most useful rejection of the pass.**
+Putting the two new instructions into `run_slice` alongside the others — the
+same technique that had just returned -34%, -2.7% and -4.0% — measured as a
+**+5.3% regression**:
+
+| bench | before | after | delta |
+|---|---|---|---|
+| loop | 0.2488 | 0.2869 | **+15.3%** |
+| exc | 0.0855 | 0.0930 | **+8.8%** |
+| genpipe | 0.1166 | 0.1268 | **+8.8%** |
+| builtins | 0.1780 | 0.1933 | **+8.6%** |
+| fib | 0.0927 | 0.0993 | **+7.2%** |
+| oo | 0.2077 | 0.2086 | +0.4% |
+
+Even `oo`, which executes the new arms half a million times, gained nothing.
+**The dispatch loop's fast-path match has a size budget and it is now full.**
+Every arm added past this point pays for itself out of the ones already there.
+Anyone continuing this work should treat `run_slice` as a fixed budget to be
+*reallocated*, and measure removals as seriously as additions.
+
+### 24. One box per generator, not one per `yield`
+
+A `GenBox` held `Box<Frame>`, so every `yield` allocated a box and every resume
+freed it — a malloc/free pair per element produced. It holds
+`Box<Option<Frame>>`: allocated once when the generator is created, written
+through for the rest of its life. The three states are unchanged and read more
+directly — finished when `done` is set, suspended when the box holds
+`Some(frame)`, being advanced elsewhere when it holds `None`.
+
+| bench | before | after | delta |
+|---|---|---|---|
+| genpipe | 0.1192 | 0.1132 | **-5.1%** |
+| **mean** | | | **0.0%** |
+
+Kept on the same reasoning as step 19: the one benchmark that suspends a
+generator is 5% faster, outside the noise floor, and no other benchmark
+executes a line of it.
+
+### 25. REJECTED — `HKey::Str(Rc<OroStr>)`, and the benchmark that found it
+
+Pass one's item 6, with the benchmark it asked for. `dictstr` was written
+first: 200k writes under distinct string keys, 200k lookups, then half a
+million reads and writes of one small record — the shape real code has, where
+the same three short keys are hashed over and over. It runs at **1.25x
+CPython**.
+
+`HKey::Str` held a `String`, so `d["name"]` copied the whole string onto the
+heap to build a probe thrown away a moment later. Sharing it as an
+`Rc<OroStr>`, with content hashing and equality, is worth **-8.9%** on
+`dictstr` — and **+1% to +4% on eight benchmarks that contain no dict at all**,
+for a net **+1.2%**. Two runs at n=9 and n=13 agree; `#[inline]` on the new
+`Hash`/`PartialEq` impls does not move it.
+
+| bench | before | after | delta |
+|---|---|---|---|
+| dictstr | 0.4067 | 0.3705 | **-8.9%** |
+| loop | 0.2494 | 0.2593 | **+4.0%** |
+| exc | 0.0867 | 0.0900 | **+3.9%** |
+| fib | 0.0957 | 0.0980 | +2.4% |
+| genpipe | 0.1131 | 0.1161 | +2.7% |
+| builtins | 0.1850 | 0.1897 | +2.5% |
+| **mean** | | | **+1.2%** |
+
+It is the correct data structure landing in the wrong place. Reverted, because
+the suite is the arbiter and the suite says no. **The benchmark stays** — the
+next person to touch `HKey` should have something that can see it.
+
+## What is left, ranked (after pass two)
+
+The ranking has changed shape. Pass one's list was about *allocations*; after
+this pass the interpreter allocates very little on the hot paths, and what is
+left is either the size of the dispatch loop or the cost of one specific
+protocol.
+
+1. **Reallocate the dispatch loop's fast-path budget.** Step 23 establishes
+   that `run_slice` is full: new arms now cost more than they save. Nobody has
+   measured which of the *existing* arms are carrying their weight — `LoadNone`,
+   `Dup`, `RotTwo`, `LoadCell` and `LoadFree` are all suspects, and each one
+   evicted buys room for `CallMethod`, which wants in and would take `oo` and
+   `chain` with it. This is a search, not a change: one arm out, measure, keep
+   or restore. Estimate 3-6% overall, and it is the only item here that can be
+   attempted without a design decision.
+
+2. **Shrink `Result<Step, RuntimeError>`.** It is 48 bytes, and every
+   instruction that still goes through `step` — every method call, every
+   generator suspend, every f-string, every `MakeFunction` — pays a 48-byte
+   store and load for it. `RuntimeError` is `{String, usize, usize}`; boxing it
+   in the internal `Result`, or narrowing `line`/`col` to `u32` and boxing the
+   message, takes the pair to 32 or 24. That would also make `step` cheaper to
+   inline, which is what step 16 shows is worth having. Wide but mechanical
+   diff; the public `RuntimeError` can stay as it is behind a boundary
+   conversion. Estimate 2-5% on the benchmarks that still reach `step`.
+
+3. **The native method call's remaining string dispatch.** `xs.append(i)` still
+   costs about 140ns, and step 22 showed the allocations are only about half of
+   it. The other half is roughly fifteen short string comparisons across
+   `method_exists`, `invoke_native_method`'s cascade and `call_method`.
+   Resolving a native method name to a small enum once — at `LoadMethod`, where
+   the name is already in hand — and dispatching on that would remove all of
+   them. Est. 10-20% on `strjoin`, `listbuild`, `strops` and `chain`. Medium
+   risk: the cascade's *order* is load-bearing and would have to be preserved
+   exactly.
+
+4. **`HKey::Str` again, once item 1 has freed some layout headroom.** Step 25
+   is right on the merits and lost on the arithmetic. It is worth retrying
+   after any change that moves the dispatch loop, because what defeated it was
+   where the compiler put the code.
+
+5. **A contiguous VM-wide value stack.** Unchanged from pass one's item 4:
+   frames would hold `(base, len)` into one buffer. Frame pooling and
+   stack-binding have taken the allocation win already, so this is now purely
+   about locality — and about letting a call bind arguments without touching
+   two stacks. Large refactor, modest return.
+
+6. **`kwargs: Vec<(String, Value)>` → `Rc<str>` keys.** Still correct, still
+   unmeasurable on this suite, still worth doing when something measures it.
+
+7. **Superinstructions.** Pass one ranked these third and estimated 15-25% on
+   `loop`. `loop` is now at **0.48x CPython** and fusing instructions would
+   still require the relocation pass that made it risky — including the op
+   indices stored as values inside `MatchDispatch` table constants. The premise
+   has weakened: dispatch is no longer what `loop` spends its time on. Lowest
+   value on this list, and the highest risk.
+
+## What pass one thought was left, ranked (kept for the record)
+
+Items 1, 2, 3 and 6 were all addressed in pass two, three of them by a
+different route than the one predicted. See the pass-two ranking at the end.
 
 1. **A `LoadMethod` / `CallMethod` pair.** `obj.m(x)` allocates an
    `Rc<BoundMethod>` at `LoadAttr` purely to carry `(receiver, func)` two
