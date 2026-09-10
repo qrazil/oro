@@ -19,6 +19,7 @@ pub fn build(name: &str, argv: &[String]) -> Option<Value> {
         "proc" => Some(build_proc()),
         "net" => Some(build_net()),
         "_io" => Some(build_native_io()),
+        "_json" => Some(build_native_json()),
         _ => None,
     }
 }
@@ -306,6 +307,57 @@ fn io_read_all(args: Vec<Value>) -> Result<Value, String> {
     match args.as_slice() {
         [Value::Stream(s)] => Ok(Value::bytes(s.read_all()?)),
         _ => Err("internal: _io.read_all takes one Rust stream".to_string()),
+    }
+}
+
+// --- _json --------------------------------------------------------------------
+
+/// The JSON codec behind `std/json.oro`.
+///
+/// The one place in the standard library where the Rust/Oro line moved *after*
+/// it was drawn, and `docs/stdlib-server-design.md` §5 records why: a JSON
+/// parser is a per-byte loop, which is precisely what §5's own rule sends to
+/// Rust, and the Oro spelling measured 95x CPython's C `json` on a 1 KB
+/// payload. `std/json.oro` keeps the module's surface, its documentation and
+/// its defaults; this is the loop underneath.
+///
+/// Underscored, and so — like `_io` — resolvable only from inside a stdlib
+/// module body. `json` is the language surface; `_json` is not, and is not
+/// frozen at 1.0.
+fn build_native_json() -> Value {
+    module(
+        "_json",
+        vec![
+            ("parse", builtin("_json.parse", json_parse)),
+            ("stringify", builtin("_json.stringify", json_stringify)),
+        ],
+    )
+}
+
+fn json_parse(args: Vec<Value>) -> Result<Value, String> {
+    match args.as_slice() {
+        [Value::Str(s)] => crate::json::parse(&s.s),
+        // `bytes` is not quietly decoded: §1's whole argument is that the
+        // decode is a step the program takes, in the open — `b.to_str()` —
+        // rather than something a codec guesses at.
+        [other] => Err(format!(
+            "parse() argument must be str, not '{}'",
+            other.type_name()
+        )),
+        _ => Err("internal: _json.parse takes one string".to_string()),
+    }
+}
+
+fn json_stringify(args: Vec<Value>) -> Result<Value, String> {
+    match args.as_slice() {
+        [value, indent] => {
+            let indent = match indent {
+                Value::None => None,
+                other => Some(other),
+            };
+            crate::json::stringify(value, indent).map(Value::str)
+        }
+        _ => Err("internal: _json.stringify takes a value and an indent".to_string()),
     }
 }
 

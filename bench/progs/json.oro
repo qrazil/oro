@@ -1,0 +1,103 @@
+# json: the codec, over the five payload shapes that stress different parts of
+# it — a small API-response object (the shape a request handler actually sees),
+# a large array of records, deep nesting, string-heavy and number-heavy input.
+#
+# This benchmark exists because there was none: `std/json.oro` shipped at 95x
+# CPython's C `json` and nothing in the suite would have said so. See
+# `docs/stdlib-server-design.md` §5.
+#
+# ORO_ONLY: `json.parse`/`json.stringify` are Oro's spellings; the CPython twin
+# is json.py.
+import json
+
+SMALL_ROUNDS = 400
+BIG_ROUNDS = 12
+
+
+# A ~1 KB API response: nested objects, an array of records, mixed types.
+def small_payload():
+    items = []
+    i = 0
+    while i < 13:
+        items.append({"sku": f"ABC-{i}", "qty": i, "price": i * 1.5, "note": null})
+        i = i + 1
+    return {
+        "id": 12345,
+        "name": "Widget Assembly",
+        "active": true,
+        "score": 98.6,
+        "tags": ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"],
+        "owner": {"id": 77, "email": "user@example.com", "roles": ["admin", "user"], "verified": false},
+        "items": items,
+        "meta": {"created": "2024-01-01T00:00:00Z", "rev": 4, "source": "api-gateway-v2"},
+    }
+
+
+def record_array(n):
+    out = []
+    i = 0
+    while i < n:
+        out.append({"id": i, "name": f"record-{i}", "v": i * 3.25, "ok": i % 2 == 0, "tags": ["x", "y"]})
+        i = i + 1
+    return out
+
+
+def nested(n):
+    v = 0
+    i = 0
+    while i < n:
+        v = {"n": v}
+        i = i + 1
+    return v
+
+
+def string_list(n):
+    out = []
+    i = 0
+    while i < n:
+        out.append(f"the quick brown fox jumps over the lazy dog {i}")
+        i = i + 1
+    return out
+
+
+def number_list(n):
+    out = []
+    i = 0
+    while i < n:
+        out.append(i * 7919)
+        out.append(i * 0.125)
+        i = i + 1
+    return out
+
+
+def rounds(text, value, n):
+    total = 0
+    i = 0
+    while i < n:
+        total = total + len(json.stringify(json.parse(text)))
+        i = i + 1
+    return total
+
+
+shapes = [
+    ["small", small_payload(), SMALL_ROUNDS],
+    ["array", record_array(600), BIG_ROUNDS],
+    ["nested", nested(200), SMALL_ROUNDS],
+    ["strings", string_list(900), BIG_ROUNDS],
+    ["numbers", number_list(1500), BIG_ROUNDS],
+]
+
+checksum = 0
+for shape in shapes:
+    text = json.stringify(shape[1])
+    checksum = checksum + rounds(text, shape[1], shape[2])
+
+# The pretty path is a different code path (padding, separators), so it gets a
+# few rounds of its own rather than being trusted to follow from the compact one.
+pretty = 0
+i = 0
+while i < SMALL_ROUNDS:
+    pretty = pretty + len(json.stringify(small_payload(), indent=2))
+    i = i + 1
+
+print(checksum, pretty)

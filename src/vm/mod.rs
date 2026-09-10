@@ -4831,6 +4831,11 @@ fn classify_error(msg: &str) -> &'static str {
     if let Some(kind) = crate::net::classify(m) {
         return kind;
     }
+    // Likewise the JSON codec: a format's diagnostics belong to the format, not
+    // to this table.
+    if let Some(kind) = crate::json::classify(m) {
+        return kind;
+    }
     // Order matters: check the more specific substrings first.
     if m.starts_with("command failed:") {
         "CommandError"

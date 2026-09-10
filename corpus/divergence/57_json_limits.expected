@@ -1,0 +1,15 @@
+[1, 2]
+TypeError: parse() argument must be str, not 'bytes'
+[1, 2]
+ValueError: bytes could not be decoded as UTF-8: invalid byte 0xff at position 0
+{'a': 3, 'b': 2}
+😀
+ValueError: unpaired UTF-16 surrogate in \u escape at position 7
+1: parsed
+200: parsed
+10000: parsed
+10002: ValueError: maximum nesting depth (10000) exceeded at position 10000
+300000: ValueError: maximum nesting depth (10000) exceeded at position 10000
+RuntimeError: maximum recursion depth exceeded
+RuntimeError: maximum recursion depth exceeded
+1002

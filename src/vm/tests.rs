@@ -1300,6 +1300,14 @@ fn a_buffer_reads_what_was_written_to_it() {
 fn private_native_modules_resolve_only_inside_the_stdlib() {
     let e = run_err("import _io\n");
     assert!(e.message.contains("No module named '_io'"), "got: {}", e.message);
+    let e = run_err("import _json\n");
+    assert!(e.message.contains("No module named '_json'"), "got: {}", e.message);
+    // ...and the module in front of it is reachable, so the rule is hiding the
+    // primitive rather than the feature.
+    assert_eq!(
+        eval_last("import json\nr = json.stringify(json.parse(\"[1,2]\"))\n").repr(),
+        "'[1,2]'"
+    );
 }
 
 /// `bytes` is a sequence of ints that, until this cast, could not be *built*

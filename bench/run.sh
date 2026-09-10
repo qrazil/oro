@@ -52,6 +52,7 @@ BENCHES=(
   "listbuild"
   "builtins"
   "chain:py=chain.py"
+  "json:py=json_twin.py"
 )
 
 if [[ ! -x "$ORO" ]]; then

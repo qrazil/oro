@@ -13,6 +13,7 @@ pub mod builtins;
 pub mod compiler;
 pub mod fmt;
 pub mod format;
+pub mod json;
 pub mod lexer;
 pub mod net;
 pub mod regexutil;
