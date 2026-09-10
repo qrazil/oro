@@ -512,9 +512,15 @@ pub struct Vm {
     /// rather than global, because a `Vm` is a value and the tests build many.
     failure_flag: Rc<Cell<bool>>,
     /// The mio reactor: readiness for parked I/O, and the deadline list.
-    /// Entirely lazy — a program that never opens a socket and never sleeps
-    /// never creates an epoll fd (see [`sched::Reactor`]).
-    reactor: sched::Reactor,
+    ///
+    /// Lazy where it counts — a program that never opens a socket and never
+    /// sleeps never creates an epoll fd or an event buffer (see
+    /// [`sched::Reactor`]) — and boxed where *that* counts. Inline, the struct
+    /// put 128 bytes between `Vm`'s hot fields and its cold ones and cost the
+    /// dispatch-bound benchmarks about 5%, which is a real number for a change
+    /// that does nothing on those programs. One 128-byte allocation per `Vm`,
+    /// once, buys it back.
+    reactor: Box<sched::Reactor>,
     /// Distinguishes one park of a task from the next, so a deadline armed for
     /// an operation that has since finished can be recognised and dropped.
     park_seq: u64,
@@ -595,7 +601,7 @@ impl Vm {
             ready: VecDeque::new(),
             parked: HashMap::new(),
             failure_flag: Rc::new(Cell::new(false)),
-            reactor: sched::Reactor::default(),
+            reactor: Box::default(),
             park_seq: 0,
             tick: 0,
         }
@@ -1537,8 +1543,18 @@ impl Vm {
                     // `accept` and `close`. Four of the five can park on the
                     // reactor and the fifth has to *wake* whoever is parked, so
                     // none of them can be a `Value`-returning native method.
-                    if let Some(step) = self.stream_io_method(&m.receiver, name, &args, &kwargs)? {
-                        return Ok(step);
+                    //
+                    // The `matches!` is not redundant with the check inside:
+                    // this arm runs on *every* native method call in the
+                    // program, and a discriminant test here is what keeps that
+                    // from being a call into a cold function. Measured — it is
+                    // worth about a point on the method-heavy benchmarks.
+                    if matches!(m.receiver, Value::Stream(_)) {
+                        if let Some(step) =
+                            self.stream_io_method(&m.receiver, name, &args, &kwargs)?
+                        {
+                            return Ok(step);
+                        }
                     }
                     // `to_str` may need to run a user `__str__`, or render a
                     // container's elements through their `__repr__`; both go

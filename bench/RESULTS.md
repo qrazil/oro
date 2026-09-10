@@ -404,3 +404,49 @@ The real cost in `oo` is elsewhere anyway: `LoadAttr` still allocates an
 6. **`OroDict` string keys.** `HKey::Str(s.s.clone())` clones the whole string
    to build a hash key, so `d["name"]` allocates on every lookup. `dictops` uses
    integer keys and so never sees it; a string-keyed dict benchmark would.
+
+## What the mio reactor cost (M3b)
+
+The reactor's budget was "must not cost anything in programs that never touch
+I/O", and the honest answer is **about 1% on average, with the largest single
+benchmark at 3.1%, and none of it work the reactor actually does**.
+
+Measured interleaved A/B against the pre-mio binary — the two alternate on every
+repetition, and which one goes first alternates too, so neither owns the warm
+slot and thermal drift hits both — pinned to one core, best-of-21:
+
+| bench | before | after | Δ min | Δ median |
+|---|---|---|---|---|
+| `fib` | 0.1908 | 0.1927 | +0.97% | +2.28% |
+| `loop` | 0.7777 | 0.7954 | +2.27% | +2.00% |
+| `strjoin` | 0.1420 | 0.1427 | +0.48% | +2.62% |
+| `strops` | 0.3399 | 0.3505 | +3.10% | +1.97% |
+| `dictops` | 0.4408 | 0.4493 | +1.94% | +0.71% |
+| `oo` | 0.3889 | 0.3914 | +0.65% | +0.27% |
+| `genpipe` | 0.1943 | 0.1928 | −0.76% | −3.68% |
+| `exc` | 0.1522 | 0.1549 | +1.79% | +3.06% |
+| `listbuild` | 0.3707 | 0.3652 | −1.48% | −0.60% |
+| `builtins` | 0.2958 | 0.3018 | +2.03% | +1.29% |
+| `chain` | 0.1904 | 0.1921 | +0.93% | +0.36% |
+| **mean** | | | **+1.08%** | |
+
+The same harness run **A/A** — the mio binary against a byte-identical copy of
+itself, in the same session — gives mean +0.19% and worst 1.80%, which is this
+machine's floor and the number the table above should be read against.
+
+Two things are worth writing down, because both cost time to find.
+
+**The `Vm` struct's size is on the dispatch path, and 128 bytes of it was worth
+5% on `loop`.** The reactor started as an inline field. It executes no code at
+all in a program with no sockets — `is_idle()` short-circuits before any
+syscall — and it still cost `loop` and `exc` about 5% and 7%, because it sat
+between `Vm`'s hot fields and its cold ones. Boxing it (one 128-byte allocation
+per VM, once) recovered all of it. This is the second time on this project that
+a struct's *layout* mattered more than its code; it will not be the last.
+
+**Below about 3% this suite cannot tell you anything about a single benchmark on
+a machine that is doing something else.** Un-pinned, mid-session, A/A produced
++5.03% on `builtins` and −1.89% on `loop` — from a binary compared with itself.
+Pinning to one core and letting the machine cool took the floor to ±1.8%. The
+mean across eleven benchmarks is a far steadier statistic than any one of them,
+which is why it is the number quoted above.
