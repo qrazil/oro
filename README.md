@@ -423,9 +423,13 @@ because the value's own text *is* the wire form now, in both directions.
 
 `True`, `False` and `None` are rejected at the word, by the lexer, naming the
 replacement — never quietly treated as ordinary names that fail as a `NameError`
-somewhere else. The type name is unchanged: `type(null)` is still
-`<class 'NoneType'>`, because that is CPython's name for the type and the corpus
-oracles it.
+somewhere else. The type name went with them: `type(null)` is `<class 'null'>`.
+`NoneType` was a leftover, pointing at a word this language does not have —
+the literal is `null`, the repr is `null`, and `json` writes `null`. It is the
+one name in the table changed on purpose, and it costs one line of oracle: the
+rest of `type(x)` stays CPython's and stays in `corpus/core/`
+(`42_type_names.oro`), with the divergences — this one and the four that never
+matched — listed in `corpus/divergence/54_type_names.oro`.
 
 The corpus keeps its oracle through the rename: `corpus/oracle.sh` translates
 in both directions — Oro's literals into Python's before CPython sees the

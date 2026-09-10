@@ -939,10 +939,10 @@ fn stream_method(
     }
 }
 
-/// The type name of argument `i`, for a diagnostic. `NoneType` when absent, so
-/// a missing argument reads the same way a wrong one does.
+/// The type name of argument `i`, for a diagnostic. `null` when absent, so a
+/// missing argument reads the same way a wrong one does.
 fn type_of(args: &[Value], i: usize) -> &'static str {
-    args.get(i).map(|v| v.type_name()).unwrap_or("NoneType")
+    args.get(i).map(|v| v.type_name()).unwrap_or_else(|| Value::None.type_name())
 }
 
 /// Optional integer argument (Python's `maxsplit`, `width`, ... style).

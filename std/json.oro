@@ -366,7 +366,7 @@ def _stringify_value(v, indent, level):
     # there is nothing left to translate in either direction: the value's own
     # to_str() is already the wire form. This used to be a `_bool_word` helper
     # and a hard-coded "null".
-    if t == "<class 'NoneType'>" or t == "<class 'bool'>":
+    if t == "<class 'null'>" or t == "<class 'bool'>":
         return v.to_str()
     if t == "<class 'int'>":
         return f"{v}"

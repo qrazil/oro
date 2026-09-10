@@ -1,0 +1,54 @@
+# INTENTIONAL DIVERGENCE.
+# The type names Oro does not share with CPython. Everything else `type(x)` can
+# answer is oracled in core/42_type_names.oro; this file is the remainder, and
+# it exists so that "intentionally different" cannot become "quietly broken".
+#
+# CPython's answers are written beside each line. Reviewed by hand.
+
+def f(x):
+    return x
+
+
+def g():
+    yield 1
+
+
+class C:
+    pass
+
+
+import re
+
+# 1. `type(null)` is `null`. CPython: <class 'NoneType'>.
+#
+# `NoneType` was a leftover. `None` is not a spelling this language has — the
+# literal is `null`, the repr is `null`, and `json` writes `null` — so a type
+# named after `None` pointed at a word the reader cannot write. This is the one
+# name on the list that was changed on purpose rather than never matching.
+print(type(null))
+print(type(null) == "<class 'null'>")
+
+# 2. A user instance is not module-qualified. CPython: <class '__main__.C'>.
+# Oro has no `__main__` and no dotted module path in a type name.
+print(type(C()), type(C))
+
+# 3. `builtin_function`, not `builtin_function_or_method`. Oro has no unbound
+# methods to be the "or method" half of that name.
+print(type(len), type(print))
+
+# 4. `Pattern` and `Match`, not `re.Pattern` and `re.Match`. Oro's type names
+# are never module-qualified (see 2), so the prefix would be the only one.
+print(type(re.compile("a")), type(re.search("a", "a")))
+
+# 5. `type(x)` is a *string*, not a type object. That is why the names above
+# are printable and comparable at all — and it is why `type(v)` keys a dict in
+# std/json.oro, which under CPython would need the type objects themselves.
+by_type = {type(1): "whole", type(1.5): "fractional", type(null): "absent"}
+print(by_type["<class 'int'>"], by_type["<class 'float'>"], by_type["<class 'null'>"])
+print(sorted([type(1.5), type(1), type("s")]))
+
+# 6. A generator handed to a builtin is drained to a list first, so `type` can
+# never see one. CPython: <class 'generator'>. This is the VM's rule that a
+# native builtin may not re-enter the interpreter, not a naming choice — the
+# name `generator` is in the table and simply unreachable through `type`.
+print(type(g()))

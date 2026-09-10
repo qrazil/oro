@@ -445,9 +445,16 @@ impl Value {
     }
 
     /// The Python-style type name, as returned by `type(x)`.
+    ///
+    /// `null`'s type is `null`, not CPython's `NoneType`. That name was a
+    /// leftover: `None` is not a spelling this language has any more, so a type
+    /// named after it pointed at nothing the reader could write. This is a
+    /// deliberate divergence and the only one in the table — every other name
+    /// here is CPython's, so `corpus/core/` still oracles the whole of the rest
+    /// and only the one line moved to `corpus/divergence/`.
     pub fn type_name(&self) -> &'static str {
         match self {
-            Value::None => "NoneType",
+            Value::None => "null",
             Value::Bool(_) => "bool",
             Value::Int(_) | Value::Big(_) => "int",
             Value::Float(_) => "float",

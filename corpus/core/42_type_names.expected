@@ -1,0 +1,15 @@
+<class 'int'> <class 'int'> <class 'int'> <class 'int'> <class 'int'>
+<class 'float'> <class 'float'> <class 'float'> <class 'float'>
+<class 'bool'> <class 'bool'>
+<class 'str'> <class 'str'> <class 'bytes'> <class 'bytes'>
+<class 'list'> <class 'list'> <class 'tuple'> <class 'tuple'> <class 'dict'> <class 'dict'>
+<class 'range'> <class 'range'>
+<class 'function'> <class 'module'>
+<class 'int'>
+<class 'float'>
+<class 'str'>
+<class 'bool'>
+<class 'list'>
+<class 'dict'>
+<class 'tuple'>
+true false false
