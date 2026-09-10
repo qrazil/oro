@@ -37,22 +37,38 @@
 //!    stack (see [`Vm::wake_with_value`]), so resumption never re-borrows
 //!    anything the parking site was holding.
 //!
-//! When the reactor lands, a socket read parks as `Park::Io { stream: Rc<..>,
-//! .. }` — an `Rc`, never a borrow — and the retry takes a fresh borrow inside
-//! the resumed call. No reshaping needed.
+//! That prediction held exactly. A socket read parks as [`Park::Io`], whose
+//! payload holds an `Rc<OroStream>` and never a borrow, and the retry takes a
+//! fresh borrow inside [`attempt`]. No reshaping was needed and none was
+//! permitted: the obvious "just give `Park` an `'a` and keep the readiness
+//! guard you already have" would have compiled, would have read as tidier, and
+//! would have reintroduced the panic. The unit test is what stands in its way,
+//! which is why it is enforcement rather than decoration.
 //!
-//! ## What is *not* here
+//! ## The reactor
 //!
-//! No reactor, no timers, no I/O readiness, no `mio`, no new dependency. Tasks
-//! park and wake on scheduler-internal events only: a channel operation that
-//! must block, a `join`, and an in-progress import. [`Vm::wait_for_external`]
-//! is the one-line seam where the reactor will block instead of the scheduler
-//! declaring a deadlock.
+//! [`Reactor`] is the M3b addition and the only place `mio` is named. The
+//! division of labour is §3's, unchanged by the build: the VM owns the ready
+//! queue and decides who runs next; the reactor answers exactly one question,
+//! *when is this fd ready*. Nothing crosses a thread boundary, so `!Send`
+//! `Rc`-shaped tasks are never a problem — and that is not a workaround, it is
+//! the reason the ready queue has to live here in the first place.
+//!
+//! Timers are ours because mio has none, and they are four lines of idea: a
+//! sorted list of deadlines whose head becomes `poll`'s timeout, where an
+//! expiry wakes a task exactly the way a readiness event does.
+//!
+//! [`Vm::wait_for_external`] was the one-line seam and is now the reactor's
+//! entry point. The deadlock condition moved with it, from "nothing ready" to
+//! §3's corrected "nothing ready **and** nothing registered".
 
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
+use crate::stream::{Io, OroStream};
 use crate::task::{Channel, TaskHandle, TaskId, TaskState};
-use crate::value::{MethodKind, Value};
+use crate::value::{MethodKind, VResult, Value};
 
 use super::{Frame, ReturnAction, RuntimeError, Step, Task, Vm};
 
@@ -75,6 +91,16 @@ pub(super) enum Park {
     Join(Rc<TaskHandle>),
     /// Another task is running this module's body. See [`Vm::import_module`].
     Import(Rc<str>),
+    /// A socket operation that would block. The payload is boxed because it is
+    /// the largest variant by some way and every other one is a pointer.
+    ///
+    /// This is the variant §3 said would be the tempting place to add a
+    /// lifetime. It carries an `Rc<OroStream>` and owned progress — never a
+    /// `Ref`, never a `RefMut`, never a mio guard.
+    Io(Box<IoWait>),
+    /// `time.sleep(secs)`. Carries the park's sequence number, which is how its
+    /// timer entry knows it is still the one this task is waiting on.
+    Sleep(u64),
     /// `yield_now()` — the odd one out, and deliberately in this enum anyway.
     ///
     /// Every other variant names something the task is *waiting for*; this one
@@ -102,6 +128,12 @@ impl Park {
             }
             Park::Join(h) => format!("join(task {})", h.id),
             Park::Import(p) => format!("import '{p}'"),
+            // Neither of these can actually reach the deadlock diagnostic — a
+            // task parked on either has something registered with the reactor,
+            // which is precisely the condition that says it is not a deadlock.
+            // Spelled anyway, for the same reason `Park::Yield` is.
+            Park::Io(w) => format!("{} on {}", w.op.what(), w.stream.repr()),
+            Park::Sleep(_) => "time.sleep()".to_string(),
             // Not reachable through the deadlock diagnostic: a yielding task is
             // requeued, never filed under `parked`, and the yield arm in
             // `run_loop` runs before the deadlock check. Spelled rather than
@@ -119,6 +151,100 @@ pub(super) struct Parked {
     park: Park,
 }
 
+/// A socket operation that could not finish now, and everything needed to
+/// finish it later.
+///
+/// Every field is owned or an `Rc`. That is the whole of the borrow-across-a-
+/// syscall defence, and it is checked by the compiler rather than by anyone
+/// re-reading this struct.
+pub(super) struct IoWait {
+    /// The stream, kept alive for as long as a task is parked on it — which is
+    /// also why a parked reader cannot have its fd closed out from under it by
+    /// a refcount reaching zero. An explicit `close()` still can, and that is
+    /// handled rather than prevented.
+    stream: Rc<OroStream>,
+    /// What is being attempted, and how far it has got.
+    op: IoOp,
+    /// The readiness the last attempt asked for.
+    interest: mio::Interest,
+    /// The reactor token `stream` is registered under.
+    token: usize,
+    /// `set_timeout`'s deadline, fixed when the operation *first* blocked and
+    /// then held across every re-park — so it bounds the whole operation, not
+    /// each syscall inside it.
+    deadline: Option<Instant>,
+    /// Identifies this operation to its timer entry. Stable across re-parks,
+    /// so a `read_until` that blocks four times keeps one deadline rather than
+    /// arming four.
+    seq: u64,
+}
+
+/// The four operations that can meet `EWOULDBLOCK`, each carrying its own
+/// partial progress.
+///
+/// The progress is here rather than in a Rust local because there is no Rust
+/// frame across a park, and it is here rather than on the stream because a
+/// second task must be able to use the stream meanwhile.
+pub(super) enum IoOp {
+    Accept,
+    Read(i64),
+    ReadUntil { delim: Rc<Vec<u8>>, limit: i64, acc: Vec<u8> },
+    /// `done` bytes of `buf` have gone. §2's `write(b)` writes all of `b` or
+    /// raises, and this counter is how that contract survives a suspension:
+    /// the caller has no return value to learn about it from, and does not.
+    ///
+    /// The `Rc` is the caller's `bytes` object, not a copy of it: Oro's `bytes`
+    /// is immutable and refcounted, so a parked write borrows nothing and
+    /// copies nothing, however long it waits.
+    Write { buf: Rc<Vec<u8>>, done: usize },
+}
+
+impl IoOp {
+    fn what(&self) -> &'static str {
+        match self {
+            IoOp::Accept => "accept()",
+            IoOp::Read(_) => "read()",
+            IoOp::ReadUntil { .. } => "read_until()",
+            IoOp::Write { .. } => "write()",
+        }
+    }
+}
+
+/// One attempt at finishing `w`, from wherever it got to.
+///
+/// A free function, not a method on `Vm`, and that is deliberate: it needs
+/// nothing from the VM, so it cannot accidentally acquire a second borrow of
+/// anything. Each call takes a fresh borrow of the stream inside
+/// `crate::stream` and has dropped it before it returns.
+fn attempt(w: &mut IoWait) -> VResult<Io<Value>> {
+    let stream = &w.stream;
+    match &mut w.op {
+        IoOp::Accept => Ok(match stream.accept()? {
+            Io::Ready(s) => Io::Ready(Value::Stream(Rc::new(s))),
+            Io::Block(i) => Io::Block(i),
+        }),
+        IoOp::Read(n) => Ok(match stream.read(*n)? {
+            Io::Ready(b) => Io::Ready(Value::bytes(b)),
+            Io::Block(i) => Io::Block(i),
+        }),
+        IoOp::ReadUntil { delim, limit, acc } => Ok(match stream.read_until(delim, *limit, acc)? {
+            Io::Ready(b) => Io::Ready(Value::bytes(b)),
+            Io::Block(i) => Io::Block(i),
+        }),
+        // The `write_all` loop that used to live in `crate::stream`, moved to
+        // where its progress can survive a park.
+        IoOp::Write { buf, done } => loop {
+            if *done >= buf.len() {
+                return Ok(Io::Ready(Value::None));
+            }
+            match stream.write(&buf[*done..])? {
+                Io::Ready(k) => *done += k,
+                Io::Block(i) => return Ok(Io::Block(i)),
+            }
+        },
+    }
+}
+
 /// How one slice of execution ended — what [`Vm::run_slice`] reports back.
 pub(super) enum Slice {
     /// The task suspended; the scheduler must file it under `park`.
@@ -129,6 +255,211 @@ pub(super) enum Slice {
     /// exception itself (rule 2 re-raises it in a joiner) and the rendered
     /// diagnostic (rule 3 prints it).
     Failed(Value, RuntimeError),
+}
+
+// --- The reactor -------------------------------------------------------------
+
+/// The one thing the VM asks the operating system for: *tell me when this fd is
+/// ready.*
+///
+/// §3's framing survived the build intact. The VM owns the ready queue and
+/// decides who runs next — it has to, because every Oro `Value` is an `Rc` and a
+/// ready queue of `!Send` tasks cannot live in a work-stealing runtime. What is
+/// left for a library is readiness notification, which is `mio::Poll` and
+/// nothing else. There is no task system here, no futures, no executor: a
+/// `Poll`, a `Token` per registered fd, an `Events` buffer, and one
+/// `poll(&mut events, timeout)` at the point where the ready queue empties.
+///
+/// **Timers are ours**, because mio has none and because `epoll_wait` already
+/// takes a timeout. A sorted list of deadlines whose head becomes that timeout
+/// is the whole mechanism, and an expiry is a wake exactly like a readiness
+/// event is. It is what `time.sleep` parks on and what `set_timeout` arms.
+///
+/// **Everything in here is lazy.** A program that never touches a socket or a
+/// clock never creates an epoll fd, never allocates an event buffer, and pays
+/// [`Reactor::is_idle`] — two `is_empty` calls — once per task switch. That is
+/// the concrete form of "the reactor must not cost anything in programs that
+/// never touch I/O".
+#[derive(Default)]
+pub(super) struct Reactor {
+    /// The epoll/kqueue handle and its event buffer, created on the first
+    /// registration and never before.
+    os: Option<Os>,
+    /// Tokens handed out. Monotonic and never reused, so a stale event for a
+    /// closed stream can never be mistaken for a live one's.
+    next_token: usize,
+    /// Who is parked on each registered fd. At most one task per direction:
+    /// two tasks reading the same socket is a program bug and is named as one,
+    /// but a reader and a writer on the same socket is `io.copy` in both
+    /// directions and has to work.
+    waiters: HashMap<usize, Waiters>,
+    /// Deadlines, soonest first. A `Vec` rather than a heap because the head is
+    /// read on every poll and the list is short — it holds one entry per
+    /// *sleeping or deadlined* task, not one per connection.
+    timers: Vec<Timer>,
+}
+
+struct Os {
+    poll: mio::Poll,
+    events: mio::Events,
+}
+
+#[derive(Default)]
+struct Waiters {
+    read: Option<TaskId>,
+    write: Option<TaskId>,
+}
+
+impl Waiters {
+    fn is_empty(&self) -> bool {
+        self.read.is_none() && self.write.is_none()
+    }
+}
+
+/// A deadline: `time.sleep`'s wake, or `set_timeout`'s expiry.
+struct Timer {
+    at: Instant,
+    task: TaskId,
+    /// Which *park* of that task this deadline belongs to. A task whose read
+    /// completes before its timeout leaves the entry behind; when it fires, the
+    /// task's current park carries a later seq and the entry is dropped
+    /// unfired. Cheaper than scrubbing the list on every wake, which would make
+    /// a completed read O(number of deadlined connections).
+    seq: u64,
+}
+
+/// How much of an event mattered. Copied out of mio's `Events` before anything
+/// is woken, because waking needs `&mut Vm` and the events borrow the reactor.
+struct ReadyFd {
+    token: usize,
+    readable: bool,
+    writable: bool,
+}
+
+impl Reactor {
+    /// Nothing registered and no deadline: nobody outside the VM can make a
+    /// task runnable, which is the corrected deadlock condition from §3.
+    fn is_idle(&self) -> bool {
+        self.waiters.is_empty() && self.timers.is_empty()
+    }
+
+    fn os(&mut self) -> VResult<&mut Os> {
+        if self.os.is_none() {
+            let poll = mio::Poll::new().map_err(|e| crate::net::err_msg(&e))?;
+            // 256 is a compromise nobody has to tune: large enough that a busy
+            // accept loop drains a batch per syscall, small enough that the
+            // allocation is invisible next to the epoll fd it accompanies.
+            self.os = Some(Os { poll, events: mio::Events::with_capacity(256) });
+        }
+        Ok(self.os.as_mut().expect("just built"))
+    }
+
+    /// Record that `task` is waiting for `interest` on `stream`, registering
+    /// the fd if this is the first time it has ever had to wait.
+    fn arm(
+        &mut self,
+        stream: &Rc<OroStream>,
+        interest: mio::Interest,
+        task: TaskId,
+    ) -> VResult<usize> {
+        let token = match stream.token() {
+            Some(t) => t,
+            None => {
+                self.next_token += 1;
+                let t = self.next_token;
+                stream.register(self.os()?.poll.registry(), t)?;
+                t
+            }
+        };
+        let w = self.waiters.entry(token).or_default();
+        let (slot, side) = if interest.is_readable() {
+            (&mut w.read, "read")
+        } else {
+            (&mut w.write, "write")
+        };
+        match *slot {
+            Some(other) if other != task => {
+                // Deliberately an exception rather than a queue. Two tasks
+                // reading one socket is not a workload, it is a race over whose
+                // bytes are whose, and the runtime knowing which is impossible.
+                return Err(format!(
+                    "two tasks cannot {side} the same {} at once (task {other} is already \
+                     waiting on it)",
+                    stream.kind.type_name()
+                ));
+            }
+            _ => *slot = Some(task),
+        }
+        Ok(token)
+    }
+
+    /// This task is no longer waiting on this side of this fd.
+    fn disarm(&mut self, token: usize, task: TaskId) {
+        let Some(w) = self.waiters.get_mut(&token) else { return };
+        if w.read == Some(task) {
+            w.read = None;
+        }
+        if w.write == Some(task) {
+            w.write = None;
+        }
+        if w.is_empty() {
+            self.waiters.remove(&token);
+        }
+    }
+
+    /// Every task waiting on this fd, forgetting all of them. `close()`'s half
+    /// of the hazard: the fd is about to go, so nobody can be left parked on it.
+    fn take_waiters(&mut self, token: usize) -> Vec<TaskId> {
+        let Some(w) = self.waiters.remove(&token) else { return Vec::new() };
+        w.read.into_iter().chain(w.write).collect()
+    }
+
+    fn add_timer(&mut self, at: Instant, task: TaskId, seq: u64) {
+        let i = self.timers.partition_point(|t| t.at <= at);
+        self.timers.insert(i, Timer { at, task, seq });
+    }
+
+    /// Wait for readiness or a deadline, and report what became ready.
+    ///
+    /// `timeout` of `None` blocks until something happens, which is exactly
+    /// what a server sitting in `accept` should do.
+    fn poll(&mut self, timeout: Option<Duration>) -> VResult<Vec<ReadyFd>> {
+        if self.waiters.is_empty() {
+            // Nothing but deadlines: there is no fd to wait on, so waiting on
+            // one would mean creating an epoll instance to sleep in. A program
+            // whose only concurrency is `time.sleep` never makes one.
+            if let Some(d) = timeout {
+                std::thread::sleep(d);
+            }
+            return Ok(Vec::new());
+        }
+        let os = self.os()?;
+        match os.poll.poll(&mut os.events, timeout) {
+            Ok(()) => {}
+            // A signal, not a fault. Nothing became ready; the scheduler will
+            // come straight back here.
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => return Ok(Vec::new()),
+            Err(e) => return Err(crate::net::err_msg(&e)),
+        }
+        Ok(os
+            .events
+            .iter()
+            .map(|ev| ReadyFd {
+                token: ev.token().0,
+                // A hang-up or an error is reported on whichever side is
+                // waiting: the retry then gets the real errno from the syscall
+                // itself, which is a better exception than anything that could
+                // be synthesised from the event flags.
+                readable: ev.is_readable() || ev.is_read_closed() || ev.is_error(),
+                writable: ev.is_writable() || ev.is_write_closed() || ev.is_error(),
+            })
+            .collect())
+    }
+
+    /// The soonest deadline, or `None` if nothing is on a clock.
+    fn next_deadline(&self) -> Option<Instant> {
+        self.timers.first().map(|t| t.at)
+    }
 }
 
 impl Vm {
@@ -318,11 +649,16 @@ impl Vm {
                     self.requeue_current(Value::None);
                 }
                 Slice::Parked(park) => {
-                    // Nothing else is runnable and, with no reactor, nothing
-                    // outside the VM can wake anyone: this is a real deadlock,
-                    // reported from the site that caused it while that site is
-                    // still the current task.
-                    if self.ready.is_empty() && !self.wait_for_external() {
+                    // §3's corrected deadlock condition: nothing ready *and*
+                    // nothing registered. A task that parked on I/O or a
+                    // deadline armed the reactor on its way here, so
+                    // `is_idle()` is already false for it and the wait happens
+                    // below, in the one place that waits. What is left in this
+                    // arm is the genuine case — everyone blocked on each
+                    // other — reported from the site that caused it while that
+                    // site is still the current task, which is what makes the
+                    // line and column the useful ones.
+                    if self.ready.is_empty() && self.reactor.is_idle() {
                         return Err(self.deadlock(&park, line, col));
                     }
                     self.park_current(*park);
@@ -348,6 +684,10 @@ impl Vm {
                     self.finish_task(Err((exc, err)));
                 }
             }
+
+            // Readiness that arrived while other tasks were still runnable.
+            // Costs nothing until something is registered.
+            self.poll_reactor_briefly();
 
             // Pick the next task. Written as a loop rather than a match so
             // that when `wait_for_external` becomes the reactor — the only
@@ -380,15 +720,184 @@ impl Vm {
         Ok(main_result.unwrap_or(Value::None))
     }
 
-    /// Block until something outside the VM makes a task runnable.
+    /// Block until something outside the VM makes a task runnable: an fd
+    /// became ready, or a deadline expired.
     ///
-    /// This milestone has no reactor, so nothing outside the VM exists and the
-    /// answer is always "no". When the mio reactor lands this is where it
-    /// blocks on readiness and moves woken tasks onto the ready queue; the
-    /// deadlock condition then correctly becomes "nothing ready *and* nothing
-    /// registered".
+    /// `false` means nothing outside the VM *can* — nothing is registered and
+    /// nothing is on a clock — which is §3's corrected deadlock condition and
+    /// the only thing this function's boolean has ever meant.
+    ///
+    /// `true` does not promise a task was woken. A spurious readiness, an
+    /// `EINTR`, or a retry that blocked again all answer `true` and send the
+    /// caller round its loop to poll once more, which is exactly right: the
+    /// alternative would be reporting a deadlock because a signal arrived.
     fn wait_for_external(&mut self) -> bool {
-        false
+        if self.reactor.is_idle() {
+            return false;
+        }
+        let timeout = self
+            .reactor
+            .next_deadline()
+            .map(|at| at.saturating_duration_since(Instant::now()));
+        match self.reactor.poll(timeout) {
+            Ok(ready) => {
+                for r in ready {
+                    self.io_ready(&r);
+                }
+            }
+            // `epoll_wait` itself failing is not something a program can be
+            // asked to handle at a call site it cannot see, so it is raised in
+            // every task that was waiting on the reactor rather than swallowed
+            // into a hang.
+            Err(msg) => self.fail_all_io(&msg),
+        }
+        self.fire_timers();
+        true
+    }
+
+    /// A non-blocking sweep of the reactor, run every so often while tasks are
+    /// still runnable.
+    ///
+    /// Without it, cooperative scheduling has a sharp edge: a task that sleeps
+    /// 10 ms while another spins on `yield_now()` never wakes, because
+    /// [`wait_for_external`](Self::wait_for_external) is only reached when the
+    /// ready queue empties. One `epoll_wait` with a zero timeout every 64 task
+    /// switches bounds that latency without putting a check in the dispatch
+    /// loop, which is the thing §3 promised never to do.
+    ///
+    /// A program that never touches I/O never gets past the `is_idle` test, so
+    /// this costs it two `is_empty` calls per *task switch* — and a program
+    /// with one task switches once.
+    fn poll_reactor_briefly(&mut self) {
+        if self.reactor.is_idle() {
+            return;
+        }
+        self.tick += 1;
+        if !self.tick.is_multiple_of(64) {
+            return;
+        }
+        match self.reactor.poll(Some(Duration::ZERO)) {
+            Ok(ready) => {
+                for r in ready {
+                    self.io_ready(&r);
+                }
+            }
+            Err(msg) => self.fail_all_io(&msg),
+        }
+        self.fire_timers();
+    }
+
+    /// An fd is ready: hand the news to whoever is parked on that side of it.
+    fn io_ready(&mut self, r: &ReadyFd) {
+        let Some(w) = self.reactor.waiters.get(&r.token) else { return };
+        let (rd, wr) = (w.read, w.write);
+        if r.readable {
+            if let Some(id) = rd {
+                self.retry_io(id);
+            }
+        }
+        if r.writable {
+            if let Some(id) = wr.filter(|id| Some(*id) != rd || !r.readable) {
+                self.retry_io(id);
+            }
+        }
+    }
+
+    /// Try to finish task `id`'s parked operation, now that its fd says it can
+    /// make progress.
+    ///
+    /// The task is *not* current while this runs, which is why the result is
+    /// pushed onto its own operand stack rather than returned: that is the same
+    /// resume protocol a channel wake uses, and the reason resumption never
+    /// re-borrows anything the parking site was holding.
+    fn retry_io(&mut self, id: TaskId) {
+        let Some(mut p) = self.parked.remove(&id) else { return };
+        let mut w = match std::mem::replace(&mut p.park, Park::Yield) {
+            Park::Io(w) => w,
+            other => {
+                p.park = other;
+                self.parked.insert(id, p);
+                return;
+            }
+        };
+        match attempt(&mut w) {
+            Ok(Io::Ready(v)) => {
+                self.reactor.disarm(w.token, id);
+                p.task
+                    .frames
+                    .last_mut()
+                    .expect("a parked task always has a frame")
+                    .stack
+                    .push(v);
+                self.ready.push_back(p.task);
+            }
+            Ok(Io::Block(i)) => {
+                // Still not enough: a readable socket can hand over fewer bytes
+                // than `read_until` needs, and a writable one can take fewer
+                // than `write` has left. The accumulator in `w.op` is exactly
+                // what makes going round again cheap instead of wrong.
+                w.interest = i;
+                match self.reactor.arm(&w.stream, i, id) {
+                    Ok(token) => {
+                        w.token = token;
+                        p.park = Park::Io(w);
+                        self.parked.insert(id, p);
+                    }
+                    Err(msg) => self.resume_failed(p, id, w.token, &msg),
+                }
+            }
+            Err(msg) => self.resume_failed(p, id, w.token, &msg),
+        }
+    }
+
+    /// A parked task's operation failed while it was not current: hand it the
+    /// exception to raise the moment it is.
+    fn resume_failed(&mut self, mut p: Parked, id: TaskId, token: usize, msg: &str) {
+        self.reactor.disarm(token, id);
+        p.task.pending_raise = Some(self.error_to_exception(&self.err(msg.to_string())));
+        self.ready.push_back(p.task);
+    }
+
+    /// The reactor itself failed. Every task waiting on it learns why.
+    fn fail_all_io(&mut self, msg: &str) {
+        let ids: Vec<TaskId> = self
+            .parked
+            .iter()
+            .filter(|(_, p)| matches!(p.park, Park::Io(_)))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            let exc = self.error_to_exception(&self.err(msg.to_string()));
+            self.wake_with_raise(id, exc);
+        }
+        self.reactor.waiters.clear();
+    }
+
+    /// Wake everything whose deadline has passed.
+    ///
+    /// A timer whose task has since moved on — its read completed, or it parked
+    /// on something else — is dropped unfired, recognised by the sequence
+    /// number rather than by scrubbing the list every time a task wakes.
+    fn fire_timers(&mut self) {
+        let now = Instant::now();
+        while self.reactor.timers.first().is_some_and(|t| t.at <= now) {
+            let t = self.reactor.timers.remove(0);
+            match self.parked.get(&t.task).map(|p| &p.park) {
+                Some(Park::Sleep(seq)) if *seq == t.seq => {
+                    self.wake_with_value(t.task, Value::None);
+                }
+                Some(Park::Io(w)) if w.seq == t.seq => {
+                    let token = w.token;
+                    self.reactor.disarm(token, t.task);
+                    // The same exception `set_timeout` has always raised, with
+                    // the same message: CPython's bare "timed out", which the
+                    // classifier already keys `TimeoutError` on.
+                    let exc = self.error_to_exception(&self.err("timed out"));
+                    self.wake_with_raise(t.task, exc);
+                }
+                _ => {}
+            }
+        }
     }
 
     fn deadlock(&self, park: &Park, line: u32, col: u32) -> RuntimeError {
@@ -734,6 +1243,208 @@ impl Vm {
     }
 
     // --- Frame-level helpers the scheduler owns -----------------------------
+
+    // --- I/O: the three parking sites, and `time.sleep` ---------------------
+
+    /// The five stream methods the VM has to own.
+    ///
+    /// Four of them can park, and a parking primitive cannot be a plain
+    /// `Builtin`: a builtin must answer with a `Value`, and the whole content
+    /// of these is the `Step` they answer with instead. That is §3's "one hard
+    /// constraint on implementation", and it is the same reason `spawn`,
+    /// `chan`, `yield_now` and `proc.run` are dispatched here.
+    ///
+    /// The fifth is `close()`, which cannot block and is here anyway, because
+    /// it is the other half of the hazard: closing a stream a task is parked on
+    /// has to *raise in that task*, and only the scheduler can reach it.
+    ///
+    /// `Ok(None)` means "not one of mine, carry on" — the same protocol
+    /// [`Vm::task_or_channel_method`] uses.
+    pub(super) fn stream_io_method(
+        &mut self,
+        recv: &Value,
+        name: &str,
+        args: &[Value],
+        kwargs: &[(String, Value)],
+    ) -> Result<Option<Step>, RuntimeError> {
+        let Value::Stream(s) = recv else { return Ok(None) };
+        if !matches!(name, "read" | "write" | "read_until" | "accept" | "close") {
+            return Ok(None);
+        }
+        if !kwargs.is_empty() {
+            return Ok(Some(self.raise("TypeError", format!("{name}() takes no keyword arguments"))));
+        }
+        let s = Rc::clone(s);
+        let op = match name {
+            "read" => match args {
+                [Value::Int(n)] => IoOp::Read(*n),
+                // `read()` with no argument would be a second behaviour under
+                // one name, and an unbounded read is a memory footgun on a
+                // server. Reading a whole stream is `io.read(r)`.
+                [] => {
+                    return Err(self
+                        .err("read() takes a size — use io.read(r) to read a whole stream"))
+                }
+                _ => {
+                    return Err(self.err(format!(
+                        "read() size argument must be int, not '{}'",
+                        crate::builtins::type_of(args, 0)
+                    )))
+                }
+            },
+            // Bytes only, in both directions, everywhere in the language. The
+            // spellings for text are `print("hi")` and `w.write(s.to_bytes())`.
+            "write" => IoOp::Write {
+                buf: self.wrap(crate::builtins::bytes_arg(args, 0, "write"))?,
+                done: 0,
+            },
+            "read_until" => {
+                let delim = self.wrap(crate::builtins::bytes_arg(args, 0, "read_until"))?;
+                let limit = match args.get(1) {
+                    Some(Value::Int(n)) => *n,
+                    // The limit is required, not defaulted: it is what stops a
+                    // client sending an unbounded header block, and a default
+                    // would be a number nobody chose.
+                    None => return Err(self.err("read_until() takes a delimiter and a limit")),
+                    Some(_) => {
+                        return Err(self.err(format!(
+                            "read_until() limit argument must be int, not '{}'",
+                            crate::builtins::type_of(args, 1)
+                        )))
+                    }
+                };
+                self.wrap(crate::builtins::exactly(args, 2, "read_until"))?;
+                IoOp::ReadUntil { delim, limit, acc: Vec::new() }
+            }
+            "accept" => {
+                self.wrap(crate::builtins::exactly(args, 0, "accept"))?;
+                IoOp::Accept
+            }
+            _ => {
+                self.wrap(crate::builtins::exactly(args, 0, "close"))?;
+                return self.stream_close(&s).map(Some);
+            }
+        };
+        self.begin_io(s, op).map(Some)
+    }
+
+    /// `close()`, and the task that may be parked on the stream being closed.
+    ///
+    /// This is the hazard from `src/net.rs`, met head-on. The parked task holds
+    /// an `Rc` and no borrow, so `close()` cannot panic; what it can do is
+    /// strand a task on an fd that is about to stop existing, so every waiter
+    /// is woken with the exception it would have got had it called the method
+    /// one instruction later — `read() on a closed TcpStream`, a plain
+    /// `ValueError`, catchable like any other.
+    fn stream_close(&mut self, s: &Rc<OroStream>) -> Result<Step, RuntimeError> {
+        self.wrap(s.close())?;
+        if let Some(token) = s.token() {
+            for id in self.reactor.take_waiters(token) {
+                let what = match self.parked.get(&id).map(|p| &p.park) {
+                    Some(Park::Io(w)) => w.op.what(),
+                    _ => continue,
+                };
+                // Character for character the message `borrow_open` would
+                // have produced one instruction later, so the same close is
+                // the same exception however the timing falls.
+                let msg = format!("{what} on a closed {}", s.kind.type_name());
+                let exc = self.error_to_exception(&self.err(msg));
+                self.wake_with_raise(id, exc);
+            }
+        }
+        self.push(Value::None);
+        Ok(Step::Next)
+    }
+
+    /// Try an operation, and park on the reactor if it cannot finish now.
+    ///
+    /// The overwhelmingly common case is that it finishes: buffered bytes, a
+    /// connection already in the backlog, a write the send buffer takes whole.
+    /// Nothing is registered and no `Park` is built for those.
+    fn begin_io(&mut self, stream: Rc<OroStream>, op: IoOp) -> Result<Step, RuntimeError> {
+        let mut w = IoWait {
+            stream,
+            op,
+            interest: mio::Interest::READABLE,
+            token: 0,
+            deadline: None,
+            seq: 0,
+        };
+        match attempt(&mut w) {
+            Ok(Io::Ready(v)) => {
+                self.push(v);
+                Ok(Step::Next)
+            }
+            Ok(Io::Block(i)) => {
+                w.interest = i;
+                self.park_io(w)
+            }
+            Err(msg) => Err(self.err(msg)),
+        }
+    }
+
+    /// Register `w`'s stream with the reactor and suspend the running task on
+    /// it.
+    ///
+    /// Note what is *not* held here: this function takes no borrow of the
+    /// stream at all, and the `Step` it returns is handed back through
+    /// `Vm::step`, so every temporary at the parking site is dropped before the
+    /// scheduler ever sees the `Park`.
+    fn park_io(&mut self, mut w: IoWait) -> Result<Step, RuntimeError> {
+        let task = self.task.id;
+        w.token = match self.reactor.arm(&w.stream, w.interest, task) {
+            Ok(t) => t,
+            Err(msg) => return Err(self.err(msg)),
+        };
+        // The deadline is fixed on the *first* block and kept across every
+        // re-park, so `set_timeout(5)` bounds the whole `read_until` rather
+        // than granting five seconds per packet.
+        if w.seq == 0 {
+            self.park_seq += 1;
+            w.seq = self.park_seq;
+            w.deadline = w.stream.timeout().map(|d| Instant::now() + d);
+            if let Some(at) = w.deadline {
+                self.reactor.add_timer(at, task, w.seq);
+            }
+        }
+        Ok(Step::Park(Box::new(Park::Io(Box::new(w)))))
+    }
+
+    /// `time.sleep(secs)` — park this task for `secs`, and let every other one
+    /// run meanwhile.
+    ///
+    /// It was `std::thread::sleep`, which stopped the whole VM: one task
+    /// sleeping meant ten thousand connections sleeping. Like `yield_now` it
+    /// cannot be a plain native builtin, because the whole content of it is the
+    /// `Step` it returns.
+    pub(super) fn do_sleep(
+        &mut self,
+        args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
+    ) -> Result<Step, RuntimeError> {
+        if !kwargs.is_empty() {
+            return Ok(self.raise("TypeError", "sleep() takes no keyword arguments"));
+        }
+        let secs = match args.as_slice() {
+            [Value::Float(f)] => *f,
+            [Value::Int(i)] => *i as f64,
+            [Value::Bool(b)] => *b as i64 as f64,
+            _ => return Err(self.err("sleep() takes one number of seconds")),
+        };
+        // `>= 0.0` rather than `!(< 0.0)`: NaN is not a length, and the
+        // negative message is the right one for it.
+        if !(secs.is_finite() && secs >= 0.0) {
+            return Err(self.err("sleep length must be non-negative"));
+        }
+        self.park_seq += 1;
+        let seq = self.park_seq;
+        // `sleep(0)` is a deadline of now: the task goes back to runnable at
+        // the next sweep, having let everything else have a turn. That is what
+        // CPython's `time.sleep(0)` means too, and it costs no special case.
+        let at = Instant::now() + Duration::from_secs_f64(secs.min(f64::from(u32::MAX)));
+        self.reactor.add_timer(at, self.task.id, seq);
+        Ok(Step::Park(Box::new(Park::Sleep(seq))))
+    }
 
     /// A module body frame is being discarded by an unwinding exception. The
     /// path has to leave `importing` here, or a *retried* import reports a

@@ -17,27 +17,39 @@
 //! without one line of special-casing, which is the whole claim the io protocol
 //! was making.
 //!
-//! **Everything here blocks.** One VM, one OS thread, one syscall at a time:
-//! `accept`, `read` and `write` stop the world until the kernel answers. That
-//! is correct for this milestone and wrong for a server, and the three places
-//! it changes are marked "where the green-thread swap lands" in
-//! `crate::stream` — nothing outside those three lines needs to know.
+//! **Nothing here blocks any more, with two named exceptions.** Every socket is
+//! non-blocking from birth; `accept`, `read` and `write` answer
+//! `stream::Io::Block` instead of waiting, and the scheduler
+//! (`crate::vm::sched`) parks the task on the mio reactor. The three places
+//! that changed are still marked "where the green-thread swap landed" in
+//! `crate::stream`, and nothing outside them needed to know.
 //!
-//! **One thing the swap must do that is not visible today**, recorded here so
-//! it is not rediscovered as a panic: all three of those calls currently hold a
-//! `RefCell` borrow of the stream's interior *across* the blocking syscall.
-//! That is harmless while blocking means the whole VM is stopped — nothing else
-//! can run to observe the borrow. It stops being harmless the moment a parked
-//! task can be suspended there, because a second task calling `close()` on the
-//! same stream would hit `BorrowMutError` and panic the interpreter. Parking
-//! therefore has to release the borrow before it yields and re-take it on
-//! resume, which is a constraint on the shape of `Step::Park`, not on this
-//! module.
+//! The two exceptions are both in [`dial`] and both are DNS-shaped: name
+//! resolution and `connect(2)`. See that function.
+//!
+//! **The hazard this module recorded, and what became of it.** All three of
+//! those calls used to hold a `RefCell` borrow of the stream's interior *across*
+//! the blocking syscall. That was harmless only while blocking meant the whole
+//! VM was stopped; the moment a task can be suspended there, a second task
+//! calling `close()` on the same stream hits `BorrowMutError` and **panics the
+//! interpreter** — not a catchable exception, a dead process.
+//!
+//! It did not survive contact, and not because anyone remembered it. `Park` has
+//! no lifetime parameter, so a `Ref<'_, T>` cannot be stored in one, and a
+//! parking site that tried to keep its borrow **does not compile**. Every
+//! method in `crate::stream` now takes its borrow, tries the syscall and drops
+//! it before answering `Io::Block`; `close()` therefore always finds the
+//! `RefCell` free, and the scheduler raises a plain `ValueError` in whoever was
+//! parked. `close_wakes_a_parked_reader` in `crate::vm::tests` is the check,
+//! and it is written even though the compiler makes the panic unreachable,
+//! because "unreachable by construction" is a claim.
 //!
 //! Not here, on purpose: UDP (not a stream, so it cannot satisfy the io
 //! protocol), Unix domain sockets, TLS, and `SO_REUSEPORT` scale-out.
 
-use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use std::net::ToSocketAddrs;
+
+use mio::net::{TcpListener, TcpStream};
 
 use crate::stream::OroStream;
 use crate::value::VResult;
@@ -53,27 +65,62 @@ use crate::value::VResult;
 /// deployment scales out, and is deliberately not here yet.
 pub fn listen(addr: &str) -> VResult<OroStream> {
     let addrs = resolve(addr, "listen")?;
-    let ln = TcpListener::bind(&addrs[..]).map_err(|e| err_msg(&e))?;
-    OroStream::listener(ln).map_err(|e| err_msg(&e))
+    // `std`'s bind, not mio's, and then `from_std`. It is `std::net`'s bind
+    // that sets `SO_REUSEADDR` on every non-Windows platform, which is the
+    // guarantee this function's whole doc comment is about; taking mio's would
+    // be trusting a second crate to keep making the same choice. `from_std`
+    // costs nothing — it is a wrapper around the same fd.
+    let ln = std::net::TcpListener::bind(&addrs[..]).map_err(|e| err_msg(&e))?;
+    ln.set_nonblocking(true).map_err(|e| err_msg(&e))?;
+    OroStream::listener(TcpListener::from_std(ln)).map_err(|e| err_msg(&e))
 }
 
 /// `net.dial(addr)`: connect, and hand back a stream.
 ///
-/// **DNS blocks the whole VM.** `ToSocketAddrs` resolves synchronously, so a
-/// hostname that takes two seconds to resolve is two seconds in which this VM
-/// runs nothing else. That is invisible when testing against `127.0.0.1` and
-/// unacceptable under green threads, where the resolution has to move to a
-/// blocking pool. It is listed in §4 as an implementation trap for exactly that
-/// reason, and it is a trap this milestone walks into knowingly rather than
-/// accidentally: blocking is the milestone.
+/// **This is the one call in `net` that still stops the world, and it does so
+/// twice: the DNS lookup and the TCP handshake.** M3b made that a deliberate,
+/// written-down limitation rather than closing it, and §4 asked whichever
+/// milestone touched it to say which answer it picked and why. This is that
+/// paragraph.
+///
+/// *What is wrong.* `ToSocketAddrs` resolves synchronously, so a hostname that
+/// takes two seconds to resolve is two seconds in which this VM runs nothing
+/// else — every task, not only the caller. `connect(2)` on a blocking socket
+/// then adds the handshake RTT on top, and to a host that is dropping packets
+/// that is the full TCP connect timeout.
+///
+/// *Why it is still here.* §4 offered two answers and both cost more than they
+/// buy at this milestone. A resolver written in Oro over UDP needs UDP, which
+/// §4 declines to add and which would be a frozen public surface bought for one
+/// internal use. A helper OS thread with a pipe the reactor already watches is
+/// the right answer and is the one this will become — but it is the first OS
+/// thread in a runtime whose entire pitch is "one VM per thread, nothing
+/// shared", and that is a claim to spend deliberately, in the milestone that
+/// has a server to justify it, rather than as a rider on the reactor. Making
+/// `connect` non-blocking is easy (park on writability, then `take_error`) and
+/// is deliberately not done separately: shipping a non-blocking connect behind
+/// a blocking resolve would move the stall by a millisecond and let the
+/// limitation read as fixed.
+///
+/// *What it costs today, precisely.* A server built on `net.listen` never
+/// reaches this function: `accept`, `read` and `write` all park, and `listen`
+/// resolves once at startup before any task exists that could be starved. It is
+/// `dial` **from inside a running server** — a proxy, an outbound API call —
+/// that stalls its peers, and it stalls them for the lookup plus the handshake.
+/// Dialling a literal `ip:port` skips the lookup entirely and leaves only the
+/// handshake, which is why every test in this tree dials `127.0.0.1` and why
+/// that is exactly the thing that makes the gap easy not to notice.
 pub fn dial(addr: &str) -> VResult<OroStream> {
     let addrs = resolve(addr, "dial")?;
     // `TcpStream::connect` over a slice tries each resolved address in turn and
     // reports the *last* failure. With one address — every literal `ip:port`,
     // which is the case that matters for the error mapping — that is the only
     // failure, so `ConnectionRefusedError` survives the loop.
-    let sock = TcpStream::connect(&addrs[..]).map_err(|e| err_msg(&e))?;
-    OroStream::socket(sock).map_err(|e| err_msg(&e))
+    let sock = std::net::TcpStream::connect(&addrs[..]).map_err(|e| err_msg(&e))?;
+    // Non-blocking from here on: the handshake is over, and everything the
+    // stream does from now on goes through the reactor.
+    sock.set_nonblocking(true).map_err(|e| err_msg(&e))?;
+    OroStream::socket(TcpStream::from_std(sock)).map_err(|e| err_msg(&e))
 }
 
 /// `"host:port"` -> socket addresses, with Go's bracket form for IPv6.
@@ -133,10 +180,13 @@ pub fn err_msg(e: &std::io::Error) -> String {
         AddrNotAvailable => "Cannot assign requested address",
         NotConnected => "Transport endpoint is not connected",
         PermissionDenied => "Permission denied",
-        // A read or write deadline. Unix reports an expired `SO_RCVTIMEO` as
-        // `EWOULDBLOCK` and Windows as `ETIMEDOUT`; both are the timeout,
-        // because Oro never puts a socket in non-blocking mode. CPython's
-        // message for this is the bare "timed out", with no errno.
+        // `set_timeout` used to be `SO_RCVTIMEO`, whose expiry Unix reports as
+        // `EWOULDBLOCK`; a deadline is now the scheduler's timer list and
+        // raises through a different path entirely. `WouldBlock` is kept here
+        // all the same, mapped to the same CPython message — the bare "timed
+        // out", with no errno — because any `EAGAIN` that reaches this function
+        // has escaped `stream::would_block`, and answering it with the timeout
+        // the caller asked for beats inventing an errno for it.
         TimedOut | WouldBlock => return "timed out".to_string(),
         _ => {
             // Something uncategorised. `io::Error`'s text is the only

@@ -103,7 +103,7 @@ fn intern(name: &str) -> &'static str {
 
 // --- Argument helpers -------------------------------------------------------
 
-fn exactly(args: &[Value], n: usize, who: &str) -> VResult<()> {
+pub(crate) fn exactly(args: &[Value], n: usize, who: &str) -> VResult<()> {
     if args.len() != n {
         Err(format!("{who}() takes {n} argument(s) but {} were given", args.len()))
     } else {
@@ -840,62 +840,16 @@ fn stream_method(
     args: Vec<Value>,
 ) -> VResult<Value> {
     match name {
-        "read" => {
-            let n = match args.as_slice() {
-                [Value::Int(n)] => *n,
-                // `read()` with no argument would be a second behaviour under
-                // one name, and an unbounded read is a memory footgun on a
-                // server. Reading a whole stream is `io.read(r)`.
-                [] => {
-                    return Err("read() takes a size — use io.read(r) to read a whole stream"
-                        .to_string())
-                }
-                _ => {
-                    return Err(format!(
-                        "read() size argument must be int, not '{}'",
-                        type_of(&args, 0)
-                    ))
-                }
-            };
-            Ok(Value::bytes(s.read(n)?))
-        }
-        "write" => {
-            // Bytes only, in both directions, everywhere in the language. The
-            // spellings for text are `print("hi")` and `w.write(s.to_bytes())`.
-            let b = bytes_arg(&args, 0, "write")?;
-            s.write(&b)?;
-            Ok(Value::None)
-        }
-        "read_until" => {
-            let delim = bytes_arg(&args, 0, "read_until")?;
-            let limit = match args.get(1) {
-                Some(Value::Int(n)) => *n,
-                // The limit is required, not defaulted: it is the thing that
-                // stops a client sending an unbounded header block, and a
-                // default would be a number nobody chose.
-                None => return Err("read_until() takes a delimiter and a limit".to_string()),
-                Some(_) => {
-                    return Err(format!(
-                        "read_until() limit argument must be int, not '{}'",
-                        type_of(&args, 1)
-                    ))
-                }
-            };
-            exactly(&args, 2, "read_until")?;
-            Ok(Value::bytes(s.read_until(&delim, limit)?))
-        }
+        // The five that park, or wake a parked task, live in `crate::vm::sched`
+        // instead: a native method must answer with a `Value`, and the whole
+        // content of those is the `Step` they answer with. Spelled here rather
+        // than left to fall through, so a routing mistake says what it is.
+        "read" | "write" | "read_until" | "accept" | "close" => Err(format!(
+            "internal: {name}() on a stream must be dispatched by the VM (it can park)"
+        )),
         "bytes" => {
             exactly(&args, 0, "bytes")?;
             Ok(Value::bytes(s.bytes()?))
-        }
-        "close" => {
-            exactly(&args, 0, "close")?;
-            s.close()?;
-            Ok(Value::None)
-        }
-        "accept" => {
-            exactly(&args, 0, "accept")?;
-            Ok(Value::Stream(Rc::new(s.accept()?)))
         }
         // A half-close, and not the same thing as `close()`: it sends FIN and
         // keeps the read side, which is how a client says "that is the whole
@@ -941,7 +895,7 @@ fn stream_method(
 
 /// The type name of argument `i`, for a diagnostic. `null` when absent, so a
 /// missing argument reads the same way a wrong one does.
-fn type_of(args: &[Value], i: usize) -> &'static str {
+pub(crate) fn type_of(args: &[Value], i: usize) -> &'static str {
     args.get(i).map(|v| v.type_name()).unwrap_or_else(|| Value::None.type_name())
 }
 
@@ -1904,7 +1858,7 @@ fn str_method(
     }
 }
 
-fn bytes_arg(args: &[Value], i: usize, who: &str) -> VResult<Rc<Vec<u8>>> {
+pub(crate) fn bytes_arg(args: &[Value], i: usize, who: &str) -> VResult<Rc<Vec<u8>>> {
     match args.get(i) {
         Some(Value::Bytes(b)) => Ok(b.clone()),
         Some(other) => Err(format!("{who}() argument must be bytes, not '{}'", other.type_name())),

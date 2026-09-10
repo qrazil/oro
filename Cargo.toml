@@ -25,12 +25,20 @@ path = "src/lib.rs"
 # linear-time match (no ReDoS). A correct linear-time engine is a serious
 # project and a hand-rolled backtracker can hang on inputs like (a+)+b.
 #
-# `mio` will join it when the I/O reactor lands (docs/stdlib-server-design.md
-# §3) — std has no readiness API at all. It is deliberately NOT listed here
-# yet: nothing in the tree uses it, and a dependency that is declared before it
-# is needed is a dependency nobody re-argues.
+# `mio` backs the I/O reactor (docs/stdlib-server-design.md §3). std has no
+# epoll/kqueue API at all, so readiness notification — "tell me when this fd is
+# readable" — cannot be written in pure std without `unsafe` and a hand-rolled
+# syscall layer, and this crate has no `unsafe` in it. mio is the same
+# epoll/kqueue wrapper tokio is built on, with the async runtime taken off the
+# top: Oro is its own scheduler (the ready queue holds `Rc`-shaped tasks and can
+# never be `Send`), so a runtime is the one thing it must not import. Three
+# crates — `mio`, `libc`, `log` — against tokio's eight.
+#
+# `libc` is a *bindings* crate, declarations rather than an implementation, so
+# the static-musl release gate survives it. That is checked, not assumed.
 [dependencies]
 regex = "1"
+mio = { version = "1", features = ["os-poll", "net"] }
 
 # Release build for the distributed single binary.
 #

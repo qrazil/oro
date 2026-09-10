@@ -511,6 +511,16 @@ pub struct Vm {
     /// which turns the process exit code into 1. Shared with every handle
     /// rather than global, because a `Vm` is a value and the tests build many.
     failure_flag: Rc<Cell<bool>>,
+    /// The mio reactor: readiness for parked I/O, and the deadline list.
+    /// Entirely lazy — a program that never opens a socket and never sleeps
+    /// never creates an epoll fd (see [`sched::Reactor`]).
+    reactor: sched::Reactor,
+    /// Distinguishes one park of a task from the next, so a deadline armed for
+    /// an operation that has since finished can be recognised and dropped.
+    park_seq: u64,
+    /// Task switches since the program started, for the periodic non-blocking
+    /// reactor sweep. Only ever incremented while something is registered.
+    tick: u64,
 }
 
 /// Add two values with the VM's numeric/sequence `+` semantics. Exposed for
@@ -585,6 +595,9 @@ impl Vm {
             ready: VecDeque::new(),
             parked: HashMap::new(),
             failure_flag: Rc::new(Cell::new(false)),
+            reactor: sched::Reactor::default(),
+            park_seq: 0,
+            tick: 0,
         }
     }
 
@@ -1459,6 +1472,11 @@ impl Vm {
                     "spawn" => return self.do_spawn(args, kwargs),
                     "chan" => return self.do_chan(args, kwargs),
                     "yield_now" => return self.do_yield_now(args, kwargs),
+                    // `time.sleep` parks the calling task on the reactor's
+                    // deadline list. It used to be `std::thread::sleep`, which
+                    // stopped every task in the VM, so it too has to answer
+                    // with a `Step` rather than a `Value`.
+                    "time.sleep" => return self.do_sleep(args, kwargs),
                     "print" => return self.do_print(args, kwargs).map(|()| Step::Next),
                     // sorted(key=…) has to call Oro code, so it is driven from
                     // the VM rather than run as a pure native builtin.
@@ -1513,6 +1531,13 @@ impl Vm {
                     // is a first-class value and can cross tasks" case §3
                     // calls out.
                     if let Some(step) = self.task_or_channel_method(&m.receiver, name, &args, &kwargs)? {
+                        return Ok(step);
+                    }
+                    // The io protocol's two methods, plus `read_until`,
+                    // `accept` and `close`. Four of the five can park on the
+                    // reactor and the fifth has to *wake* whoever is parked, so
+                    // none of them can be a `Value`-returning native method.
+                    if let Some(step) = self.stream_io_method(&m.receiver, name, &args, &kwargs)? {
                         return Ok(step);
                     }
                     // `to_str` may need to run a user `__str__`, or render a

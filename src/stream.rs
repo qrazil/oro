@@ -25,12 +25,52 @@
 //! Oro code has no handle on the read buffer: no size to pass, no way to
 //! observe whether it has been allocated. Exposing any of that would be
 //! reintroducing `BufReader` under a new name.
+//!
+//! ## Sockets never block, and that changes the *signature*, not the protocol
+//!
+//! Every socket in Oro is in non-blocking mode from the moment it exists, so
+//! the four operations that can meet `EWOULDBLOCK` — `accept`, `read`,
+//! `read_until` and `write` — answer [`Io<T>`] rather than `T`: either the
+//! result, or "this would block, wait for *that* readiness and call me again".
+//! The waiting is not done here. It is done by the scheduler
+//! (`crate::vm::sched`), which parks the task, registers the fd with the mio
+//! reactor and calls back in. `File`, `Buffer`, stdin and stdout can never
+//! answer [`Io::Block`], so the tri-state costs them one `match` arm and
+//! nothing else.
+//!
+//! **Nothing in these methods holds a `RefCell` borrow when it returns
+//! `Io::Block`.** Each takes its borrow, tries the syscall and drops the borrow
+//! before answering, which is what lets a second task `close()` the same stream
+//! while the first is parked on it. `src/net.rs` records why that matters and
+//! `crate::vm::sched`'s docs record what enforces it.
+//!
+//! **Where a partly-finished operation keeps its progress** is the other half
+//! of that rule: not in a Rust stack frame (there is none across a park) and
+//! not in the stream (a second task must be able to use it), but in the
+//! caller's owned accumulator — `read_until`'s `acc`, `write`'s returned count.
+//! The scheduler owns those, inside the `Park`, where they are `'static`.
 
-use std::cell::{Ref, RefCell, RefMut};
+use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::Shutdown;
+use std::time::Duration;
+
+use mio::net::{TcpListener, TcpStream};
 
 use crate::value::VResult;
+
+/// What an I/O attempt on a non-blocking stream answers.
+///
+/// There is no third case: an operation either finished or is waiting on one
+/// readiness. Errors ride on the `VResult` around this, exactly as they did
+/// when the same calls blocked.
+pub enum Io<T> {
+    /// It finished, and here is the result.
+    Ready(T),
+    /// It would block. Wait for this readiness on this stream, then call the
+    /// same method again with the same accumulator.
+    Block(mio::Interest),
+}
 
 /// The read-buffer size, and the largest single `read` served from the buffer.
 /// One syscall per 8 KiB instead of one per byte.
@@ -81,12 +121,14 @@ enum Backing {
     Stdin,
     Stdout,
     Stderr,
-    /// A connected socket. Reads and writes are **blocking**, which is correct
-    /// for this milestone: one VM, one OS thread, one connection at a time.
-    /// When green threads arrive this is the variant that learns to park —
-    /// see the note on [`Inner::read_source`].
+    /// A connected socket, always in non-blocking mode. It is a `mio` socket
+    /// rather than a `std` one for one reason: `mio::event::Source` is what
+    /// `Registry::register` takes, and registering the fd is how a parked task
+    /// gets woken. Everything else about it — `Read`, `Write`, `shutdown`,
+    /// `set_nodelay`, `peer_addr` — is the `std` surface unchanged.
     Socket(TcpStream),
-    /// A listening socket. It has no read or write side at all.
+    /// A listening socket, also non-blocking. It has no read or write side at
+    /// all.
     Listener(TcpListener),
 }
 
@@ -102,19 +144,36 @@ struct Inner {
     /// sized at `BUFSIZE` so refilling never re-zeroes it.
     end: usize,
     closed: bool,
+    /// `set_timeout(secs)`. Not `SO_RCVTIMEO` any more: a non-blocking socket
+    /// never waits in the kernel, so a deadline is something the scheduler
+    /// enforces (`crate::vm::sched`'s timer list) and this is only where the
+    /// number is kept between `set_timeout` and the park that uses it.
+    timeout: Option<Duration>,
 }
 
 /// An open byte stream.
 pub struct OroStream {
     pub kind: StreamKind,
     inner: RefCell<Inner>,
+    /// The reactor token this stream's fd is registered under, or `0` for
+    /// "never parked on". Deliberately *outside* the `RefCell`: `close()` holds
+    /// the borrow while the scheduler needs to know which token to release.
+    token: Cell<usize>,
 }
 
 impl OroStream {
     fn new(kind: StreamKind, back: Backing) -> OroStream {
         OroStream {
             kind,
-            inner: RefCell::new(Inner { back, buf: Vec::new(), pos: 0, end: 0, closed: false }),
+            inner: RefCell::new(Inner {
+                back,
+                buf: Vec::new(),
+                pos: 0,
+                end: 0,
+                closed: false,
+                timeout: None,
+            }),
+            token: Cell::new(0),
         }
     }
 
@@ -150,7 +209,15 @@ impl OroStream {
         let end = b.len();
         OroStream {
             kind: StreamKind::Buffer,
-            inner: RefCell::new(Inner { back: Backing::Mem, buf: b, pos: 0, end, closed: false }),
+            inner: RefCell::new(Inner {
+                back: Backing::Mem,
+                buf: b,
+                pos: 0,
+                end,
+                closed: false,
+                timeout: None,
+            }),
+            token: Cell::new(0),
         }
     }
 
@@ -183,15 +250,16 @@ impl OroStream {
         Ok(OroStream::new(StreamKind::TcpListener { local }, Backing::Listener(ln)))
     }
 
-    /// `listener.accept()`: block until a client connects, then hand back a
-    /// stream that satisfies the io protocol exactly like a file does.
+    /// `listener.accept()`: the next queued connection, as a stream that
+    /// satisfies the io protocol exactly like a file does.
     ///
-    /// **Where the green-thread swap lands (1 of 3).** This is one of the three
-    /// blocking syscalls in the language. Under green threads it becomes
-    /// "register interest in readability, park the task, retry" — the shape of
-    /// the code around it does not change, because `accept` is already a
-    /// method that returns a stream or raises.
-    pub fn accept(&self) -> VResult<OroStream> {
+    /// **Where the green-thread swap landed (1 of 3).** It is the shape the
+    /// module docs predicted: the syscall is unchanged, and `EWOULDBLOCK` is no
+    /// longer an error but `Io::Block(READABLE)` — "park the task on this
+    /// listener's readability and call `accept` again". The borrow is dropped
+    /// on the way out of this function, so the task parks holding nothing but
+    /// an `Rc`.
+    pub fn accept(&self) -> VResult<Io<OroStream>> {
         let inner = self.borrow_open("accept")?;
         let ln = match &inner.back {
             Backing::Listener(ln) => ln,
@@ -202,8 +270,15 @@ impl OroStream {
                 ))
             }
         };
-        let (sock, _) = ln.accept().map_err(|e| crate::net::err_msg(&e))?;
-        OroStream::socket(sock).map_err(|e| crate::net::err_msg(&e))
+        let sock = match ln.accept() {
+            Ok((sock, _)) => sock,
+            Err(e) if would_block(&e) => return Ok(Io::Block(mio::Interest::READABLE)),
+            Err(e) => return Err(crate::net::err_msg(&e)),
+        };
+        // Dropped before the new stream is built, so `accept` never holds two
+        // stream borrows at once.
+        drop(inner);
+        OroStream::socket(sock).map(Io::Ready).map_err(|e| crate::net::err_msg(&e))
     }
 
     /// `conn.shutdown_write()`: send FIN, keep reading.
@@ -227,19 +302,27 @@ impl OroStream {
     ///
     /// One knob rather than two: separate read and write deadlines are two
     /// numbers that servers set to the same value (§4).
+    ///
+    /// This used to be `SO_RCVTIMEO`/`SO_SNDTIMEO`, and it cannot be any more:
+    /// the socket is non-blocking, so the kernel never waits and a kernel-side
+    /// deadline has nothing to expire. The number is recorded here and turned
+    /// into a scheduler deadline by the park that needs it — which is strictly
+    /// better than the socket option was, because it now covers the *whole*
+    /// operation (a `read_until` spanning four packets, a partial write
+    /// finishing over three) rather than restarting on each syscall.
     pub fn set_timeout(&self, secs: Option<f64>) -> VResult<()> {
         let d = match secs {
             None => None,
-            Some(s) if s > 0.0 && s.is_finite() => Some(std::time::Duration::from_secs_f64(s)),
+            Some(s) if s > 0.0 && s.is_finite() => Some(Duration::from_secs_f64(s)),
             Some(s) => {
                 return Err(format!("set_timeout() seconds must be positive, not {s}"));
             }
         };
-        let inner = self.borrow_open("set_timeout")?;
+        let mut inner = self.borrow_open_mut("set_timeout")?;
         match &inner.back {
-            Backing::Socket(s) => {
-                s.set_read_timeout(d).map_err(|e| crate::net::err_msg(&e))?;
-                s.set_write_timeout(d).map_err(|e| crate::net::err_msg(&e))
+            Backing::Socket(_) => {
+                inner.timeout = d;
+                Ok(())
             }
             // A listener has no timeout on purpose: an `accept` that gives up
             // after n seconds is a loop condition dressed as an error. Shutdown
@@ -338,7 +421,7 @@ impl OroStream {
     /// `read(n)`: between 1 and `n` bytes, or `b""` at EOF. A short read is not
     /// an error and does not mean EOF — it means "this is what has arrived".
     /// Code that needs exactly `n` bytes calls `io.read(r, n)`.
-    pub fn read(&self, n: i64) -> VResult<Vec<u8>> {
+    pub fn read(&self, n: i64) -> VResult<Io<Vec<u8>>> {
         // `read(0)` would return b"" and look like EOF, so it is a ValueError
         // rather than a second thing b"" can mean.
         if n < 1 {
@@ -350,21 +433,40 @@ impl OroStream {
         // to its own allocation: buffering it would only copy it twice.
         if inner.refills() && inner.pos == inner.end && n >= BUFSIZE {
             let mut out = vec![0u8; n];
-            let got = inner.read_source(&mut out)?;
+            let got = match inner.read_source(&mut out)? {
+                Io::Ready(k) => k,
+                Io::Block(i) => return Ok(Io::Block(i)),
+            };
             out.truncate(got);
-            return Ok(out);
+            return Ok(Io::Ready(out));
         }
-        let avail = inner.fill()?;
+        // Buffered bytes are served without a syscall, so a `read` only ever
+        // blocks when there is genuinely nothing to hand back — which is what
+        // keeps the park rare rather than per-call.
+        let avail = match inner.fill()? {
+            Io::Ready(k) => k,
+            Io::Block(i) => return Ok(Io::Block(i)),
+        };
         let k = avail.min(n);
         let out = inner.buf[inner.pos..inner.pos + k].to_vec();
         inner.pos += k;
-        Ok(out)
+        Ok(Io::Ready(out))
     }
 
-    /// `write(b)`: all of `b`, or an error. No count is returned — under green
-    /// threads a short write is the runtime's problem, not the caller's, so
-    /// there is no branch here for every call site to get wrong.
-    pub fn write(&self, b: &[u8]) -> VResult<()> {
+    /// One attempt at writing `b`: `Io::Ready(k)` with `1 <= k <= b.len()`, or
+    /// `Io::Block(WRITABLE)` when the kernel's send buffer is full.
+    ///
+    /// This is the *primitive*, not the protocol. §2's `write(b)` writes all of
+    /// `b` or raises, and that contract is met one level up, by the scheduler
+    /// looping on `k` across as many parks as it takes. Keeping the count here
+    /// rather than a `write_all` loop is what makes a partial write resumable:
+    /// a Rust loop cannot survive a park, and an owned `done` counter in the
+    /// `Park` can.
+    ///
+    /// A backing that cannot block (a file, a `Buffer`, stdout) still writes
+    /// all of `b` in one call and answers `Io::Ready(b.len())`, so nothing but
+    /// a socket ever sees the loop go round twice.
+    pub fn write(&self, b: &[u8]) -> VResult<Io<usize>> {
         let mut inner = self.borrow_open_mut("write")?;
         inner.write_source(b)
     }
@@ -379,7 +481,10 @@ impl OroStream {
     /// is what stops a client sending an unbounded header block. At EOF it
     /// returns what it has, delimiter or not — the same rule `read` follows,
     /// where the end of a stream is not a fault.
-    pub fn read_until(&self, delim: &[u8], limit: i64) -> VResult<Vec<u8>> {
+    /// `out` is the caller's accumulator and carries the partial result across
+    /// a park: on `Io::Block` it holds every byte scanned so far, and the next
+    /// call resumes from there. It is empty on the first call.
+    pub fn read_until(&self, delim: &[u8], limit: i64, out: &mut Vec<u8>) -> VResult<Io<Vec<u8>>> {
         if delim.is_empty() {
             return Err("read_until() delimiter must not be empty".to_string());
         }
@@ -389,10 +494,13 @@ impl OroStream {
         let limit = limit as usize;
         let mut inner = self.borrow_readable("read_until")?;
         let too_long = || format!("read_until() found no delimiter in the first {limit} bytes");
-        let mut out: Vec<u8> = Vec::new();
         loop {
-            if inner.fill()? == 0 {
-                return Ok(out);
+            match inner.fill()? {
+                // EOF: the end of a stream is not a fault, so what has arrived
+                // is the answer, delimiter or not.
+                Io::Ready(0) => return Ok(Io::Ready(std::mem::take(out))),
+                Io::Ready(_) => {}
+                Io::Block(i) => return Ok(Io::Block(i)),
             }
             let chunk = &inner.buf[inner.pos..inner.end];
             // Everything already collected has been scanned, so the only
@@ -421,7 +529,7 @@ impl OroStream {
                     // belongs to the next read.
                     out.extend_from_slice(&chunk[..take]);
                     inner.pos += take;
-                    return Ok(out);
+                    return Ok(Io::Ready(std::mem::take(out)));
                 }
                 None => {
                     out.extend_from_slice(chunk);
@@ -473,6 +581,15 @@ impl OroStream {
     /// `close()`. Not part of the protocol and not an interface: refcounting
     /// already closes a stream when its last reference drops, which is why Oro
     /// has no `with`. This is for the cases where end of scope is too late.
+    ///
+    /// A task may be parked on this stream right now — that is the whole hazard
+    /// `src/net.rs` records — and this method does not and cannot wake it: the
+    /// scheduler owns the parked map. What it guarantees instead is that the
+    /// borrow it takes is *not* one the parked task is holding, so this cannot
+    /// panic; the scheduler reads [`token`](Self::token) afterwards and raises
+    /// in whoever was waiting. Dropping the backing closes the fd, and a closed
+    /// fd leaves the kernel's epoll set on its own, so there is no
+    /// deregistration to forget.
     pub fn close(&self) -> VResult<()> {
         let mut inner = self.inner.borrow_mut();
         // Dropping the handle closes the fd. Writers are unbuffered, so there
@@ -484,17 +601,56 @@ impl OroStream {
         inner.closed = true;
         Ok(())
     }
+
+    // --- What the reactor needs, and nothing more ---------------------------
+
+    /// The deadline `set_timeout` asked for, if any. Read by the scheduler at
+    /// the moment an operation first blocks.
+    pub fn timeout(&self) -> Option<Duration> {
+        self.inner.borrow().timeout
+    }
+
+    /// The reactor token this stream is registered under, or `None` if it has
+    /// never had to park.
+    pub fn token(&self) -> Option<usize> {
+        match self.token.get() {
+            0 => None,
+            t => Some(t),
+        }
+    }
+
+    /// Register this stream's fd with `registry` under `token`, for both
+    /// readability and writability.
+    ///
+    /// One registration per stream, ever. mio's epoll registration is
+    /// edge-triggered, so interest in a direction nobody is parked on costs at
+    /// most one spurious retry (the writable edge that fires once, just after
+    /// the fd is added) and never a spin — and it buys back the
+    /// register/deregister pair that every park would otherwise pay for.
+    pub fn register(&self, registry: &mio::Registry, token: usize) -> VResult<()> {
+        let mut inner = self.borrow_open_mut("read")?;
+        let interest = mio::Interest::READABLE | mio::Interest::WRITABLE;
+        let tok = mio::Token(token);
+        let r = match &mut inner.back {
+            Backing::Socket(s) => registry.register(s, tok, interest),
+            Backing::Listener(l) => registry.register(l, tok, interest),
+            _ => return Err("internal: only a socket can be registered".to_string()),
+        };
+        r.map_err(|e| crate::net::err_msg(&e))?;
+        self.token.set(token);
+        Ok(())
+    }
 }
 
 impl Inner {
     /// Bytes available at `buf[pos..end]`, refilling from the source first if
     /// the buffer is spent. `0` means EOF.
-    fn fill(&mut self) -> VResult<usize> {
+    fn fill(&mut self) -> VResult<Io<usize>> {
         if self.pos < self.end {
-            return Ok(self.end - self.pos);
+            return Ok(Io::Ready(self.end - self.pos));
         }
         if !self.refills() {
-            return Ok(0);
+            return Ok(Io::Ready(0));
         }
         // First read: this is where the 8 KiB appears. An idle stream never
         // reaches here and never pays for it.
@@ -506,8 +662,13 @@ impl Inner {
         let mut scratch = std::mem::take(&mut self.buf);
         let got = self.read_source(&mut scratch);
         self.buf = scratch;
-        self.end = got?;
-        Ok(self.end)
+        // `pos == end == 0` either way, so a blocked refill leaves the stream
+        // exactly as it found it and the retry re-runs this whole function.
+        self.end = match got? {
+            Io::Ready(k) => k,
+            Io::Block(i) => return Ok(Io::Block(i)),
+        };
+        Ok(Io::Ready(self.end))
     }
 
     /// Whether this stream has a read side. A `Buffer` does, and serves it
@@ -523,16 +684,21 @@ impl Inner {
 
     /// One `read(2)` into `out`, from whatever this stream is over.
     ///
-    /// **Where the green-thread swap lands (2 of 3).** The socket arm is the
-    /// only blocking read in the language, and it is one line. Under green
-    /// threads it becomes: attempt the read; on `EWOULDBLOCK`, register the fd
-    /// for readability and park the task; resume and retry. Everything above
-    /// this function — `read`, `read_until`, the buffer, `io.read`,
-    /// `io.copy` — is unchanged by that, because the only thing that changes
-    /// is how long this call takes to answer.
-    fn read_source(&mut self, out: &mut [u8]) -> VResult<usize> {
+    /// **Where the green-thread swap landed (2 of 3).** The socket arm is the
+    /// only read in the language that can meet `EWOULDBLOCK`, and it is still
+    /// one line plus the arm that names it. Everything above this function —
+    /// `read`, `read_until`, the lazy 8 KiB buffer, `io.read`, `io.copy` — is
+    /// unchanged, because the only thing that changed is that this call can now
+    /// answer "not yet" instead of waiting.
+    fn read_source(&mut self, out: &mut [u8]) -> VResult<Io<usize>> {
         match &mut self.back {
-            Backing::Socket(s) => return s.read(out).map_err(|e| crate::net::err_msg(&e)),
+            Backing::Socket(s) => {
+                return match s.read(out) {
+                    Ok(k) => Ok(Io::Ready(k)),
+                    Err(e) if would_block(&e) => Ok(Io::Block(mio::Interest::READABLE)),
+                    Err(e) => Err(crate::net::err_msg(&e)),
+                }
+            }
             // A Buffer's bytes are all in `buf`, and a writer never reads.
             Backing::Mem | Backing::Write(_) | Backing::Stdout | Backing::Stderr
             | Backing::Listener(_) => {
@@ -545,17 +711,27 @@ impl Inner {
             Backing::Stdin => std::io::stdin().read(out),
             _ => unreachable!("every other backing answered above"),
         };
-        r.map_err(|e| e.to_string())
+        r.map(Io::Ready).map_err(|e| e.to_string())
     }
 
     fn read_source_to_end(&mut self, out: &mut Vec<u8>) -> VResult<()> {
         let r = match &mut self.back {
             Backing::Read(f) => f.read_to_end(out).map(|_| ()),
             Backing::Stdin => std::io::stdin().read_to_end(out).map(|_| ()),
-            // A socket has no size to `stat`, so this is the chunked path
-            // either way; `read_to_end` stops at the peer's FIN.
-            Backing::Socket(s) => {
-                return s.read_to_end(out).map(|_| ()).map_err(|e| crate::net::err_msg(&e))
+            // A socket cannot come here, and the reason is worth spelling.
+            // "Read to EOF" on a socket is an unbounded wait, and an unbounded
+            // wait inside one Rust call is exactly the thing green threads make
+            // impossible: there is no park point in the middle of a
+            // `read_to_end`. `io.read(r)` already routes a socket to its Oro
+            // chunk loop — `while chunk != b""` over `r.read(_CHUNK)` — where
+            // every iteration is a park point and the loop survives a
+            // suspension because it lives in Oro frames rather than Rust ones.
+            // Only `File` and `Buffer` reach the `stat`-and-allocate-once path,
+            // which is what `std/io.oro` has always dispatched on.
+            Backing::Socket(_) => {
+                return Err("internal: read_all() on a socket — io.read(r) takes the chunk \
+                            loop for a stream with no knowable size"
+                    .to_string())
             }
             // A Buffer is already whole; `read_all` took its remainder above.
             Backing::Mem => Ok(()),
@@ -566,7 +742,7 @@ impl Inner {
         r.map_err(|e| e.to_string())
     }
 
-    fn write_source(&mut self, b: &[u8]) -> VResult<()> {
+    fn write_source(&mut self, b: &[u8]) -> VResult<Io<usize>> {
         let r = match &mut self.back {
             Backing::Write(f) => f.write_all(b),
             // Unbuffered: the write is flushed before the call returns, which
@@ -592,12 +768,22 @@ impl Inner {
                 self.end = self.buf.len();
                 Ok(())
             }
-            // **Where the green-thread swap lands (3 of 3).** `write_all`
-            // loops until every byte is gone, which is exactly the contract
-            // §2 gives `write`; under green threads the loop's `EWOULDBLOCK`
-            // arm parks the task instead of blocking the VM, and no caller
-            // learns about it because `write` has no return value to change.
-            Backing::Socket(s) => return s.write_all(b).map_err(|e| crate::net::err_msg(&e)),
+            // **Where the green-thread swap landed (3 of 3).** This used to be
+            // `write_all`, whose loop is exactly the contract §2 gives
+            // `write` — and exactly the loop that cannot survive a park,
+            // because its progress lives in a Rust stack frame. So the loop
+            // moved up into the scheduler, where "how much has gone" is an
+            // owned `usize` inside the `Park`, and what is left here is one
+            // `write(2)`. The contract is unchanged and no caller learns about
+            // any of it, because `write` has no return value to change.
+            Backing::Socket(s) => {
+                return match s.write(b) {
+                    Ok(0) if !b.is_empty() => Err("[Errno 32] Broken pipe".to_string()),
+                    Ok(k) => Ok(Io::Ready(k)),
+                    Err(e) if would_block(&e) => Ok(Io::Block(mio::Interest::WRITABLE)),
+                    Err(e) => Err(crate::net::err_msg(&e)),
+                }
+            }
             Backing::Listener(_) => {
                 return Err("write() on a TcpListener, which is not a stream of bytes".to_string())
             }
@@ -605,7 +791,9 @@ impl Inner {
                 return Err("write() on a stream open for reading (mode 'r')".to_string())
             }
         };
-        r.map_err(|e| e.to_string())
+        // Everything that is not a socket wrote all of `b` or failed; there is
+        // no partial case for the caller's loop to go round twice on.
+        r.map(|()| Io::Ready(b.len())).map_err(|e| e.to_string())
     }
 
     /// Bytes remaining in the source, when that is knowable: a regular file's
@@ -624,6 +812,16 @@ impl Inner {
         usize::try_from(meta.len().saturating_sub(pos)).ok()
     }
 
+}
+
+/// Whether an `io::Error` is the kernel saying "not now".
+///
+/// `EINTR` is folded in here rather than treated as a failure: a signal that
+/// interrupted the syscall means nothing happened, and the retry is a re-park
+/// that costs one loop of the scheduler. `WouldBlock` is `EAGAIN` and
+/// `EWOULDBLOCK` both — `io::ErrorKind` already unifies the two spellings.
+fn would_block(e: &std::io::Error) -> bool {
+    matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted)
 }
 
 /// The offset of `needle` in `hay`, or `None`.

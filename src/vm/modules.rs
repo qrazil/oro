@@ -132,18 +132,13 @@ fn time_time(args: Vec<Value>) -> Result<Value, String> {
     Ok(Value::Float(now.as_secs_f64()))
 }
 
-fn time_sleep(args: Vec<Value>) -> Result<Value, String> {
-    let secs = match args.as_slice() {
-        [Value::Float(f)] => *f,
-        [Value::Int(i)] => *i as f64,
-        [Value::Bool(b)] => *b as i64 as f64,
-        _ => return Err("sleep() takes one number of seconds".to_string()),
-    };
-    if secs < 0.0 {
-        return Err("sleep length must be non-negative".to_string());
-    }
-    std::thread::sleep(std::time::Duration::from_secs_f64(secs));
-    Ok(Value::None)
+/// `time.sleep` is finished in the VM: it *parks* the calling task on the
+/// reactor's deadline list rather than stopping the OS thread, so every other
+/// task keeps running. A builtin can only answer with a `Value`, and the whole
+/// content of this one is the `Step` it answers with, so this stub is never
+/// invoked directly — the same arrangement `proc.run` has.
+fn time_sleep(_args: Vec<Value>) -> Result<Value, String> {
+    Err("internal: time.sleep must be dispatched by the VM (it parks)".to_string())
 }
 
 /// Monotonic seconds from a fixed reference — only ever increases. Use it for

@@ -20,11 +20,63 @@
 //! hierarchy are both in scope.
 
 use super::*;
-use crate::stream::OroStream;
+use crate::stream::{Io, OroStream};
 
 /// The hang guard, in seconds. Nothing here takes milliseconds; this only ever
 /// fires on a bug.
 const GUARD: f64 = 20.0;
+
+/// Wait for a non-blocking operation to finish, the way the scheduler would.
+///
+/// Every socket in Oro is non-blocking now, so `read`, `write`, `read_until`
+/// and `accept` answer [`Io<T>`]: the result, or "would block". The thing that
+/// *waits* is the reactor, and there is no VM here — these tests exercise
+/// `crate::stream`'s semantics directly, one layer below the scheduler, which
+/// is the layer they have always been about.
+///
+/// Spinning with a 1 ms sleep is the honest stand-in at that layer, and it
+/// keeps the file's third rule: [`GUARD`] bounds it, so a bug in the code under
+/// test fails the run in seconds rather than stalling CI. The *scheduler's*
+/// parking is checked where it belongs, in `crate::vm::tests`, against real
+/// concurrent tasks.
+fn spin<T>(mut f: impl FnMut() -> VResult<Io<T>>) -> VResult<T> {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs_f64(GUARD);
+    loop {
+        match f()? {
+            Io::Ready(v) => return Ok(v),
+            Io::Block(_) if std::time::Instant::now() >= until => return Err("timed out".into()),
+            Io::Block(_) => std::thread::sleep(std::time::Duration::from_millis(1)),
+        }
+    }
+}
+
+fn rd(s: &OroStream, n: i64) -> VResult<Vec<u8>> {
+    spin(|| s.read(n))
+}
+
+/// §2's `write(b)`: all of `b`, or raises. The loop over the partial-write
+/// count is the scheduler's job in the real thing; here it is three lines.
+fn wr(s: &OroStream, b: &[u8]) -> VResult<()> {
+    let mut done = 0usize;
+    spin(move || {
+        while done < b.len() {
+            match s.write(&b[done..])? {
+                Io::Ready(k) => done += k,
+                Io::Block(i) => return Ok(Io::Block(i)),
+            }
+        }
+        Ok(Io::Ready(()))
+    })
+}
+
+fn ru(s: &OroStream, delim: &[u8], limit: i64) -> VResult<Vec<u8>> {
+    let mut acc = Vec::new();
+    spin(move || s.read_until(delim, limit, &mut acc))
+}
+
+fn ac(s: &OroStream) -> VResult<OroStream> {
+    spin(|| s.accept())
+}
 
 /// A connected pair on the loopback, plus the listener that made it.
 ///
@@ -35,7 +87,7 @@ fn pair() -> (OroStream, OroStream, OroStream) {
     let ln = listen("127.0.0.1:0").expect("bind on an ephemeral port");
     let addr = ln.addr_attr("local").unwrap();
     let client = dial(&addr).expect("dial the listener we just bound");
-    let server = ln.accept().expect("accept the connection we just made");
+    let server = ac(&ln).expect("accept the connection we just made");
     client.set_timeout(Some(GUARD)).unwrap();
     server.set_timeout(Some(GUARD)).unwrap();
     (ln, server, client)
@@ -64,20 +116,20 @@ fn dead_addr() -> String {
 #[test]
 fn a_socket_is_a_reader_and_a_writer() {
     let (_ln, server, client) = pair();
-    client.write(b"ping").unwrap();
-    assert_eq!(server.read(4).unwrap(), b"ping");
-    server.write(b"pong").unwrap();
-    assert_eq!(client.read(4).unwrap(), b"pong");
+    wr(&client, b"ping").unwrap();
+    assert_eq!(rd(&server, 4).unwrap(), b"ping");
+    wr(&server, b"pong").unwrap();
+    assert_eq!(rd(&client, 4).unwrap(), b"pong");
 }
 
 #[test]
 fn read_returns_at_most_n_and_at_least_one_byte() {
     let (_ln, server, client) = pair();
-    client.write(b"abc").unwrap();
+    wr(&client, b"abc").unwrap();
     // `n` is a maximum, and a short read is not EOF — it is "this is what has
     // arrived". The only thing guaranteed is 1..=3, which is precisely why
     // code needing exactly n bytes calls `io.read(r, n)`.
-    let got = server.read(4096).unwrap();
+    let got = rd(&server, 4096).unwrap();
     assert!(!got.is_empty() && got.len() <= 3, "read(4096) returned {got:?}");
     assert!(b"abc".starts_with(&got[..]));
 }
@@ -87,19 +139,19 @@ fn read_zero_is_an_error_on_a_socket_too() {
     let (_ln, server, _client) = pair();
     // `read(0)` would return b"" and look like EOF; there is exactly one thing
     // b"" means (§2).
-    assert!(server.read(0).is_err());
-    assert!(server.read(-1).is_err());
+    assert!(rd(&server, 0).is_err());
+    assert!(rd(&server, -1).is_err());
 }
 
 #[test]
 fn eof_is_an_empty_read_after_the_peer_closes() {
     let (_ln, server, client) = pair();
-    client.write(b"last").unwrap();
+    wr(&client, b"last").unwrap();
     client.close().unwrap();
-    assert_eq!(server.read(64).unwrap(), b"last");
+    assert_eq!(rd(&server, 64).unwrap(), b"last");
     // The end of a stream is not a fault, and it stays ended.
-    assert_eq!(server.read(64).unwrap(), b"");
-    assert_eq!(server.read(64).unwrap(), b"");
+    assert_eq!(rd(&server, 64).unwrap(), b"");
+    assert_eq!(rd(&server, 64).unwrap(), b"");
 }
 
 #[test]
@@ -110,39 +162,56 @@ fn read_until_spans_two_packets() {
     // unlucky coalesce weakens the test's reach without making it flaky.
     let (_ln, server, client) = pair();
     let writer = std::thread::spawn(move || {
-        client.write(b"GET / HTTP/1.1\r\nHost: x\r\n\r").unwrap();
+        wr(&client, b"GET / HTTP/1.1\r\nHost: x\r\n\r").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(40));
-        client.write(b"\nBODY").unwrap();
+        wr(&client, b"\nBODY").unwrap();
         client
     });
-    let head = server.read_until(b"\r\n\r\n", 65536).unwrap();
+    let head = ru(&server, b"\r\n\r\n", 65536).unwrap();
     assert_eq!(head, b"GET / HTTP/1.1\r\nHost: x\r\n\r\n");
     // Everything after the delimiter belongs to the next read, and must still
     // be there: over-reading past the delimiter with nowhere to put the excess
     // is the other half of this bug.
     let _client = writer.join().unwrap();
-    assert_eq!(server.read(64).unwrap(), b"BODY");
+    assert_eq!(rd(&server, 64).unwrap(), b"BODY");
 }
 
 #[test]
 fn read_until_raises_past_the_limit() {
     let (_ln, server, client) = pair();
-    client.write(b"a header line far longer than the limit\r\n").unwrap();
-    let e = server.read_until(b"\r\n", 8).unwrap_err();
+    wr(&client, b"a header line far longer than the limit\r\n").unwrap();
+    let e = ru(&server, b"\r\n", 8).unwrap_err();
     // The limit is what stops a client sending an unbounded header block. The
     // classifier answers `ValueError` to this message; 42_net.oro checks that.
     assert!(e.contains("found no delimiter"), "{e}");
 }
 
 #[test]
-fn read_all_on_a_socket_stops_at_the_peers_fin() {
-    // `io.read(r)` with no count reaches this for a Rust stream. A socket has
-    // no size to `stat`, so this is the chunked path, and it must end at EOF
-    // rather than block for ever.
+fn read_all_refuses_a_socket_and_the_chunk_loop_covers_it() {
+    // `read_all` is the `stat`-and-allocate-once path, and it used to accept a
+    // socket by falling back to `read_to_end`. Under green threads it cannot:
+    // "read until EOF" on a socket is an unbounded wait, and there is no park
+    // point in the middle of one Rust call. So it says so...
     let (_ln, server, client) = pair();
-    client.write(b"whole message").unwrap();
+    wr(&client, b"whole message").unwrap();
     client.shutdown_write().unwrap();
-    assert_eq!(server.read_all().unwrap(), b"whole message");
+    let e = server.read_all().unwrap_err();
+    assert!(e.contains("io.read(r) takes the chunk loop"), "{e}");
+
+    // ...and nothing loses a capability, because `std/io.oro` has always
+    // dispatched `io.read(r)` on the type: `File` and `Buffer` take the fast
+    // path, and everything else — a socket, or an Oro class with a `read`
+    // method — takes the `while chunk != b""` loop, where every iteration is a
+    // park point. This is that loop, spelled in Rust.
+    let mut all = Vec::new();
+    loop {
+        let chunk = rd(&server, 65536).unwrap();
+        if chunk.is_empty() {
+            break;
+        }
+        all.extend_from_slice(&chunk);
+    }
+    assert_eq!(all, b"whole message");
 }
 
 // --- The half-close, §4 -------------------------------------------------------
@@ -150,17 +219,17 @@ fn read_all_on_a_socket_stops_at_the_peers_fin() {
 #[test]
 fn shutdown_write_ends_one_direction_and_keeps_the_other() {
     let (_ln, server, client) = pair();
-    client.write(b"request").unwrap();
+    wr(&client, b"request").unwrap();
     client.shutdown_write().unwrap();
-    assert_eq!(server.read(64).unwrap(), b"request");
+    assert_eq!(rd(&server, 64).unwrap(), b"request");
     // The peer saw the FIN...
-    assert_eq!(server.read(64).unwrap(), b"");
+    assert_eq!(rd(&server, 64).unwrap(), b"");
     // ...and the answer still gets back, which is the entire point of a
     // half-close being a different thing from `close()`.
-    server.write(b"response").unwrap();
-    assert_eq!(client.read(64).unwrap(), b"response");
+    wr(&server, b"response").unwrap();
+    assert_eq!(rd(&client, 64).unwrap(), b"response");
     // Writing after the half-close is the caller's mistake, not a silent no-op.
-    assert!(client.write(b"more").is_err());
+    assert!(wr(&client, b"more").is_err());
 }
 
 // --- Addresses ----------------------------------------------------------------
@@ -195,9 +264,9 @@ fn ipv6_uses_gos_bracket_form() {
     let addr = ln.addr_attr("local").unwrap();
     assert!(addr.starts_with("[::1]:"), "{addr}");
     let client = dial(&addr).unwrap();
-    let server = ln.accept().unwrap();
-    client.write(b"v6").unwrap();
-    assert_eq!(server.read(2).unwrap(), b"v6");
+    let server = ac(&ln).unwrap();
+    wr(&client, b"v6").unwrap();
+    assert_eq!(rd(&server, 2).unwrap(), b"v6");
 }
 
 #[test]
@@ -243,7 +312,7 @@ fn writing_to_a_vanished_peer_raises_a_connection_error() {
     // than asserting a fixed one.
     let mut err = None;
     for _ in 0..50 {
-        match server.write(b"x") {
+        match wr(&server, b"x") {
             Ok(()) => std::thread::sleep(std::time::Duration::from_millis(10)),
             Err(e) => {
                 err = Some(e);
@@ -260,17 +329,31 @@ fn writing_to_a_vanished_peer_raises_a_connection_error() {
 }
 
 #[test]
-fn a_read_deadline_is_a_timeout_error() {
+fn a_deadline_is_recorded_here_and_enforced_by_the_scheduler() {
+    // `set_timeout` used to be `SO_RCVTIMEO`, and an expired read came back
+    // from the kernel as `EWOULDBLOCK`. It cannot be that any more: the socket
+    // is non-blocking, so the kernel never waits and a kernel-side deadline has
+    // nothing to expire. The number is recorded here...
+    // `pair()` has already set one — the hang guard — so this starts by
+    // overwriting it rather than by asserting there is none.
     let (_ln, server, client) = pair();
     server.set_timeout(Some(0.05)).unwrap();
-    let e = server.read(64).unwrap_err();
-    // CPython's message for a socket deadline is the bare "timed out", with no
-    // errno, and that is what the classifier already keys `TimeoutError` on.
-    assert_eq!(e, "timed out");
-    // Clearing it puts the socket back to blocking.
+    assert_eq!(server.timeout(), Some(std::time::Duration::from_millis(50)));
     server.set_timeout(None).unwrap();
-    client.write(b"now").unwrap();
-    assert_eq!(server.read(64).unwrap(), b"now");
+    assert_eq!(server.timeout(), None);
+
+    // ...and it does not change what this layer does, which is answer "would
+    // block" at once, every time, deadline or no deadline.
+    server.set_timeout(Some(0.05)).unwrap();
+    assert!(matches!(server.read(64), Ok(Io::Block(_))));
+
+    // Turning that deadline into the same `TimeoutError` it always raised is
+    // the scheduler's timer list, which needs tasks to be meaningful and is
+    // checked in `crate::vm::tests::a_read_timeout_fires_while_another_task_runs`.
+    // What this layer still owes is that clearing it works.
+    server.set_timeout(None).unwrap();
+    wr(&client, b"now").unwrap();
+    assert_eq!(rd(&server, 64).unwrap(), b"now");
 }
 
 #[test]
@@ -286,10 +369,10 @@ fn a_timeout_must_be_a_positive_number() {
 #[test]
 fn a_listener_is_not_a_stream_of_bytes() {
     let ln = listen("127.0.0.1:0").unwrap();
-    let e = ln.read(16).unwrap_err();
+    let e = rd(&ln, 16).unwrap_err();
     assert!(e.contains("not a stream of bytes"), "{e}");
-    assert!(ln.write(b"x").unwrap_err().contains("not a stream of bytes"));
-    assert!(ln.read_until(b"\n", 16).is_err());
+    assert!(wr(&ln, b"x").unwrap_err().contains("not a stream of bytes"));
+    assert!(ru(&ln, b"\n", 16).is_err());
     // ...and the socket operations are the other way round.
     assert!(ln.shutdown_write().is_err());
     assert!(ln.set_nodelay(true).is_err());
@@ -300,7 +383,7 @@ fn a_listener_is_not_a_stream_of_bytes() {
 #[test]
 fn accept_on_a_socket_is_a_mistake_not_a_hang() {
     let (_ln, server, _client) = pair();
-    assert!(failure(server.accept()).contains("not a listener"));
+    assert!(failure(ac(&server)).contains("not a listener"));
 }
 
 #[test]
@@ -310,8 +393,8 @@ fn close_frees_the_port_and_the_stream() {
     ln.close().unwrap();
     // Every operation on a closed stream says so, rather than answering with a
     // plausible EOF.
-    assert!(failure(ln.accept()).contains("on a closed TcpListener"));
-    assert!(ln.read(1).unwrap_err().contains("on a closed TcpListener"));
+    assert!(failure(ac(&ln)).contains("on a closed TcpListener"));
+    assert!(rd(&ln, 1).unwrap_err().contains("on a closed TcpListener"));
     // The fd really went: the port is refused and bindable again, which is also
     // what makes `dead_addr()` above trustworthy.
     assert!(failure(dial(&addr)).contains("Connection refused"));
@@ -323,8 +406,8 @@ fn close_frees_the_port_and_the_stream() {
 fn a_closed_socket_refuses_reads_and_writes() {
     let (_ln, server, client) = pair();
     client.close().unwrap();
-    assert!(client.read(1).unwrap_err().contains("on a closed TcpStream"));
-    assert!(client.write(b"x").unwrap_err().contains("on a closed TcpStream"));
+    assert!(rd(&client, 1).unwrap_err().contains("on a closed TcpStream"));
+    assert!(wr(&client, b"x").unwrap_err().contains("on a closed TcpStream"));
     assert!(client.shutdown_write().unwrap_err().contains("on a closed TcpStream"));
     let _ = server;
 }
