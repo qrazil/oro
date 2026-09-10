@@ -921,6 +921,11 @@ impl<'a> Codegen<'a> {
                     .freevars
                     .iter()
                     .position(|&s| s == sym)
+                    // Unlike the lookup in `unthreaded_check`, this one cannot
+                    // be reached by any program: `sym` is already a free
+                    // variable of `child`, and the resolve pass threads a free
+                    // variable through *every* function between the user and
+                    // the owner, this one included.
                     .expect("free variable must be available in the enclosing function")
                     as u16;
                 captures.push(CaptureSource::Free(idx));
@@ -931,6 +936,7 @@ impl<'a> Codegen<'a> {
     }
 
     // --- Stores --------------------------------------------------------------
+
     /// Where `name` lives in the current scope, as a diagnostic rather than a
     /// panic when the resolve pass never threaded it. Every expression that can
     /// hold a name is walked by that pass, so this should be unreachable — but
