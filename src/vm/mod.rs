@@ -539,7 +539,16 @@ enum OrdState {
     /// permutation reorders the keys and the items it decorates together —
     /// the classic decorate-sort-undecorate, which is what the native
     /// `sort_by_keys` this replaces does too.
-    Merge { src: Vec<usize>, dst: Vec<usize>, width: usize, lo: usize, mid: usize, hi: usize, i: usize, j: usize },
+    Merge {
+        src: Vec<usize>,
+        dst: Vec<usize>,
+        width: usize,
+        lo: usize,
+        mid: usize,
+        hi: usize,
+        i: usize,
+        j: usize,
+    },
     /// A linear min/max fold: `best` is the index of the winner so far, `next`
     /// the candidate being weighed.
     Fold { best: usize, next: usize },
@@ -3194,12 +3203,15 @@ impl Vm {
             OrdKind::Extreme { want_min, who } => {
                 let want =
                     if want_min { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater };
+                let sym = if want_min { "<" } else { ">" };
                 let mut best = 0;
                 if items.is_empty() {
                     return Err(self.err(format!("{who}() arg is an empty sequence")));
                 }
                 for i in 1..items.len() {
-                    if self.wrap(crate::builtins::ord_or_defer(&keys[i], &keys[best], if want_min { "<" } else { ">" }))? == want {
+                    let ord =
+                        self.wrap(crate::builtins::ord_or_defer(&keys[i], &keys[best], sym))?;
+                    if ord == want {
                         best = i;
                     }
                 }
@@ -3272,11 +3284,9 @@ impl Vm {
         let keys = items.clone();
         let kind = match name {
             "sorted" => OrdKind::Sort(SeqShape::List),
-            other => OrdKind::Extreme { want_min: other == "min", who: if other == "min" { "min" } else { "max" } },
+            "min" => OrdKind::Extreme { want_min: true, who: "min" },
+            _ => OrdKind::Extreme { want_min: false, who: "max" },
         };
-        if matches!(kind, OrdKind::Extreme { .. }) && items.is_empty() {
-            return Err(self.err(format!("{name}() arg is an empty sequence")));
-        }
         self.begin_order_to(kind, items, keys, false, cont).map(|()| None)
     }
 
