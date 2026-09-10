@@ -211,10 +211,19 @@ impl BoundMethod {
     /// while `a.m == a.m` is **true**. Identity would answer the first
     /// question when the reader asked the second, so this is the one reference
     /// type that is not compared by address.
-    fn equals(&self, other: &BoundMethod) -> bool {
-        if !self.receiver.equals(&other.receiver) {
-            return false;
+    ///
+    /// `None`, like everywhere else in this file, means the receivers are a
+    /// pair only the VM can decide (see [`Value::try_equals`]).
+    fn try_equals(&self, other: &BoundMethod, depth: u32) -> Option<bool> {
+        if !self.kinds_equal(other) {
+            return Some(false);
         }
+        self.receiver.eq_at(&other.receiver, depth + 1)
+    }
+
+    /// The half of [`BoundMethod::try_equals`] that never needs the VM: same
+    /// function, or same native name.
+    fn kinds_equal(&self, other: &BoundMethod) -> bool {
         match (&self.kind, &other.kind) {
             (MethodKind::User { func: a, .. }, MethodKind::User { func: b, .. }) => {
                 Rc::ptr_eq(a, b)
@@ -279,6 +288,23 @@ impl Class {
                 return Some((v.clone(), cur.clone()));
             }
             cur = cur.base.as_ref()?;
+        }
+    }
+
+    /// Whether `name` is defined anywhere in this class or its bases, without
+    /// producing the member. [`find`](Self::find) clones both the value and the
+    /// class it came from; the equality path only wants the yes/no, and asks it
+    /// on comparisons that are not going to dispatch anything.
+    pub fn defines(class: &Rc<Class>, name: &str) -> bool {
+        let mut cur = class;
+        loop {
+            if cur.members.borrow().contains_key(name) {
+                return true;
+            }
+            match cur.base.as_ref() {
+                Some(b) => cur = b,
+                None => return false,
+            }
         }
     }
 
@@ -773,69 +799,106 @@ impl Value {
         Some(p as usize)
     }
 
-    /// Equality as used by `==`, `!=`, `in`, and membership. Numbers compare
-    /// across `bool`/`int`/`float`; unlike types are simply unequal.
+    /// Equality as used by `==`, `!=`, `in`, and membership — **as far as it
+    /// can be decided without running Oro code**. `None` is not a third truth
+    /// value: it means the answer depends on a user `__eq__`, which lives in a
+    /// frame and can only be reached by the VM (see `Vm::begin_compare`).
     ///
-    /// Value types compare by content and reference types by identity, which is
-    /// CPython's split and was not Oro's: before this, `f == f` was **false**
-    /// for a function, a generator, a stream and a task, because there was no
-    /// identity arm at all and everything fell through to `_ => false`. A
-    /// function that is not equal to itself is a plain correctness bug, and it
-    /// is also what stopped a connection registry from being a `dict`
-    /// (`docs/stdlib-server-design.md` §7 item 13).
-    pub fn equals(&self, other: &Value) -> bool {
+    /// Numbers compare across `bool`/`int`/`float`; unlike types are simply
+    /// unequal. Value types compare by content and reference types by identity,
+    /// which is CPython's split and was not Oro's: before this, `f == f` was
+    /// **false** for a function, a generator, a stream and a task, because
+    /// there was no identity arm at all and everything fell through to
+    /// `_ => false`. A function that is not equal to itself is a plain
+    /// correctness bug, and it is also what stopped a connection registry from
+    /// being a `dict` (`docs/stdlib-server-design.md` §7 item 13).
+    #[inline]
+    pub fn try_equals(&self, other: &Value) -> Option<bool> {
+        self.eq_at(other, 0)
+    }
+
+    /// [`try_equals`](Self::try_equals) at a known nesting depth.
+    ///
+    /// The depth is carried so that a *cyclic* structure defers instead of
+    /// recursing until the Rust stack dies — `x = []; x.append(x)` compared
+    /// against a second such list used to be a hard crash. Only the container
+    /// arms look at it, so the scalar path (which is every `==` in a program
+    /// without containers on both sides) pays nothing for it.
+    #[inline]
+    fn eq_at(&self, other: &Value, depth: u32) -> Option<bool> {
         if let (Some(a), Some(b)) = (self.as_number(), other.as_number()) {
-            return a.equals(&b);
+            return Some(a.equals(&b));
         }
         match (self, other) {
-            (Value::None, Value::None) => true,
-            (Value::Str(a), Value::Str(b)) => a.s == b.s,
-            (Value::Bytes(a), Value::Bytes(b)) => a == b,
-            (Value::List(a), Value::List(b)) => seq_eq(&a.borrow(), &b.borrow()),
-            (Value::Tuple(a), Value::Tuple(b)) => seq_eq(a, b),
+            (Value::None, Value::None) => Some(true),
+            (Value::Str(a), Value::Str(b)) => Some(a.s == b.s),
+            (Value::Bytes(a), Value::Bytes(b)) => Some(a == b),
+            (Value::List(a), Value::List(b)) => {
+                if Rc::ptr_eq(a, b) {
+                    return Some(true);
+                }
+                try_seq_eq(&a.borrow(), &b.borrow(), depth)
+            }
+            (Value::Tuple(a), Value::Tuple(b)) => {
+                if Rc::ptr_eq(a, b) {
+                    return Some(true);
+                }
+                try_seq_eq(a, b, depth)
+            }
             (Value::Dict(a), Value::Dict(b)) => {
-                let (a, b) = (a.borrow(), b.borrow());
-                a.len() == b.len()
-                    && a.items().iter().all(|(k, v)| {
-                        b.get(k).ok().flatten().map(|bv| bv.equals(v)).unwrap_or(false)
-                    })
+                if Rc::ptr_eq(a, b) {
+                    Some(true)
+                } else {
+                    try_dict_eq(a, b, depth)
+                }
             }
             // A `range` is a sequence, and CPython compares it as one.
-            (Value::Range(a), Value::Range(b)) => a.equals(b),
+            (Value::Range(a), Value::Range(b)) => Some(a.equals(b)),
             // The two reference types that are *not* their address.
-            (Value::Builtin(a), Value::Builtin(b)) => a.name == b.name,
-            (Value::Method(a), Value::Method(b)) => a.equals(b),
-            // Identity for everything else that has one — instances included,
-            // where a `__eq__` dunder, when present, is dispatched by the VM
-            // before this fallback is reached. Unlike types have no identity in
-            // common and fall out as unequal.
+            (Value::Builtin(a), Value::Builtin(b)) => Some(a.name == b.name),
+            (Value::Method(a), Value::Method(b)) => a.try_equals(b, depth),
+            // Identity for everything else that has one — except an instance
+            // whose class defines `__eq__`, which is the whole point of this
+            // returning an `Option`: that pair is handed back to the VM.
+            // Unlike types have no identity in common and fall out as unequal.
             //
-            // Out of line on purpose. `equals` is called on every `==`, `!=`,
-            // `in` and dict comparison in the program, and it is small enough
-            // to inline into those call sites; folding two `identity()` matches
-            // into its body would have cost that, for arms that are reached
-            // only when both operands are reference types.
-            _ => identity_eq(self, other),
+            // Out of line on purpose. `try_equals` is called on every `==`,
+            // `!=`, `in` and dict comparison in the program, and it is small
+            // enough to inline into those call sites; folding the instance
+            // check and two `identity()` matches into its body would have cost
+            // that, for arms that are reached only when both operands are
+            // reference types.
+            _ => identity_or_defer(self, other),
         }
     }
 
-    /// Ordering for `<`, `<=`, `>`, `>=`. Numbers order across numeric types;
-    /// strings and equal-typed sequences order lexicographically. Anything else
-    /// is a `TypeError`.
-    pub fn compare(&self, other: &Value) -> VResult<std::cmp::Ordering> {
+    /// Ordering for `<`, `<=`, `>`, `>=`, as far as native code can decide it.
+    /// Numbers order across numeric types; strings and equal-typed sequences
+    /// order lexicographically. Anything else is a `TypeError` — except an
+    /// instance, which is `Ok(None)`: only the VM can run `__lt__`.
+    ///
+    /// `sym` is the operator the *program* wrote, carried only so the
+    /// `TypeError` can name it. CPython names the real operator (`'>=' not
+    /// supported between …`), and a comparison inside a sequence reports the
+    /// operator the sequence was compared with, so it threads down too.
+    #[inline]
+    pub fn try_compare(
+        &self,
+        other: &Value,
+        sym: &'static str,
+    ) -> VResult<Option<std::cmp::Ordering>> {
         if let (Some(a), Some(b)) = (self.as_number(), other.as_number()) {
-            return a.compare(&b);
+            return a.compare(&b).map(Some);
         }
         match (self, other) {
-            (Value::Str(a), Value::Str(b)) => Ok(a.s.cmp(&b.s)),
-            (Value::Bytes(a), Value::Bytes(b)) => Ok(a.cmp(b)),
-            (Value::List(a), Value::List(b)) => seq_cmp(&a.borrow(), &b.borrow()),
-            (Value::Tuple(a), Value::Tuple(b)) => seq_cmp(a, b),
-            _ => Err(format!(
-                "'<' not supported between instances of '{}' and '{}'",
-                self.type_name(),
-                other.type_name()
-            )),
+            (Value::Str(a), Value::Str(b)) => Ok(Some(a.s.cmp(&b.s))),
+            (Value::Bytes(a), Value::Bytes(b)) => Ok(Some(a.cmp(b))),
+            (Value::List(a), Value::List(b)) => try_seq_cmp(&a.borrow(), &b.borrow(), sym),
+            (Value::Tuple(a), Value::Tuple(b)) => try_seq_cmp(a, b, sym),
+            // An instance may define `__lt__`; the VM decides, and produces
+            // this same message itself when the class defines nothing.
+            (Value::Instance(_), _) | (_, Value::Instance(_)) => Ok(None),
+            _ => Err(unorderable(sym, self, other)),
         }
     }
 
@@ -881,27 +944,120 @@ pub fn exception_repr(inst: &Instance) -> String {
     format!("{}({})", inst.class.name, parts.join(", "))
 }
 
-/// The identity arm of [`Value::equals`], kept out of that function's body so
-/// the hot path stays inlinable. See the call site.
+/// How deep [`Value::eq_at`] will walk before handing the pair to the VM. The
+/// VM's own limit (`Vm::CMP_DEPTH_LIMIT`) is what finally turns a cycle into a
+/// `RecursionError`; this one only has to stop the *Rust* stack from being the
+/// thing that notices, so it is small.
+const MAX_EQ_DEPTH: u32 = 64;
+
+/// The identity arm of [`Value::try_equals`], kept out of that function's body
+/// so the hot path stays inlinable. See the call site.
+///
+/// This is where a user `__eq__` is *detected* — never called; calling it means
+/// a frame, which only the VM can push. The check is deliberately blind to
+/// whether the two are the same object: CPython's `==` operator has no identity
+/// shortcut (`a == a` runs `__eq__`, and answers `false` if that is what it
+/// says), and the places that *do* shortcut — `in`, and element comparison
+/// inside a container — apply it in the VM, which is the only layer that knows
+/// which of the two it is doing.
 #[inline(never)]
-fn identity_eq(a: &Value, b: &Value) -> bool {
-    match (a.identity(), b.identity()) {
+fn identity_or_defer(a: &Value, b: &Value) -> Option<bool> {
+    if defines_eq(a) || defines_eq(b) {
+        return None;
+    }
+    Some(match (a.identity(), b.identity()) {
         (Some(x), Some(y)) => x == y,
+        _ => false,
+    })
+}
+
+/// Does deciding equality for this operand need a user `__eq__`? Only an
+/// instance can carry one.
+pub fn defines_eq(v: &Value) -> bool {
+    match v {
+        Value::Instance(i) => Class::defines(&i.class, "__eq__"),
         _ => false,
     }
 }
 
-fn seq_eq(a: &[Value], b: &[Value]) -> bool {
-    a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.equals(y))
-}
-
-fn seq_cmp(a: &[Value], b: &[Value]) -> VResult<std::cmp::Ordering> {
+/// Out of line, and it has to be: if this were folded into [`Value::eq_at`]
+/// that function would become directly recursive, and a recursive function
+/// cannot be inlined into the `==` and `in` sites that call it — which is where
+/// the whole fast path lives. The same is true of the two below.
+#[inline(never)]
+fn try_seq_eq(a: &[Value], b: &[Value], depth: u32) -> Option<bool> {
+    if a.len() != b.len() {
+        return Some(false);
+    }
+    if depth >= MAX_EQ_DEPTH {
+        return a.is_empty().then_some(true);
+    }
     for (x, y) in a.iter().zip(b.iter()) {
-        if !x.equals(y) {
-            return x.compare(y);
+        match x.eq_at(y, depth + 1) {
+            Some(true) => {}
+            verdict => return verdict,
         }
     }
-    Ok(a.len().cmp(&b.len()))
+    Some(true)
+}
+
+#[inline(never)]
+fn try_dict_eq(
+    a: &Rc<RefCell<OroDict>>,
+    b: &Rc<RefCell<OroDict>>,
+    depth: u32,
+) -> Option<bool> {
+    if depth >= MAX_EQ_DEPTH {
+        return None;
+    }
+    let (a, b) = (a.borrow(), b.borrow());
+    if a.len() != b.len() {
+        return Some(false);
+    }
+    for (k, v) in a.items() {
+        // The keys are matched by `HKey` and never run user code; only the
+        // values are compared with `==` (`docs/hash-and-equality.md`).
+        match b.get(k).ok().flatten() {
+            None => return Some(false),
+            Some(bv) => match bv.eq_at(v, depth + 1) {
+                Some(true) => {}
+                verdict => return verdict,
+            },
+        }
+    }
+    Some(true)
+}
+
+#[inline(never)]
+fn try_seq_cmp(
+    a: &[Value],
+    b: &[Value],
+    sym: &'static str,
+) -> VResult<Option<std::cmp::Ordering>> {
+    for (x, y) in a.iter().zip(b.iter()) {
+        match x.try_equals(y) {
+            Some(true) => continue,
+            Some(false) => return x.try_compare(y, sym),
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(a.len().cmp(&b.len())))
+}
+
+/// The `TypeError` for a pair that has no ordering, naming the operator the
+/// program actually wrote. Shared by the native path and the VM's, so the
+/// message does not depend on which of them discovered the problem.
+pub fn unorderable(sym: &str, a: &Value, b: &Value) -> String {
+    // CPython names `type(v)`, which for an instance is its class and for a
+    // class object is `type` — so this is `type_name` with the instance arm
+    // filled in, not `type_label` (which would call `int` an `int`).
+    fn ty(v: &Value) -> String {
+        match v {
+            Value::Instance(i) => i.class.name.to_string(),
+            other => other.type_name().to_string(),
+        }
+    }
+    format!("'{sym}' not supported between instances of '{}' and '{}'", ty(a), ty(b))
 }
 
 /// A number lifted out of a [`Value`] for arithmetic. The `bool`/`int` split is

@@ -116,6 +116,8 @@ struct JobDepths {
     sort_jobs: usize,
     seq_jobs: usize,
     mat_jobs: usize,
+    cmp_jobs: usize,
+    ord_jobs: usize,
 }
 
 enum BlockKind {
@@ -152,6 +154,9 @@ enum ReturnAction {
     DriveSort,
     /// Feed the returned value into the active map/filter job and continue it.
     DriveSeq,
+    /// Feed the returned comparison dunder's value into the active deep
+    /// comparison and continue it (`in`, container equality, nested ordering).
+    DriveCmp,
     /// A module body finished: capture its namespace into a module value, cache
     /// it under the dotted path, and push it as the import result.
     BuildModule(Rc<str>),
@@ -381,6 +386,155 @@ enum StrCont {
     FormatSpec(String),
 }
 
+/// How deep a comparison may nest before Oro calls it a cycle. CPython answers
+/// the same shape of program with `RecursionError: maximum recursion depth
+/// exceeded in comparison`, and so does this — the number is not the same one
+/// CPython uses, but the behaviour it is there to produce is.
+const CMP_DEPTH_LIMIT: usize = 600;
+
+/// A comparison that native code could not finish on its own — because some
+/// pair inside it is an instance whose class defines `__eq__`, `__lt__` or a
+/// sibling, and calling one of those means running Oro code.
+///
+/// The VM never recurses in Rust (module docs), so the "recursion" of a deep
+/// comparison is this explicit `levels` stack instead: each level is one
+/// suspended `a == b` that is waiting on the answer to a smaller one. That is
+/// the same trade [`SortJob`] and [`SeqJob`] make — the difference is only that
+/// what suspends here is an operator rather than a call.
+///
+/// The fast path never builds one of these. [`Value::try_equals`] and
+/// [`Value::try_compare`] answer natively for every pair with no user dunder
+/// under it, and a job is created only when one of them says `None`.
+struct CmpJob {
+    levels: Vec<CmpLevel>,
+    cont: CmpCont,
+}
+
+/// One suspended level of a deep comparison.
+///
+/// Every level answers a `bool`, and every level's *questions* are single
+/// pairs, which is what keeps the machine flat: a level either asks about one
+/// more pair or announces its answer.
+enum CmpLevel {
+    /// Waiting on a comparison dunder's return value. `negate` is the
+    /// `__ne__`-from-`__eq__` fallback.
+    Dunder { negate: bool },
+    /// Two sequences, element by element. For `==` every pair must match; for
+    /// an ordering the first pair that does *not* match decides the whole
+    /// answer by `op`, which is CPython's `list_richcompare` exactly.
+    Seq { a: Vec<Value>, b: Vec<Value>, i: usize, op: CmpOp, deciding: bool },
+    /// Two dicts' values, paired up by key. The keys were matched by `HKey`
+    /// before this level existed and never dispatch `__eq__` — that is the
+    /// decision `docs/hash-and-equality.md` argues, and this honours it.
+    Vals { a: Vec<Value>, b: Vec<Value>, i: usize },
+    /// `item in items`: scan for an element equal to `item`.
+    Contains { items: Vec<Value>, item: Value, i: usize },
+}
+
+/// What a finished [`CmpJob`] answer is for.
+enum CmpCont {
+    /// The result of an operator: push it, negated for `!=` / `not in`.
+    Push { negate: bool },
+    /// The `<` an ordering job asked for: hand it back to [`OrdJob`].
+    Order,
+}
+
+/// What one step of the pair evaluator did.
+enum PairStep {
+    /// The pair is decided.
+    Done(bool),
+    /// It reduces to this other pair (a bound method to its receivers).
+    Ask(Value, Value, CmpOp),
+    /// A level was pushed; advance it.
+    Pushed,
+    /// A dunder frame was pushed; the interpreter loop takes over.
+    Dispatched,
+}
+
+/// What advancing one [`CmpLevel`] did.
+enum LevelStep {
+    /// The level is decided.
+    Done(bool),
+    /// It wants this pair compared.
+    Ask(Value, Value, CmpOp),
+    /// It settled an element without asking anything (the identity shortcut);
+    /// advance it again.
+    Retry,
+}
+
+/// Where the comparison machine goes next: down into a pair, or back up with an
+/// answer. One `enum` rather than two functions calling each other, because
+/// "calling each other" is the Rust recursion this whole design exists to
+/// avoid.
+enum CmpNext {
+    Ask(Value, Value, CmpOp),
+    Give(bool),
+}
+
+/// An ordering — `sorted`, `list.sort`, `min`, `max` — whose `<` is a user
+/// `__lt__`, and which therefore cannot be a call to `slice::sort_by`.
+///
+/// Native ordering stays native: [`Vm::begin_order`] scans the elements once
+/// for an instance and only builds one of these when it finds one, so a sort of
+/// ints or strings runs exactly the code it ran before.
+struct OrdJob {
+    /// What is being ordered, and what shape the answer takes.
+    kind: OrdKind,
+    /// Where the answer goes once it has that shape.
+    cont: OrdCont,
+    /// The values being ordered. For a keyed sort these are the *keys*; `items`
+    /// carries what they decorate.
+    keys: Vec<Value>,
+    items: Vec<Value>,
+    reverse: bool,
+    state: OrdState,
+}
+
+/// What a finished ordering's value is for — the same shape as [`StrCont`],
+/// and for the same reason: an ordering is not always something the program
+/// wrote at the top level. `xs.map(sorted)` runs one per element from inside a
+/// [`SeqJob`], and `sorted(xs, key=min)` runs one per key from inside a
+/// [`SortJob`], and neither wants its answer on the operand stack.
+enum OrdCont {
+    /// An ordering the program wrote: push it.
+    Push,
+    /// A collection callback's result: record it and carry on with the chain.
+    Seq,
+    /// A sort key: record it and carry on computing keys.
+    Sort,
+}
+
+/// Which ordering an [`OrdJob`] is carrying out, and where its answer goes.
+enum OrdKind {
+    /// `sorted(...)` / `xs.sorted()`: push a new collection of this shape.
+    Sort(SeqShape),
+    /// `xs.sort(...)`: write back in place and push `None`.
+    SortInPlace(Rc<RefCell<Vec<Value>>>),
+    /// `min` / `max` / `min_by` / `max_by`: push the winning element. `who`
+    /// is the spelling the program used, so the empty-sequence message names
+    /// the call that was actually written.
+    Extreme { want_min: bool, who: &'static str },
+}
+
+/// The resumable half of an [`OrdJob`].
+///
+/// The sort is a bottom-up merge sort rather than a call into `slice::sort_by`,
+/// for the same reason the comparison machine above is a stack: the comparator
+/// can suspend, and a Rust sort has nowhere to suspend to. Bottom-up is chosen
+/// because its whole state is five indices — no recursion to make explicit —
+/// and because it is stable, which is what `sorted` promises and what makes
+/// `reverse=true` invert the comparator instead of the result.
+enum OrdState {
+    /// A merge sort in progress. It permutes *indices*, not values, so one
+    /// permutation reorders the keys and the items it decorates together —
+    /// the classic decorate-sort-undecorate, which is what the native
+    /// `sort_by_keys` this replaces does too.
+    Merge { src: Vec<usize>, dst: Vec<usize>, width: usize, lo: usize, mid: usize, hi: usize, i: usize, j: usize },
+    /// A linear min/max fold: `best` is the index of the winner so far, `next`
+    /// the candidate being weighed.
+    Fold { best: usize, next: usize },
+}
+
 /// One unit of execution: everything that describes *what is running right
 /// now*, as opposed to what is true of the whole process.
 ///
@@ -414,6 +568,12 @@ struct Task {
     sort_jobs: Vec<SortJob>,
     seq_jobs: Vec<SeqJob>,
     mat_jobs: Vec<MatJob>,
+    /// Stack of in-flight deep comparisons (see [`CmpJob`]). A `__eq__` that
+    /// itself compares containers nests cleanly, which is why it is a stack.
+    cmp_jobs: Vec<CmpJob>,
+    /// Stack of in-flight orderings — sort, min, max — whose `<` is a user
+    /// `__lt__` (see [`OrdJob`]).
+    ord_jobs: Vec<OrdJob>,
     /// Exceptions currently being handled (top = innermost), for bare `raise`.
     handling: Vec<Value>,
     /// Why each in-flight `finally` body is running, so `EndFinally` can resume
@@ -456,6 +616,8 @@ impl Task {
             sort_jobs: Vec::new(),
             seq_jobs: Vec::new(),
             mat_jobs: Vec::new(),
+            cmp_jobs: Vec::new(),
+            ord_jobs: Vec::new(),
             handling: Vec::new(),
             finally_why: Vec::new(),
             gen_stack: Vec::new(),
@@ -921,11 +1083,16 @@ impl Vm {
                 Op::Compare(cmp) => {
                     let b = self.pop();
                     let a = self.pop();
-                    // An instance may define a rich-comparison dunder; if so it
-                    // is dispatched and produces the result via its return.
-                    if !(matches!(a, Value::Instance(_)) && self.try_compare_dunder(cmp, &a, &b)?) {
-                        let r = self.wrap(compare(cmp, &a, &b))?;
-                        self.push(Value::Bool(r));
+                    // The native answer, which is every comparison in a program
+                    // with no user `__eq__`/`__lt__` under either operand.
+                    match self.wrap(try_compare_op(cmp, &a, &b))? {
+                        Some(r) => self.push(Value::Bool(r)),
+                        // Some pair in there needs Oro code. A dunder on the
+                        // operands themselves is dispatched straight from here,
+                        // so that its value reaches the program unconverted
+                        // (CPython's `a == b` is whatever `__eq__` returned, not
+                        // its truthiness); anything deeper goes to the machine.
+                        None => self.compare_slow(cmp, a, b)?,
                     }
                 }
                 Op::Jump(t) => self.top().pc = t as usize,
@@ -1484,9 +1651,16 @@ impl Vm {
                     // with a `Step` rather than a `Value`.
                     "time.sleep" => return self.do_sleep(args, kwargs),
                     "print" => return self.do_print(args, kwargs).map(|()| Step::Next),
-                    // sorted(key=…) has to call Oro code, so it is driven from
-                    // the VM rather than run as a pure native builtin.
-                    "sorted" if !kwargs.is_empty() => return self.do_sorted(args, kwargs),
+                    // `sorted` and `min`/`max` decide with `<`, which may be
+                    // a user `__lt__` — so they are driven from the VM, which
+                    // is the only layer that can run one. Elements with no
+                    // dunder still take the native path, one branch further in.
+                    "sorted" if !kwargs.is_empty() || ord_needs_vm(&args) => {
+                        return self.do_sorted(args, kwargs)
+                    }
+                    "min" | "max" if ord_needs_vm(&args) => {
+                        return self.do_extreme(b.name, args, kwargs)
+                    }
                     // proc.run is finished here so it can take keyword args and
                     // build a Completed instance.
                     "proc.run" => return self.do_proc_run(args, kwargs).map(|()| Step::Next),
@@ -1593,7 +1767,7 @@ impl Vm {
                     }
                     // list.sort(key=…, reverse=…) shares sorted()'s frame-driven
                     // key machinery; it just writes back in place.
-                    if &**name == "sort" && !kwargs.is_empty() {
+                    if &**name == "sort" {
                         if let Value::List(l) = &m.receiver {
                             if !args.is_empty() {
                                 return Err(self.err("sort() takes no positional arguments"));
@@ -1604,6 +1778,26 @@ impl Vm {
                                 .begin_sort(items, keyfn, reverse, Some(l.clone()))
                                 .map(|()| Step::Next);
                         }
+                    }
+                    // The chain's three orderings. Like their builtin twins
+                    // they compare with `<`, so a receiver of instances needs
+                    // frames; anything else falls straight through to native.
+                    if matches!(&**name, "sorted" | "min" | "max")
+                        && !matches!(m.receiver, Value::Generator(_))
+                        && crate::builtins::is_collection(&m.receiver)
+                        && args.is_empty()
+                        && kwargs.is_empty()
+                    {
+                        let (shape, items) = self.seq_receiver(name, &m.receiver)?;
+                        let keys = items.clone();
+                        let kind = match &**name {
+                            "sorted" => OrdKind::Sort(shape),
+                            other => OrdKind::Extreme {
+                                want_min: other == "min",
+                                who: if other == "min" { "min" } else { "max" },
+                            },
+                        };
+                        return self.begin_order(kind, items, keys, false).map(|()| Step::Next);
                     }
                     if let Some(step) =
                         self.materialize_generator_args(&Value::Method(m.clone()), &args, &kwargs)?
@@ -1715,6 +1909,21 @@ impl Vm {
     ) -> Result<(), RuntimeError> {
         if self.task.frames.len() >= MAX_FRAMES {
             return Err(self.err("maximum recursion depth exceeded"));
+        }
+        // A `def` with a `yield` in it is a generator function, and calling one
+        // produces a generator rather than running the body. This path pushes a
+        // frame that runs the body *directly*, so a `yield` in it would arrive
+        // with no generator to suspend into — which was a `yield outside a
+        // generator` panic, reachable from an ordinary `obj.m()` long before
+        // any of this and reachable from `in` now that `__eq__` is dispatched.
+        // A panic is the worst answer available; refusing by name is the same
+        // answer `sorted(key=…)` and the chain callbacks already give.
+        if func.code.is_generator {
+            let name = func.code.name.clone();
+            return Err(self.err(format!(
+                "{name}() has a `yield` in it, and Oro does not carry generators \
+                 through methods and dunders — move it to a module-level def"
+            )));
         }
         let mut frame = self.bind_call(&func, Some(receiver.clone()), args, kwargs)?;
         frame.ret_action = action;
@@ -1967,6 +2176,10 @@ impl Vm {
                     return Ok(());
                 }
                 Value::Builtin(b) => {
+                    let Some(call_args) = self.ord_callback(b.name, call_args, OrdCont::Seq)?
+                    else {
+                        return Ok(());
+                    };
                     let r = self.wrap((b.func)(call_args))?;
                     self.record_seq_result(r);
                 }
@@ -2043,32 +2256,18 @@ impl Vm {
                 return Ok(());
             }
             SeqOp::MinBy | SeqOp::MaxBy => {
+                // The callback's values are the keys, and they are user values:
+                // if they are instances the `<` between them is a `__lt__`, so
+                // this goes through the ordering machine like every other
+                // extreme in the language.
                 let want_min = op == SeqOp::MinBy;
-                let mut best: Option<(usize, &Value)> = None;
-                for (i, key) in results.iter().enumerate() {
-                    match best {
-                        None => best = Some((i, key)),
-                        Some((_, bk)) => {
-                            let ord = self.wrap(key.compare(bk))?;
-                            let take = if want_min {
-                                ord == std::cmp::Ordering::Less
-                            } else {
-                                ord == std::cmp::Ordering::Greater
-                            };
-                            if take {
-                                best = Some((i, key));
-                            }
-                        }
-                    }
-                }
-                let out = match best {
-                    Some((i, _)) => items[i].clone(),
-                    None => {
-                        return Err(self.err(format!("{}() arg is an empty sequence", op.name())))
-                    }
-                };
-                self.push(out);
-                return Ok(());
+                let who = op.name();
+                return self.begin_order(
+                    OrdKind::Extreme { want_min, who },
+                    items,
+                    results,
+                    false,
+                );
             }
             SeqOp::GroupBy => {
                 let mut d = crate::value::OroDict::new();
@@ -2120,7 +2319,9 @@ impl Vm {
                 }
                 out
             }
-            SeqOp::SortBy => self.wrap(crate::builtins::sort_by_keys(items, &results, false))?,
+            // `sort_by` is finished by the ordering machine rather than
+            // rebuilt here, because its keys may need `__lt__`.
+            SeqOp::SortBy => return self.begin_order(OrdKind::Sort(shape), items, results, false),
             SeqOp::UniqueBy => {
                 let mut seen = crate::value::OroDict::new();
                 let mut out = Vec::new();
@@ -2322,6 +2523,33 @@ impl Vm {
         self.begin_sort(items, keyfn, reverse, None).map(|()| Step::Next)
     }
 
+    /// `min(...)` / `max(...)`. With one argument it ranges over an iterable,
+    /// with several over the arguments themselves — and either way the `<` it
+    /// decides with may be a user `__lt__`.
+    fn do_extreme(
+        &mut self,
+        who: &'static str,
+        args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
+    ) -> Result<Step, RuntimeError> {
+        if let Some(callee) = crate::builtins::lookup(who) {
+            if let Some(step) = self.materialize_generator_args(&callee, &args, &kwargs)? {
+                return Ok(step);
+            }
+        }
+        if !kwargs.is_empty() {
+            return Err(self.err(format!("{who}() takes no keyword arguments")));
+        }
+        let items = match args.len() {
+            0 => return Err(self.err(format!("{who}() expected at least 1 argument"))),
+            1 => self.wrap(iterate_to_vec(&args[0]))?,
+            _ => args,
+        };
+        let keys = items.clone();
+        self.begin_order(OrdKind::Extreme { want_min: who == "min", who }, items, keys, false)
+            .map(|()| Step::Next)
+    }
+
     /// Shared parsing of the `key=`/`reverse=` pair for `sorted` and `list.sort`.
     fn sort_kwargs(
         &mut self,
@@ -2367,8 +2595,7 @@ impl Vm {
             None => {
                 // No key: the elements are their own keys.
                 let keys = items.clone();
-                let sorted = self.wrap(crate::builtins::sort_by_keys(items, &keys, reverse))?;
-                return self.finish_sort(sorted, in_place);
+                return self.begin_order(sort_kind(in_place), items, keys, reverse);
             }
         };
         let n = items.len();
@@ -2389,9 +2616,14 @@ impl Vm {
                 let job = self.task.sort_jobs.last().expect("active sort job");
                 if job.next >= job.items.len() {
                     let job = self.task.sort_jobs.pop().unwrap();
-                    let sorted =
-                        self.wrap(crate::builtins::sort_by_keys(job.items, &job.keys, job.reverse))?;
-                    return self.finish_sort(sorted, job.in_place);
+                    // The keys are user values and may be instances, so the
+                    // sort itself can need frames too — `begin_order` decides.
+                    return self.begin_order(
+                        sort_kind(job.in_place),
+                        job.items,
+                        job.keys,
+                        job.reverse,
+                    );
                 }
                 (job.items[job.next].clone(), job.keyfn.clone())
             };
@@ -2415,7 +2647,10 @@ impl Vm {
                 // A native key (len, str, …) cannot re-enter Oro, so it can be
                 // called inline and the loop continues without a frame.
                 Value::Builtin(b) => {
-                    let key = self.wrap((b.func)(vec![item]))?;
+                    let Some(args) = self.ord_callback(b.name, vec![item], OrdCont::Sort)? else {
+                        return Ok(());
+                    };
+                    let key = self.wrap((b.func)(args))?;
                     self.task.sort_jobs.last_mut().unwrap().keys.push(key);
                 }
                 Value::Method(m) => {
@@ -2429,21 +2664,6 @@ impl Vm {
                 _ => return Err(self.err("sort key is not callable")),
             }
         }
-    }
-
-    fn finish_sort(
-        &mut self,
-        sorted: Vec<Value>,
-        in_place: Option<Rc<RefCell<Vec<Value>>>>,
-    ) -> Result<(), RuntimeError> {
-        match in_place {
-            Some(list) => {
-                *list.borrow_mut() = sorted;
-                self.push(Value::None);
-            }
-            None => self.push(Value::List(Rc::new(RefCell::new(sorted)))),
-        }
-        Ok(())
     }
 
     /// Drive an in-flight `print`: render remaining args left to right, calling
@@ -2578,19 +2798,26 @@ impl Vm {
         Ok(())
     }
 
-    /// Dispatch a rich-comparison dunder for an instance `a`. Returns `true`
-    /// (and pushes a frame) when one was found; `false` to fall back to the
-    /// default comparison.
+    /// Dispatch a rich-comparison dunder for `a op b` at the *top level* of an
+    /// operator. Returns `true` (and pushes a frame) when one was found;
+    /// `false` to fall back to the default comparison.
+    ///
+    /// Two things separate this from the same dispatch inside a container
+    /// (`Vm::step_pair`), and both are CPython's behaviour rather than
+    /// convenience:
+    ///
+    /// * **The dunder's value is pushed raw.** `__eq__` may return anything,
+    ///   and `a == b` is that thing, not its truthiness — `T() == T()` where
+    ///   `T.__eq__` answers `[1, 2, 3]` *is* `[1, 2, 3]`. Truthiness is applied
+    ///   only where a decision has to be made, which is inside `in` and
+    ///   container comparison.
+    /// * **There is no identity shortcut.** `a == a` runs `__eq__` and answers
+    ///   `false` if that is what it says, while `a in [a]` is `true` without
+    ///   calling anything.
     fn try_compare_dunder(&mut self, cmp: CmpOp, a: &Value, b: &Value) -> Result<bool, RuntimeError> {
-        let name = match cmp {
-            CmpOp::Eq => "__eq__",
-            CmpOp::NotEq => "__ne__",
-            CmpOp::Lt => "__lt__",
-            CmpOp::Gt => "__gt__",
-            CmpOp::LtEq => "__le__",
-            CmpOp::GtEq => "__ge__",
+        let Some(name) = rich_dunder(cmp) else {
             // `in` and `not in` have no rich-comparison dunder.
-            _ => return Ok(false),
+            return Ok(false);
         };
         if let Some((f, defclass)) = instance_method(a, name) {
             self.invoke_user(f, a.clone(), defclass, vec![b.clone()], Vec::new(), ReturnAction::Normal)?;
@@ -2603,7 +2830,574 @@ impl Vm {
                 return Ok(true);
             }
         }
+        // The reflected operand: `1 == obj` asks `obj.__eq__(1)`, and `1 < obj`
+        // asks `obj.__gt__(1)`. CPython reaches this when the left operand's
+        // own attempt returns `NotImplemented`; Oro's types have no `__eq__` to
+        // return it from, so "the left operand had nothing to say" is exactly
+        // the case above having fallen through.
+        let reflected = reflect_dunder(cmp);
+        if let Some((f, defclass)) = instance_method(b, reflected) {
+            self.invoke_user(f, b.clone(), defclass, vec![a.clone()], Vec::new(), ReturnAction::Normal)?;
+            return Ok(true);
+        }
+        if matches!(cmp, CmpOp::NotEq) {
+            if let Some((f, defclass)) = instance_method(b, "__eq__") {
+                self.invoke_user(f, b.clone(), defclass, vec![a.clone()], Vec::new(), ReturnAction::NegateBool)?;
+                return Ok(true);
+            }
+        }
         Ok(false)
+    }
+
+    // --- deep comparison ------------------------------------------------------
+
+    /// The half of `Op::Compare` that needs Oro code, kept out of line so the
+    /// interpreter's dispatch loop stays the size it was. Comparison is the
+    /// hottest non-arithmetic instruction in the language and this branch is
+    /// taken only by programs with a comparison dunder in them.
+    #[inline(never)]
+    fn compare_slow(&mut self, cmp: CmpOp, a: Value, b: Value) -> Result<(), RuntimeError> {
+        // A dunder on the operands themselves is dispatched from here, so that
+        // its value reaches the program unconverted: CPython's `a == b` is
+        // whatever `__eq__` returned, not its truthiness.
+        if self.try_compare_dunder(cmp, &a, &b)? {
+            return Ok(());
+        }
+        // Anything deeper — a container holding one, or `in` over a list —
+        // goes to the machine, where the answer *is* a decision and truthiness
+        // does apply.
+        let (op, negate) = match cmp {
+            CmpOp::NotEq => (CmpOp::Eq, true),
+            CmpOp::NotIn => (CmpOp::NotIn, true),
+            other => (other, false),
+        };
+        self.begin_compare(op, a, b, negate)
+    }
+
+    /// Start a comparison that native code deferred: `a op b` where some pair
+    /// inside it needs a user dunder. `negate` inverts the finished answer,
+    /// which is how `!=` and `not in` are spelled once `==` and `in` exist.
+    fn begin_compare(
+        &mut self,
+        op: CmpOp,
+        a: Value,
+        b: Value,
+        negate: bool,
+    ) -> Result<(), RuntimeError> {
+        self.task.cmp_jobs.push(CmpJob { levels: Vec::new(), cont: CmpCont::Push { negate } });
+        let next = match op {
+            CmpOp::In | CmpOp::NotIn => {
+                let items = self.wrap(membership_items(&b, &a))?;
+                self.task.cmp_jobs.last_mut().expect("cmp job").levels.push(CmpLevel::Contains {
+                    items,
+                    item: a,
+                    i: 0,
+                });
+                self.advance_top(None)?
+            }
+            _ => CmpNext::Ask(a, b, op),
+        };
+        self.drive_cmp(next)
+    }
+
+    /// The comparison machine's loop. Runs until the whole comparison is
+    /// decided, or until a dunder frame is pushed — at which point it returns,
+    /// and `ReturnAction::DriveCmp` calls it again with the answer.
+    fn drive_cmp(&mut self, mut next: CmpNext) -> Result<(), RuntimeError> {
+        loop {
+            match next {
+                CmpNext::Ask(a, b, op) => match self.step_pair(a, b, op)? {
+                    PairStep::Done(v) => next = CmpNext::Give(v),
+                    PairStep::Ask(a, b, op) => next = CmpNext::Ask(a, b, op),
+                    PairStep::Pushed => next = self.advance_top(None)?,
+                    PairStep::Dispatched => return Ok(()),
+                },
+                CmpNext::Give(v) => {
+                    if self.task.cmp_jobs.last().expect("cmp job").levels.is_empty() {
+                        let job = self.task.cmp_jobs.pop().expect("cmp job");
+                        return self.finish_cmp(job.cont, v);
+                    }
+                    next = self.advance_top(Some(v))?;
+                }
+            }
+        }
+    }
+
+    /// Deliver the finished comparison.
+    fn finish_cmp(&mut self, cont: CmpCont, v: bool) -> Result<(), RuntimeError> {
+        match cont {
+            CmpCont::Push { negate } => {
+                self.push(Value::Bool(v != negate));
+                Ok(())
+            }
+            CmpCont::Order => self.drive_ord(Some(v)),
+        }
+    }
+
+    /// Decide one pair. Either it falls out natively, or a dunder is dispatched
+    /// for it, or it is structural and becomes a level of its own.
+    fn step_pair(&mut self, a: Value, b: Value, op: CmpOp) -> Result<PairStep, RuntimeError> {
+        // Native first: this is the same code the fast path runs, and it
+        // answers every pair with no user dunder underneath it.
+        if let Some(r) = self.wrap(try_compare_op(op, &a, &b))? {
+            return Ok(PairStep::Done(r));
+        }
+
+        // A user dunder on the left, then the reflected one on the right.
+        // Unlike the top-level dispatch, the answer here is a decision, so the
+        // returned value is taken for its truthiness.
+        if let Some(name) = rich_dunder(op) {
+            if let Some((f, defclass)) = instance_method(&a, name) {
+                self.task.cmp_jobs.last_mut().expect("cmp job")
+                    .levels.push(CmpLevel::Dunder { negate: false });
+                self.invoke_user(f, a, defclass, vec![b], Vec::new(), ReturnAction::DriveCmp)?;
+                return Ok(PairStep::Dispatched);
+            }
+            if let Some((f, defclass)) = instance_method(&b, reflect_dunder(op)) {
+                self.task.cmp_jobs.last_mut().expect("cmp job")
+                    .levels.push(CmpLevel::Dunder { negate: false });
+                self.invoke_user(f, b, defclass, vec![a], Vec::new(), ReturnAction::DriveCmp)?;
+                return Ok(PairStep::Dispatched);
+            }
+        }
+
+        // Structural: the pair itself has no dunder, but something inside it
+        // does. Descending is what grows the level stack, so it is where the
+        // cycle guard sits.
+        if self.task.cmp_jobs.last().expect("cmp job").levels.len() >= CMP_DEPTH_LIMIT {
+            return Err(self.err("maximum recursion depth exceeded in comparison"));
+        }
+        let level = match (&a, &b) {
+            (Value::List(x), Value::List(y)) => {
+                CmpLevel::Seq { a: x.borrow().clone(), b: y.borrow().clone(), i: 0, op, deciding: false }
+            }
+            (Value::Tuple(x), Value::Tuple(y)) => {
+                CmpLevel::Seq { a: x.as_ref().clone(), b: y.as_ref().clone(), i: 0, op, deciding: false }
+            }
+            (Value::Dict(x), Value::Dict(y)) => {
+                let (x, y) = (x.borrow(), y.borrow());
+                if x.len() != y.len() {
+                    return Ok(PairStep::Done(false));
+                }
+                let mut av = Vec::with_capacity(x.len());
+                let mut bv = Vec::with_capacity(x.len());
+                for (k, v) in x.items() {
+                    // The key match is by `HKey` and never runs user code; only
+                    // the values are compared with `==`.
+                    match self.wrap(y.get(k))? {
+                        Some(other) => {
+                            av.push(v.clone());
+                            bv.push(other);
+                        }
+                        None => return Ok(PairStep::Done(false)),
+                    }
+                }
+                CmpLevel::Vals { a: av, b: bv, i: 0 }
+            }
+            // Two bound methods with the same function reduce to their
+            // receivers, which may themselves be instances with `__eq__`.
+            (Value::Method(x), Value::Method(y)) => {
+                return Ok(PairStep::Ask(x.receiver.clone(), y.receiver.clone(), CmpOp::Eq))
+            }
+            // No dunder and no structure. For an ordering that is the
+            // `TypeError`; for equality, identity, which is where an instance
+            // whose class defines only `__lt__` lands.
+            _ => {
+                return match op {
+                    CmpOp::Eq | CmpOp::NotEq => Ok(PairStep::Done(same_object(&a, &b))),
+                    _ => Err(self.err(crate::value::unorderable(op_symbol(op), &a, &b))),
+                }
+            }
+        };
+        self.task.cmp_jobs.last_mut().expect("cmp job").levels.push(level);
+        Ok(PairStep::Pushed)
+    }
+
+    /// Advance the innermost level, folding in the answer it was waiting on
+    /// (`None` when the level has only just been pushed). A level that finishes
+    /// is popped and its answer flows to the level beneath it.
+    fn advance_top(&mut self, incoming: Option<bool>) -> Result<CmpNext, RuntimeError> {
+        let job = self.task.cmp_jobs.last_mut().expect("cmp job");
+        let level = job.levels.last_mut().expect("cmp level");
+        let step = match level {
+            // A dunder level is popped by the `DriveCmp` return action, which
+            // is the only thing that can answer it.
+            CmpLevel::Dunder { .. } => unreachable!("a dunder level is resumed by its frame"),
+            CmpLevel::Seq { a, b, i, op, deciding } => {
+                if *deciding {
+                    // The deciding pair was asked with the original operator,
+                    // so its answer is the sequence's answer.
+                    LevelStep::Done(incoming.expect("a deciding pair was asked"))
+                } else if incoming == Some(false) {
+                    // The first pair that differs decides the whole comparison
+                    // — by `op`, which for `==` is simply "unequal".
+                    let k = *i - 1;
+                    if matches!(op, CmpOp::Eq) {
+                        LevelStep::Done(false)
+                    } else {
+                        *deciding = true;
+                        LevelStep::Ask(a[k].clone(), b[k].clone(), *op)
+                    }
+                } else if *i < a.len().min(b.len()) {
+                    let k = *i;
+                    *i += 1;
+                    if same_object(&a[k], &b[k]) {
+                        // CPython's identity shortcut, which is why `a in [a]`
+                        // is true even when `a.__eq__` says otherwise.
+                        LevelStep::Retry
+                    } else {
+                        LevelStep::Ask(a[k].clone(), b[k].clone(), CmpOp::Eq)
+                    }
+                } else {
+                    // One ran out: the lengths settle it.
+                    LevelStep::Done(ord_holds(*op, a.len().cmp(&b.len())))
+                }
+            }
+            CmpLevel::Vals { a, b, i } => {
+                if incoming == Some(false) {
+                    LevelStep::Done(false)
+                } else if *i < a.len() {
+                    let k = *i;
+                    *i += 1;
+                    if same_object(&a[k], &b[k]) {
+                        LevelStep::Retry
+                    } else {
+                        LevelStep::Ask(a[k].clone(), b[k].clone(), CmpOp::Eq)
+                    }
+                } else {
+                    LevelStep::Done(true)
+                }
+            }
+            CmpLevel::Contains { items, item, i } => {
+                if incoming == Some(true) {
+                    LevelStep::Done(true)
+                } else if *i < items.len() {
+                    let k = *i;
+                    *i += 1;
+                    if same_object(&items[k], item) {
+                        LevelStep::Done(true)
+                    } else {
+                        // The container's element goes on the *left*, which is
+                        // what decides whose `__eq__` runs for `x in xs`.
+                        LevelStep::Ask(items[k].clone(), item.clone(), CmpOp::Eq)
+                    }
+                } else {
+                    LevelStep::Done(false)
+                }
+            }
+        };
+        match step {
+            LevelStep::Ask(a, b, op) => Ok(CmpNext::Ask(a, b, op)),
+            LevelStep::Retry => self.advance_top(None),
+            LevelStep::Done(v) => {
+                self.task.cmp_jobs.last_mut().expect("cmp job").levels.pop();
+                Ok(CmpNext::Give(v))
+            }
+        }
+    }
+
+    // --- orderings that need `__lt__` -----------------------------------------
+
+    /// Order `items` by `keys` — sort, or pick an extreme — running a user
+    /// `__lt__` through frames when the keys need one.
+    ///
+    /// Keys with no user ordering take the native path unchanged: the scan that
+    /// decides is one discriminant test per element, against a sort that is
+    /// already `O(n log n)` comparisons.
+    fn begin_order(
+        &mut self,
+        kind: OrdKind,
+        items: Vec<Value>,
+        keys: Vec<Value>,
+        reverse: bool,
+    ) -> Result<(), RuntimeError> {
+        self.begin_order_to(kind, items, keys, reverse, OrdCont::Push)
+    }
+
+    /// [`begin_order`](Self::begin_order) for an ordering whose answer does not
+    /// belong on the operand stack. See [`OrdCont`].
+    fn begin_order_to(
+        &mut self,
+        kind: OrdKind,
+        items: Vec<Value>,
+        keys: Vec<Value>,
+        reverse: bool,
+        cont: OrdCont,
+    ) -> Result<(), RuntimeError> {
+        // The same predicate the entry points use, asked again here because
+        // `sort_by`, `min_by` and `sorted(key=…)` arrive with keys a callback
+        // produced, which nothing could have scanned earlier.
+        if !keys.iter().any(ord_defers) {
+            return self.finish_order_native(kind, items, keys, reverse, cont);
+        }
+        let n = items.len();
+        let state = match kind {
+            OrdKind::Extreme { .. } => {
+                if n == 0 {
+                    // The native path owns the empty-sequence message.
+                    return self.finish_order_native(kind, items, keys, reverse, cont);
+                }
+                OrdState::Fold { best: 0, next: 1 }
+            }
+            _ => OrdState::Merge {
+                src: (0..n).collect(),
+                dst: vec![0; n],
+                width: 1,
+                lo: 0,
+                mid: 1.min(n),
+                hi: 2.min(n),
+                i: 0,
+                j: 1.min(n),
+            },
+        };
+        self.task.ord_jobs.push(OrdJob { kind, cont, keys, items, reverse, state });
+        self.drive_ord(None)
+    }
+
+    /// The ordering that needs no frames, which is every ordering in a program
+    /// with no user `__lt__` in it.
+    fn finish_order_native(
+        &mut self,
+        kind: OrdKind,
+        items: Vec<Value>,
+        keys: Vec<Value>,
+        reverse: bool,
+        cont: OrdCont,
+    ) -> Result<(), RuntimeError> {
+        match kind {
+            OrdKind::Extreme { want_min, who } => {
+                let want =
+                    if want_min { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater };
+                let mut best = 0;
+                if items.is_empty() {
+                    return Err(self.err(format!("{who}() arg is an empty sequence")));
+                }
+                for i in 1..items.len() {
+                    if self.wrap(crate::builtins::ord_or_defer(&keys[i], &keys[best], if want_min { "<" } else { ">" }))? == want {
+                        best = i;
+                    }
+                }
+                let best = items[best].clone();
+                self.deliver_order(cont, best)
+            }
+            kind => {
+                let sorted = self.wrap(crate::builtins::sort_by_keys(items, &keys, reverse))?;
+                self.finish_order(kind, sorted, cont)
+            }
+        }
+    }
+
+    /// Turn a finished ordering into the value it produces.
+    fn finish_order(
+        &mut self,
+        kind: OrdKind,
+        out: Vec<Value>,
+        cont: OrdCont,
+    ) -> Result<(), RuntimeError> {
+        let v = match kind {
+            OrdKind::SortInPlace(list) => {
+                *list.borrow_mut() = out;
+                Value::None
+            }
+            OrdKind::Sort(shape) => self.wrap(Self::rebuild_shape(shape, out))?,
+            OrdKind::Extreme { .. } => unreachable!("an extreme produces its winner directly"),
+        };
+        self.deliver_order(cont, v)
+    }
+
+    /// Hand a finished ordering to whatever asked for it.
+    fn deliver_order(&mut self, cont: OrdCont, v: Value) -> Result<(), RuntimeError> {
+        match cont {
+            OrdCont::Push => {
+                self.push(v);
+                Ok(())
+            }
+            OrdCont::Seq => {
+                self.record_seq_result(v);
+                self.drive_seq()
+            }
+            OrdCont::Sort => {
+                self.task.sort_jobs.last_mut().expect("sort job").keys.push(v);
+                self.drive_sort()
+            }
+        }
+    }
+
+    /// A native ordering reached as a *callback* rather than as a call the
+    /// program wrote — `xs.map(sorted)`, `sorted(xs, key=min)`. Native code
+    /// cannot run a `__lt__`, and a callback's result does not go on the
+    /// operand stack, so both facts have to be handled here.
+    ///
+    /// `Ok(Some(args))` hands the arguments back for the ordinary native call,
+    /// which is what every callback that is not one of these three gets.
+    fn ord_callback(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+        cont: OrdCont,
+    ) -> Result<Option<Vec<Value>>, RuntimeError> {
+        if !matches!(name, "sorted" | "min" | "max") || !ord_needs_vm(&args) {
+            return Ok(Some(args));
+        }
+        let items = match args.as_slice() {
+            [it] => self.wrap(iterate_to_vec(it))?,
+            _ => args,
+        };
+        let keys = items.clone();
+        let kind = match name {
+            "sorted" => OrdKind::Sort(SeqShape::List),
+            other => OrdKind::Extreme { want_min: other == "min", who: if other == "min" { "min" } else { "max" } },
+        };
+        if matches!(kind, OrdKind::Extreme { .. }) && items.is_empty() {
+            return Err(self.err(format!("{name}() arg is an empty sequence")));
+        }
+        self.begin_order_to(kind, items, keys, false, cont).map(|()| None)
+    }
+
+    /// The ordering machine's loop: run until the ordering is finished, or
+    /// until a `<` has to be decided by Oro code. `answer` is the `<` the
+    /// previous suspension asked for.
+    fn drive_ord(&mut self, mut answer: Option<bool>) -> Result<(), RuntimeError> {
+        loop {
+            let (ask, op) = {
+                let job = self.task.ord_jobs.last_mut().expect("ord job");
+                match job.state {
+                    // `min` asks "is the candidate below the winner?" and `max`
+                    // the mirror, which is CPython's split: `max` of a class
+                    // that defines only `__lt__` works, but by reflection, and
+                    // a class that defines neither says so with a `>`.
+                    OrdState::Fold { .. } => {
+                        let op = match job.kind {
+                            OrdKind::Extreme { want_min: true, .. } => CmpOp::Lt,
+                            _ => CmpOp::Gt,
+                        };
+                        (Self::step_fold(job, answer.take()), op)
+                    }
+                    // A sort is spelled entirely in `<`, as CPython's is.
+                    OrdState::Merge { .. } => (Self::step_merge(job, answer.take()), CmpOp::Lt),
+                }
+            };
+            let Some((lhs, rhs)) = ask else {
+                let job = self.task.ord_jobs.pop().expect("ord job");
+                return self.finish_ord_job(job);
+            };
+            let job = self.task.ord_jobs.last().expect("ord job");
+            let (lhs, rhs) = (job.keys[lhs].clone(), job.keys[rhs].clone());
+            // Native comparison still answers most pairs even here: only the
+            // ones that really are instances cost a frame.
+            match self.wrap(try_compare_op(op, &lhs, &rhs))? {
+                Some(v) => answer = Some(v),
+                None => {
+                    self.task.cmp_jobs.push(CmpJob { levels: Vec::new(), cont: CmpCont::Order });
+                    return self.drive_cmp(CmpNext::Ask(lhs, rhs, op));
+                }
+            }
+        }
+    }
+
+    /// One step of the min/max fold. `min` keeps the first of several equal
+    /// smallest elements and `max` the first of several largest, which is
+    /// CPython's rule and falls out of asking for a *strict* `<`.
+    fn step_fold(job: &mut OrdJob, answer: Option<bool>) -> Option<(usize, usize)> {
+        let n = job.keys.len();
+        let OrdState::Fold { best, next } = &mut job.state else {
+            unreachable!("step_fold on a merge")
+        };
+        if let Some(take) = answer {
+            if take {
+                *best = *next;
+            }
+            *next += 1;
+        }
+        (*next < n).then_some((*next, *best))
+    }
+
+    /// One step of the bottom-up merge sort: fold in the `<` that was asked
+    /// for, then return the next pair to compare, or `None` when the sort is
+    /// done.
+    ///
+    /// The entire sort state is the six indices in [`OrdState::Merge`], so
+    /// suspending it costs nothing and resuming it is this function. Bottom-up
+    /// is what makes that true: a top-down merge sort would have a Rust call
+    /// stack to make explicit as well.
+    fn step_merge(job: &mut OrdJob, answer: Option<bool>) -> Option<(usize, usize)> {
+        let reverse = job.reverse;
+        let n = job.items.len();
+        let OrdState::Merge { src, dst, width, lo, mid, hi, i, j } = &mut job.state else {
+            unreachable!("step_merge on a fold")
+        };
+        if let Some(take_right) = answer {
+            // The write position: `lo + (i - lo) + (j - mid)`.
+            let k = *i + *j - *mid;
+            if take_right {
+                dst[k] = src[*j];
+                *j += 1;
+            } else {
+                dst[k] = src[*i];
+                *i += 1;
+            }
+        }
+        loop {
+            if *width >= n {
+                return None;
+            }
+            if *lo >= n {
+                // The pass is done: what was written becomes what is read.
+                std::mem::swap(src, dst);
+                *width *= 2;
+                if *width >= n {
+                    return None;
+                }
+                *lo = 0;
+                *mid = (*width).min(n);
+                *hi = (2 * *width).min(n);
+                *i = 0;
+                *j = *mid;
+                continue;
+            }
+            if *i < *mid && *j < *hi {
+                // Forward asks "is the right run's element strictly smaller?",
+                // and takes from the left otherwise, which is what makes the
+                // merge stable. Reversed asks the mirror — inverting the
+                // comparator rather than the output, so equal elements keep
+                // their original order in both directions, as CPython promises.
+                let (l, r) = (src[*i], src[*j]);
+                return Some(if reverse { (l, r) } else { (r, l) });
+            }
+            let k = *i + *j - *mid;
+            if *i < *mid {
+                dst[k] = src[*i];
+                *i += 1;
+            } else if *j < *hi {
+                dst[k] = src[*j];
+                *j += 1;
+            } else {
+                // This pair of runs is merged; line up the next pair.
+                *lo = *hi;
+                if *lo < n {
+                    *mid = (*lo + *width).min(n);
+                    *hi = (*lo + 2 * *width).min(n);
+                    *i = *lo;
+                    *j = *mid;
+                }
+            }
+        }
+    }
+
+    /// Undecorate: turn the finished permutation back into values.
+    fn finish_ord_job(&mut self, job: OrdJob) -> Result<(), RuntimeError> {
+        match job.state {
+            OrdState::Fold { best, .. } => {
+                let v = job.items[best].clone();
+                self.deliver_order(job.cont, v)
+            }
+            OrdState::Merge { src, .. } => {
+                let mut slots: Vec<Option<Value>> = job.items.into_iter().map(Some).collect();
+                let out =
+                    src.into_iter().map(|i| slots[i].take().expect("index used once")).collect();
+                self.finish_order(job.kind, out, job.cont)
+            }
+        }
     }
 
     /// Assemble a class from the member values on the stack (see
@@ -3083,6 +3877,17 @@ impl Vm {
                 self.drive_seq()?;
             }
             ReturnAction::NegateBool => self.push(Value::Bool(!value.truthy())),
+            ReturnAction::DriveCmp => {
+                let job = self.task.cmp_jobs.last_mut().expect("cmp job");
+                let negate = match job.levels.pop() {
+                    Some(CmpLevel::Dunder { negate }) => negate,
+                    _ => unreachable!("DriveCmp without a waiting dunder level"),
+                };
+                // Truthiness, not the value: this is a decision inside `in` or
+                // a container comparison, where CPython applies `bool()` too.
+                self.drive_cmp(CmpNext::Give(value.truthy() != negate))?;
+            }
+
             ReturnAction::FormatSpec(spec) => {
                 let out =
                     self.wrap(crate::format::format_value(&value, crate::format::CONV_NONE, &spec))?;
@@ -3192,6 +3997,8 @@ impl Vm {
             sort_jobs: self.task.sort_jobs.len(),
             seq_jobs: self.task.seq_jobs.len(),
             mat_jobs: self.task.mat_jobs.len(),
+            cmp_jobs: self.task.cmp_jobs.len(),
+            ord_jobs: self.task.ord_jobs.len(),
         }
     }
 
@@ -3203,6 +4010,8 @@ impl Vm {
         self.task.sort_jobs.truncate(d.sort_jobs);
         self.task.seq_jobs.truncate(d.seq_jobs);
         self.task.mat_jobs.truncate(d.mat_jobs);
+        self.task.cmp_jobs.truncate(d.cmp_jobs);
+        self.task.ord_jobs.truncate(d.ord_jobs);
     }
 
     /// Unwind `exc` through the block and frame stacks. On success (a handler or
@@ -4133,39 +4942,220 @@ fn instance_method(v: &Value, name: &str) -> Option<(Rc<Function>, Rc<Class>)> {
 
 // --- Comparison -------------------------------------------------------------
 
-fn compare(op: CmpOp, a: &Value, b: &Value) -> Result<bool, String> {
+/// Every comparison operator, as far as native code can decide it. `None` is
+/// the signal that a user dunder is involved and the VM has to take over —
+/// see [`Value::try_equals`] and `Vm::begin_compare`.
+fn try_compare_op(op: CmpOp, a: &Value, b: &Value) -> Result<Option<bool>, String> {
     use std::cmp::Ordering;
     Ok(match op {
-        CmpOp::Eq => a.equals(b),
-        CmpOp::NotEq => !a.equals(b),
-        CmpOp::Lt => a.compare(b)? == Ordering::Less,
-        CmpOp::Gt => a.compare(b)? == Ordering::Greater,
-        CmpOp::LtEq => a.compare(b)? != Ordering::Greater,
-        CmpOp::GtEq => a.compare(b)? != Ordering::Less,
-        CmpOp::In => contains(b, a)?,
-        CmpOp::NotIn => !contains(b, a)?,
+        CmpOp::Eq => a.try_equals(b),
+        CmpOp::NotEq => {
+            // `__ne__` is its own dunder, and a class may define it without
+            // `__eq__` — in which case `try_equals` would answer natively and
+            // never reach it. One discriminant test per `!=` buys that.
+            if matches!(a, Value::Instance(_)) || matches!(b, Value::Instance(_)) {
+                None
+            } else {
+                a.try_equals(b).map(|r| !r)
+            }
+        }
+        CmpOp::Lt => a.try_compare(b, "<")?.map(|o| o == Ordering::Less),
+        CmpOp::Gt => a.try_compare(b, ">")?.map(|o| o == Ordering::Greater),
+        CmpOp::LtEq => a.try_compare(b, "<=")?.map(|o| o != Ordering::Greater),
+        CmpOp::GtEq => a.try_compare(b, ">=")?.map(|o| o != Ordering::Less),
+        CmpOp::In => try_contains(b, a)?,
+        CmpOp::NotIn => try_contains(b, a)?.map(|r| !r),
     })
 }
 
-fn contains(container: &Value, item: &Value) -> Result<bool, String> {
+/// Do these arguments to `sorted` / `min` / `max` need the VM — is any
+/// candidate an instance, whose `<` is a user `__lt__`?
+///
+/// This is the guard that keeps `min(i, 7)` on the native path it has always
+/// been on: one discriminant test per candidate, against an ordering that is
+/// already at least linear in them. The uncertain cases — a generator, an
+/// iterator, a dict — answer `true` and let `Vm::begin_order` make the same
+/// decision with the elements in hand.
+fn ord_needs_vm(args: &[Value]) -> bool {
+    match args {
+        [Value::List(l)] => l.borrow().iter().any(ord_defers),
+        [Value::Tuple(t)] => t.iter().any(ord_defers),
+        // The three iterables whose elements are never instances.
+        [Value::Str(_) | Value::Bytes(_) | Value::Range(_)] => false,
+        [_] => true,
+        many => many.iter().any(ord_defers),
+    }
+}
+
+/// How deep [`ord_defers`] looks before giving up and answering "yes".
+const ORD_SCAN_DEPTH: u32 = 8;
+
+/// Could ordering this value against another need Oro code? An instance can,
+/// and so can a container, because of what may be *inside* it — `min` over a
+/// list of lists of instances compares the instances.
+///
+/// `false` is the strong answer: it means the whole value was walked and holds
+/// no instance anywhere, so native ordering cannot get stuck. Everything
+/// uncertain — including anything past the scan depth, which is how a cyclic
+/// value is kept from being walked forever here — answers `true` and lets the
+/// resumable path decide, since that path is correct for every input and merely
+/// slower.
+fn ord_defers(v: &Value) -> bool {
+    fn go(v: &Value, depth: u32) -> bool {
+        match v {
+            Value::Instance(_) => true,
+            _ if depth >= ORD_SCAN_DEPTH => true,
+            Value::List(l) => l.borrow().iter().any(|e| go(e, depth + 1)),
+            Value::Tuple(t) => t.iter().any(|e| go(e, depth + 1)),
+            _ => false,
+        }
+    }
+    go(v, 0)
+}
+
+/// `sorted()` builds a new list; `list.sort()` writes back where it was.
+fn sort_kind(in_place: Option<Rc<RefCell<Vec<Value>>>>) -> OrdKind {
+    match in_place {
+        Some(l) => OrdKind::SortInPlace(l),
+        None => OrdKind::Sort(SeqShape::List),
+    }
+}
+
+/// Does an ordering hold, given the ordering of the two operands?
+fn ord_holds(op: CmpOp, o: std::cmp::Ordering) -> bool {
+    use std::cmp::Ordering;
+    match op {
+        CmpOp::Lt => o == Ordering::Less,
+        CmpOp::Gt => o == Ordering::Greater,
+        CmpOp::LtEq => o != Ordering::Greater,
+        CmpOp::GtEq => o != Ordering::Less,
+        CmpOp::Eq => o == Ordering::Equal,
+        CmpOp::NotEq => o != Ordering::Equal,
+        CmpOp::In | CmpOp::NotIn => unreachable!("membership is not an ordering"),
+    }
+}
+
+/// The rich-comparison dunder an operator dispatches, or `None` for the two
+/// that have none.
+fn rich_dunder(op: CmpOp) -> Option<&'static str> {
+    Some(match op {
+        CmpOp::Eq => "__eq__",
+        CmpOp::NotEq => "__ne__",
+        CmpOp::Lt => "__lt__",
+        CmpOp::Gt => "__gt__",
+        CmpOp::LtEq => "__le__",
+        CmpOp::GtEq => "__ge__",
+        CmpOp::In | CmpOp::NotIn => return None,
+    })
+}
+
+/// The dunder the *right* operand is asked when the left has nothing to say:
+/// `1 < obj` becomes `obj.__gt__(1)`. Equality is its own reflection.
+fn reflect_dunder(op: CmpOp) -> &'static str {
+    match op {
+        CmpOp::Lt => "__gt__",
+        CmpOp::Gt => "__lt__",
+        CmpOp::LtEq => "__ge__",
+        CmpOp::GtEq => "__le__",
+        // `!=` reflects to `__ne__`, not to `__eq__`: falling back to `__eq__`
+        // here would take the *un-negated* path and answer `{} != obj` with
+        // whatever `obj.__eq__` said. The negated fallback is a separate step
+        // at the call site, and it has to stay separate.
+        CmpOp::NotEq => "__ne__",
+        _ => "__eq__",
+    }
+}
+
+/// The symbol an operator is written with, for the `TypeError` that names it.
+fn op_symbol(op: CmpOp) -> &'static str {
+    match op {
+        CmpOp::Lt => "<",
+        CmpOp::Gt => ">",
+        CmpOp::LtEq => "<=",
+        CmpOp::GtEq => ">=",
+        _ => "<",
+    }
+}
+
+/// Are these two the same heap object? CPython's identity shortcut inside
+/// `PyObject_RichCompareBool`, which is why `a in [a]` is `true` even when
+/// `a.__eq__` answers `false`, and why a self-referential list compares equal
+/// to itself instead of recursing forever.
+fn same_object(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::List(x), Value::List(y)) => Rc::ptr_eq(x, y),
+        (Value::Tuple(x), Value::Tuple(y)) => Rc::ptr_eq(x, y),
+        (Value::Dict(x), Value::Dict(y)) => Rc::ptr_eq(x, y),
+        _ => match (a.identity(), b.identity()) {
+            (Some(x), Some(y)) => x == y,
+            _ => false,
+        },
+    }
+}
+
+/// The elements `item in container` has to scan, for the containers whose
+/// membership is a linear run of `==`. Everything else — a string, a `bytes`,
+/// a `range`, a `dict` — answers without ever comparing two values with `==`,
+/// so it never reaches here.
+fn membership_items(container: &Value, item: &Value) -> Result<Vec<Value>, String> {
+    match container {
+        Value::List(l) => Ok(l.borrow().clone()),
+        Value::Tuple(t) => Ok(t.as_ref().clone()),
+        other => Err(format!(
+            "internal: {} membership does not dispatch (item {})",
+            other.type_name(),
+            item.type_name()
+        )),
+    }
+}
+
+fn try_contains(container: &Value, item: &Value) -> Result<Option<bool>, String> {
     match container {
         Value::Str(hay) => match item {
-            Value::Str(needle) => Ok(hay.s.contains(&needle.s)),
+            Value::Str(needle) => Ok(Some(hay.s.contains(&needle.s))),
             _ => Err("'in <string>' requires string as left operand".to_string()),
         },
         // Subsequence, like `str`. CPython also lets an `int` on the left ask
         // whether one octet is present; that is a second meaning for one
         // spelling, so Oro says what it wants instead of guessing.
         Value::Bytes(hay) => match item {
-            Value::Bytes(needle) => Ok(subsequence(hay, needle)),
+            Value::Bytes(needle) => Ok(Some(subsequence(hay, needle))),
             _ => Err("'in <bytes>' requires bytes as left operand".to_string()),
         },
-        Value::List(l) => Ok(l.borrow().iter().any(|v| v.equals(item))),
-        Value::Tuple(t) => Ok(t.iter().any(|v| v.equals(item))),
-        Value::Dict(d) => d.borrow().contains(item),
-        Value::Range(r) => Ok(range_contains(r, item)),
+        Value::List(l) => Ok(seq_contains(&l.borrow(), item)),
+        Value::Tuple(t) => Ok(seq_contains(t, item)),
+        // A dict key is an `HKey` and a lookup has nowhere to call user code
+        // from, which is the decision `docs/hash-and-equality.md` argues at
+        // length: a class defining `__eq__` is not a key at all, so `in` over a
+        // dict never has one to dispatch.
+        Value::Dict(d) => d.borrow().contains(item).map(Some),
+        Value::Range(r) => Ok(Some(range_contains(r, item))),
         other => Err(format!("argument of type '{}' is not iterable", other.type_name())),
     }
+}
+
+/// `item in items` for a list or tuple, short-circuiting on the first hit and
+/// deferring the whole scan the moment one element needs a user `__eq__`.
+///
+/// Deferring the *whole* scan rather than one element costs a re-walk of the
+/// elements already rejected, and buys a machine that never has to remember how
+/// far a native loop got. `in` over a list is O(n) comparisons either way.
+fn seq_contains(items: &[Value], item: &Value) -> Option<bool> {
+    let mut deferred = false;
+    for v in items {
+        match v.try_equals(item) {
+            Some(true) => return Some(true),
+            Some(false) => {}
+            // The identity shortcut is asked only here, where the alternative
+            // is a frame — so a scan over ints pays nothing for it.
+            None if same_object(v, item) => return Some(true),
+            None => {
+                deferred = true;
+                break;
+            }
+        }
+    }
+    (!deferred).then_some(false)
 }
 
 /// Whether `needle` appears contiguously in `hay`. The empty needle is present

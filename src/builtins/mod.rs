@@ -302,7 +302,9 @@ fn fold_extreme(args: Vec<Value>, who: &str, want: std::cmp::Ordering) -> VResul
     let mut it = items.into_iter();
     let mut best = it.next().ok_or_else(|| format!("{who}() arg is an empty sequence"))?;
     for v in it {
-        if v.compare(&best)? == want {
+        if ord_or_defer(&v, &best, if want == std::cmp::Ordering::Less { "<" } else { ">" })?
+            == want
+        {
             best = v;
         }
     }
@@ -332,6 +334,23 @@ fn bi_sorted(args: Vec<Value>) -> VResult<Value> {
     Ok(Value::List(Rc::new(RefCell::new(items))))
 }
 
+/// The error a native ordering answers with when it meets an operand whose
+/// ordering only a user `__lt__` can decide.
+///
+/// It is a backstop, not a path: the VM checks every ordering entry point
+/// (`sorted`, `sort`, `min`, `max`, and their chain spellings) for such an
+/// operand *before* calling native code, and runs the resumable comparison
+/// itself instead. Seeing this message means an entry point was missed — which
+/// is worth a loud internal error, because the alternative for a `__lt__` that
+/// native code cannot call is ordering by address.
+pub const ORD_NEEDS_VM: &str = "internal: ordering needs the VM (unrouted __lt__)";
+
+/// [`Value::try_compare`] with "the VM must decide" turned into the backstop
+/// error above, for the native orderings that have no way to suspend.
+pub fn ord_or_defer(a: &Value, b: &Value, sym: &'static str) -> VResult<std::cmp::Ordering> {
+    a.try_compare(b, sym)?.ok_or_else(|| ORD_NEEDS_VM.to_string())
+}
+
 /// Stable sort of `items` by the matching entry in `keys` (the classic
 /// decorate-sort-undecorate). `reverse` inverts the *comparator* rather than
 /// reversing the result: `sort_by` is stable, so equal keys keep their original
@@ -345,7 +364,7 @@ pub fn sort_by_keys(items: Vec<Value>, keys: &[Value], reverse: bool) -> VResult
             return std::cmp::Ordering::Equal;
         }
         let (lhs, rhs) = if reverse { (b, a) } else { (a, b) };
-        match keys[lhs].compare(&keys[rhs]) {
+        match ord_or_defer(&keys[lhs], &keys[rhs], "<") {
             Ok(o) => o,
             Err(e) => {
                 err = Some(e);
@@ -370,7 +389,7 @@ fn sort_values(items: &mut [Value]) -> VResult<()> {
         if err.is_some() {
             return std::cmp::Ordering::Equal;
         }
-        match a.compare(b) {
+        match ord_or_defer(a, b, "<") {
             Ok(ord) => ord,
             Err(e) => {
                 err = Some(e);
@@ -1554,7 +1573,7 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
             }
             let mut best = items[0].clone();
             for v in &items[1..] {
-                let ord = v.compare(&best)?;
+                let ord = ord_or_defer(v, &best, if name == "min" { "<" } else { ">" })?;
                 let take = if name == "min" {
                     ord == std::cmp::Ordering::Less
                 } else {

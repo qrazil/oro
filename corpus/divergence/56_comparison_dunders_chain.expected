@@ -1,0 +1,33 @@
+--- the two spellings of one question now agree
+true true
+false false
+false 1
+Cell(1)
+([Cell(1)], [Cell(2)])
+[Cell(1)] [Cell(2)]
+[Cell(1)] [true, false]
+--- a class with __eq__ is still not a dict key, and still not hashable
+unhashable type: 'Cell' — it defines __eq__, so its identity is not what equality means for it
+{1: [Cell(1)], 2: [Cell(2)]}
+unhashable type: 'Cell' — it defines __eq__, so its identity is not what equality means for it
+a
+--- the chain's orderings run __lt__ too
+[V(1), V(2), V(3)]
+V(1) V(3)
+[V(1), V(2), V(3)]
+V(1) V(3)
+(V(1), V(2), V(3))
+V(1)
+[1, 2, 3]
+--- and they are shape-preserving, as the protocol promises
+[V(1), V(2)] (V(1), V(2))
+[V(1), V(2)] (V(1), V(2))
+--- an ordering with nothing to order by
+'<' not supported between instances of 'Plain' and 'Plain'
+'<' not supported between instances of 'Plain' and 'Plain'
+--- an exception from inside a dunder does not corrupt the job stack
+boom-eq
+boom-lt
+boom-lt
+[true, false]
+[[V(1), V(1)], [V(1), V(2)], [V(1), V(3)]]

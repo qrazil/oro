@@ -1,0 +1,43 @@
+# KNOWN-FAILING: correct Python that Oro gets wrong.
+#
+# A method with `yield` in it is a generator function in CPython, and calling it
+# produces a generator like any other. Oro's method-call path pushes a frame
+# that runs the body directly, so the `yield` has nothing to suspend into.
+#
+# Until this milestone that was a `yield outside a generator` *panic* — the
+# interpreter aborting, not a diagnostic. It is now a clean error, which is the
+# whole of the change: carrying generators through methods is a real feature and
+# is not what the comparison-dunder work was about. Filed here so it stays
+# visible, and so that the day it starts working the harness says so.
+#
+# The module-level spelling below is the workaround, and it works today.
+
+
+class Counter:
+    def __init__(self, n):
+        self.n = n
+
+    def up(self):
+        i = 0
+        while i < self.n:
+            yield i
+            i = i + 1
+
+
+def up_from(obj):
+    i = 0
+    while i < obj.n:
+        yield i
+        i = i + 1
+
+
+c = Counter(3)
+out = []
+for x in up_from(c):
+    out.append(x)
+print(out)
+
+got = []
+for x in c.up():
+    got.append(x)
+print(got)
