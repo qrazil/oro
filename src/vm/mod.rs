@@ -2467,11 +2467,19 @@ impl Vm {
                     }
                     _ => {}
                 }
-                // A generator argument must be drained through frames first.
-                if let Some(step) =
-                    self.materialize_generator_args(&Value::Builtin(b.clone()), &args, &kwargs)?
-                {
-                    return Ok(step);
+                // A generator argument must be drained through frames first,
+                // and the test is spelled out here for the same reason it is
+                // spelled out in `invoke_native_method`: passing the callee
+                // means building a `Value::Builtin` and bumping an `Rc` on
+                // *every* builtin call, so that `materialize_generator_args`
+                // can look at the arguments, find no generator among them, and
+                // answer `None`.
+                if args.iter().any(|a| matches!(a, Value::Generator(_))) {
+                    if let Some(step) =
+                        self.materialize_generator_args(&Value::Builtin(b.clone()), &args, &kwargs)?
+                    {
+                        return Ok(step);
+                    }
                 }
                 if !kwargs.is_empty() {
                     return Err(self.err(format!("{}() takes no keyword arguments", b.name)));
