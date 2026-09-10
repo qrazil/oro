@@ -1,0 +1,112 @@
+# INTENTIONAL DIVERGENCE FROM PYTHON.
+# `std/http.oro` and this file are Oro-only: `=>` lambdas, `to_` casts, `b""`
+# literals and Oro's block scope. CPython cannot run either, so the oracle
+# cannot generate this .expected — it is reviewed by hand.
+#
+# The request parser: a well-formed GET, header case-insensitivity,
+# percent-decoding, the target forms a server must accept, and the malformed
+# inputs it must refuse. Every line below reads as a claim about HTTP, so a
+# wrong line is wrong on its face rather than merely different.
+
+# `import http` resolves to `std/http.oro` through the symlink beside this
+# file, because a user module is loaded from the script's own directory. The
+# symlink goes away the moment `http` joins `io` and `json` in the embedded
+# module table; nothing else here changes when it does.
+import http
+import io
+
+
+def check(label, got, want):
+    if got == want:
+        print(f"{label} -> {want}")
+    else:
+        print(f"{label} -> MISMATCH: got {got}, want {want}")
+
+
+def parse(raw):
+    return http.read_request(io.buffer(raw))
+
+
+# The status and message a bad request is answered with, as one string, so
+# the baseline records *which* rejection fired and not merely that one did.
+def outcome(raw):
+    try:
+        req = parse(raw)
+        if req == None:
+            return "clean EOF"
+        return "accepted"
+    except http.BadRequest as e:
+        return f"{e.status} {e}"
+    except ValueError as e:
+        return f"400 {e}"
+
+
+print("--- a well-formed GET")
+req = parse(b"GET /hello?name=ada&n=42 HTTP/1.1\r\nHost: example.com\r\nUser-Agent: probe\r\n\r\n")
+check("method", req.method, "GET")
+check("path", req.path, "/hello")
+check("version", req.version, "1.1")
+check("query name", req.query["name"], "ada")
+check("query n", req.query["n"], "42")
+check("header lookup is case-insensitive", req.header("HOST"), "example.com")
+check("absent header takes the default", req.header("X-Nope", "-"), "-")
+check("a GET has an empty body, not a missing one", io.read(req.body), b"")
+check("str(request)", f"{req}", "GET /hello HTTP/1.1")
+
+print("--- header names fold, values do not")
+req = parse(b"GET / HTTP/1.1\r\nHOST: Example.COM\r\nX-A: v1\r\nx-a:   v2   \r\n\r\n")
+check("name lowercased", req.headers.get("host"), "Example.COM")
+check("repeated field joined with a comma", req.header("X-A"), "v1, v2")
+
+print("--- percent-decoding")
+req = parse(b"GET /a%20b/%C3%A9?q=a+b&r=%2Fx&flag HTTP/1.1\r\nHost: h\r\n\r\n")
+check("path escape", req.path, "/a b/é")
+check("'+' is a space in a query", req.query["q"], "a b")
+check("'+' is NOT a space in a path", parse(b"GET /a+b HTTP/1.1\r\nHost: h\r\n\r\n").path, "/a+b")
+check("escape in a query value", req.query["r"], "/x")
+check("a valueless query key is empty", req.query["flag"], "")
+
+print("--- the target forms a server must accept")
+check("absolute-form drops the authority", parse(b"GET http://ex.com/x?y=1 HTTP/1.1\r\nHost: ex.com\r\n\r\n").path, "/x")
+check("absolute-form with no path", parse(b"GET http://ex.com HTTP/1.1\r\nHost: ex.com\r\n\r\n").path, "/")
+check("absolute-form with a query and no path", parse(b"GET http://ex.com?y=1 HTTP/1.1\r\nHost: ex.com\r\n\r\n").query["y"], "1")
+check("asterisk-form", parse(b"OPTIONS * HTTP/1.1\r\nHost: h\r\n\r\n").path, "*")
+check("HTTP/1.0 needs no Host", parse(b"GET / HTTP/1.0\r\n\r\n").version, "1.0")
+check("a leading blank line is skipped", parse(b"\r\nGET / HTTP/1.1\r\nHost: h\r\n\r\n").method, "GET")
+
+print("--- what must be refused")
+check("no Host on 1.1", outcome(b"GET / HTTP/1.1\r\n\r\n"), "400 HTTP/1.1 request without a Host header")
+check("two Host headers", outcome(b"GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n"), "400 duplicate host header")
+check("two spaces in the request line", outcome(b"GET  / HTTP/1.1\r\nHost: h\r\n\r\n"), "400 malformed request line")
+check("no version", outcome(b"GET /\r\nHost: h\r\n\r\n"), "400 malformed request line")
+check("not HTTP at all", outcome(b"GET / SPDY/1.1\r\nHost: h\r\n\r\n"), "400 unrecognised protocol in the request line")
+check("HTTP/2.0 over 1.1 framing", outcome(b"GET / HTTP/2.0\r\nHost: h\r\n\r\n"), "505 unsupported HTTP version '2.0'")
+check("space before the colon", outcome(b"GET / HTTP/1.1\r\nHost : h\r\n\r\n"), "400 malformed header name")
+check("obsolete line folding", outcome(b"GET / HTTP/1.1\r\nHost: h\r\n X-Bad: 1\r\n\r\n"), "400 obsolete line folding is not supported")
+check("a header line with no colon", outcome(b"GET / HTTP/1.1\r\nHost: h\r\nbroken\r\n\r\n"), "400 malformed header line")
+check("a head that never ends", outcome(b"GET / HTTP/1.1\r\nHost: h\r\n"), "400 connection ended in the middle of the header block")
+check("nothing at all", outcome(b""), "clean EOF")
+check("only blank lines", outcome(b"\r\n\r\n"), "400 empty request line")
+check("a bad percent-escape", outcome(b"GET /a%zz HTTP/1.1\r\nHost: h\r\n\r\n"), "400 invalid percent-escape in the request target")
+check("a truncated percent-escape", outcome(b"GET /a%4 HTTP/1.1\r\nHost: h\r\n\r\n"), "400 truncated percent-escape in the request target")
+check("a fragment", outcome(b"GET /a#b HTTP/1.1\r\nHost: h\r\n\r\n"), "400 a fragment must not be sent in a request target")
+check("a relative target", outcome(b"GET x HTTP/1.1\r\nHost: h\r\n\r\n"), "400 request target is not an absolute path")
+check("a bare LF inside a header value", outcome(b"GET / HTTP/1.1\r\nHost: h\r\nX-B: a\nb\r\n\r\n"), "400 malformed header value")
+check("a NUL inside a header value", outcome(b"GET / HTTP/1.1\r\nHost: h\r\nX-B: a\x00b\r\n\r\n"), "400 malformed header value")
+check("a control character in the target", outcome(b"GET /a\x01b HTTP/1.1\r\nHost: h\r\n\r\n"), "400 malformed request target")
+check("a header value that is not UTF-8", outcome(b"GET / HTTP/1.1\r\nHost: h\r\nX-B: \xff\r\n\r\n"), "400 bytes could not be decoded as UTF-8: invalid byte 0xff at position 0")
+check("a path that decodes to invalid UTF-8", outcome(b"GET /%FF HTTP/1.1\r\nHost: h\r\n\r\n"), "400 bytes could not be decoded as UTF-8: invalid byte 0xff at position 1")
+
+print("--- bounded, because the client chooses the size")
+oversized = [b"GET / HTTP/1.1\r\nHost: h\r\nX-Big: "]
+oversized.append(b"a" * 70000)
+oversized.append(b"\r\n\r\n")
+check("a header block over 64 KiB", outcome(oversized.join(b"")), "431 header block exceeded 65536 bytes")
+
+many = [b"GET / HTTP/1.1\r\nHost: h\r\n"]
+i = 0
+while i < 120:
+    many.append(f"X-N{i}: 1\r\n".to_bytes())
+    i = i + 1
+many.append(b"\r\n")
+check("more than 100 header fields", outcome(many.join(b"")), "431 more than 100 header fields")

@@ -1,0 +1,130 @@
+--- HTTP/1.1 reuses the connection by default
+requests served -> 2
+nothing left unread -> b''
+--- two requests, one connection
+    b'HTTP/1.1 200 OK'
+    b'content-type: text/plain; charset=utf-8'
+    b'content-length: 7'
+    b'date: <clock>'
+    b''
+    b'/first\nHTTP/1.1 200 OK'
+    b'content-type: text/plain; charset=utf-8'
+    b'content-length: 8'
+    b'date: <clock>'
+    b''
+    b'/second\n'
+--- HTTP/1.0 does not, unless it asks
+requests served -> 1
+the second request was never read -> b'GET /second HTTP/1.0\r\n\r\n'
+--- 1.0 closes after one
+    b'HTTP/1.1 200 OK'
+    b'content-type: text/plain; charset=utf-8'
+    b'content-length: 7'
+    b'connection: close'
+    b'date: <clock>'
+    b''
+    b'/first\n'
+1.0 with Connection: keep-alive -> 2
+--- 1.0 kept alive is told so
+    b'HTTP/1.1 200 OK'
+    b'content-type: text/plain; charset=utf-8'
+    b'content-length: 7'
+    b'connection: keep-alive'
+    b'date: <clock>'
+    b''
+    b'/first\nHTTP/1.1 200 OK'
+    b'content-type: text/plain; charset=utf-8'
+    b'content-length: 8'
+    b'connection: keep-alive'
+    b'date: <clock>'
+    b''
+    b'/second\n'
+--- Connection: close ends it from either side
+the client asked to close -> 1
+a comma list is read as a list -> 1
+the handler asked to close -> 1
+--- an unread request body is drained, not left to be parsed as a request
+requests served -> 2
+--- the body was skipped, not parsed
+    b'HTTP/1.1 200 OK'
+    b'content-type: text/plain; charset=utf-8'
+    b'content-length: 9'
+    b'date: <clock>'
+    b''
+    b'/ignored\nHTTP/1.1 200 OK'
+    b'content-type: text/plain; charset=utf-8'
+    b'content-length: 8'
+    b'date: <clock>'
+    b''
+    b'/second\n'
+--- a body too large to be worth draining closes the connection instead
+requests served -> 1
+the response says the connection is ending -> True
+--- a connection cannot be reused forever
+requests served before the cap -> 1000
+the last response says the connection is ending -> True
+--- a handler that raises is a 500, and says so on stderr
+http: handler raised <class 'ValueError'>: a bug in the handler, not in the request
+requests served -> 1
+--- 500 response
+    b'HTTP/1.1 500 Internal Server Error'
+    b'content-type: text/plain; charset=utf-8'
+    b'content-length: 22'
+    b'date: <clock>'
+    b''
+    b'internal server error\n'
+--- a handler that builds a header out of user input cannot inject one
+http: handler raised <class 'ValueError'>: illegal character in response header value for 'x-echo'
+--- 500, not an injected header
+    b'HTTP/1.1 500 Internal Server Error'
+    b'content-type: text/plain; charset=utf-8'
+    b'content-length: 22'
+    b'date: <clock>'
+    b''
+    b'internal server error\n'
+--- a body that cannot be drained closes the connection rather than escaping
+requests served -> 1
+--- answered, then closed
+    b'HTTP/1.1 200 OK'
+    b'content-type: text/plain; charset=utf-8'
+    b'content-length: 22'
+    b'connection: close'
+    b'date: <clock>'
+    b''
+    b'did not read the body\n'
+--- a handler that raises BadRequest is answered as the client error it is
+--- 422 response
+    b'HTTP/1.1 422 Unprocessable Content'
+    b'content-type: text/plain; charset=utf-8'
+    b'content-length: 19'
+    b'date: <clock>'
+    b''
+    b'your JSON is wrong\n'
+--- a malformed request is answered and the connection ends
+requests served -> 0
+the second request was never read -> b'GET /second HTTP/1.1\r\nHost: h\r\n\r\n'
+--- 400 response
+    b'HTTP/1.1 400 Bad Request'
+    b'content-type: text/plain; charset=utf-8'
+    b'content-length: 39'
+    b'connection: close'
+    b'date: <clock>'
+    b''
+    b'HTTP/1.1 request without a Host header\n'
+--- routing
+an exact route -> 200 allow=- b'ok\n'
+a parameterised route binds its segment -> 200 allow=- b'42\n'
+a different method on the same path -> 201 allow=- b'created\n'
+no route at all -> 404 allow=- b'not found\n'
+a known path, a wrong method -> 405 allow=GET, HEAD b'method not allowed\n'
+a known pattern, a wrong method -> 405 allow=GET, HEAD b'method not allowed\n'
+HEAD is served by the GET route -> 200 allow=- b'ok\n'
+an empty segment does not bind a parameter -> 404 allow=- b'not found\n'
+--- and HEAD's body is dropped on the way out, not by the route
+--- HEAD /health
+    b'HTTP/1.1 200 OK'
+    b'content-type: text/plain; charset=utf-8'
+    b'content-length: 3'
+    b'date: <clock>'
+    b''
+    b''

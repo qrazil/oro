@@ -1,0 +1,1018 @@
+# http.oro — HTTP/1.1 for servers, written entirely in Oro on top of the
+# frozen core and `std/io.oro`. There is no Rust `http` module and there
+# should never be one: baking a wire format into a runtime that promises to
+# freeze means being stuck with HTTP/1.1's edge cases forever. Everything
+# here parses with three generic primitives that earn their place on their
+# own — `read_until` for the header block, `bytes.split` for the lines,
+# `bytes.find` for the colon — and does the rest per *request* rather than
+# per *byte*, which is the side of the boundary the interpreter can afford.
+#
+# API
+# ---
+#   http.read_request(r)                     -> Request | None at a clean EOF
+#   http.write_response(w, req, resp, keep)  -> None, in one write() call
+#   http.should_keep_alive(req, resp)        -> bool
+#   http.serve_conn(conn, handler)           -> int, requests served
+#
+#   http.Request(method, path, query, version, headers, body)
+#   http.Response(status=200, headers=None, body=b"")
+#   http.text(s, status=200)                 -> Response
+#   http.json_response(v, status=200)        -> Response
+#   http.Router().add(method, path, handler) -> Router (chains)
+#   http.BadRequest(message, status=400)     -> Exception
+#
+# A connection is served by handing `serve_conn` anything that is a Reader
+# and a Writer, which on a real server is the socket and in every test in
+# `corpus/divergence/` is an `io.buffer()`. There are no wrapper objects in
+# the loop: every reader buffers by construction, so `read_until` works on
+# the connection directly, and `write_response` batches its own output with
+# the list-append-and-join idiom, so there is nothing to flush and no
+# `flush()` to forget.
+#
+# Not here, deliberately: `Expect: 100-continue` (answered 417 and moved
+# past), HTTP/2, HTTP/3, WebSocket upgrade, multipart parsing, cookie jars,
+# sessions, static file serving, compression, and a client. Each is
+# expressible in Oro on the surface above, and none of them is worth having
+# before the server works.
+
+import io
+import json
+import sys
+import time
+
+# --- limits ---------------------------------------------------------------
+# Every one of these bounds something an anonymous client controls. A server
+# with no limit on the header block is a server a single connection can
+# exhaust, which is why `read_until` takes its limit as an argument rather
+# than defaulting to unbounded.
+
+_MAX_HEAD = 65536
+_MAX_HEADERS = 100
+_MAX_CHUNK_LINE = 32
+_MAX_TRAILER_LINE = 8192
+_MAX_DRAIN = 65536
+_MAX_REQUESTS_PER_CONN = 1000
+
+# The messages that quote a limit are built here, at module scope, rather than
+# where they are raised. A module-level name used *only* inside an f-string
+# field of a function does not compile today, so a constant that appears in a
+# message and nowhere else has to be interpolated somewhere the compiler can
+# already see it. Building them once is the better shape anyway.
+_ERR_HEAD_TOO_BIG = f"header block exceeded {_MAX_HEAD} bytes"
+_ERR_TOO_MANY_HEADERS = f"more than {_MAX_HEADERS} header fields"
+_ERR_TOO_MANY_TRAILERS = f"more than {_MAX_HEADERS} trailer fields"
+
+# Bytes per read when a streamed response body is re-framed as chunks. Large
+# enough that a chunk is worth the syscall it costs; a chunked response is
+# genuinely more than one write, and that is the price of not knowing the
+# length up front.
+_STREAM_CHUNK = 8192
+
+_BYTES = "<class 'bytes'>"
+
+# --- byte tables ----------------------------------------------------------
+# `in` on bytes takes bytes, not an int, and iterating bytes yields ints, so
+# the character classes RFC 9110 defines are lookup tables keyed by byte
+# value. They are built once at import, the way `json.oro` builds its control
+# character table, rather than written as dict literals: `oro fmt` collapses
+# a multi-line dict literal onto a single line whatever its length, so a
+# table with more than a handful of entries has to be assembled by statement
+# to stay readable.
+
+# tchar: the characters a method or a header field name may contain.
+_TOKEN_DELIMS = '"(),/:;<=>?@[\\]{}'
+_TOKEN_OK = {}
+_tb = 33
+while _tb < 127:
+    if f"{_tb:c}" not in _TOKEN_DELIMS:
+        _TOKEN_OK[_tb] = True
+    _tb = _tb + 1
+
+# Hex digit -> value, for percent-decoding and chunk sizes. Doubles as the
+# "is this a hex digit" test, so a malformed escape is one lookup rather than
+# a decode that might itself raise.
+_HEX_VALUE = {}
+_hd = 0
+while _hd < 10:
+    _HEX_VALUE[48 + _hd] = _hd
+    _hd = _hd + 1
+_hd = 0
+while _hd < 6:
+    _HEX_VALUE[65 + _hd] = 10 + _hd
+    _HEX_VALUE[97 + _hd] = 10 + _hd
+    _hd = _hd + 1
+
+_SPACE = 32
+_TAB = 9
+_PERCENT = 37
+_PLUS = 43
+_DEL = 127
+
+# Headers that may not repeat. RFC 9110 lets a recipient join duplicates of a
+# list-valued field with a comma; Host and Content-Length are not list-valued,
+# and two of either is a request-smuggling vector rather than a list.
+_SINGLE_VALUED = ["host", "content-length"]
+
+# --- status reasons -------------------------------------------------------
+# Built by assignment for the formatter reason given above.
+
+_REASONS = {}
+_REASONS[100] = "Continue"
+_REASONS[101] = "Switching Protocols"
+_REASONS[200] = "OK"
+_REASONS[201] = "Created"
+_REASONS[202] = "Accepted"
+_REASONS[204] = "No Content"
+_REASONS[206] = "Partial Content"
+_REASONS[301] = "Moved Permanently"
+_REASONS[302] = "Found"
+_REASONS[303] = "See Other"
+_REASONS[304] = "Not Modified"
+_REASONS[307] = "Temporary Redirect"
+_REASONS[308] = "Permanent Redirect"
+_REASONS[400] = "Bad Request"
+_REASONS[401] = "Unauthorized"
+_REASONS[403] = "Forbidden"
+_REASONS[404] = "Not Found"
+_REASONS[405] = "Method Not Allowed"
+_REASONS[406] = "Not Acceptable"
+_REASONS[408] = "Request Timeout"
+_REASONS[409] = "Conflict"
+_REASONS[410] = "Gone"
+_REASONS[411] = "Length Required"
+_REASONS[413] = "Content Too Large"
+_REASONS[414] = "URI Too Long"
+_REASONS[415] = "Unsupported Media Type"
+_REASONS[417] = "Expectation Failed"
+_REASONS[422] = "Unprocessable Content"
+_REASONS[426] = "Upgrade Required"
+_REASONS[429] = "Too Many Requests"
+_REASONS[431] = "Request Header Fields Too Large"
+_REASONS[500] = "Internal Server Error"
+_REASONS[501] = "Not Implemented"
+_REASONS[502] = "Bad Gateway"
+_REASONS[503] = "Service Unavailable"
+_REASONS[504] = "Gateway Timeout"
+_REASONS[505] = "HTTP Version Not Supported"
+
+
+# The reason phrase for a status code. HTTP/1.1 lets it be anything at all —
+# clients are required to ignore it — so an unrecognised code gets a
+# placeholder rather than an exception.
+def _reason(status):
+    return _REASONS.get(status, "Unknown")
+
+
+# --- errors ---------------------------------------------------------------
+
+# A request the client got wrong. It carries the status to answer with,
+# because "malformed" is not one status: an unparseable request line is 400,
+# a header block over the limit is 431, and a transfer coding this server
+# does not implement is 501. Everything raised from inside the parser is one
+# of these, and the connection loop turns it into a response and closes.
+#
+# It sets `self.message` and defines `__str__` rather than delegating to the
+# base class: an Oro subclass cannot call `super().__init__`.
+class BadRequest(Exception):
+    def __init__(self, message, status=400):
+        self.message = message
+        self.status = status
+
+    def __str__(self):
+        return self.message
+
+    def __repr__(self):
+        return f"BadRequest({self.message}, status={self.status})"
+
+
+# --- types ----------------------------------------------------------------
+
+class Request:
+    def __init__(self, method, path, query, version, headers, body):
+        self.method = method
+        self.path = path
+        self.query = query
+        self.version = version
+        self.headers = headers
+        # Always a Reader, never None and never sometimes-bytes: a GET with no
+        # body gets an empty Buffer. One shape means a handler never branches
+        # on it and `text()` is one line instead of three.
+        self.body = body
+        self.params = {}
+
+    def header(self, name, default=None):
+        return self.headers.get(name.lower(), default)
+
+    def text(self):
+        return io.read(self.body).to_str()
+
+    def json(self):
+        return json.parse(self.text())
+
+    def __str__(self):
+        return f"{self.method} {self.path} HTTP/{self.version}"
+
+    def __repr__(self):
+        return f"<Request {self.method} {self.path} HTTP/{self.version}>"
+
+
+class Response:
+    def __init__(self, status=200, headers=None, body=b""):
+        self.status = status
+        self.headers = {}
+        if headers != None:
+            self.headers = headers
+        # bytes *or* a Reader, and that choice is what selects the framing:
+        # bytes gets a Content-Length, a Reader gets Transfer-Encoding:
+        # chunked. This is the one place a two-shape field earns its cost,
+        # because it is the distinction the protocol itself makes.
+        self.body = body
+
+    def __str__(self):
+        reason = _reason(self.status)
+        return f"{self.status} {reason}"
+
+    def __repr__(self):
+        reason = _reason(self.status)
+        return f"<Response {self.status} {reason}>"
+
+
+def text(s, status=200):
+    return Response(status, {"content-type": "text/plain; charset=utf-8"}, s.to_bytes())
+
+
+def json_response(v, status=200):
+    return Response(status, {"content-type": "application/json"}, json.stringify(v).to_bytes())
+
+
+def _is_streamed(body):
+    return type(body) != _BYTES
+
+
+# --- byte helpers ---------------------------------------------------------
+
+# A method or header field name: at least one character, all of them tchar.
+# The header case is the load-bearing one — a name with a space before its
+# colon ("Foo : bar") is a request-smuggling vector and RFC 9112 says a
+# server must reject the message rather than trim it.
+def _is_token(b):
+    if len(b) == 0:
+        return False
+    for c in b:
+        if _TOKEN_OK.get(c) == None:
+            return False
+    return True
+
+
+# A header field value may hold tabs and any byte above the control range,
+# and nothing else. Rejecting bare CR and bare LF here is what stops a
+# response-splitting payload arriving in a request and being echoed back.
+def _is_field_value(b):
+    for c in b:
+        if c < 32 and c != _TAB:
+            return False
+        if c == _DEL:
+            return False
+    return True
+
+
+# A request target is visible ASCII or above. Control characters are
+# rejected; bytes above 127 are not, because clients do send raw UTF-8 in a
+# path and the strict decode below is the place to answer for it.
+def _is_target(b):
+    if len(b) == 0:
+        return False
+    for c in b:
+        if c < 33 or c == _DEL:
+            return False
+    return True
+
+
+# Percent-decode `b`. In a query string `+` also means a space; in a path it
+# does not, which is the whole reason this takes a flag rather than guessing.
+#
+# A truncated or non-hex escape is a 400 rather than a literal `%`: guessing
+# what a malformed escape meant is how two intermediaries end up disagreeing
+# about a path.
+def _percent_decode(b, plus_is_space):
+    if b.find(b"%") < 0 and not plus_is_space:
+        return b
+    out = []
+    i = 0
+    n = len(b)
+    while i < n:
+        c = b[i]
+        if c == _PERCENT:
+            if i + 2 >= n:
+                raise BadRequest("truncated percent-escape in the request target")
+            hi = _HEX_VALUE.get(b[i + 1])
+            lo = _HEX_VALUE.get(b[i + 2])
+            if hi == None or lo == None:
+                raise BadRequest("invalid percent-escape in the request target")
+            out.append(hi * 16 + lo)
+            i = i + 3
+        elif c == _PLUS and plus_is_space:
+            out.append(_SPACE)
+            i = i + 1
+        else:
+            out.append(c)
+            i = i + 1
+    return out.to_bytes()
+
+
+# Whether a comma-separated header value lists `token`. `Connection` is the
+# only field this module reads that way, and it is legal there for a client
+# to send "keep-alive, upgrade" or two Connection headers that the parser has
+# already joined with a comma.
+def _has_token(value, token):
+    if value == None:
+        return False
+    for part in value.split(","):
+        if part.strip().lower() == token:
+            return True
+    return False
+
+
+# --- the parser -----------------------------------------------------------
+# A class holding the split lines and a cursor, for the reason `json.oro`
+# gives for its own parser: Oro cannot rebind a captured variable from a
+# nested function, so threading the cursor through return values would be
+# messier than mutating `self.i`.
+
+class _HeadParser:
+    def __init__(self, raw):
+        self.lines = raw.split(b"\r\n")
+        self.n = len(self.lines)
+        self.i = 0
+
+    def fail(self, msg, status=400):
+        raise BadRequest(msg, status)
+
+    def request_line(self):
+        # RFC 9112 asks a server to ignore at least one empty line before the
+        # request line, which is what a client that ended its last request
+        # with a stray CRLF produces. The head is already bounded, so this
+        # loop is bounded with it.
+        while self.i < self.n and len(self.lines[self.i]) == 0:
+            self.i = self.i + 1
+        if self.i >= self.n:
+            self.fail("empty request line")
+        parts = self.lines[self.i].split(b" ")
+        self.i = self.i + 1
+        # Exactly one space on either side of the target. Tolerating runs of
+        # spaces here is how a request line becomes ambiguous to two parsers
+        # at once.
+        if len(parts) != 3:
+            self.fail("malformed request line")
+        method = parts[0]
+        target = parts[1]
+        version = parts[2]
+        if not _is_token(method):
+            self.fail("malformed method")
+        if not _is_target(target):
+            self.fail("malformed request target")
+        if not version.startswith(b"HTTP/"):
+            self.fail("unrecognised protocol in the request line")
+        v = version[5:].to_str()
+        if v != "1.1" and v != "1.0":
+            self.fail(f"unsupported HTTP version '{v}'", 505)
+        return method.to_str(), target, v
+
+    def headers(self):
+        out = {}
+        count = 0
+        while self.i < self.n and len(self.lines[self.i]) > 0:
+            count = count + 1
+            if count > _MAX_HEADERS:
+                self.fail(_ERR_TOO_MANY_HEADERS, 431)
+            line = self.lines[self.i]
+            self.i = self.i + 1
+            # Obsolete line folding: a header continued on an indented line.
+            # RFC 9112 deprecated it, it is a smuggling vector, and supporting
+            # it costs parser complexity forever.
+            if line[0] == _SPACE or line[0] == _TAB:
+                self.fail("obsolete line folding is not supported")
+            c = line.find(b":")
+            if c <= 0:
+                self.fail("malformed header line")
+            raw_name = line[0:c]
+            raw_value = line[c + 1:]
+            if not _is_token(raw_name):
+                self.fail("malformed header name")
+            if not _is_field_value(raw_value):
+                self.fail("malformed header value")
+            # Names are case-insensitive, so they are lowercased once here and
+            # every lookup afterwards is a plain dict hit. Values decode as
+            # UTF-8, strictly: RFC 7230 said ISO-8859-1 historically, modern
+            # practice is ASCII or UTF-8, and rejecting is the safe direction.
+            name = raw_name.to_str().lower()
+            value = raw_value.strip().to_str()
+            existing = out.get(name)
+            if existing == None:
+                out[name] = value
+            elif name in _SINGLE_VALUED:
+                self.fail(f"duplicate {name} header")
+            else:
+                out[name] = existing + ", " + value
+        return out
+
+
+# Split a request target into a percent-decoded path and a query dict.
+#
+# Absolute-form ("GET http://host/p HTTP/1.1") is accepted because RFC 9112
+# requires a server to accept it; the authority is dropped, since Host is
+# what this module routes on.
+def _split_target(target):
+    if target == b"*":
+        return "*", {}
+    if target.startswith(b"http://"):
+        target = _authority_path(target[7:])
+    elif target.startswith(b"https://"):
+        target = _authority_path(target[8:])
+    if target.find(b"#") >= 0:
+        raise BadRequest("a fragment must not be sent in a request target")
+    if not target.startswith(b"/"):
+        raise BadRequest("request target is not an absolute path")
+    q = target.find(b"?")
+    if q < 0:
+        return _percent_decode(target, False).to_str(), {}
+    return _percent_decode(target[0:q], False).to_str(), _parse_query(target[q + 1:])
+
+
+# The path-and-query part of an absolute-form target, given everything after
+# the scheme. An authority with no path at all is the empty path, which is
+# "/"; an authority followed straight by a query keeps the query, because
+# dropping it would silently change what was asked for.
+def _authority_path(rest):
+    slash = rest.find(b"/")
+    q = rest.find(b"?")
+    if q >= 0 and (slash < 0 or q < slash):
+        return b"/" + rest[q:]
+    if slash < 0:
+        return b"/"
+    return rest[slash:]
+
+
+# `a=1&b=2` -> {"a": "1", "b": "2"}. A repeated key keeps the last value,
+# which is what a plain dict assignment gives; a program that needs every
+# value of a repeated key is doing something this dict cannot express and
+# should read `req.query` from the raw target itself.
+def _parse_query(qs):
+    out = {}
+    for pair in qs.split(b"&"):
+        if len(pair) == 0:
+            continue
+        e = pair.find(b"=")
+        if e < 0:
+            out[_percent_decode(pair, True).to_str()] = ""
+        else:
+            key = _percent_decode(pair[0:e], True).to_str()
+            out[key] = _percent_decode(pair[e + 1:], True).to_str()
+    return out
+
+
+# Read one request from `r`, or None if the connection ended cleanly between
+# requests.
+#
+# `read_until` returns what it has at EOF, delimiter or not, so the three
+# cases are distinguished by what came back: nothing at all is a clean close,
+# something without the terminator is a client that vanished mid-request, and
+# a ValueError is a header block over the limit.
+def read_request(r):
+    raw = _read_head(r)
+    if raw == b"":
+        return None
+    if not raw.endswith(b"\r\n\r\n"):
+        raise BadRequest("connection ended in the middle of the header block")
+    p = _HeadParser(raw)
+    method, target, version = p.request_line()
+    headers = p.headers()
+    # An HTTP/1.1 request without a Host is a 400 by fiat of RFC 9112: it is
+    # the field that makes name-based virtual hosting possible, and a request
+    # that omits it cannot be routed by any server that has more than one name.
+    if version == "1.1" and headers.get("host") == None:
+        raise BadRequest("HTTP/1.1 request without a Host header")
+    path, query = _split_target(target)
+    return Request(method, path, query, version, headers, _body_reader(r, headers))
+
+
+# The head, or a 431 if the client would not stop sending one. Split out
+# because a `try` body has its own scope: a name first bound inside one does
+# not survive it, so the shape that wants no temporary is to return from
+# inside the `try`.
+def _read_head(r):
+    try:
+        return r.read_until(b"\r\n\r\n", _MAX_HEAD)
+    except ValueError as e:
+        raise BadRequest(_ERR_HEAD_TOO_BIG, 431)
+
+
+# --- body framing ---------------------------------------------------------
+
+# Which reader frames the body, decided entirely by the two headers that are
+# allowed to say so.
+#
+# A request carrying both Content-Length and Transfer-Encoding is rejected
+# rather than resolved. That ambiguity is the classic request-smuggling
+# vector: whichever one this server picks, some proxy in front of it picks
+# the other, and the disagreement is an injected request. There is no
+# leniency worth having here.
+def _body_reader(r, headers):
+    te = headers.get("transfer-encoding")
+    n = headers.get("content-length")
+    if te != None:
+        if n != None:
+            raise BadRequest("both Content-Length and Transfer-Encoding are present")
+        # Only the identity of the list matters, and the only list this
+        # server implements is the one-element list "chunked". "gzip,
+        # chunked" is well-formed and unimplemented, which is a 501 — not a
+        # 400, and certainly not a silently un-gzipped body.
+        if te.lower() != "chunked":
+            raise BadRequest(f"unsupported Transfer-Encoding '{te}'", 501)
+        return _ChunkedReader(r)
+    if n == None:
+        # Neither header: no body at all. Not "read until EOF" — on a
+        # keep-alive connection there is no EOF to read to, and treating the
+        # next request as this one's body is the same smuggling bug from the
+        # other direction.
+        return io.buffer(b"")
+    return _LimitReader(r, _content_length(n))
+
+
+def _content_length(s):
+    if len(s) == 0:
+        raise BadRequest("empty Content-Length")
+    for ch in s:
+        if ch not in "0123456789":
+            raise BadRequest(f"malformed Content-Length '{s}'")
+    return s.to_int()
+
+
+# Exactly `remaining` bytes of `r`, and then EOF.
+#
+# A Reader is an object with a `read(n)` method, so this is the whole of it —
+# there is nothing to inherit from and nothing to register, which is why
+# `io.read` and `io.copy` work on it without ever having heard of it.
+class _LimitReader:
+    def __init__(self, r, remaining):
+        self.r = r
+        self.remaining = remaining
+
+    def read(self, n):
+        if n < 1:
+            raise ValueError(f"read() count must be at least 1, not {n}")
+        if self.remaining == 0:
+            return b""
+        if n > self.remaining:
+            n = self.remaining
+        chunk = self.r.read(n)
+        self.remaining = self.remaining - len(chunk)
+        return chunk
+
+
+# `Transfer-Encoding: chunked`, as a Reader.
+#
+# The same shape as `_LimitReader` with a small state machine over it: a size
+# line, that many bytes, a CRLF, repeat, and a zero size ends it. Reading is
+# per *chunk* rather than per byte — one `read_until` for the size line and
+# then ordinary reads for the data — which is the whole reason this can live
+# in Oro at all.
+class _ChunkedReader:
+    def __init__(self, r):
+        self.r = r
+        self.remaining = 0
+        self.done = False
+
+    def read(self, n):
+        if n < 1:
+            raise ValueError(f"read() count must be at least 1, not {n}")
+        if self.done:
+            return b""
+        if self.remaining == 0:
+            self.next_chunk()
+            if self.done:
+                return b""
+        if n > self.remaining:
+            n = self.remaining
+        chunk = self.r.read(n)
+        if chunk == b"":
+            raise BadRequest("connection ended in the middle of a chunk")
+        self.remaining = self.remaining - len(chunk)
+        if self.remaining == 0:
+            self.end_of_chunk()
+        return chunk
+
+    def next_chunk(self):
+        size = _chunk_size(self.r.read_until(b"\r\n", _MAX_CHUNK_LINE))
+        if size == 0:
+            self.skip_trailer()
+            self.done = True
+        else:
+            self.remaining = size
+
+    def end_of_chunk(self):
+        if self.terminator() != b"\r\n":
+            raise BadRequest("chunk data was not followed by CRLF")
+
+    # `if/for/while/try` bodies have real block scope, so a name first bound
+    # inside a `try` does not survive it. Returning from inside the `try` is
+    # the shape that wants no temporary at all.
+    def terminator(self):
+        try:
+            return io.read(self.r, 2)
+        except EOFError as e:
+            raise BadRequest("connection ended before a chunk terminator")
+
+    # Trailer fields are read and discarded. Acting on a header that arrives
+    # after the body has already been handed to the application is a decision
+    # this module does not have the standing to make.
+    def skip_trailer(self):
+        count = 0
+        line = self.r.read_until(b"\r\n", _MAX_TRAILER_LINE)
+        while line != b"\r\n" and line != b"":
+            count = count + 1
+            if count > _MAX_HEADERS:
+                raise BadRequest(_ERR_TOO_MANY_TRAILERS, 431)
+            line = self.r.read_until(b"\r\n", _MAX_TRAILER_LINE)
+
+
+# Parse a chunk size line: hex digits, optional `;ext=...` extensions that
+# are ignored, CRLF. `read_until` returning a line without its CRLF means the
+# connection ended, which is not a valid end to a chunked body.
+def _chunk_size(line):
+    if not line.endswith(b"\r\n"):
+        raise BadRequest("chunk size line was not terminated")
+    head = line[0:len(line) - 2]
+    semi = head.find(b";")
+    if semi >= 0:
+        head = head[0:semi]
+    head = head.strip()
+    if len(head) == 0:
+        raise BadRequest("empty chunk size")
+    size = 0
+    for c in head:
+        v = _HEX_VALUE.get(c)
+        if v == None:
+            raise BadRequest("malformed chunk size")
+        size = size * 16 + v
+    return size
+
+
+# --- writing a response ---------------------------------------------------
+
+_DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+_EPOCH_WEEKDAY = 4
+_DAY_SECONDS = 86400
+
+
+# An epoch timestamp as an IMF-fixdate: "Sun, 06 Nov 1994 08:49:37 GMT". The
+# one format RFC 9110 requires a server to send, and the only one worth
+# generating.
+#
+# `time` exports `time()` and nothing else, so the civil date comes out of
+# the days-since-epoch count by the usual era arithmetic rather than out of a
+# calendar the runtime does not have. Oro's `//` floors and its `%` follows
+# it, so a timestamp before 1970 is handled by the same expressions rather
+# than by a special case.
+def _http_date(t):
+    secs = t.to_int()
+    days = secs // _DAY_SECONDS
+    rem = secs % _DAY_SECONDS
+    year, month, day = _civil_from_days(days)
+    weekday = (days + _EPOCH_WEEKDAY) % 7
+    hour = rem // 3600
+    minute = rem % 3600 // 60
+    second = rem % 60
+    stamp = f"{hour:02d}:{minute:02d}:{second:02d}"
+    dayname = _DAYS[weekday]
+    monthname = _MONTHS[month - 1]
+    return f"{dayname}, {day:02d} {monthname} {year:04d} {stamp} GMT"
+
+
+# Days since 1970-01-01 -> (year, month, day), by Howard Hinnant's era
+# algorithm: shift the epoch to 0000-03-01 so a leap day lands at the end of
+# a year and the month lengths become a linear sequence.
+def _civil_from_days(z):
+    z = z + 719468
+    era = z // 146097
+    doe = z - era * 146097
+    yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
+    year = yoe + era * 400
+    doy = doe - (365 * yoe + yoe // 4 - yoe // 100)
+    mp = (5 * doy + 2) // 153
+    day = doy - (153 * mp + 2) // 5 + 1
+    month = mp + 3
+    if month > 12:
+        month = month - 12
+        year = year + 1
+    return year, month, day
+
+
+# 1xx, 204 and 304 have no body and no framing headers, ever. A
+# Content-Length on a 304 is a real interoperability bug, not a harmless one:
+# a client that believes it goes looking for a body that is not coming.
+def _is_bodiless(status):
+    if status >= 100 and status < 200:
+        return True
+    return status == 204 or status == 304
+
+
+# A header a handler built out of user input must not be able to end the
+# header block early. This is the response side of the same check the parser
+# makes on the way in.
+def _check_headers(headers):
+    for name, value in headers.items():
+        _check_header(name, value)
+
+
+def _check_header(name, value):
+    if name.find("\r") >= 0 or name.find("\n") >= 0 or name.find(":") >= 0:
+        raise ValueError(f"illegal character in response header name '{name}'")
+    if value.find("\r") >= 0 or value.find("\n") >= 0:
+        raise ValueError(f"illegal character in response header value for '{name}'")
+
+
+# Write `resp` to `w` as the answer to `req`.
+#
+# The head and a non-streamed body leave in **one** `write`, which is one
+# syscall — exactly what a BufWriter used to buy, bought instead by the
+# list-append-and-join idiom the language already has. The batching is
+# visible at the call site, nothing is left dirty if this returns early, and
+# there is no flush to forget after the last response of a keep-alive
+# connection.
+#
+# `date` is only filled in if the caller has not set one, which keeps this
+# function a pure translation of its arguments when a test wants it to be.
+def write_response(w, req, resp, keep_alive):
+    h = resp.headers
+    body = resp.body
+    streamed = _is_streamed(body)
+    # A HEAD response carries the headers the GET would have carried,
+    # including its framing, and no body.
+    suppress = req.method == "HEAD"
+    chunked = False
+    if _is_bodiless(resp.status):
+        suppress = True
+    elif streamed:
+        # HTTP/1.0 has no chunked coding, so a body of unknown length can only
+        # be delimited by closing the connection. `should_keep_alive` knows
+        # this and has already refused to reuse it.
+        if req.version != "1.0":
+            chunked = True
+            h["transfer-encoding"] = "chunked"
+    else:
+        h["content-length"] = f"{len(body)}"
+    if not keep_alive:
+        h["connection"] = "close"
+    elif req.version == "1.0":
+        # 1.0 closes by default, so a 1.0 client that will be kept has to be
+        # told: without this header it closes anyway and the reuse it asked
+        # for silently never happens.
+        h["connection"] = "keep-alive"
+    if h.get("date") == None:
+        h["date"] = _http_date(time.time())
+
+    reason = _reason(resp.status)
+    parts = [f"HTTP/1.1 {resp.status} {reason}\r\n".to_bytes()]
+    _check_headers(h)
+    for k, v in h.items():
+        parts.append(f"{k}: {v}\r\n".to_bytes())
+    parts.append(b"\r\n")
+    if suppress:
+        w.write(parts.join(b""))
+        return
+    if not streamed:
+        parts.append(body)
+        w.write(parts.join(b""))
+        return
+    w.write(parts.join(b""))
+    if chunked:
+        _write_chunked(w, body)
+    else:
+        io.copy(w, body)
+
+
+def _write_chunked(w, body):
+    chunk = body.read(_STREAM_CHUNK)
+    while chunk != b"":
+        size = f"{len(chunk):x}\r\n".to_bytes()
+        w.write([size, chunk, b"\r\n"].join(b""))
+        chunk = body.read(_STREAM_CHUNK)
+    w.write(b"0\r\n\r\n")
+
+
+# --- keep-alive and the connection loop -----------------------------------
+
+# Whether this connection can carry another request. Every clause below is a
+# bug if it is left out.
+def should_keep_alive(req, resp):
+    if _has_token(req.header("connection"), "close"):
+        return False
+    if _has_token(resp.headers.get("connection"), "close"):
+        return False
+    if req.version == "1.0":
+        # A body of unknown length on 1.0 is delimited by the close itself.
+        if _is_streamed(resp.body) and not _is_bodiless(resp.status):
+            return False
+        # 1.0 closes by default and reuses only when asked to.
+        return _has_token(req.header("connection"), "keep-alive")
+    # 1.1 reuses by default.
+    return True
+
+
+# Read whatever is left of a request body the handler did not read, so the
+# next request on this connection does not begin in the middle of it.
+# Returns False if there is more left than is worth reading — draining a
+# 100 MB upload nobody wanted is a denial-of-service assist, and closing is
+# the cheaper answer.
+def _drain(body):
+    try:
+        return _drain_loop(body)
+    except BadRequest as e:
+        # A body that cannot be read to its end has desynchronised the stream,
+        # which needs the same answer as one too large to drain: stop reading
+        # this connection and say so.
+        return False
+
+
+def _drain_loop(body):
+    left = _MAX_DRAIN
+    chunk = body.read(left)
+    while chunk != b"":
+        left = left - len(chunk)
+        if left < 1:
+            return False
+        chunk = body.read(left)
+    return True
+
+
+def _error_response(status, message):
+    return text(message + "\n", status)
+
+
+# Serve requests on `conn` until it must close; return how many were served.
+#
+# `conn` is anything that is a Reader and a Writer — a socket in production,
+# an `io.buffer()` in every test — which is why this loop has no wrapper
+# objects in it and never learned what it is talking to.
+#
+# NOTE: the design's sketch of this loop also sets an idle timeout between
+# requests and a request timeout mid-request, through `conn.set_timeout()`.
+# That method arrives with `net`; a `Buffer` does not have it, and a type
+# check here to decide whether to call it would be exactly the smell the io
+# protocol exists to avoid. The two timeouts therefore belong to whatever
+# owns the socket, not to this loop, which stays true to the protocol.
+def serve_conn(conn, handler):
+    served = 0
+    while served < _MAX_REQUESTS_PER_CONN:
+        req = _try_read(conn)
+        if req == None:
+            return served
+        resp = _dispatch(handler, req)
+        # Drained before the response is written, not after, so that the
+        # Connection header this response carries is the truth about what
+        # happens next rather than a promise made before checking.
+        drained = _drain(req.body)
+        keep = drained and served + 1 < _MAX_REQUESTS_PER_CONN
+        if keep:
+            keep = should_keep_alive(req, resp)
+        write_response(conn, req, resp, keep)
+        served = served + 1
+        if not keep:
+            return served
+    return served
+
+
+# Two catches, with two scopes, and the scopes are the point.
+#
+# This one wraps the parse and nothing else. Everything inside it is reading
+# bytes an anonymous client chose, so every ValueError it can raise really is
+# a bad request — a failed UTF-8 decode, a `read_until` past its limit, a
+# malformed chunk size. The same `except` around the *handler* would turn a
+# genuine bug in application code into a 400, which is a misleading answer to
+# a well-formed request.
+def _try_read(conn):
+    try:
+        return read_request(conn)
+    except BadRequest as e:
+        _answer(conn, e.status, f"{e}")
+        return None
+    except ValueError as e:
+        _answer(conn, 400, f"{e}")
+        return None
+
+
+# The other catch. A handler that raises is a 500 with the exception on
+# stderr; a handler that raises BadRequest (by calling `req.json()` on a
+# malformed chunked body, say) is answered as the client error it is.
+# BaseException — SystemExit — is deliberately not caught.
+def _dispatch(handler, req):
+    try:
+        resp = handler(req)
+        # Validated here rather than only at the point of writing, so a header
+        # a handler built badly out of user input is that handler's 500 and
+        # not an exception escaping the connection loop.
+        _check_headers(resp.headers)
+        return resp
+    except BadRequest as e:
+        return _error_response(e.status, f"{e}")
+    except EOFError as e:
+        return _error_response(400, f"{e}")
+    except Exception as e:
+        sys.stderr.write(f"http: handler raised {type(e)}: {e}\n".to_bytes())
+        return _error_response(500, "internal server error")
+
+
+# Answer a request that could not be parsed. There is no Request to answer,
+# so a blank one stands in: it exists only to tell `write_response` the
+# method is not HEAD and the version is not 1.0.
+def _answer(conn, status, message):
+    blank = Request("GET", "/", {}, "1.1", {}, io.buffer(b""))
+    write_response(conn, blank, _error_response(status, message), False)
+
+
+# --- routing --------------------------------------------------------------
+
+# Exact routes are an O(1) dict hit, which is where the overwhelming majority
+# of traffic lands. Parameterised routes ("/users/:id") are a linear scan of a
+# segment matcher. No regex, no trie, no wildcard mounts and no middleware
+# stack — middleware in a language with first-class functions is
+# `h => req => ...`, and it does not need a framework to hold it.
+class Router:
+    def __init__(self):
+        self.exact = {}
+        self.patterns = []
+
+    def add(self, method, path, handler):
+        if path.find(":") < 0:
+            self.exact[method + " " + path] = handler
+        else:
+            self.patterns.append((method, path.split("/"), handler))
+        # Returned so routes chain in the reading order Oro prefers.
+        return self
+
+    def dispatch(self, req):
+        h = self.handler_for(req.method, req)
+        if h != None:
+            return h(req)
+        # A HEAD is served by the GET route with the body suppressed on the
+        # way out, because RFC 9110 requires HEAD wherever GET is supported
+        # and because writing every route twice is not a design.
+        if req.method == "HEAD":
+            h = self.handler_for("GET", req)
+            if h != None:
+                return h(req)
+        allowed = self.allowed(req.path)
+        if len(allowed) > 0:
+            # A 405 must say what is allowed instead; a bare 405 tells a
+            # client nothing it can act on.
+            return Response(405, {"allow": allowed.join(", ")}, b"method not allowed\n")
+        return Response(404, {}, b"not found\n")
+
+    def handler_for(self, method, req):
+        h = self.exact.get(method + " " + req.path)
+        if h != None:
+            return h
+        segs = req.path.split("/")
+        for m, pat, fn in self.patterns:
+            if m == method:
+                params = _match(pat, segs)
+                if params != None:
+                    req.params = params
+                    return fn
+        return None
+
+    def allowed(self, path):
+        out = []
+        segs = path.split("/")
+        for key in self.exact.keys():
+            sp = key.find(" ")
+            if key[sp + 1:] == path:
+                out.append(key[0:sp])
+        for m, pat, fn in self.patterns:
+            if _match(pat, segs) != None and m not in out:
+                out.append(m)
+        if "GET" in out and "HEAD" not in out:
+            out.append("HEAD")
+        return sorted(out)
+
+
+# Match a route's segments against a path's. `:name` binds one segment and
+# will not bind an empty one, so "/users/" does not match "/users/:id".
+def _match(pat, segs):
+    if len(pat) != len(segs):
+        return None
+    params = {}
+    i = 0
+    while i < len(pat):
+        p = pat[i]
+        if len(p) > 0 and p[0] == ":":
+            if len(segs[i]) == 0:
+                return None
+            params[p[1:]] = segs[i]
+        elif p != segs[i]:
+            return None
+        i = i + 1
+    return params

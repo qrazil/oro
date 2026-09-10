@@ -1,0 +1,132 @@
+# INTENTIONAL DIVERGENCE FROM PYTHON. Reviewed by hand; see 43_http_request.oro.
+#
+# Writing a response: the framing a body shape selects, the head and body
+# leaving in one write, the statuses that carry no body, and the date format
+# RFC 9110 requires. The writer here counts its calls, because "one write, one
+# syscall" is a property of this module and not an implementation detail —
+# it is what the language buys by having no buffered writer and no flush().
+
+import http
+import io
+
+
+def check(label, got, want):
+    if got == want:
+        print(f"{label} -> {want}")
+    else:
+        print(f"{label} -> MISMATCH: got {got}, want {want}")
+
+
+# A Writer, which is an object with a `write` method and nothing else. It
+# keeps each call separately so the test can assert how many there were.
+class CountingWriter:
+    def __init__(self):
+        self.parts = []
+
+    def write(self, b):
+        self.parts.append(b)
+
+    def bytes(self):
+        return self.parts.join(b"")
+
+    def writes(self):
+        return len(self.parts)
+
+
+def request(method, version):
+    return http.Request(method, "/", {}, version, {}, io.buffer(b""))
+
+
+# Every response carries a Date, and a live clock is not reviewable, so the
+# value is replaced before it is printed. The header itself is still asserted
+# to be there.
+def scrub(raw):
+    return raw.split(b"\r\n").map(line => _scrub_line(line)).join(b"\r\n")
+
+
+def _scrub_line(line):
+    if line.startswith(b"date: "):
+        return b"date: <clock>"
+    return line
+
+
+def show(label, raw):
+    print(f"--- {label}")
+    for line in scrub(raw).split(b"\r\n"):
+        print(f"    {line}")
+
+
+print("--- a bytes body is framed by Content-Length, in one write")
+w = CountingWriter()
+resp = http.text("hello\n")
+http.write_response(w, request("GET", "1.1"), resp, True)
+check("writes", w.writes(), 1)
+show("200 with a text body", w.bytes())
+
+print("--- a Reader body is framed by chunked")
+w = CountingWriter()
+resp = http.Response(200, {"content-type": "application/octet-stream"}, io.buffer(b"streamed"))
+http.write_response(w, request("GET", "1.1"), resp, True)
+check("head, one chunk, terminator", w.writes(), 3)
+show("200 with a streamed body", w.bytes())
+
+print("--- HEAD carries the framing and no body")
+w = CountingWriter()
+http.write_response(w, request("HEAD", "1.1"), http.text("hello\n"), True)
+check("writes", w.writes(), 1)
+show("HEAD response", w.bytes())
+
+print("--- 204 carries no framing at all")
+w = CountingWriter()
+http.write_response(w, request("GET", "1.1"), http.Response(204), True)
+show("204 response", w.bytes())
+
+print("--- a connection that will not be reused says so")
+w = CountingWriter()
+http.write_response(w, request("GET", "1.1"), http.text("bye\n"), False)
+show("200 with Connection: close", w.bytes())
+
+print("--- json_response")
+w = CountingWriter()
+http.write_response(w, request("GET", "1.1"), http.json_response({"ok": True, "n": 2}), True)
+show("200 with a JSON body", w.bytes())
+
+print("--- a caller-set Date is left alone")
+w = CountingWriter()
+resp = http.text("x")
+resp.headers["date"] = "Sun, 06 Nov 1994 08:49:37 GMT"
+http.write_response(w, request("GET", "1.1"), resp, True)
+check("date", resp.headers["date"], "Sun, 06 Nov 1994 08:49:37 GMT")
+
+print("--- HTTP/1.0 has no chunked coding, so an unsized body is delimited by the close")
+w = CountingWriter()
+resp = http.Response(200, {}, io.buffer(b"raw bytes"))
+http.write_response(w, request("GET", "1.0"), resp, False)
+check("no transfer-encoding header", resp.headers.get("transfer-encoding", "-"), "-")
+show("1.0 response with an unsized body", w.bytes())
+
+print("--- a header cannot end the header block early")
+w = CountingWriter()
+resp = http.Response(200, {"x-echo": "a\r\nx-injected: yes"}, b"")
+try:
+    http.write_response(w, request("GET", "1.1"), resp, True)
+    print("MISMATCH: the injected header was written")
+except ValueError as e:
+    print(f"ValueError: {e}")
+
+print("--- reason phrases")
+check("200", http._reason(200), "OK")
+check("404", http._reason(404), "Not Found")
+check("431", http._reason(431), "Request Header Fields Too Large")
+check("599", http._reason(599), "Unknown")
+
+# Every expected value below was cross-checked against CPython's
+# `time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(t))`, which is the
+# nearest thing to an oracle a date table in a hand-reviewed file can have.
+print("--- IMF-fixdate")
+check("the epoch", http._http_date(0.0), "Thu, 01 Jan 1970 00:00:00 GMT")
+check("RFC 9110's own example", http._http_date(784111777.0), "Sun, 06 Nov 1994 08:49:37 GMT")
+check("a leap day", http._http_date(951782400.0), "Tue, 29 Feb 2000 00:00:00 GMT")
+check("the last second of 1999", http._http_date(946684799.0), "Fri, 31 Dec 1999 23:59:59 GMT")
+check("2038, past a 32-bit second count", http._http_date(2147483648.0), "Tue, 19 Jan 2038 03:14:08 GMT")
+check("before the epoch", http._http_date(-86400.0), "Wed, 31 Dec 1969 00:00:00 GMT")

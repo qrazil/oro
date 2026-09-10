@@ -139,9 +139,9 @@ Implemented and working today:
   stack, so pipelines never grow the native stack.
 - **`global`** for mutating module-level state from a function.
 - **Modules:** `import a.b.c` / `import x as y`, built-in `sys`, `os`, `time`,
-  `re`, and `proc`; `io` and `json`, which are written in Oro and shipped as
-  source inside the binary; and user modules loaded from the script's directory
-  (run once, cached).
+  `re`, and `proc`; `io`, `json` and `http`, which are written in Oro and
+  shipped as source inside the binary; and user modules loaded from the
+  script's directory (run once, cached).
 - **Byte streams:** `open(path, mode)` (`r`/`w`/`a`, and every one of them
   **bytes**) returning a stream with `read(n)`/`write(b)`, plus
   `read_until(delim, limit)` and `close()`; `io.read`, `io.copy` and
@@ -549,6 +549,26 @@ growth path for the standard library, not a temporary arrangement.
 - **`json`** — also written in Oro: `json.parse(text)` and
   `json.stringify(value, indent=None)`. `stringify` requires `str` dict keys
   rather than silently stringifying an int one.
+- **`http`** — HTTP/1.1 for servers, written in Oro on top of `io` and the
+  `bytes` methods, with **no HTTP-specific Rust primitive anywhere**:
+  `read_until` for the header block, `bytes.split` for the lines and
+  `bytes.find` for the colon are generic building blocks that earn their place
+  on their own, and everything above them is per *request* rather than per
+  *byte*. `http.read_request(r)` parses one request off any Reader (`None` at a
+  clean EOF); `http.write_response(w, req, resp, keep_alive)` sends the head
+  and a sized body in **one** `write`; `http.serve_conn(conn, handler)` is the
+  keep-alive loop; `http.Router().add(method, path, handler)` chains routes and
+  binds `/users/:id` segments into `req.params`. A request body is always a
+  Reader, framed by `Content-Length` or `Transfer-Encoding: chunked` — a
+  request carrying both is a 400, because guessing which one an intermediary
+  meant is how a request smuggles another one in behind it. Everything it is
+  handed is bytes an anonymous client chose, so the header block is bounded,
+  obsolete line folding is refused, and a header block that goes over the limit
+  is a 431 rather than a memory leak. Deliberately absent: `Expect:
+  100-continue`, HTTP/2, HTTP/3, WebSocket upgrade, multipart, cookies,
+  sessions, static files, compression, and a client. (The module and its four
+  corpus files are complete; the one-line entry in the embedded module table in
+  `src/vm/stdlib.rs` that makes `import http` resolve lands with it.)
 - **`proc`** — exactly one function,
   `run(args, check=…, quiet=…, cwd=…, env=…, timeout=…)`, returning a
   `CompletedProcess` with `.returncode`, `.ok`, `.truncated`, `.stdout`,
@@ -679,9 +699,10 @@ Stated plainly:
   no `encoding=` argument exists anywhere, and other encodings are a library
   written in Oro, later. Modules resolve against the one documented search path
   (the script's directory) with no runtime path changes.
-- **The stdlib is deliberately small.** `io` and `json` ship, written in Oro;
-  data structures like a `Set` class and modules like `csv` are the intended
-  growth area — written in Oro on top of the frozen core, not baked into it.
+- **The stdlib is deliberately small.** `io`, `json` and `http` ship, written
+  in Oro; data structures like a `Set` class and modules like `csv` are the
+  intended growth area — written in Oro on top of the frozen core, not baked
+  into it.
 
 ## The corpus: CPython as an oracle
 

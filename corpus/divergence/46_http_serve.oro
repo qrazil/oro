@@ -1,0 +1,168 @@
+# INTENTIONAL DIVERGENCE FROM PYTHON. Reviewed by hand; see 43_http_request.oro.
+#
+# The connection loop and the router. Keep-alive is a policy with four rules
+# and every one of them is a bug if it is left out, so each is asserted on its
+# own: 1.1 reuses by default, 1.0 does not, `Connection: close` ends it from
+# either side, and an unread request body is drained before the next request
+# so the next parse does not read the previous body as a request line.
+
+import http
+import io
+
+
+def check(label, got, want):
+    if got == want:
+        print(f"{label} -> {want}")
+    else:
+        print(f"{label} -> MISMATCH: got {got}, want {want}")
+
+
+# A connection with two ends. A `Buffer` is a queue, so reading and writing
+# one would feed the responses back to the parser; a real socket has separate
+# directions and so does this. It is a Reader and a Writer by having `read`
+# and `write`, and the loop never learns it is not a socket.
+class Conn:
+    def __init__(self, incoming):
+        self.incoming = io.buffer(incoming)
+        self.outgoing = io.buffer()
+
+    def read(self, n):
+        return self.incoming.read(n)
+
+    def read_until(self, delim, limit):
+        return self.incoming.read_until(delim, limit)
+
+    def write(self, b):
+        self.outgoing.write(b)
+
+    def sent(self):
+        return self.outgoing.bytes()
+
+    def unread(self):
+        return self.incoming.bytes()
+
+
+def scrub(raw):
+    return raw.split(b"\r\n").map(line => _scrub_line(line)).join(b"\r\n")
+
+
+def _scrub_line(line):
+    if line.startswith(b"date: "):
+        return b"date: <clock>"
+    return line
+
+
+def show(label, raw):
+    print(f"--- {label}")
+    for line in scrub(raw).split(b"\r\n"):
+        print(f"    {line}")
+
+
+def echo_path(req):
+    return http.text(req.path + "\n")
+
+
+def boom(req):
+    raise ValueError("a bug in the handler, not in the request")
+
+
+def refuse(req):
+    raise http.BadRequest("your JSON is wrong", 422)
+
+
+print("--- HTTP/1.1 reuses the connection by default")
+c = Conn(b"GET /first HTTP/1.1\r\nHost: h\r\n\r\nGET /second HTTP/1.1\r\nHost: h\r\n\r\n")
+check("requests served", http.serve_conn(c, echo_path), 2)
+check("nothing left unread", c.unread(), b"")
+show("two requests, one connection", c.sent())
+
+print("--- HTTP/1.0 does not, unless it asks")
+c = Conn(b"GET /first HTTP/1.0\r\n\r\nGET /second HTTP/1.0\r\n\r\n")
+check("requests served", http.serve_conn(c, echo_path), 1)
+check("the second request was never read", c.unread(), b"GET /second HTTP/1.0\r\n\r\n")
+show("1.0 closes after one", c.sent())
+
+c = Conn(b"GET /first HTTP/1.0\r\nConnection: keep-alive\r\n\r\nGET /second HTTP/1.0\r\nConnection: keep-alive\r\n\r\n")
+check("1.0 with Connection: keep-alive", http.serve_conn(c, echo_path), 2)
+show("1.0 kept alive is told so", c.sent())
+
+print("--- Connection: close ends it from either side")
+c = Conn(b"GET /first HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\nGET /second HTTP/1.1\r\nHost: h\r\n\r\n")
+check("the client asked to close", http.serve_conn(c, echo_path), 1)
+check("a comma list is read as a list", http.serve_conn(Conn(b"GET / HTTP/1.1\r\nHost: h\r\nConnection: keep-alive, close\r\n\r\nGET / HTTP/1.1\r\nHost: h\r\n\r\n"), echo_path), 1)
+check("the handler asked to close", http.serve_conn(Conn(b"GET / HTTP/1.1\r\nHost: h\r\n\r\nGET / HTTP/1.1\r\nHost: h\r\n\r\n"), req => http.Response(200, {"connection": "close"}, b"")), 1)
+
+print("--- an unread request body is drained, not left to be parsed as a request")
+c = Conn(b"POST /ignored HTTP/1.1\r\nHost: h\r\nContent-Length: 11\r\n\r\nGET /nope\r\nGET /second HTTP/1.1\r\nHost: h\r\n\r\n")
+check("requests served", http.serve_conn(c, echo_path), 2)
+show("the body was skipped, not parsed", c.sent())
+
+print("--- a body too large to be worth draining closes the connection instead")
+huge = [b"POST /upload HTTP/1.1\r\nHost: h\r\nContent-Length: 200000\r\n\r\n"]
+huge.append(b"x" * 200000)
+huge.append(b"GET /second HTTP/1.1\r\nHost: h\r\n\r\n")
+c = Conn(huge.join(b""))
+check("requests served", http.serve_conn(c, echo_path), 1)
+check("the response says the connection is ending", scrub(c.sent()).find(b"connection: close") > 0, True)
+
+print("--- a connection cannot be reused forever")
+capped = []
+i = 0
+while i < 1200:
+    capped.append(b"GET / HTTP/1.1\r\nHost: h\r\n\r\n")
+    i = i + 1
+c = Conn(capped.join(b""))
+check("requests served before the cap", http.serve_conn(c, req => http.Response(200, {}, b"")), 1000)
+check("the last response says the connection is ending", scrub(c.sent()).endswith(b"connection: close\r\ndate: <clock>\r\n\r\n"), True)
+
+print("--- a handler that raises is a 500, and says so on stderr")
+c = Conn(b"GET / HTTP/1.1\r\nHost: h\r\n\r\n")
+check("requests served", http.serve_conn(c, boom), 1)
+show("500 response", c.sent())
+
+print("--- a handler that builds a header out of user input cannot inject one")
+c = Conn(b"GET / HTTP/1.1\r\nHost: h\r\n\r\n")
+http.serve_conn(c, req => http.Response(200, {"x-echo": "a\r\nx-injected: yes"}, b""))
+show("500, not an injected header", c.sent())
+
+print("--- a body that cannot be drained closes the connection rather than escaping")
+c = Conn(b"POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nab\r\n0\r\n\r\n")
+check("requests served", http.serve_conn(c, req => http.text("did not read the body\n")), 1)
+show("answered, then closed", c.sent())
+
+print("--- a handler that raises BadRequest is answered as the client error it is")
+c = Conn(b"GET / HTTP/1.1\r\nHost: h\r\n\r\n")
+http.serve_conn(c, refuse)
+show("422 response", c.sent())
+
+print("--- a malformed request is answered and the connection ends")
+c = Conn(b"GET / HTTP/1.1\r\n\r\nGET /second HTTP/1.1\r\nHost: h\r\n\r\n")
+check("requests served", http.serve_conn(c, echo_path), 0)
+check("the second request was never read", c.unread(), b"GET /second HTTP/1.1\r\nHost: h\r\n\r\n")
+show("400 response", c.sent())
+
+print("--- routing")
+r = http.Router().add("GET", "/health", req => http.text("ok\n")).add("GET", "/users/:id", req => http.text(req.params["id"] + "\n")).add("POST", "/users", req => http.text("created\n", 201))
+
+
+def route(method, path):
+    req = http.Request(method, path, {}, "1.1", {}, io.buffer(b""))
+    resp = r.dispatch(req)
+    body = resp.body
+    allow = resp.headers.get("allow", "-")
+    return f"{resp.status} allow={allow} {body}"
+
+
+check("an exact route", route("GET", "/health"), "200 allow=- b'ok\\n'")
+check("a parameterised route binds its segment", route("GET", "/users/42"), "200 allow=- b'42\\n'")
+check("a different method on the same path", route("POST", "/users"), "201 allow=- b'created\\n'")
+check("no route at all", route("GET", "/missing"), "404 allow=- b'not found\\n'")
+check("a known path, a wrong method", route("DELETE", "/health"), "405 allow=GET, HEAD b'method not allowed\\n'")
+check("a known pattern, a wrong method", route("DELETE", "/users/42"), "405 allow=GET, HEAD b'method not allowed\\n'")
+check("HEAD is served by the GET route", route("HEAD", "/health"), "200 allow=- b'ok\\n'")
+check("an empty segment does not bind a parameter", route("GET", "/users/"), "404 allow=- b'not found\\n'")
+
+print("--- and HEAD's body is dropped on the way out, not by the route")
+c = Conn(b"HEAD /health HTTP/1.1\r\nHost: h\r\n\r\n")
+http.serve_conn(c, req => r.dispatch(req))
+show("HEAD /health", c.sent())

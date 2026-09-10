@@ -1,0 +1,78 @@
+--- a bytes body is framed by Content-Length, in one write
+writes -> 1
+--- 200 with a text body
+    b'HTTP/1.1 200 OK'
+    b'content-type: text/plain; charset=utf-8'
+    b'content-length: 6'
+    b'date: <clock>'
+    b''
+    b'hello\n'
+--- a Reader body is framed by chunked
+head, one chunk, terminator -> 3
+--- 200 with a streamed body
+    b'HTTP/1.1 200 OK'
+    b'content-type: application/octet-stream'
+    b'transfer-encoding: chunked'
+    b'date: <clock>'
+    b''
+    b'8'
+    b'streamed'
+    b'0'
+    b''
+    b''
+--- HEAD carries the framing and no body
+writes -> 1
+--- HEAD response
+    b'HTTP/1.1 200 OK'
+    b'content-type: text/plain; charset=utf-8'
+    b'content-length: 6'
+    b'date: <clock>'
+    b''
+    b''
+--- 204 carries no framing at all
+--- 204 response
+    b'HTTP/1.1 204 No Content'
+    b'date: <clock>'
+    b''
+    b''
+--- a connection that will not be reused says so
+--- 200 with Connection: close
+    b'HTTP/1.1 200 OK'
+    b'content-type: text/plain; charset=utf-8'
+    b'content-length: 4'
+    b'connection: close'
+    b'date: <clock>'
+    b''
+    b'bye\n'
+--- json_response
+--- 200 with a JSON body
+    b'HTTP/1.1 200 OK'
+    b'content-type: application/json'
+    b'content-length: 17'
+    b'date: <clock>'
+    b''
+    b'{"ok":true,"n":2}'
+--- a caller-set Date is left alone
+date -> Sun, 06 Nov 1994 08:49:37 GMT
+--- HTTP/1.0 has no chunked coding, so an unsized body is delimited by the close
+no transfer-encoding header -> -
+--- 1.0 response with an unsized body
+    b'HTTP/1.1 200 OK'
+    b'connection: close'
+    b'date: <clock>'
+    b''
+    b'raw bytes'
+--- a header cannot end the header block early
+ValueError: illegal character in response header value for 'x-echo'
+--- reason phrases
+200 -> OK
+404 -> Not Found
+431 -> Request Header Fields Too Large
+599 -> Unknown
+--- IMF-fixdate
+the epoch -> Thu, 01 Jan 1970 00:00:00 GMT
+RFC 9110's own example -> Sun, 06 Nov 1994 08:49:37 GMT
+a leap day -> Tue, 29 Feb 2000 00:00:00 GMT
+the last second of 1999 -> Fri, 31 Dec 1999 23:59:59 GMT
+2038, past a 32-bit second count -> Tue, 19 Jan 2038 03:14:08 GMT
+before the epoch -> Wed, 31 Dec 1969 00:00:00 GMT

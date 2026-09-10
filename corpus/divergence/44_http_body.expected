@@ -1,0 +1,30 @@
+--- Content-Length
+method -> POST
+body is exactly Content-Length bytes -> hello world
+a second read is at EOF -> b''
+one byte at a time gives the same body -> hello world
+a zero-length body -> 
+--- chunked
+chunks are rejoined -> hello world
+one byte at a time gives the same body -> hello world
+a chunk extension is ignored -> hello
+a trailer is read and discarded -> abc
+the header dict does not gain the trailer -> -
+a size is hex, not decimal -> 31
+an empty chunked body -> 
+TE is matched case-insensitively -> 
+--- neither header means no body, not read-to-EOF
+body is empty -> b''
+--- what must be refused rather than guessed at
+both framings at once -> 400 both Content-Length and Transfer-Encoding are present
+two Content-Length headers -> 400 duplicate content-length header
+a transfer coding this server does not implement -> 501 unsupported Transfer-Encoding 'gzip, chunked'
+a non-numeric Content-Length -> 400 malformed Content-Length '5x'
+a signed Content-Length -> 400 malformed Content-Length '+5'
+an empty Content-Length -> 400 empty Content-Length
+a malformed chunk size -> 400 malformed chunk size
+chunk data not followed by CRLF -> 400 chunk data was not followed by CRLF
+a chunked body that stops mid-chunk -> 400 connection ended in the middle of a chunk
+a chunk size line with no CRLF -> 400 chunk size line was not terminated
+--- a Content-Length body that the client never finished
+io.read(body, 10) raised EOFError: stream ended after 3 bytes, expected 10

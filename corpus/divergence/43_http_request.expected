@@ -1,0 +1,51 @@
+--- a well-formed GET
+method -> GET
+path -> /hello
+version -> 1.1
+query name -> ada
+query n -> 42
+header lookup is case-insensitive -> example.com
+absent header takes the default -> -
+a GET has an empty body, not a missing one -> b''
+str(request) -> GET /hello HTTP/1.1
+--- header names fold, values do not
+name lowercased -> Example.COM
+repeated field joined with a comma -> v1, v2
+--- percent-decoding
+path escape -> /a b/é
+'+' is a space in a query -> a b
+'+' is NOT a space in a path -> /a+b
+escape in a query value -> /x
+a valueless query key is empty -> 
+--- the target forms a server must accept
+absolute-form drops the authority -> /x
+absolute-form with no path -> /
+absolute-form with a query and no path -> 1
+asterisk-form -> *
+HTTP/1.0 needs no Host -> 1.0
+a leading blank line is skipped -> GET
+--- what must be refused
+no Host on 1.1 -> 400 HTTP/1.1 request without a Host header
+two Host headers -> 400 duplicate host header
+two spaces in the request line -> 400 malformed request line
+no version -> 400 malformed request line
+not HTTP at all -> 400 unrecognised protocol in the request line
+HTTP/2.0 over 1.1 framing -> 505 unsupported HTTP version '2.0'
+space before the colon -> 400 malformed header name
+obsolete line folding -> 400 obsolete line folding is not supported
+a header line with no colon -> 400 malformed header line
+a head that never ends -> 400 connection ended in the middle of the header block
+nothing at all -> clean EOF
+only blank lines -> 400 empty request line
+a bad percent-escape -> 400 invalid percent-escape in the request target
+a truncated percent-escape -> 400 truncated percent-escape in the request target
+a fragment -> 400 a fragment must not be sent in a request target
+a relative target -> 400 request target is not an absolute path
+a bare LF inside a header value -> 400 malformed header value
+a NUL inside a header value -> 400 malformed header value
+a control character in the target -> 400 malformed request target
+a header value that is not UTF-8 -> 400 bytes could not be decoded as UTF-8: invalid byte 0xff at position 0
+a path that decodes to invalid UTF-8 -> 400 bytes could not be decoded as UTF-8: invalid byte 0xff at position 1
+--- bounded, because the client chooses the size
+a header block over 64 KiB -> 431 header block exceeded 65536 bytes
+more than 100 header fields -> 431 more than 100 header fields

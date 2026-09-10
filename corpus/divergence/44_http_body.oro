@@ -1,0 +1,102 @@
+# INTENTIONAL DIVERGENCE FROM PYTHON. Reviewed by hand; see 43_http_request.oro.
+#
+# Body framing: Content-Length, chunked, neither, and the combinations a
+# server must refuse rather than guess at. Every framing case is run twice —
+# once over a Buffer that answers a read in full, and once over a reader that
+# hands back one byte at a time — because `read(n)` is allowed to return fewer
+# than n bytes without being at EOF, and a body reader that assumes otherwise
+# is the bug that works against localhost and fails under load.
+
+import http
+import io
+
+
+def check(label, got, want):
+    if got == want:
+        print(f"{label} -> {want}")
+    else:
+        print(f"{label} -> MISMATCH: got {got}, want {want}")
+
+
+# A Reader that never returns more than `most` bytes at a time. `read_until`
+# passes straight through, because it is a method on the concrete Rust
+# readers and there is nothing for an Oro wrapper to add to it.
+class Trickle:
+    def __init__(self, b, most):
+        self.b = b
+        self.most = most
+
+    def read(self, n):
+        if n > self.most:
+            n = self.most
+        return self.b.read(n)
+
+    def read_until(self, delim, limit):
+        return self.b.read_until(delim, limit)
+
+
+def parse(raw):
+    return http.read_request(io.buffer(raw))
+
+
+def parse_trickled(raw):
+    return http.read_request(Trickle(io.buffer(raw), 1))
+
+
+def outcome(raw):
+    try:
+        req = parse(raw)
+        body = io.read(req.body)
+        return f"accepted, body {body}"
+    except http.BadRequest as e:
+        return f"{e.status} {e}"
+    except ValueError as e:
+        return f"400 {e}"
+
+
+_POST = b"POST /submit HTTP/1.1\r\nHost: h\r\nContent-Length: 11\r\n\r\nhello worldLEFTOVER"
+
+print("--- Content-Length")
+req = parse(_POST)
+check("method", req.method, "POST")
+check("body is exactly Content-Length bytes", req.text(), "hello world")
+check("a second read is at EOF", req.body.read(8), b"")
+check("one byte at a time gives the same body", parse_trickled(_POST).text(), "hello world")
+check("a zero-length body", parse(b"POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 0\r\n\r\n").text(), "")
+
+print("--- chunked")
+_CHUNKED = b"POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"
+check("chunks are rejoined", parse(_CHUNKED).text(), "hello world")
+check("one byte at a time gives the same body", parse_trickled(_CHUNKED).text(), "hello world")
+_EXT = b"POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n5;a=b\r\nhello\r\n0\r\n\r\n"
+check("a chunk extension is ignored", parse(_EXT).text(), "hello")
+_TRAILER = b"POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\nX-Sum: 6\r\n\r\n"
+check("a trailer is read and discarded", parse(_TRAILER).text(), "abc")
+check("the header dict does not gain the trailer", parse(_TRAILER).header("X-Sum", "-"), "-")
+_HEX = b"POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n1F\r\nabcdefghijklmnopqrstuvwxyz01234\r\n0\r\n\r\n"
+check("a size is hex, not decimal", len(parse(_HEX).text()), 31)
+check("an empty chunked body", parse(b"POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n").text(), "")
+check("TE is matched case-insensitively", parse(b"POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: Chunked\r\n\r\n0\r\n\r\n").text(), "")
+
+print("--- neither header means no body, not read-to-EOF")
+req = parse(b"GET / HTTP/1.1\r\nHost: h\r\n\r\nGET /next HTTP/1.1\r\nHost: h\r\n\r\n")
+check("body is empty", io.read(req.body), b"")
+
+print("--- what must be refused rather than guessed at")
+check("both framings at once", outcome(b"POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\nhello"), "400 both Content-Length and Transfer-Encoding are present")
+check("two Content-Length headers", outcome(b"POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello"), "400 duplicate content-length header")
+check("a transfer coding this server does not implement", outcome(b"POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: gzip, chunked\r\n\r\n"), "501 unsupported Transfer-Encoding 'gzip, chunked'")
+check("a non-numeric Content-Length", outcome(b"POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 5x\r\n\r\nhello"), "400 malformed Content-Length '5x'")
+check("a signed Content-Length", outcome(b"POST / HTTP/1.1\r\nHost: h\r\nContent-Length: +5\r\n\r\nhello"), "400 malformed Content-Length '+5'")
+check("an empty Content-Length", outcome(b"POST / HTTP/1.1\r\nHost: h\r\nContent-Length: \r\n\r\nhello"), "400 empty Content-Length")
+check("a malformed chunk size", outcome(b"POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nab\r\n0\r\n\r\n"), "400 malformed chunk size")
+check("chunk data not followed by CRLF", outcome(b"POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nabXX0\r\n\r\n"), "400 chunk data was not followed by CRLF")
+check("a chunked body that stops mid-chunk", outcome(b"POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n9\r\nab"), "400 connection ended in the middle of a chunk")
+check("a chunk size line with no CRLF", outcome(b"POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n5"), "400 chunk size line was not terminated")
+
+print("--- a Content-Length body that the client never finished")
+req = parse(b"POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 10\r\n\r\nabc")
+try:
+    print(io.read(req.body, 10))
+except EOFError as e:
+    print(f"io.read(body, 10) raised EOFError: {e}")
