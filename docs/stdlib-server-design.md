@@ -1,13 +1,24 @@
 # Bytes, I/O, concurrency and networking
 
 *Requirements and design for the layer that lets Oro serve HTTP. Status:
-proposal. Nothing here is implemented.*
+partly built.* `bytes`, the io protocol, `open`, the three stream types,
+blocking TCP, the `Task` split, the scheduler, `spawn`, channels and
+`std/http.oro` have landed. The reactor, timers, `SO_REUSEPORT` scale-out and
+graceful shutdown have not.
 
-Oro today can compute. It cannot talk to anything. `open()` is UTF-8 text,
-`sys.stdout` is the *string* `'<stdout>'`, there is no byte type, no socket, and
-no way to do two things at once. This document specifies the layer that fixes
-that, and it tries to do so in the way the README demands: pick one spelling,
-state the reason, name what the choice costs, and then stop.
+*Where the build contradicted the design, the original reasoning is kept beside
+the correction rather than deleted — what was believed, what turned out to be
+true, and why the difference matters. That record is the most useful thing in
+this document, and it is worth more than a clean spec would be.*
+
+The problem, as it stood when this was written: Oro could compute and could not
+talk to anything. `open()` was UTF-8 text, `sys.stdout` was the *string*
+`'<stdout>'`, there was no byte type, no socket, and no way to do two things at
+once. This document specifies the layer that fixes that, and it tries to do so
+in the way the README demands: pick one spelling, state the reason, name what
+the choice costs, and then stop. Most of it now exists; the past tense in this
+paragraph is the only concession made to that, because the arguments below are
+worth reading as the arguments they were.
 
 The target is concrete. A working HTTP server, with the HTTP itself written in
 Oro on top of a small set of Rust primitives, and with the primitive set small
@@ -17,10 +28,13 @@ Four decisions are already settled and are not re-argued here, only built on:
 
 - **Green threads, not `async`/`await`.** No function coloring. `spawn(f)` and
   channels; I/O looks blocking and parks the Oro task instead of the thread.
-- **tokio is the engine and is invisible in the language.** One VM per OS
-  thread, `current_thread`, nothing shared between threads. Every `Value` is
+- **The reactor is invisible in the language — and it is mio, not tokio.** One
+  VM per OS thread, nothing shared between threads. Every `Value` is
   `Rc`/`RefCell` — there is not one `Arc` in the codebase — so values are
-  `!Send`. Scale out with `SO_REUSEPORT` across N single-threaded VMs.
+  `!Send`. Scale out with `SO_REUSEPORT` across N single-threaded VMs. This
+  bullet said "tokio is the engine" until the scheduler was actually built;
+  §3 records why the engine turned out to be one whole layer smaller than
+  that.
 - **Errors are exceptions**, using the existing
   `BaseException`→`Exception`→`OSError`/`ValueError` hierarchy.
 - **Go's `io` philosophy**: one-method interfaces that everything composes
@@ -809,9 +823,22 @@ for msg in ch:                 # iterates until the channel is closed and draine
 
 Six names total: `spawn`, `chan`, `send`, `recv`, `close`, `join`.
 
-**`spawn(f, *args)`** starts `f(*args)` as a task, immediately, and returns a
-`Task`. It is a builtin, not a module member, because it is a control-flow
-construct — the same reason `print` and `len` are builtins.
+**`spawn(f, *args)`** creates the task for `f(*args)` and enqueues it
+immediately; the *spawner* keeps running, and gets the `Task` back. It is a
+builtin, not a module member, because it is a control-flow construct — the same
+reason `print` and `len` are builtins.
+
+This used to read "starts `f(*args)` as a task, immediately, and returns a
+`Task`", and both halves of that cannot be literally true at once: if the callee
+ran first, `spawn` would not have returned yet, and `t = spawn(...)` would be
+unwritable. "Immediately" belongs to the *creation and enqueueing*, not to the
+first instruction of the body. The distinction is not pedantry — it is the only
+reading under which the handle exists.
+
+`spawn` also refuses a generator function, and anything not defined in Oro. A
+task exists in order to be *able* to suspend, and only an Oro frame can; a
+builtin runs to completion without ever reaching a park point, so spawning one
+would be a slower way of calling it.
 
 **Both buffered and unbuffered channels, from one constructor.** `chan()` is a
 rendezvous, `chan(n)` has capacity `n`. This is one spelling with a parameter,
@@ -840,6 +867,12 @@ for safety, because safety is free.
 That removes the main thing `select` is reached for in a server (wait for work,
 or for a shutdown signal). Per-connection tasks plus read timeouts plus a shared
 shutdown flag cover the rest.
+
+*One hole in exactly this argument, recorded here rather than left to be
+discovered:* "a cache is a `dict`" is true of a dict keyed by a string or an
+int, and false of a dict keyed by a **task, a stream or a function** — those
+types are unhashable today, and `task == task` is `False`. A connection registry
+is the first such dict anyone writes on top of `net`. §7 item 13.
 
 So: **`select` is not shipped.** It is additive and can arrive later if a real
 program needs it, in which case it should be a function — `select([a, b])`
@@ -870,6 +903,23 @@ Oro's rule:
 Rule 3 uses Oro's deterministic refcount drop, which is exactly the property
 that removed `with`. Nothing is ever silently swallowed, and nothing is
 double-reported.
+
+**"The same rendering an uncaught top-level exception gets" was a mistake, and
+it shipped.** It was written as a consistency argument, and it was implemented
+literally, so an unjoined failed task prints exactly this and nothing else:
+
+```
+app.oro:42:9: KeyError: 'user'
+```
+
+That is the line a program prints *as it dies*. Here the program did not die —
+it is still serving the other 9,999 connections, which is the property this
+entire section exists to guarantee. In a server log, which is where this line
+will actually be read, it says the wrong thing about the most important fact in
+it. One word of prefix fixes it — `task failed: app.oro:42:9: KeyError:
+'user'` — with the location, the exception and the exit code all unchanged.
+Recorded in §7 rather than patched in passing, because it is a user-visible
+output format and it should be chosen on purpose.
 
 This is the single most important property of a server runtime: a `KeyError` in
 one request handler must return 500 for that request and must not take down the
@@ -915,12 +965,21 @@ Closing the listener wakes the parked `accept()` with an exception; the loop
 exits; the implicit join-all at exit drains the in-flight connections; each
 connection loop checks `_shutting_down` before serving another keep-alive
 request. A deadline on that drain is a `time.sleep` in a task plus `sys.exit`,
-which needs no new API.
+which needs no new API — but it needs a `time.sleep` that *parks*, which is
+M3b's timer list. Today that sleep would stop the drain it is supposed to be
+timing.
 
 ### Cooperative, not preemptive
 
 **Tasks yield only at I/O, channel operations, and `time.sleep`.** A CPU-bound
 task starves every other task in its VM until it finishes.
+
+Two of those three do not yet do it. `time.sleep` is still
+`std::thread::sleep`: it stops the whole VM, every task, for the duration.
+Socket reads, writes and `accept` block the same way. Both need the reactor, and
+the reactor is not built — so channel operations and `join` are the only real
+suspension points today. That is the honest state of the milestone, and it is
+listed against M3b in §8 rather than folded into something that has shipped.
 
 Say it plainly: yes, that means a handler with an accidental `while True:` hangs
 that VM's other connections. Three reasons that is the right trade here, and one
@@ -934,7 +993,11 @@ reason it is not permanent:
    safepoint check on every instruction costs on the hottest path in the system,
    and the interpreter is already 1.7×–5.7× slower than CPython with a separate
    effort under way to fix that. Spending budget there, to fix a
-   self-inflicted problem, is the wrong direction.
+   self-inflicted problem, is the wrong direction. *Built, this held exactly:*
+   there is **no safepoint check in the dispatch loop at all**. The entire cost
+   of concurrency on that path is one new `match` arm on a `Step` the loop was
+   already matching — which is how the change stayed inside the bench harness's
+   ±3% run-to-run drift instead of spending a budget it did not have.
 3. **Preemption without parallelism buys only latency fairness.** It does not
    buy throughput. Within one VM the total work is the same either way.
 4. **It is not a freeze commitment.** Preemption is an implementation property,
@@ -944,8 +1007,17 @@ reason it is not permanent:
    release without changing one line of user code. Choosing cooperative now is
    reversible; that is what makes it an easy choice.
 
-No `yield_now()`. It is a second spelling for cooperation whose only purpose is
-to work around a limitation we may delete.
+No `yield_now()` — and this is the one argument in the section that does not
+survive the section. It was cut as "a second spelling for cooperation whose only
+purpose is to work around a limitation we may delete", but the limitation is
+cooperative scheduling, and the four points above keep cooperative scheduling
+for 1.0 on four separate grounds. A workaround for a permanent limitation is not
+a workaround; it is the API.
+
+As shipped there is no way for a task to hand over the CPU without touching a
+channel. The only spelling that works is `spawn(nothing).join()` — two
+allocations and a scheduler round trip to express a no-op. Recorded as open in
+§7, with a recommendation rather than a risk attached to it.
 
 ### What `spawn` costs, concretely
 
@@ -956,6 +1028,18 @@ A generator today is one suspended `Frame` moved into a `GenBox`
 (`frame: Option<Box<dyn Any>>`) — the frame's `locals`, `cells`, `free` and
 `stack` `Vec`s, boxed. Suspension is a `Vec::pop` and resumption a `Vec::push`.
 Nothing is copied and the native stack is never involved.
+
+One language-level behaviour changed on the way past this, and it deserves a
+line because it is not a concurrency feature. **A generator driven from two
+places at once now raises `ValueError: generator already executing`** —
+CPython's exact wording. Before, a `GenBox` whose frame had been *taken* was
+indistinguishable from one that was *exhausted*, so a second `for` over a
+generator already being iterated simply **ended the loop, silently**. That was
+wrong in single-task code too — a generator that iterates itself hit it, with no
+concurrency anywhere in sight, and got a quietly empty loop instead of an error.
+Green threads did not create the bug; they only made it easy to reach, because a
+generator is a first-class value and can travel down a channel to a task that
+starts driving it while the first task is still suspended inside it.
 
 A task needs the same trick applied to a *stack segment* rather than a single
 frame, because a task parked in `conn.read(n)` may be twenty Oro calls deep.
@@ -972,9 +1056,41 @@ gen_stack, handling, finally_why
 ```
 
 Everything left on `Vm` (`excs`, `argv`, `module_cache`, `import_root`,
-`importing`, `proc_class`, `exit_code`) is genuinely process-wide and stays
-shared — including the module cache, so `import` happens once per VM and all
-tasks see the same module objects. `MAX_FRAMES` becomes a per-task limit.
+`proc_class`, `exit_code`) is genuinely process-wide and stays shared —
+including the module cache, so `import` happens once per VM and all tasks see
+the same module objects. `MAX_FRAMES` becomes a per-task limit.
+
+**`importing` was on that list, and it did not belong there.** M2's report was
+right to flag it. It is not process-wide state: it is a property of the current
+import *chain*, and a chain belongs to whoever is walking it. Left plainly
+shared, the second task to `import json` while the first is still running the
+body would be told `circular import detected` about a perfectly ordinary
+import — a diagnostic that is not merely unhelpful but false.
+
+It is built as `HashMap<String, TaskId>` — path to **owning task** — and that
+one extra field answers both questions without ambiguity:
+
+- the owner meeting its own path is a genuine cycle, and still raises
+  `ImportError`;
+- anyone else **parks**, on `Park::Import(path)`, and is handed the finished
+  module when the body completes.
+
+A module body that *fails* hands the **same exception** to everyone parked on
+its rendezvous. That is the only answer that keeps `import` meaning one thing
+per path: either everybody gets the module, or everybody gets the reason there
+isn't one.
+
+A per-*task* flag would have been wrong in the opposite direction — it would
+miss real cycles that cross a module boundary. Recording the owner is what makes
+both questions answerable with one lookup.
+
+**This also fixed a bug that predates concurrency entirely.** The path was
+inserted before the module frame ran, but only removed in `finish_module` — so a
+module body that raised left its path in the map forever. The first import
+reported the real error; a *retried* import of the same module then reported
+`circular import detected`, pointing at a problem that did not exist in place of
+the one that did. Unwinding now releases the path, and settles the rendezvous,
+as the module frame is discarded.
 
 Once that refactor exists, a task is:
 
@@ -1005,42 +1121,188 @@ is why generator arguments have to be drained by `MatJob` and the call retried.
 But it also means **an I/O primitive cannot be a plain `Builtin`.** A `Builtin`
 must return a `Value`; a blocking read must instead say "park this task". I/O
 primitives are therefore VM-dispatched, the way `proc.run` already is, and the
-interpreter's `Step` enum grows one variant:
+interpreter's `Step` enum grows one variant. This document sketched it as
+`Park(Wait)`. As built:
 
 ```rust
 enum Step {
     Next,
     Done(Value),
     Raise(Value),
-    Park(Wait),     // suspend the current task until `Wait` is ready
+    Park(Box<sched::Park>),      // suspend the running task
+}
+
+enum Park {
+    Recv(Rc<Channel>),
+    IterRecv(Rc<Channel>, usize),   // + the ForIter exit target
+    Send(Rc<Channel>),
+    Join(Rc<TaskHandle>),
+    Import(Rc<str>),
 }
 ```
 
-### tokio is the reactor; the VM is the scheduler
+Two things about that shape are load-bearing, and neither is visible in the
+sketch.
 
-This framing matters, because "tokio runs the tasks" does not work: `tokio::spawn`
-requires `Send`, and every Oro `Value` is `Rc`.
+**The payload is boxed, and that is a hot-path decision rather than a style
+one.** `Step` is what `Vm::step` returns on *every instruction*. An inline
+`Park` would widen the return value of the single hottest function in the system
+in order to pay for a case that is taken almost never. Boxed, the new variant
+costs the dispatch path a discriminant it already had. `step_stayed_small` in
+the VM tests caps `size_of::<Step>()` at 24 bytes, so widening it is a test
+failure rather than a silent regression discovered in a benchmark six months
+later.
 
-Instead:
+**The `RefCell`-across-a-syscall hazard is prevented by the absence of a
+lifetime — not by what the payload carries.** The hazard is recorded in
+`src/net.rs`: the blocking socket calls hold a `RefCell` borrow of the stream's
+interior *across* the syscall. That is harmless while blocking means the whole
+VM is stopped, because nothing else can run to observe the borrow. It stops
+being harmless the instant a task can be suspended there, because a second task
+calling `close()` on that same stream hits `BorrowMutError` and **panics the
+interpreter** — not a catchable exception, not a traceback, a dead process.
+
+An earlier version of this section implied the payload *type* was what prevented
+that. It is not, and being wrong about it is dangerous, because "carries only
+owned data" is a property a human has to keep re-checking and a compiler will
+never check for you. The real mechanism is stronger and free: **neither `Step`
+nor `Park` has a lifetime parameter.** A `Ref<'_, T>` is not `'static`, so it
+cannot be stored in either, and a parking site that tried to hold its borrow
+across the suspend **would not compile**. `park_cannot_carry_a_borrow` in the VM
+tests asserts the `'static` bound on both types, which turns the guarantee into
+a failing test rather than a latent panic.
+
+Two supporting properties, recorded because together they are the reason no
+*second* rule is needed anywhere else:
+
+- `Step::Park` is **returned** from `Vm::step`, so by the time the scheduler
+  sees it, every temporary at the parking site has already been dropped.
+- A woken task is handed its result by pushing onto **its own operand stack**
+  (`Vm::wake_with_value`). Nothing reaches back into the resource, so resumption
+  re-borrows nothing that the parking site was holding.
+
+**So the rule, stated plainly enough to survive the next person to edit this
+enum: `Park` must stay `'static`.** The obvious next addition is an I/O
+readiness variant, and the natural way to write one is to hold the guard you
+already have and therefore give `Park` an `'a` — which would read as tidier,
+would compile, and would silently reintroduce exactly the panic above. The one
+thing standing in its way is a unit test, so the test is not decoration: it is
+the enforcement. A socket read parks as
+`Park::Io { stream: Rc<..>, .. }` — an `Rc`, never a borrow — and the retry
+takes a fresh borrow inside the resumed call. No reshaping needed, and none
+permitted.
+
+### mio is the reactor; the VM is the scheduler
+
+The framing here was right and it survived the build. The dependency underneath
+it did not: this section said tokio, and the answer is mio.
+
+**The framing, which is the part that was right.** "tokio runs the tasks" does
+not work: `tokio::spawn` requires `Send`, and every Oro `Value` is an `Rc`. So
+the split is:
 
 - The **VM** owns the ready queue and decides which task runs next. Its run loop
   is unchanged and stays synchronous.
-- **tokio** provides only readiness and timers: `TcpStream`/`TcpListener`
-  registration with epoll/kqueue, and `sleep`.
-- A parked task holds a boxed readiness future in a `FuturesUnordered`. When the
-  ready queue empties, the VM calls `rt.block_on(parked.next())` to learn which
-  task woke, moves it to the ready queue, and resumes the loop.
+- The **reactor** provides one thing: *tell me when this fd is readable.*
+- Nothing crosses a thread boundary, so `!Send` values are never a problem.
 
-Nothing crosses a thread boundary, so `!Send` values are never a problem, and
-`LocalSet`/`spawn_local` are not needed either.
+That `!Send` argument is worth keeping in full, because it is not an
+inconvenience the design works around — it is precisely *why* the VM must own
+the ready queue. A ready queue holding `Rc`-shaped tasks cannot live in a
+work-stealing runtime, and once it lives here, it decides who runs next, and the
+scheduler is ours by construction.
 
-**The dependency cost, named rather than waved at.** Oro's README boasts one
-dependency, and adding tokio is a second and much larger exception to that. It
-should be feature-gated to `net`, `time`, `rt` and `io-util`, kept out of the
-`macros` and `rt-multi-thread` features that are useless here, and the release
-binary size delta measured and recorded in the README rather than discovered by
-a user. It must remain static-musl-linkable; that is a release-gate check, not
-an assumption.
+**Now the correction.** Once the VM is the scheduler, look at what is left of
+tokio. Its multi-threaded scheduler, its current-thread scheduler, its task
+system, its `JoinHandle`s, its `async fn` machinery, its ecosystem — all of that
+is *scheduling*, and Oro does its own. Oro needs exactly one thing from that
+crate, and that one thing **is mio**. mio is also what tokio is built on, so
+this is not a smaller-but-riskier reactor: it is the same battle-tested
+epoll/kqueue wrapper with the runtime taken off the top.
+
+**The dependency cost, measured rather than waved at:**
+
+| | features | crates pulled |
+|---|---|---|
+| tokio | `rt`, `net`, `io-util`, `time` | **8** |
+| mio | `os-poll`, `net` | **3** (`mio`, `libc`, `log`) |
+
+The project before this was five crates in total — `regex` plus its four
+transitive ones. tokio would have more than doubled the dependency graph in
+order to buy a scheduler that gets thrown away on the first line of use. Three
+crates is a real cost and it is the smallest honest one on offer.
+
+A consequence to handle rather than discover: **the README's line-6 "no
+dependencies" claim needs rewriting either way.** It already carries one
+sanctioned exception (`regex`, argued on linear-time matching); it is about to
+carry two, and the second is the one that touches syscalls. That sentence should
+be rewritten deliberately, with both exceptions and both reasons in it, rather
+than quietly amended.
+
+**The static-musl-linkable requirement survives intact.** `libc` is a *bindings*
+crate — declarations, not an implementation — so musl still links statically.
+That stays a release-gate check rather than an assumption, alongside the
+binary-size delta.
+
+**The one real thing mio lacks is timers**, and timers are the whole of what
+tokio would have added here. They are also the piece Oro is best placed to
+build: `epoll_wait` takes a timeout, so "wake this task in N ms" is a sorted
+list of deadlines whose head becomes the poll timeout, and an expiry is a wake
+exactly like a readiness event is. That is a small amount of code with no new
+concepts in it, and writing it is more in this project's spirit than importing
+an async runtime to get `sleep`.
+
+The `FuturesUnordered` and `rt.block_on(parked.next())` sketch that used to be
+here goes with tokio, and so do the notes about not needing `LocalSet` /
+`spawn_local` and about avoiding the `macros` and `rt-multi-thread` features:
+none of those concepts exist in the mio version. What replaces them is smaller
+than any of them — a `Poll`, a `Token` per registered fd mapping to a `TaskId`,
+an `Events` buffer, and one `poll(&mut events, timeout)` call at the point where
+the ready queue empties.
+
+### The scheduler, as built
+
+The names in the code differ from the sketch above, and the differences carry
+information rather than taste.
+
+**`run_loop` became `run_slice`, and the name `run_loop` moved up a level.** The
+old interpreter loop is now `Vm::run_slice`, which runs **one** task until it
+parks, returns, or dies, and reports which of the three happened:
+
+```rust
+enum Slice {
+    Parked(Box<Park>),
+    Returned(Value),
+    Failed(Value, RuntimeError),
+}
+```
+
+The scheduler proper — the ready queue, the parked map, task switching, the
+deadlock diagnostic, `spawn`, `join`, the channels and the import rendezvous —
+is `src/vm/sched.rs`, a loop *above* the interpreter loop. Switching tasks is a
+`std::mem::replace` of `Vm::task`, and that is the whole of the machinery.
+
+**There is no safepoint check in the dispatch loop.** That is the concrete form
+of the promise made under "Cooperative, not preemptive": `run_slice` is the old
+loop with one new `match` arm and nothing else, which is how the ~3% benchmark
+budget was met rather than merely hoped for.
+
+**Per-task outcomes changed what `unwind` returns.** It used to hand back a
+rendered `RuntimeError`. It now returns the exception **value**, because rule 2
+has to re-raise the very same object in whoever joins the task, and a formatted
+string is not that object. The diagnostic string is derived from the value
+*afterwards*, for the one case — rule 3 — that prints instead of re-raising.
+`Slice::Failed` carries both for exactly that reason, and the ordering matters:
+the value is the outcome, the string is a rendering of it.
+
+**`Vm::wait_for_external()` returns `false` today, and it is the single line the
+mio reactor replaces.** With no reactor, nothing outside the VM can make a task
+runnable, so "nothing ready, and something parked" is a genuine deadlock and is
+reported as one — naming what every blocked task is waiting for, since "recv on
+an empty unbuffered channel" and "send to a full one" are different bugs with
+the same word in front of them. When mio lands, that function blocks on
+readiness and moves woken tasks onto the ready queue, and the deadlock condition
+becomes the correct one: **nothing ready *and* nothing registered.**
 
 ---
 
@@ -1066,6 +1328,22 @@ conn.close()
 
 That is the whole module: two constructors, two objects.
 
+**Built, and blocking.** `net` landed ahead of the scheduler rather than after
+it, as one more implementation of the io protocol: `listen`, `dial`, `accept`,
+`read`, `write`, `peer`, `local`, `set_timeout`, `set_nodelay`,
+`shutdown_write`, `close` and the error mapping all exist and all stop the
+world. That ordering turned out to be right twice over — it proved the
+one-protocol claim of §2 against a real socket with no adaptation layer, and it
+is where the `RefCell`-across-a-syscall hazard was found and written down while
+it was still harmless. What is missing is the parking, which is M3b.
+
+Two smaller gaps, so they are not mistaken for design: `net.listen(addr)` takes
+no `reuseport=` yet — `SO_REUSEADDR` is set on every listener, because a server
+that cannot restart until `TIME_WAIT` drains is a server that cannot be
+deployed, but `SO_REUSEPORT` is a different option and waits for M6, which is
+the milestone that has something to scale out. The keyword in the sketch above
+is the spelling it will arrive under, not a flag that exists today.
+
 **Addresses are strings.** `"host:port"`, with Go's bracket form for IPv6
 (`"[::1]:8080"`). No `Address` type. A type would buy parsing that is rarely
 needed, and when it is, `addr.rsplit(":", 1)` covers it with methods that already
@@ -1082,12 +1360,28 @@ two knobs where servers set both to the same value. Expiry raises `TimeoutError`
 which already exists under `OSError`. A listener has no timeout; use a task and a
 shutdown flag.
 
-**Blocking DNS is a trap and must be handled.** `std::net::ToSocketAddrs` resolves
-synchronously and would freeze the entire VM — every task, not just the caller —
-for the duration of a slow lookup. `net.dial` with a hostname must go through
-tokio's `lookup_host`, which uses tokio's blocking pool. This is easy to get
-wrong and easy to not notice in testing against `127.0.0.1`, so it belongs in the
-implementation checklist explicitly.
+**Blocking DNS is a trap, it is still unhandled, and mio does not solve it.**
+`std::net::ToSocketAddrs` resolves synchronously and freezes the entire VM —
+every task, not just the caller — for the duration of a slow lookup. That is
+exactly what `net.listen` and `net.dial` do today.
+
+The answer here used to be tokio's `lookup_host`, which is a wrapper around the
+same blocking call, moved onto tokio's blocking thread pool. mio has no DNS at
+all, so choosing mio (§3) means choosing to *build* the answer rather than
+import it. That cost belongs on mio's side of the ledger and it is recorded
+here.
+
+There are two candidates and neither is free. Resolve on a helper OS thread and
+park the task on a pipe the reactor is already watching — correct, and it is the
+first OS thread in a runtime whose entire pitch is one VM per thread with
+nothing shared. Or write a resolver in Oro over UDP — which needs UDP, which §4
+deliberately declines to add. The milestone that picks one should say which and
+why, in this document, rather than settling it in a commit message.
+
+`net.listen` is the easy half: it resolves once, at startup, before any task
+that could be starved exists. It is `dial` from inside a running server that
+matters. This is easy to get wrong and easy not to notice when every test dials
+`127.0.0.1`, which is why it is written down here twice.
 
 **Error mapping**, using CPython's class names throughout so the hierarchy stays
 one hierarchy:
@@ -1155,6 +1449,7 @@ irrelevant next to the syscalls.
 | `Buffer` | trivial, and it must be a Reader/Writer peer of the real ones |
 | whole-stream read of a Rust stream | `stat` + one allocation, and it touches every byte (§2) |
 | scheduler, `spawn`, channels, parking | the interpreter loop |
+| the reactor: mio readiness, and the timer list | `epoll_wait` and its timeout argument (§3) |
 | `sys.stdout`/`stderr`/`stdin` | fds |
 
 **Oro (`std/`):**
@@ -1205,6 +1500,16 @@ CPU, revisit — and the first thing to reach for is one more *generic* primitiv
 `std/http.oro`, in the style of `std/json.oro`: a state-holding class for the
 parser (because Oro cannot rebind a captured variable from a nested function),
 plain functions for everything else, no cleverness.
+
+**Built, and closer to this sketch than not.** Three differences worth knowing.
+`_serve_conn` and `_should_keep_alive` shipped *public*, as `serve_conn` and
+`should_keep_alive` — a connection served over a `Buffer` is how the whole layer
+is tested, and a test cannot call a private name. The parser gained token and
+field-value validation that the sketch below waves at. And `http.serve(addr,
+handler)` does **not** exist yet: an accept loop needs `net` and the scheduler in
+the same room, which is M6. `serve_conn(conn, handler)` is the seam that exists
+today, and it is deliberately the one the tests use — see §8's parallel-track
+argument, which this is the payoff of.
 
 ### Types
 
@@ -1552,7 +1857,8 @@ These are the load-bearing spellings. Getting one wrong is expensive forever.
 - **UDP, Unix sockets, TLS** — not shipped, additive later (§4).
 - **`int.to_bytes` and binary packing** — waiting for a real binary protocol.
 - **Preemption** — an implementation property with no surface, changeable at any
-  time (§3).
+  time (§3). `yield_now()` is *not* in this category: it would be surface, and
+  it is currently missing rather than deliberately absent (item 11 below).
 - **Buffering** — that every reader buffers, how large the buffer is, and when it
   is allocated are Rust-side properties with no Oro-visible handle (§2). That is
   what makes them safe to change; it is also why exposing any of them later would
@@ -1626,12 +1932,58 @@ Stated as risks, not resolved:
     an explicit synonym rather than an error, so the reader never has to
     remember which one the bare call means.
 
+The next three are not risks. They are things the build settled wrongly or left
+out, recorded here because this is where the section that names them belongs and
+because none of them is fixed yet.
+
+11. **No `yield_now()`, and the argument for cutting it does not hold.** §3
+    rejected it as a second spelling for a limitation that might be deleted —
+    but the limitation is cooperative scheduling, and §3 also *keeps*
+    cooperative scheduling for 1.0, on four separate grounds. A workaround for a
+    permanent limitation is not a workaround. As shipped there is no way for a
+    task to hand over the CPU without touching a channel; the only spelling that
+    works is `spawn(nothing).join()`, which is two allocations and a scheduler
+    round trip to express a no-op. This is the one item here with a
+    recommendation rather than a risk attached: **reopen it.** It is a builtin,
+    it is small, it is additive, and it is easier to add now than after a
+    release where the idiom above has appeared in someone's code.
+12. **The drop-report rendering is misleading, and it shipped that way.** §3
+    asked for "the same rendering an uncaught top-level exception gets", which
+    was implemented literally, so an unjoined failed task prints
+    `app.oro:42:9: KeyError: 'user'` — a line that says *the program died* when
+    it did not, printed by a runtime whose central promise is that one handler's
+    `KeyError` does not take down the other 9,999 connections. In a server log,
+    which is the only place this will ever be read, it misleads. One word of
+    prefix fixes it, with the location, the exception and the exit code
+    unchanged. Cheap now; a compatibility question about log output once
+    anything greps for it.
+13. **Identity equality and hashing are missing, and it undercuts §3's own best
+    argument.** Measured: `f == f`, `gen == gen`, `task == task` and
+    `buf == buf` are all **`False`**, and all four types are **unhashable** —
+    where CPython has functions, generators and file objects hashable by
+    identity and equal to themselves. §3's strongest claim is that tasks share
+    plain mutable state with no locks, and that "a cache is a `dict`". The first
+    dict anyone writes in the networking milestone is a connection registry
+    keyed by task or by stream, and today that raises `unhashable type`. A fix
+    is queued. It is listed here rather than filed as a bug because it is a
+    *frozen-surface* question — what `==` means on a non-value type — wearing
+    the clothes of a missing method.
+
 ---
 
 ## 8. Implementation plan
 
 Ordered by dependency. The earliest milestone that serves a real HTTP request is
 **M4**, and it does so *without* the `http` module.
+
+**Status, and one thing the ordering got wrong.** M0, M1, M2 and M5 have landed.
+M3 landed in halves: the scheduler is built, the reactor is not, so it is
+written below as M3a and M3b. `net` also landed early and out of order —
+blocking, ahead of the scheduler — which was the right accident: it proved §2's
+one-protocol claim on a real socket before any of the concurrency existed, and
+it is where the `RefCell`-across-a-syscall hazard was found and recorded while
+it was still harmless to have. What remains is the reactor, timers, DNS, and
+M6.
 
 ### M0 — `bytes`
 
@@ -1670,18 +2022,41 @@ Hoist the eleven per-execution fields out of `Vm` into a `Task`; `Vm` holds
 acceptance criterion. This is the riskiest change in the project and it lands
 with no new API to debug alongside it. That is the point of separating it.
 
-### M3 — the scheduler
+*Landed*, and it is the milestone whose report corrected this document twice:
+`importing` is not process-wide, and `Step::Park` is boxed and `'static` for
+reasons the sketch here did not contain (§3).
 
-tokio as the reactor (`net`, `time`, `rt`, `io-util` features only); the ready
-queue and the parked-future set; `spawn`; `Task.join` with the drop-reports rule;
-`chan`; channel iteration; `time.sleep` parking instead of
-`std::thread::sleep`. Record the binary-size delta and verify the static musl
-build still links.
+### M3a — the scheduler, with no reactor (landed)
+
+The ready queue, the parked map, `spawn`, `Task.join` with the drop-report rule,
+`chan`, channel iteration, the import rendezvous, and a deadlock diagnostic that
+names what each blocked task is waiting for. `run_loop` split into `run_slice`
+(one task, in `vm/mod.rs`) and the scheduler (`vm/sched.rs`).
+
+No reactor, no timers, no new dependency: tasks park and wake on
+scheduler-internal events only. `Vm::wait_for_external()` returns `false`, and
+that one line is the entire seam M3b replaces.
+
+### M3b — the reactor
+
+mio (`os-poll` and `net` features only, 3 crates — §3); registering fds and
+mapping readiness back to `TaskId`s; the sorted timer list feeding `poll`'s
+timeout; socket `read`/`write`/`accept` parking instead of blocking;
+`time.sleep` parking instead of `std::thread::sleep`; and an answer for blocking
+DNS (§4), which mio does not supply and tokio would have.
+
+`wait_for_external` stops returning `false`, and the deadlock condition becomes
+"nothing ready *and* nothing registered". Rewrite the README's line-6
+no-dependencies sentence, record the binary-size delta, and verify the static
+musl build still links — `libc` is bindings, so it should, but that is a
+release-gate check and not an assumption.
 
 ### M4 — `net`, and the first serving demo
 
-`net.listen`/`dial`, `TcpListener.accept`, `TcpStream` as Reader/Writer, timeouts,
-error mapping, `SO_REUSEPORT`, non-blocking DNS.
+`net.listen`/`dial`, `TcpListener.accept`, `TcpStream` as Reader/Writer,
+timeouts and error mapping — **all of which have already landed, blocking** (see
+the status note above). What M4 still owes is the M3b half: those three calls
+parking instead of stopping the VM, plus `SO_REUSEPORT` and non-blocking DNS.
 
 **The demo is here**, roughly thirty lines of Oro on `net` + `io` alone:
 
@@ -1703,8 +2078,10 @@ while True:
 
 It is a real HTTP response to a real browser, over a real socket, with a task per
 connection — and it proves every hard part (bytes, protocol, scheduler, reactor,
-parking) before any protocol code exists. Load-test it here: this is where
-"tokio as reactor, VM as scheduler" is either right or is not.
+parking) before any protocol code exists. Load-test it here: this is where "mio
+as reactor, VM as scheduler" is either right or is not. Note what the demo needs
+that today's blocking `net` cannot give it: `ln.accept()` must park, or the
+`spawn` on the next line never gets a turn.
 
 ### M5 — `std/http.oro`
 

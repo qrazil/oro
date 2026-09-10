@@ -28,7 +28,7 @@
 //!    carries owned data — an `Rc`, an index, a `Value`. A `Ref<'_, T>` or
 //!    `RefMut<'_, T>` cannot be stored in one, so a parking site that tried to
 //!    keep its borrow alive across the suspend would not compile.
-//!    `park_carries_nothing_borrowed` in `super::tests` asserts the `'static`
+//!    `park_cannot_carry_a_borrow` in `super::tests` asserts the `'static`
 //!    bound so that adding a lifetime is a test failure, not a latent panic.
 //! 2. `Step::Park` is *returned* from `Vm::step`, so by the time the scheduler
 //!    sees it every temporary inside the parking site is already dropped.
