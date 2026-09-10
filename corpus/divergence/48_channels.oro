@@ -1,0 +1,124 @@
+# INTENTIONAL DIVERGENCE.
+# `chan` has no CPython counterpart either — `queue.Queue` is a thread-safe
+# object with `get`/`put`/`task_done`, not a rendezvous, and it has no closed
+# state at all. Reviewed by hand; every line is a claim in words.
+#
+# `docs/stdlib-server-design.md` §3, "The surface" and "A closed channel".
+
+# --- a buffered channel is a queue with a bound -------------------------------
+ch = chan(2)
+ch.send(1)
+ch.send(2)
+print("two sends into a buffer of two did not block:", True)
+print("values come out in order:", [ch.recv(), ch.recv()] == [1, 2])
+
+# --- chan() and chan(0) are the same thing ------------------------------------
+# One spelling with a parameter, so `chan(0)` is an explicit synonym for the
+# default rather than an error (§3).
+a = chan()
+b = chan(0)
+print("chan()  is", repr(a))
+print("chan(0) is", repr(b))
+
+# --- a round trip -------------------------------------------------------------
+req = chan()
+rep = chan()
+
+def double():
+    for n in req:
+        rep.send(n * 2)
+    rep.close()
+
+d = spawn(double)
+req.send(21)
+print("round trip through two channels:", rep.recv() == 42)
+req.send(5)
+print("and again on the same pair:", rep.recv() == 10)
+req.close()
+d.join()
+
+# --- unbuffered rendezvous ordering -------------------------------------------
+# `send` on an unbuffered channel does not complete until a receiver has the
+# value. The trace below is the whole handshake, and it is deterministic.
+log = []
+gate = chan()
+
+def producer():
+    i = 0
+    while i < 2:
+        log.append("send " + i.to_str())
+        gate.send(i)
+        log.append("sent " + i.to_str())
+        i = i + 1
+    gate.close()
+
+p = spawn(producer)
+log.append("recv")
+first = gate.recv()
+log.append("got " + first.to_str())
+second = gate.recv()
+log.append("got " + second.to_str())
+p.join()
+print("values arrived in order:", [first, second] == [0, 1])
+print("the handshake:", log)
+# Reading that trace: main's `recv` found nothing and parked, so the producer
+# ran. Its first `send` found main already waiting and handed the value over
+# without blocking — a rendezvous completes the instant both halves are
+# present. Its second `send` found nobody waiting and parked; main woke with
+# 0, printed it, and its next `recv` took the parked sender's 1 and released
+# it. "sent 1" therefore lands after "got 1": the sender resumes when the
+# scheduler next reaches it, not the instant it is unblocked.
+
+# --- iterating a channel stops at close, it does not raise --------------------
+work = chan(3)
+work.send("x")
+work.send("y")
+work.close()
+seen = []
+for item in work:
+    seen.append(item)
+print("a closed channel hands out its buffer first, then ends the loop:", seen == ["x", "y"])
+
+# --- but a bare recv on a closed and drained channel raises -------------------
+try:
+    work.recv()
+    print("UNREACHABLE")
+except ChannelClosed as e:
+    print("recv on a drained closed channel raises ChannelClosed:", e)
+
+try:
+    work.send("z")
+    print("UNREACHABLE")
+except ChannelClosed as e:
+    print("send on a closed channel raises ChannelClosed:", e)
+
+# --- close is idempotent ------------------------------------------------------
+work.close()
+print("closing a closed channel is a no-op:", True)
+
+# --- closing wakes everyone parked on it --------------------------------------
+# This is §3's shutdown story in miniature: closing the channel is the signal,
+# and the parked receivers find out by being woken, not by polling.
+sink = chan()
+done = []
+
+def consumer(tag):
+    try:
+        sink.recv()
+        done.append(tag + ":value")
+    except ChannelClosed:
+        done.append(tag + ":closed")
+
+c1 = spawn(consumer, "c1")
+c2 = spawn(consumer, "c2")
+sink.send("only one")
+sink.close()
+c1.join()
+c2.join()
+print("one receiver got the value, the other got the close:", done == ["c1:value", "c2:closed"])
+
+# --- ChannelClosed is an ordinary Exception subclass ---------------------------
+try:
+    work.recv()
+except Exception as e:
+    print("except Exception catches it:", type(e))

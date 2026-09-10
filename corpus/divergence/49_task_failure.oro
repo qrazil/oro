@@ -1,0 +1,81 @@
+# INTENTIONAL DIVERGENCE.
+# `docs/stdlib-server-design.md` §3, "An uncaught exception in a task" — the
+# rule Oro takes from neither Go (which kills the process) nor Python (which
+# prints and exits 0 anyway). There is nothing to diff this against; reviewed
+# by hand.
+#
+# THE LAST LINE OF THE EXPECTED OUTPUT IS ON STDERR, and it is the point of the
+# whole file: an unjoined failure is reported, at the moment its handle dies,
+# with the same rendering an uncaught top-level exception gets. The run also
+# exits 1 — `tests/programs_run.rs` asserts that half, since a `.expected` file
+# cannot see an exit code.
+
+# --- rule 1: the task dies, the program does not ------------------------------
+def boom(msg):
+    raise ValueError(msg)
+
+def fine():
+    return "still here"
+
+bad = spawn(boom, "one handler blew up")
+good = spawn(fine)
+print("the healthy task is unaffected:", good.join() == "still here")
+
+# --- rule 2: a joined exception is re-raised in the joiner --------------------
+try:
+    bad.join()
+    print("UNREACHABLE")
+except ValueError as e:
+    print("the joiner owns it:", e)
+
+# The exception keeps its class, so a server's error-to-status mapping works.
+def missing():
+    d = {}
+    return d["nope"]
+
+try:
+    spawn(missing).join()
+    print("UNREACHABLE")
+except KeyError as e:
+    print("and its type survives the crossing:", type(e), e)
+
+# Joining again re-raises the same exception rather than reporting that the
+# task was already joined. `join` is idempotent in both directions.
+try:
+    bad.join()
+    print("UNREACHABLE")
+except ValueError as e:
+    print("a second join re-raises it too:", e)
+
+# --- nothing is double-reported ------------------------------------------------
+# `bad` was joined, so when its handle dies at the end of this program it will
+# print nothing. Only the unjoined one below prints.
+print("a joined failure prints nothing at drop:", True)
+
+# --- a task that fails cannot take its peers with it ---------------------------
+survivors = []
+
+def crash(tag):
+    survivors.append(tag)
+    raise RuntimeError(tag + " died")
+
+def survive(tag):
+    survivors.append(tag)
+    return tag
+
+hs = [spawn(crash, "a"), spawn(survive, "b"), spawn(crash, "c"), spawn(survive, "d")]
+outcomes = []
+for h in hs:
+    try:
+        outcomes.append(h.join())
+    except RuntimeError as e:
+        outcomes.append("caught: " + e.to_str())
+print("every task ran:", survivors == ["a", "b", "c", "d"])
+print("two of four failed, and only those two:", outcomes)
+
+# --- rule 3: an unjoined failure is printed when its handle is dropped ---------
+# Nothing holds this handle, so the scheduler's own reference is the last one:
+# it dies the instant the task does, and reports then. This is the property the
+# whole rule exists for — a dead worker in a server must never be silent.
+spawn(boom, "nobody joined me")
+print("main is done; the unjoined failure is reported below, on stderr")

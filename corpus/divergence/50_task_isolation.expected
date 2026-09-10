@@ -1,0 +1,19 @@
+the parent's stack depth before: 3000
+the spawned task exhausted its own frames: maximum recursion depth exceeded
+the parent's stack is untouched: 3000
+a generator survived the trip down a channel: True
+  first advanced the generator to 0
+the second task was refused: generator already executing
+the first task still owned it, and ended when the gate closed
+and a generator cannot advance itself either: generator already executing
+  one reaches the import
+  [slow.oro body begins]
+  two reaches the import
+  [slow.oro body ends]
+  one is past the import
+  two is past the import
+one sees 42
+two sees 42
+the module body ran exactly once for both: True
+first attempt reports the real error: this module body is broken
+second attempt reports the real error: this module body is broken

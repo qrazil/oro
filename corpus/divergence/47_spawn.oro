@@ -1,0 +1,72 @@
+# INTENTIONAL DIVERGENCE.
+# `spawn` and `join` have no CPython counterpart. CPython's nearest thing is a
+# `threading.Thread`, which is preemptive, needs locks, and whose `join()`
+# returns `None` rather than the function's value — so there is no oracle and
+# this baseline is reviewed by hand.
+#
+# Everything printed here is a *claim in words*, not a dump, because a reviewed
+# baseline can only catch what a reader can read.
+#
+# The rules under test are `docs/stdlib-server-design.md` §3.
+
+# --- spawn starts a task and returns immediately ----------------------------
+order = []
+
+def worker(name, n):
+    i = 0
+    while i < n:
+        order.append(name)
+        i = i + 1
+    return name.upper()
+
+t = spawn(worker, "a", 2)
+order.append("main-after-spawn")
+print("spawn returned before the task ran:", order == ["main-after-spawn"])
+print("the handle is a", type(t))
+
+# --- join returns the function's value ---------------------------------------
+print("join returns the return value:", t.join() == "A")
+print("the task ran when main blocked:", order == ["main-after-spawn", "a", "a"])
+
+# --- join is idempotent -------------------------------------------------------
+print("joining twice gives the same value:", t.join() == "A")
+
+# --- tasks share plain mutable state, with no locks (§3, 'No select') --------
+# One VM means no parallelism means no data races, so `order` above is an
+# ordinary list mutated by two tasks and nothing had to be said about it.
+total = {"n": 0}
+
+def bump(k):
+    i = 0
+    while i < k:
+        total["n"] = total["n"] + 1
+        i = i + 1
+
+ts = []
+for k in [10, 20, 30]:
+    ts.append(spawn(bump, k))
+for h in ts:
+    h.join()
+print("three tasks summed into one dict:", total["n"] == 60)
+
+# --- cooperative, not preemptive ---------------------------------------------
+# A task with no park point in it runs to completion once it starts. That is
+# the whole scheduling rule, and it is what makes this file's output stable.
+trace = []
+
+def loud(tag):
+    trace.append(tag + "1")
+    trace.append(tag + "2")
+
+spawn(loud, "x").join()
+spawn(loud, "y").join()
+print("nothing interleaved a task that never blocks:", trace == ["x1", "x2", "y1", "y2"])
+
+# --- the implicit join-all at exit -------------------------------------------
+# Main returning does not kill the spawned task: the program is finished when
+# main has returned *and* every task has. Go loses this line; Oro prints it.
+def late():
+    print("a spawned task still ran after main's last statement")
+
+spawn(late)
+print("main's last statement")

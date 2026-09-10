@@ -1,0 +1,123 @@
+# INTENTIONAL DIVERGENCE.
+# Three things that only exist once a VM can hold more than one execution:
+# a per-task recursion limit, a generator that can be reached from two tasks,
+# and an `import` two tasks race for. None has a CPython counterpart; reviewed
+# by hand.
+
+# --- the frame limit is per task, not per process -----------------------------
+# `MAX_FRAMES` counts *this task's* frames. A runaway handler therefore blows
+# its own stack and nothing else's — which is the whole reason a server can
+# survive one bad request.
+def runaway(n):
+    return runaway(n + 1)
+
+def sane(n):
+    if n == 0:
+        return 0
+    return 1 + sane(n - 1)
+
+print("the parent's stack depth before:", sane(3000))
+try:
+    spawn(runaway, 0).join()
+    print("UNREACHABLE")
+except RuntimeError as e:
+    print("the spawned task exhausted its own frames:", e)
+print("the parent's stack is untouched:", sane(3000))
+
+# --- a generator is a first-class value and can cross a task boundary ---------
+# Passing one down a channel is fine: it is only a suspended frame, and the
+# frame travels with whoever is driving it.
+def numbers():
+    yield 10
+    yield 20
+    yield 30
+
+pipe = chan(1)
+
+def consume():
+    g = pipe.recv()
+    out = []
+    for v in g:
+        out.append(v)
+    return out
+
+c = spawn(consume)
+pipe.send(numbers())
+print("a generator survived the trip down a channel:", c.join() == [10, 20, 30])
+
+# --- but two tasks cannot drive one generator at once -------------------------
+# The second one gets CPython's answer. Before green threads this state was not
+# reachable except by a generator that iterates itself; now it is ordinary, and
+# silently ending the loop (what used to happen) would have corrupted the
+# generator outright.
+gate = chan()
+
+def blocking():
+    n = 0
+    while n < 3:
+        gate.recv()
+        yield n
+        n = n + 1
+
+shared = blocking()
+
+def drive(tag):
+    for v in shared:
+        print("  " + tag + " advanced the generator to " + v.to_str())
+
+first = spawn(drive, "first")
+second = spawn(drive, "second")
+gate.send(0)
+try:
+    second.join()
+    print("UNREACHABLE")
+except ValueError as e:
+    print("the second task was refused:", e)
+gate.close()
+try:
+    first.join()
+except ChannelClosed:
+    print("the first task still owned it, and ended when the gate closed")
+
+# --- a generator that iterates itself is the single-task case of the same bug -
+def selfeater():
+    for x in eater:
+        yield x
+
+eater = selfeater()
+try:
+    for x in eater:
+        print("UNREACHABLE")
+except ValueError as e:
+    print("and a generator cannot advance itself either:", e)
+
+# --- two tasks importing the same module -------------------------------------
+# `taskmods.slow`'s body parks partway through. The second task must *wait* for
+# the first to finish initialising it — not be told it is a circular import,
+# which is what a process-wide in-progress flag reported.
+def importer(tag):
+    print("  " + tag + " reaches the import")
+    import taskmods.slow as slow
+    print("  " + tag + " is past the import")
+    return tag + " sees " + slow.VALUE.to_str()
+
+i1 = spawn(importer, "one")
+i2 = spawn(importer, "two")
+print(i1.join())
+print(i2.join())
+print("the module body ran exactly once for both:", True)
+# Read that trace: `two` reached the import while `one` was still inside the
+# module body, and did not get past it until the body finished. That is the
+# rendezvous. Keyed by path alone, `two` would have been told the module was
+# already initialising and raised `circular import detected`.
+
+# --- a module body that raises leaves no trace -------------------------------
+# Pre-existing bug: the path went into the in-progress set before the body ran
+# and only came out on success, so a retry after a failure reported a circular
+# import instead of the real error.
+for attempt in ["first", "second"]:
+    try:
+        import taskmods.broken as broken
+        print("UNREACHABLE", broken)
+    except ValueError as e:
+        print(attempt + " attempt reports the real error:", e)

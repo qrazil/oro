@@ -1,0 +1,10 @@
+# A module whose *body* parks: it spawns a task and joins it, so the import is
+# genuinely in flight for a while. That is what makes the in-progress-import
+# rendezvous observable from a second task (see `50_task_isolation.oro`).
+print("  [slow.oro body begins]")
+
+def _compute():
+    return 42
+
+VALUE = spawn(_compute).join()
+print("  [slow.oro body ends]")

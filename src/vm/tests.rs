@@ -33,6 +33,29 @@ fn eval_last(src: &str) -> Value {
     run_locals(src).into_iter().next_back().expect("at least one local")
 }
 
+/// Run `src` and return the module variable called `name`.
+///
+/// Safer than [`eval_last`] for anything with a `for` in it: a loop variable
+/// takes a slot of its own without being a module name, so "the last slot" and
+/// "the last variable I wrote" stop agreeing.
+fn eval_var(src: &str, name: &str) -> Value {
+    let code = compile_module(src);
+    let mut vm = Vm::new(Vec::new());
+    vm.push_module_frame(code.clone());
+    vm.run_loop().expect("run");
+    let (_, target) = code
+        .module_names
+        .iter()
+        .find(|(n, _)| &**n == name)
+        .unwrap_or_else(|| panic!("no module variable called `{name}`"));
+    match target {
+        VarTarget::Local(s) => vm.task.last_locals[*s as usize].clone(),
+        VarTarget::Cell(_) => {
+            panic!("`{name}` is captured by a closure; pass it as an argument instead")
+        }
+    }
+}
+
 fn run_err(src: &str) -> RuntimeError {
     let tokens = Lexer::new(src).tokenize().expect("lex");
     let program = Parser::new(tokens).parse().expect("parse");
@@ -1178,4 +1201,359 @@ fn task_state_is_not_shared_between_tasks() {
     assert_eq!(vm.task.handling.len(), 1);
     assert_eq!(vm.task.finally_why.len(), 1);
     assert_eq!((vm.task.line, vm.task.col), (17, 5));
+}
+
+// --- The scheduler -----------------------------------------------------------
+
+/// `Step::Park` cannot carry a borrow, and the compiler is what enforces it.
+///
+/// `src/net.rs` records the hazard this stands against: the blocking socket
+/// calls hold a `RefCell` borrow of the stream's interior *across* the syscall,
+/// which becomes a `BorrowMutError` **panic** — not a catchable exception — the
+/// moment a second task can run while the first is suspended there. Parking
+/// must release the borrow before it yields.
+///
+/// A `Ref<'a, T>` is not `'static`, so this bound is exactly the property that
+/// makes "the borrow is released before the suspend" unexpressible-otherwise
+/// rather than a rule someone has to remember. Adding a lifetime parameter to
+/// `Park` or `Step` in order to smuggle a guard through fails right here.
+#[test]
+fn park_cannot_carry_a_borrow() {
+    fn owned_only<T: 'static>() {}
+    owned_only::<sched::Park>();
+    owned_only::<Step>();
+}
+
+/// The scheduler is a `Vec::push` and a `mem::replace`, and it stays that way:
+/// nothing on the dispatch path grew.
+#[test]
+fn step_stayed_small() {
+    // `Step` is the return value of `Vm::step`, which runs once per
+    // instruction. `Park`'s payload is boxed so the new variant costs the hot
+    // path a discriminant it already had rather than widening every return.
+    assert!(
+        std::mem::size_of::<Step>() <= 24,
+        "Step grew to {} bytes — box the payload rather than widening the value \
+         `Vm::step` returns on every instruction",
+        std::mem::size_of::<Step>()
+    );
+}
+
+/// Two tasks alternate, and the alternation is decided by the channel rather
+/// than by luck: an unbuffered send cannot complete until a receiver is there.
+#[test]
+fn two_tasks_interleave_deterministically() {
+    let v = eval_var(
+        "\
+ch = chan()
+log = []
+def echo():
+    for x in ch:
+        log.append(\"task \" + x.to_str())
+t = spawn(echo)
+i = 0
+while i < 3:
+    log.append(\"main \" + i.to_str())
+    ch.send(i)
+    i = i + 1
+ch.close()
+t.join()
+r = log
+",
+        "r",
+    );
+    // main's first `send` finds nobody waiting and parks, which is what lets
+    // `echo` run at all; from then on each side hands off to the other.
+    assert_eq!(
+        v.repr(),
+        "['main 0', 'task 0', 'main 1', 'main 2', 'task 1', 'task 2']",
+        "the interleaving is a property of the rendezvous, not of timing"
+    );
+}
+
+/// A value goes out and comes back, through two tasks and two channels.
+#[test]
+fn a_channel_round_trip() {
+    let v = eval_var(
+        "\
+req = chan()
+rep = chan()
+def square():
+    for n in req:
+        rep.send(n * n)
+s = spawn(square)
+out = []
+for n in [2, 3, 4]:
+    req.send(n)
+    out.append(rep.recv())
+req.close()
+s.join()
+r = out
+",
+        "r",
+    );
+    assert_eq!(v.repr(), "[4, 9, 16]");
+}
+
+/// A buffered channel absorbs `cap` sends without a receiver and blocks on the
+/// next one; the blocked sender is released the moment a slot frees up.
+#[test]
+fn a_buffered_channel_blocks_only_when_full() {
+    let v = eval_var(
+        "\
+ch = chan(2)
+log = []
+def fill():
+    for i in [1, 2, 3]:
+        ch.send(i)
+        log.append(\"sent \" + i.to_str())
+def nothing():
+    return 0
+f = spawn(fill)
+# Hand the CPU to `fill` without becoming a receiver, so the buffer is what
+# stops it rather than a rendezvous with main.
+spawn(nothing).join()
+log.append(\"main resumes\")
+log.append(\"took \" + ch.recv().to_str())
+log.append(\"took \" + ch.recv().to_str())
+log.append(\"took \" + ch.recv().to_str())
+f.join()
+r = log
+",
+        "r",
+    );
+    // `fill` fills both slots, blocks on the third, and only resumes once
+    // main's first `recv` frees a slot.
+    assert_eq!(
+        v.repr(),
+        "['sent 1', 'sent 2', 'main resumes', 'took 1', 'took 2', 'took 3', 'sent 3']"
+    );
+}
+
+/// §3 rule 2: a task's exception is re-raised in whoever joins it, with its
+/// class intact, and joining is idempotent.
+#[test]
+fn a_failing_task_is_re_raised_in_the_joiner() {
+    let v = eval_var(
+        "\
+def boom():
+    raise KeyError(\"k\")
+t = spawn(boom)
+out = []
+for _ in [1, 2]:
+    try:
+        t.join()
+        out.append(\"no raise\")
+    except KeyError as e:
+        out.append(\"KeyError \" + e.to_str())
+r = out
+",
+        "r",
+    );
+    assert_eq!(v.repr(), "['KeyError k', 'KeyError k']");
+}
+
+/// A task that fails does not touch its peers, and the program keeps running.
+#[test]
+fn one_task_failing_leaves_the_others_alone() {
+    let v = eval_var(
+        "\
+def crash():
+    raise ValueError(\"x\")
+def ok(n):
+    return n * 2
+hs = [spawn(crash), spawn(ok, 5), spawn(crash), spawn(ok, 7)]
+out = []
+for h in hs:
+    try:
+        out.append(h.join())
+    except ValueError:
+        out.append(\"failed\")
+r = out
+",
+        "r",
+    );
+    assert_eq!(v.repr(), "['failed', 10, 'failed', 14]");
+}
+
+/// `MAX_FRAMES` counts the *running task's* frames, so a runaway task exhausts
+/// its own stack segment and nothing else's.
+#[test]
+fn the_frame_limit_is_per_task() {
+    let v = eval_var(
+        "\
+def runaway(n):
+    return runaway(n + 1)
+def depth(n):
+    if n == 0:
+        return 0
+    return 1 + depth(n - 1)
+out = []
+try:
+    spawn(runaway, 0).join()
+    out.append(\"no limit\")
+except RuntimeError:
+    out.append(\"limited\")
+out.append(depth(2000))
+r = out
+",
+        "r",
+    );
+    assert_eq!(v.repr(), "['limited', 2000]");
+}
+
+/// Two tasks cannot advance one generator. Before green threads the state was
+/// only reachable by a generator that iterates itself, and the loop ended
+/// silently instead of complaining.
+#[test]
+fn a_generator_cannot_be_driven_by_two_tasks() {
+    let v = eval_var(
+        "\
+gate = chan()
+def slow():
+    n = 0
+    while n < 2:
+        gate.recv()
+        yield n
+        n = n + 1
+g = slow()
+def drive():
+    for _ in g:
+        pass
+a = spawn(drive)
+b = spawn(drive)
+gate.send(0)
+out = []
+try:
+    b.join()
+    out.append(\"no raise\")
+except ValueError as e:
+    out.append(e.to_str())
+gate.close()
+try:
+    a.join()
+except ChannelClosed:
+    out.append(\"owner ended at close\")
+r = out
+",
+        "r",
+    );
+    assert_eq!(v.repr(), "['generator already executing', 'owner ended at close']");
+}
+
+/// A generator sent down a channel arrives as a generator — it must not be
+/// drained into a list on the way, which is what the materialise path would do
+/// to any other native call's generator argument.
+#[test]
+fn a_generator_survives_a_channel() {
+    let v = eval_var(
+        "\
+def nums():
+    yield 1
+    yield 2
+ch = chan(1)
+def consume():
+    g = ch.recv()
+    out = []
+    for x in g:
+        out.append(x)
+    return out
+c = spawn(consume)
+ch.send(nums())
+r = c.join()
+",
+        "r",
+    );
+    assert_eq!(v.repr(), "[1, 2]");
+}
+
+/// Every task blocked with nothing able to wake anyone is a deadlock, and it is
+/// reported as one rather than hanging.
+#[test]
+fn a_deadlock_is_reported() {
+    let e = run_err("ch = chan()\nx = ch.recv()\n");
+    assert!(e.message.starts_with("deadlock:"), "got {}", e.message);
+    assert!(e.message.contains("recv"), "the diagnostic names what is waited on: {}", e.message);
+    // A task left parked forever after main returns is the same failure.
+    let e = run_err("ch = chan()\ndef stuck():\n    ch.recv()\nspawn(stuck)\n");
+    assert!(e.message.starts_with("deadlock:"), "got {}", e.message);
+}
+
+/// A task cannot join itself, and the diagnostic says so rather than reporting
+/// a deadlock several instructions later.
+#[test]
+fn a_task_cannot_join_itself() {
+    let e = run_err(
+        "\
+box = []
+def me():
+    box[0].join()
+t = spawn(me)
+box.append(t)
+t.join()
+",
+    );
+    assert!(e.message.contains("cannot join itself"), "got {}", e.message);
+}
+
+/// `spawn` needs something that can suspend, which means an Oro frame.
+#[test]
+fn spawn_rejects_what_cannot_park() {
+    for (src, want) in [
+        ("spawn(len, [1])\n", "function defined in Oro"),
+        ("def g():\n    yield 1\nspawn(g)\n", "generator function"),
+        ("spawn()\n", "at least 1 argument"),
+    ] {
+        let e = run_err(src);
+        assert!(e.message.contains(want), "{src}: got {}", e.message);
+    }
+}
+
+/// `chan(0)` is the default spelled out, not an error; a negative or
+/// non-integer capacity is.
+#[test]
+fn chan_capacity_is_checked() {
+    assert_eq!(eval("r = chan(0)\n").repr(), "<channel cap=0>");
+    assert_eq!(eval("r = chan()\n").repr(), "<channel cap=0>");
+    assert_eq!(eval("r = chan(4)\n").repr(), "<channel cap=4>");
+    assert!(run_err("r = chan(-1)\n").message.contains("must not be negative"));
+    assert!(run_err("r = chan(\"x\")\n").message.contains("must be an int"));
+}
+
+/// Two tasks importing one module is a rendezvous, not a cycle — but a module
+/// that imports itself still is.
+#[test]
+fn concurrent_imports_rendezvous_but_real_cycles_still_raise() {
+    // A real cycle inside one task: `json` is a builtin module, so use the
+    // import machinery's own bookkeeping to check the owner test directly.
+    let mut vm = Vm::new(Vec::new());
+    vm.importing.insert("m".to_string(), 7);
+    vm.task.id = 7;
+    assert!(
+        matches!(vm.await_import("m", 7), Step::Raise(_)),
+        "the task already running the body sees a cycle"
+    );
+    assert!(vm.import_waiters.is_empty(), "a cycle does not queue anybody");
+    vm.task.id = 9;
+    assert!(
+        matches!(vm.await_import("m", 7), Step::Park(_)),
+        "a different task waits for it instead"
+    );
+    vm.task.id = 11;
+    assert!(matches!(vm.await_import("m", 7), Step::Park(_)));
+    assert_eq!(vm.import_waiters["m"], vec![9, 11]);
+}
+
+/// A module body that raises must release the path, or a *retry* reports
+/// `circular import detected` instead of the real error. That bug predates the
+/// scheduler; the rendezvous is what made it worth fixing rather than noting.
+#[test]
+fn a_failed_module_body_releases_its_path() {
+    let mut vm = Vm::new(Vec::new());
+    vm.importing.insert("m".to_string(), 0);
+    vm.import_waiters.insert("m".to_string(), vec![]);
+    let exc = vm.make_exception_instance(vm.excs["ValueError"].clone(), Vec::new());
+    vm.release_import("m", Err(exc));
+    assert!(vm.importing.is_empty(), "the path must not survive a failed body");
+    assert!(vm.import_waiters.is_empty());
 }

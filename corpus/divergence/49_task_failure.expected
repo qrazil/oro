@@ -1,0 +1,9 @@
+the healthy task is unaffected: True
+the joiner owns it: one handler blew up
+and its type survives the crossing: <class 'KeyError'> 'nope'
+a second join re-raises it too: one handler blew up
+a joined failure prints nothing at drop: True
+every task ran: True
+two of four failed, and only those two: ['caught: a died', 'b', 'caught: c died', 'd']
+main is done; the unjoined failure is reported below, on stderr
+divergence/49_task_failure.oro:15:5: ValueError: nobody joined me

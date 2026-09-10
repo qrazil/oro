@@ -1,0 +1,3 @@
+# A module body that raises. The import must leave no trace behind: a retry has
+# to report *this* error, not `circular import detected`.
+raise ValueError("this module body is broken")
