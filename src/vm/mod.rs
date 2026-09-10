@@ -1004,26 +1004,31 @@ impl Vm {
                         }
                     }
                 }
-                Op::Compare(cmp) if !matches!(cmp, CmpOp::In | CmpOp::NotIn) => {
+                Op::Compare(cmp) => {
                     let frame = self.task.frames.last_mut().expect("no active frame");
                     let n = frame.stack.len();
                     if n >= 2 {
                         if let (Value::Int(a), Value::Int(b)) =
                             (&frame.stack[n - 2], &frame.stack[n - 1])
                         {
-                            let (a, b) = (*a, *b);
+                            // `in`/`not in` on two integers is not a
+                            // comparison at all, so it declines here rather
+                            // than in an arm guard: a guard on one arm of this
+                            // match costs the whole match its jump table.
                             let r = match cmp {
-                                CmpOp::Eq => a == b,
-                                CmpOp::NotEq => a != b,
-                                CmpOp::Lt => a < b,
-                                CmpOp::Gt => a > b,
-                                CmpOp::LtEq => a <= b,
-                                CmpOp::GtEq => a >= b,
-                                CmpOp::In | CmpOp::NotIn => unreachable!("guarded above"),
+                                CmpOp::Eq => Some(a == b),
+                                CmpOp::NotEq => Some(a != b),
+                                CmpOp::Lt => Some(a < b),
+                                CmpOp::Gt => Some(a > b),
+                                CmpOp::LtEq => Some(a <= b),
+                                CmpOp::GtEq => Some(a >= b),
+                                CmpOp::In | CmpOp::NotIn => None,
                             };
-                            frame.stack.truncate(n - 1);
-                            frame.stack[n - 2] = Value::Bool(r);
-                            continue;
+                            if let Some(r) = r {
+                                frame.stack.truncate(n - 1);
+                                frame.stack[n - 2] = Value::Bool(r);
+                                continue;
+                            }
                         }
                     }
                 }
@@ -1046,10 +1051,12 @@ impl Vm {
                 // when there is no `finally` to run on the way out, an outer
                 // frame to return into, and nothing for the VM to do with the
                 // value but push it. Anything else falls through to `step`.
-                Op::Call(n) if self.task.frames.len() < MAX_FRAMES => {
-                    if let Some(func) = self.fast_call_target(n as usize) {
-                        self.call_fast_unchecked(func, n as usize);
-                        continue;
+                Op::Call(n) => {
+                    if self.task.frames.len() < MAX_FRAMES {
+                        if let Some(func) = self.fast_call_target(n as usize) {
+                            self.call_fast_unchecked(func, n as usize);
+                            continue;
+                        }
                     }
                 }
                 Op::Return => {
