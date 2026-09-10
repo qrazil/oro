@@ -32,7 +32,41 @@ harness checks oro and CPython agree before reporting a time.
 
 ## Where things stand
 
-Two optimization passes have run. Pass two is `perf/pass-two`, rebased onto
+Three optimization passes have run. Pass three is `perf/pass-three`, measured
+against pass two's tip. Interleaved A/B, both binaries pinned to one core,
+best-of-15:
+
+| bench | pass two | after pass three | improvement | vs CPython (pass two -> now) |
+|---|---|---|---|---|
+| fib | 0.0858s | 0.0882s | +2.9% | 2.05x -> **2.00x** |
+| loop | 0.2340s | **0.2259s** | **-3.5%** | 0.48x -> **0.45x** |
+| strjoin | 0.1065s | **0.0987s** | **-7.3%** | 1.59x -> **1.47x** |
+| strops | 0.2251s | **0.2024s** | **-10.1%** | 1.27x -> **1.14x** |
+| dictops | 0.2772s | 0.2761s | -0.4% | 1.30x -> **1.37x** |
+| dictstr | 0.3708s | **0.3366s** | **-9.2%** | 1.39x -> **1.25x** |
+| oo | 0.1991s | 0.1972s | -1.0% | 1.43x -> **1.39x** |
+| genpipe | 0.1034s | 0.1024s | -1.0% | 1.70x -> **1.64x** |
+| exc | 0.0844s | 0.0837s | -0.8% | 0.83x -> **0.78x** |
+| listbuild | 0.1671s | **0.1536s** | **-8.1%** | 0.86x -> **0.80x** |
+| builtins | 0.1667s | **0.1616s** | **-3.1%** | 0.59x -> **0.58x** |
+| chain | 0.1276s | **0.1194s** | **-6.4%** | 1.92x -> **1.86x** |
+| json | 0.0978s | **0.0946s** | **-3.3%** | 0.72x -> **0.66x** |
+| **mean** | | | **-3.9%** min, **-4.6%** median | |
+
+The A/A control in that session was **mean +0.23% min, worst 1.5%**. `fib`'s
++2.9% is inside its own code-placement band, which this pass measured for the
+first time and which is the most important thing it found — see
+"What a never-called function is worth" below.
+
+Five benchmarks remain faster than CPython 3.12 and nothing is worse than
+2.00x. The `vs CPython` columns come from `./bench/run.sh -n 5` run twice in
+one session, once per binary, so both ratios share a CPython measurement; the
+delta column is the interleaved A/B, which is the number that carries evidence.
+`dictops` is the one place the two disagree (A/B says -0.4%, the ratio says it
+got worse) and the ratio is the weaker statistic: CPython's own `dictops` time
+moved 2.4% between the two runs.
+
+Two optimization passes preceded it. Pass two is `perf/pass-two`, rebased onto
 `feat/sane-defaults` after the JSON work landed and **re-measured against it** —
 the baseline below is that branch's own binary, not pass one's, so the slice
 fix and the iterative teardown that arrived in the meantime are already in the
@@ -962,7 +996,346 @@ generator crossing a `spawn`/`chan` boundary are all covered by
 `47_generator_method.oro` and `58_generator_receiver.oro`, which pass
 unmodified, and by program 63 of the diagnostic differential.
 
-## What is left, ranked (after pass two)
+## Pass three — per-optimization log
+
+Method as pass two's: every number is an **interleaved A/B**, pinned to one
+core, opened with an **A/A control**. The A/A floors measured were **mean
+-0.14% min, worst 1.53%** at the start, **+0.80% min, worst 1.13%** mid-pass,
+and **+0.23% min** at the end. The **min** column is the statistic used
+throughout; the median column on this machine is two to three times noisier
+(the opening A/A read +1.09% mean median with `dictops` at 7.05%, against
+-0.14% mean min).
+
+Gates on every commit: `cargo test` in **debug** (424), `./corpus/run.sh` (84
+pass, 0 fail, 0 known-failing), `cargo clippy --all-targets -- -D warnings`,
+the four size tripwires, and the byte-for-byte diagnostic differential —
+**extended from 91 programs to 93** in this pass.
+
+### What a never-called function is worth: +6.6% or -7.8% on `loop`
+
+**Read this before reading any single-benchmark number in this file.**
+
+Three separate correct changes in this pass measured as large regressions on
+benchmarks that do not execute a line of the changed code. Rather than accept
+that a fourth time, it was measured directly. A `pub fn` was added to
+`src/vm/mod.rs` containing nothing but arithmetic on its argument, called from
+`main` under `if args.len() > 100_000` so that LTO cannot drop it and the
+branch is never taken. It changes no behaviour and executes no instruction.
+
+| probe | binary grows by | `loop` | `fib` | `builtins` | `listbuild` | `dictstr` | `strops` |
+|---|---|---|---|---|---|---|---|
+| large | +5536 B | **+6.63%** | -1.00% | -2.13% | +1.10% | +0.20% | +0.63% |
+| small | +2224 B | **-7.80%** | -2.69% | -2.22% | -0.40% | -0.25% | -0.68% |
+
+`loop` spans **fourteen points** between two binaries that differ only in how
+much dead code sits ahead of the dispatch loop. `fib` spans about 3 points,
+`builtins` about 2.2; `dictstr`, `listbuild` and `strops` stay under 1.1.
+
+**An A/A control cannot see this**, and that is the point. A/A compares a
+binary with a byte-identical copy of itself, so it holds layout fixed and
+measures only the machine. It reported -0.14% mean and 1.53% worst in the same
+session in which a placement change was worth 6.6% on one benchmark. The A/A
+floor bounds *thermal and scheduling* noise. It says nothing about the noise a
+recompile introduces, and every A/B in this file is a recompile.
+
+The consequence for method: **judge a change by the benchmarks that execute
+it.** A move on a benchmark that does not run the changed code is placement
+until proved otherwise, up to that benchmark's band. The suite mean is not a
+refuge either — the two probes moved a six-benchmark mean by +0.91% and -2.34%.
+This is why `HKey::Str` was rejected in pass two and kept in pass three on
+materially the same numbers, and it retroactively qualifies every `loop` figure
+in the pass-one and pass-two logs, including step 23's, which is the finding the
+whole ranking below was built on.
+
+(Mechanism unidentified, and it is not the obvious ones: the effect does not
+follow code size monotonically, `#[inline(never)]` on `Vm::step`, `Vm::invoke`
+and `Vm::do_call` does not change it, and reordering an arm *inside*
+`run_slice` — which moves nothing else — reads as +0.16% mean. Instruction
+cache, iTLB or branch-target-buffer aliasing of the dispatch loop all fit.)
+
+### The instruction profile the suite actually has
+
+Nobody had counted. A throwaway instrumented build (a counter at every fast-path
+`continue`, and one keyed by opcode where the loop falls through to `step`) was
+run over all thirteen benchmarks. It is what settled step 31 and it is what
+picked step 32 as the best remaining candidate, so it is worth keeping.
+
+Fast-path arms, by where they fire:
+
+| arm | fires | verdict |
+|---|---|---|
+| `LoadFast` / `LoadConst` / `StoreFast` / `BinAdd`-`Sub`-`Mul` / `Compare` / `Jump` / `PopJumpIf*` | tens of millions, every benchmark | core |
+| `LoadGlobal` | `builtins` 1.20M (12.9% of its instructions), `strops` 400k | earns |
+| `LoadAttr` | `oo` 1.00M (9.7%) | earns |
+| `LoadSubscript` | `listbuild` 800k, `dictstr` 700k, `dictops` 500k | earns |
+| `StoreSubscript` | `dictstr` 700k, `dictops` 500k, `listbuild` 400k | earns |
+| `Call` | `fib` 636k, `exc` 200k | earns |
+| `Return` | `fib` 636k, `oo` 400k, `exc` 133k | earns |
+| `LoadFree` | `fib` 636k (9.1%), `oo` 200k | earns |
+| `Pop` | `listbuild` 400k, `strjoin` 200k, `chain` 200k | modest |
+| `ForIter` | `dictops` 500k (`genpipe`'s iterators are generators, which decline) | modest |
+| `LoadNone` | `oo` 200k, `json` 5k, otherwise 1 | marginal |
+| `LoadCell` | `exc` 66,667, otherwise ~0 | marginal |
+| `Dup` | **0** | dead |
+| `RotTwo` | **0** | dead |
+| `ListAppend` | **0** | dead |
+
+And the hottest instructions still reaching `step`, which is where any future
+fast-path arm would have to come from:
+
+| bench | op | count | share of that benchmark |
+|---|---|---|---|
+| `builtins` | `Call` (a native builtin) | 1,200,001 | 12.9% |
+| `exc` | the five block ops | 1,133,334 | 15.5% |
+| `strops` | `LoadMethod` + `CallMethod` | 1,200,000 | 14.6% |
+| `genpipe` | `ForIter` (generator) + `Yield` | 1,200,003 | 14.0% |
+| `chain` | `LoadMethod` + `CallMethod` + `Return` | 800,006 | 16.7% |
+| `oo` | `LoadMethod` + `CallMethod` | 800,004 | 7.8% |
+| `oo` | `StoreAttr` | 600,007 | 5.8% |
+| `listbuild` | `LoadMethod` + `CallMethod` | 800,000 | 5.1% |
+
+Step 32 took the largest of these that fits in one small arm and it still did
+not pay, so the numbers in this table should be read as an upper bound on what
+is available rather than as a list of opportunities.
+
+### 27. Box the error half of every internal VM `Result` (48 -> 24 bytes)
+
+Pass two's item 2. `Vm::step` returns one `Result<Step, RuntimeError>` per
+instruction through a hidden return pointer, written and read back each time.
+`Step` is 24 bytes and `RuntimeError` is 40 (`{Box<str>, Rc<str>, u32, u32}`),
+so the pair was 48 — twice the width of the half carrying the result, to
+describe a condition that arises on well under one instruction in a million.
+`vm::VmError` is `Box<RuntimeError>` and every internal fallible VM signature
+uses it; the pair is **24 bytes**, the `Result` discriminant riding in `Step`'s
+own spare tag values. The public surface (`vm::run`, `vm::run_main`) still
+hands back a plain `RuntimeError`, unboxed once per program at the boundary.
+The tripwire asserted `<= 48` and now asserts `<= 24`.
+
+| bench | before | after | delta |
+|---|---|---|---|
+| loop | 0.2386 | 0.2284 | **-4.28%** |
+| dictstr | 0.3800 | 0.3716 | **-2.20%** |
+| oo | 0.2078 | 0.2036 | **-2.04%** |
+| json | 0.1023 | 0.1009 | -1.39% |
+| listbuild | 0.1764 | 0.1743 | -1.17% |
+| builtins | 0.1767 | 0.1835 | **+3.84%** |
+| **mean** | | | **0.00%** |
+
+Kept on a mean of zero. Two independent runs (n=11 and n=13) agree case for
+case, so the split is a property of the two binaries. It is the one change in
+this pass whose verdict the placement finding does not settle: `builtins`
+executes the changed code and got slower, and `builtins`'s own band is 2.2%.
+The structural argument carried it — the hot return halves, and everything
+built on top of it since is cheaper for that.
+
+### 28. Stop allocating an `Rc<BoundMethod>` on every native method call
+
+Pass two's item 3, and it turned out not to be about string dispatch at all.
+`invoke_native_method` ended with
+
+    self.materialize_generator_args(&Self::rebound_method(&receiver, name), ...)
+
+and `materialize_generator_args` *begins* by asking whether any argument is a
+generator, answering `None` when none is. The callee it was handed existed only
+to be dropped — and `rebound_method` builds an `Rc<BoundMethod>`: a heap
+allocation, a receiver clone and a name refcount bump. Every `xs.append(i)`,
+`s.split(c)`, `ys.map(f)` and `d.get(k)` in the program paid for one, because a
+Rust argument is evaluated before the call that ignores it.
+
+`rebound_method`'s own doc comment says it is "rare by construction, so it can
+afford the allocation the ordinary path no longer makes". It was not rare, it
+was universal. This is the very allocation the `LoadMethod`/`CallMethod` pair
+(step 22) was built to remove, reintroduced one layer down — and step 22's
+note that "a native method call did not measurably change at all" is explained
+by it: the wrapper was still being built, just somewhere else.
+
+| bench | before | after | n=13 | n=17 |
+|---|---|---|---|---|
+| strops | 0.2267 | 0.2068 | **-8.15%** | **-8.79%** |
+| listbuild | 0.1651 | 0.1549 | **-7.42%** | **-6.20%** |
+| strjoin | 0.1070 | 0.1000 | **-6.38%** | **-6.55%** |
+| chain | 0.1268 | 0.1188 | **-5.10%** | **-6.33%** |
+| json | 0.0995 | 0.0974 | +1.08% | **-2.07%** |
+| **mean** | | | **-1.29%** | |
+
+Every benchmark that makes native method calls improves 5-9%. Differential
+program 92 was written for it: a generator passed to `list.extend` and to
+`str.join`, a generator *receiver* for `to_list` and `filter`, a generator
+argument to a builtin, and a diagnostic.
+
+**The string cascade itself was not touched, and on this evidence it is worth
+much less than pass two's 10-20% estimate.** `SeqOp::from_name` and its
+neighbours look like fifteen comparisons written out, but LLVM buckets a `match`
+on `&str` by length first, so `"append"` is compared against `"filter"` and
+little else. The allocation was the cost.
+
+### 29. `HKey::Str` shares the string instead of copying it
+
+Pass two's item 4 and its step 25, retried and this time kept. `HKey::Str` held
+a `String`, so `d["name"]` allocated a copy of the whole string to build a probe
+thrown away a moment later, on every dict read and write. It is
+`StrKey(Rc<OroStr>)`: hashing by content (`String`'s own `Hash`, so buckets are
+unchanged), equality leading with `Rc::ptr_eq` — a key stored under an interned
+name is usually probed with the very same `Rc` — then falling back to content.
+
+| bench | before | after | delta |
+|---|---|---|---|
+| dictstr | 0.3609 | 0.3319 | **-8.03%** |
+| json | 0.0953 | 0.0933 | **-2.07%** |
+| loop | 0.2208 | 0.2385 | +8.06% |
+| fib | 0.0816 | 0.0887 | +8.76% |
+| **mean** | | | +1.01% min, +0.05% median |
+
+Pass two measured almost exactly this (`dictstr` -8.9%, mean +1.2%) and
+rejected it because eight dict-free benchmarks got slower. **That reading was
+wrong.** `loop` +8% and `fib` +8.8% are inside their placement bands and
+neither program contains a dict; `dictstr` -8.0% is eight times its own band
+and is the benchmark that was written to see this change. Differential program
+93 was written for it: the same string key built four ways, an interned name
+probed with a constructed key, numeric normalisation, Unicode keys and a key
+that is a prefix of another, tuples containing strings, fifty distinct keys
+written then re-read, two bound methods as keys, and a `KeyError`.
+
+### 30. Stop bumping a builtin's refcount on every builtin call
+
+Step 28's shape again, in `Vm::invoke`'s `Value::Builtin` arm: the callee was
+built unconditionally so that `materialize_generator_args` could look at the
+arguments, find no generator, and answer `None`. A `Value` construction and an
+`Rc` bump on every `len(xs)`, `abs(n)`, `min(a, b)`.
+
+| bench | before | after | delta |
+|---|---|---|---|
+| builtins | 0.1772 | 0.1609 | **-9.20%** |
+| loop | 0.2436 | 0.2254 | -7.46% |
+| genpipe | 0.1050 | 0.1032 | -1.76% |
+| strops | 0.2068 | 0.2033 | -1.69% |
+| exc | 0.0854 | 0.0841 | -1.55% |
+| **mean** | | | **-2.04%** |
+
+The placement band is visible here from both sides at once. This identical
+change, measured against the previous tip, read `builtins` **-7.41%** and `loop`
+**+7.47%**, mean +0.46%; measured against this one it reads `builtins` -9.20%
+and `loop` -7.46%, mean -2.04%. `builtins` is the benchmark that makes 1.2M
+native calls and it is consistent across both; `loop` makes none and swung
+fifteen points.
+
+### 31. REJECTED — evicting the dispatch loop's dead fast-path arms
+
+**Pass two's item 1, searched and answered: no.** An instrumented build counted
+every fast-path arm across the whole suite. `Dup`, `RotTwo` and `ListAppend`
+fire **zero times in all thirteen benchmarks** — `xs.append` is
+`LoadMethod`/`CallMethod`, and `ListAppend` is only comprehensions — and
+`LoadCell` fires 66,667 times in `exc` and essentially nowhere else. Pass two
+named `LoadNone`, `Dup`, `RotTwo`, `LoadCell` and `LoadFree` as suspects; the
+counts clear `LoadFree` (636k in `fib`, 9.1% of its instructions) and
+`LoadNone` (200k in `oo`).
+
+Evicting the three provably dead arms — leaving them to `step`, which handles
+them exactly as it always did — is a **regression**:
+
+| bench | before | after | n=9 | n=13 |
+|---|---|---|---|---|
+| listbuild | 0.1547 | 0.1644 | **+6.27%** | **+7.49%** |
+| builtins | 0.1539 | 0.1586 | **+3.05%** | **+2.86%** |
+| oo | 0.1831 | 0.1864 | +1.83% | +0.97% |
+| **mean** | | | **+1.29%** | **+2.47%** |
+
+`listbuild`'s band is 1.1% and it lost 6-7% twice, so this is real and not
+placement. Nothing improves, because nothing executed the evicted arms in the
+first place. **The fast-path match is not a budget with room to be freed:
+removing arms that never run still costs, and a fuller match is a cheaper
+one** — which is the same thing step 21 saw from the other side ("`loop`
+executes none of these arms and is 7.8% faster anyway") and step 18 saw as an
+arm guard costing the whole match its jump table.
+
+Judging removals as seriously as additions was the right instruction; the
+answer is simply that every current arm earns its place, including three that
+never fire.
+
+### 32. REJECTED — a `StoreAttr` fast path in the dispatch loop
+
+The other half of step 20's attribute work, and the profile's best remaining
+candidate: `oo` spends 5.8% of its instructions on `StoreAttr` and every one
+goes through `step`. An arm for the only receiver that has settable attributes:
+
+| bench | before | after | delta |
+|---|---|---|---|
+| oo | 0.1971 | 0.1927 | **-2.24%** |
+| loop | 0.2252 | 0.2430 | +7.89% |
+| exc | 0.0836 | 0.0864 | +3.39% |
+| listbuild | 0.1537 | 0.1572 | +2.24% |
+| dictstr | 0.3358 | 0.3430 | +2.13% |
+| **mean** | | | **+1.98%** |
+
+`oo` is the only benchmark that executes the arm and it gains 2.2%. **Ten of
+the other twelve get slower**, most of them by more than their placement bands,
+which is a broader and more consistent pattern than placement produces. This is
+step 23's finding reproduced with attribution: the dispatch loop's fast-path
+match really is full, an added arm is paid for out of the arms already there,
+and 5.8% of one benchmark's instructions is not enough to buy in.
+
+### What the pass three branch cost the rest of the system
+
+Nothing measurable. `size_of::<Value>()` is 16, `size_of::<Op>()` is 8,
+`size_of::<Step>()` is 24, and `Result<Step, VmError>` is 24 (was 48). The
+binary is 2.98 MB, unchanged to three digits. No dependency was added, no
+`unsafe` was written, and the two `#![deny(unsafe_code)]` crate roots are
+untouched.
+
+## What is left, ranked (after pass three)
+
+The shape has changed again. Pass one's list was about allocations; pass two's
+was about the size of the dispatch loop; what pass three found is that **the
+remaining allocations were hiding inside arguments to functions that did not
+use them**, and that the measurement apparatus was reporting layout as cost.
+
+1. **Look for the third `materialize_*` argument.** Steps 28 and 30 are the
+   same bug found twice, five hundred lines apart: a callee built eagerly for a
+   callee-drains-a-generator path that almost never runs. `materialize_receiver`
+   has the same signature and two call sites, both already behind a
+   `matches!(receiver, Value::Generator(_))` guard — so those are clean — but
+   the pattern is worth a sweep. Cheap, and the two instances of it were worth
+   6-9% each on the benchmarks that touched them.
+
+2. **Give the placement band a control.** Every A/B in this file is a
+   recompile, and a recompile moves `loop` by up to fourteen points. Building
+   each binary two or three times with a deliberate, varying dead-code padding
+   and taking the *median across builds* would turn a coin flip into a
+   measurement, at maybe 3x the wall clock. Nothing else on this list can be
+   read confidently until this exists, and two pass-two conclusions (step 23's
+   budget, step 25's rejection) are already known to have been distorted by it.
+
+3. **`builtins`, and `Vm::invoke`'s string cascade.** `builtins` is the one
+   benchmark that got slower from step 27 while executing its changed code. Its
+   `Value::Builtin` arm still tests the callee's name against fourteen literals
+   before reaching `(b.func)(args)`, and `do_call` still allocates an argument
+   `Vec` per native call (`popn`). A `BuiltinKind` computed at construction
+   would skip the cascade — but the construction site is
+   `src/builtins/mod.rs:64`, which was off limits to this pass. Est. 5-10% on
+   `builtins`; note that `min`, `max` and `len` are VM-inspected names and would
+   still enter the cascade, so the flag alone does not finish the job.
+
+4. **`fib`, which is now the worst benchmark in the suite at 2.00x.** It moved
+   least of anything this pass and nothing here targeted it. Its instruction mix
+   is 9.1% `LoadFree` — the free-variable read is on `fib`'s critical path
+   because the recursive name is a captured cell — and the call/return pair it
+   is otherwise made of is already in the dispatch loop.
+
+5. **A contiguous VM-wide value stack.** Unchanged from pass two's item 5. Large
+   refactor, modest return, and now also a large placement perturbation, which
+   makes it hard to evaluate.
+
+6. **`kwargs: Vec<(String, Value)>` -> `Rc<str>` keys.** Still correct, still
+   unmeasurable on this suite.
+
+7. **Superinstructions.** Still lowest value and highest risk. `loop` is at
+   0.45x CPython, and step 31 makes it *less* likely that shrinking the
+   instruction stream is where the remaining time is.
+
+## What pass two thought was left, ranked (kept for the record)
+
+Items 2, 3 and 4 were addressed in pass three; item 1 was searched and
+answered "no". See the pass-three ranking above it.
 
 The ranking has changed shape. Pass one's list was about *allocations*; after
 this pass the interpreter allocates very little on the hot paths, and what is
