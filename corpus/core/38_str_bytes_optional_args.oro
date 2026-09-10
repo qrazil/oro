@@ -63,14 +63,21 @@ for s in STRS:
 # `"xxhixx"`. The no-argument form has its own trap — CPython counts
 # U+001C..U+001F as whitespace and Rust's `char::is_whitespace` does not, which
 # `split()` shared.
-print("--- str.strip / lstrip / rstrip([chars])")
+print("--- str.strip([chars])")
 for s in ["  hi  ", "xxhixx", "xyxhixyx", "", "xxx", "\thi\n ", "ααhiα", "a\x1cb\x1d", "\x1c\x1e hi \x1f"]:
-    row = [s.strip(), s.lstrip(), s.rstrip()]
+    row = [s.strip()]
     for chars in ["x", "xy", "", "α", "abc", None]:
         row.append(s.strip(chars))
-        row.append(s.lstrip(chars))
-        row.append(s.rstrip(chars))
-    print(repr(s), row, s.split(), s.rsplit())
+    print(repr(s), row, s.split())
+
+# `count` is the same non-overlapping count CPython does, including the empty
+# needle sitting between every pair of characters and at both ends.
+print("--- str.count(sub)")
+for s in STRS:
+    row = []
+    for sub in SUBS:
+        row.append(s.count(sub))
+    print(repr(s), row)
 
 # The same table on bytes, where an index counts octets rather than characters.
 BYTES = [b"abcabc", b"abc", b"", b"\xc3\xa9x\xc3\xa9", b"\x00a\xff"]
@@ -107,13 +114,18 @@ for s in BYTES:
                 row.append(s.replace(old, new, count))
             print(repr(s), repr(old), repr(new), row)
 
-print("--- bytes.strip / lstrip / rstrip([chars])")
+print("--- bytes.strip([chars])")
 for s in BYTES:
-    row = [s.strip(), s.lstrip(), s.rstrip()]
+    row = [s.strip()]
     for chars in [b"a", b"ab", b"", b"\xff\x00", None]:
         row.append(s.strip(chars))
-        row.append(s.lstrip(chars))
-        row.append(s.rstrip(chars))
+    print(repr(s), row)
+
+print("--- bytes.count(sub)")
+for s in BYTES:
+    row = []
+    for sub in BSUBS:
+        row.append(s.count(sub))
     print(repr(s), row)
 
 # The workaround `std/http.oro` no longer needs: scanning a header block with

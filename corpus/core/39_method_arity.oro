@@ -33,30 +33,6 @@ except TypeError:
     print('"abc".strip("x", "y")', "-> TypeError")
 
 try:
-    "abc".lstrip("x", "y")
-    print('"abc".lstrip("x", "y")', "-> no error")
-except TypeError:
-    print('"abc".lstrip("x", "y")', "-> TypeError")
-
-try:
-    "abc".rstrip("x", "y")
-    print('"abc".rstrip("x", "y")', "-> no error")
-except TypeError:
-    print('"abc".rstrip("x", "y")', "-> TypeError")
-
-try:
-    "abc".zfill()
-    print('"abc".zfill()', "-> no error")
-except TypeError:
-    print('"abc".zfill()', "-> TypeError")
-
-try:
-    "abc".zfill(5, 5)
-    print('"abc".zfill(5, 5)', "-> no error")
-except TypeError:
-    print('"abc".zfill(5, 5)', "-> TypeError")
-
-try:
     "abc".find()
     print('"abc".find()', "-> no error")
 except TypeError:
@@ -129,10 +105,22 @@ except TypeError:
     print('"a b".split("b", 1, 2)', "-> TypeError")
 
 try:
-    "a b".rsplit("b", 1, 2)
-    print('"a b".rsplit("b", 1, 2)', "-> no error")
+    "abc".count()
+    print('"abc".count()', "-> no error")
 except TypeError:
-    print('"a b".rsplit("b", 1, 2)', "-> TypeError")
+    print('"abc".count()', "-> TypeError")
+
+try:
+    "abc".count("a", "b")
+    print('"abc".count("a", "b")', "-> no error")
+except TypeError:
+    print('"abc".count("a", "b")', "-> TypeError")
+
+try:
+    b"abc".count()
+    print('b"abc".count()', "-> no error")
+except TypeError:
+    print('b"abc".count()', "-> TypeError")
 
 try:
     "-".join(["a"], 2)
@@ -163,18 +151,6 @@ try:
     print('b"abc".strip(b"x", b"y")', "-> no error")
 except TypeError:
     print('b"abc".strip(b"x", b"y")', "-> TypeError")
-
-try:
-    b"abc".zfill()
-    print('b"abc".zfill()', "-> no error")
-except TypeError:
-    print('b"abc".zfill()', "-> TypeError")
-
-try:
-    b"abc".zfill(5, 5)
-    print('b"abc".zfill(5, 5)', "-> no error")
-except TypeError:
-    print('b"abc".zfill(5, 5)', "-> TypeError")
 
 try:
     b"abc".find()

@@ -1,0 +1,15 @@
+# The hot string methods: strip, find and replace over 200k short lines. Written
+# in the spellings both Oro and CPython share, so the harness can run it on
+# either without a twin.
+line = "  key = value ; trailing  "
+n = 0
+hits = 0
+while n < 200000:
+    s = line.strip()
+    i = s.find("=")
+    if i >= 0:
+        hits = hits + 1
+    k = s.replace(" ", "")
+    n = n + len(k) - len(k) + 1
+
+print(hits, n)

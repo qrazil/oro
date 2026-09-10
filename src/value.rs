@@ -852,7 +852,7 @@ pub(crate) fn push_unicode_escape(out: &mut String, c: char) {
 /// no-break space in the output looks like nothing at all, and pasting it back
 /// does not reliably reproduce the value. Printable non-ASCII (`é`, `日本語`)
 /// still goes out raw, as it does in Python 3.
-fn repr_str(s: &str) -> String {
+pub fn repr_str(s: &str) -> String {
     let quote = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
     let qb = quote as u8;
     let bytes = s.as_bytes();

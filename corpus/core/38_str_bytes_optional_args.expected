@@ -177,16 +177,22 @@
 '😀x😀' 'α' '' ['😀x😀', '😀x😀', '😀x😀', '😀x😀', '😀x😀', '😀x😀', '😀x😀', '😀x😀']
 '😀x😀' 'α' 'yy' ['😀x😀', '😀x😀', '😀x😀', '😀x😀', '😀x😀', '😀x😀', '😀x😀', '😀x😀']
 '😀x😀' 'α' 'éé' ['😀x😀', '😀x😀', '😀x😀', '😀x😀', '😀x😀', '😀x😀', '😀x😀', '😀x😀']
---- str.strip / lstrip / rstrip([chars])
-'  hi  ' ['hi', 'hi  ', '  hi', '  hi  ', '  hi  ', '  hi  ', '  hi  ', '  hi  ', '  hi  ', '  hi  ', '  hi  ', '  hi  ', '  hi  ', '  hi  ', '  hi  ', '  hi  ', '  hi  ', '  hi  ', 'hi', 'hi  ', '  hi'] ['hi'] ['hi']
-'xxhixx' ['xxhixx', 'xxhixx', 'xxhixx', 'hi', 'hixx', 'xxhi', 'hi', 'hixx', 'xxhi', 'xxhixx', 'xxhixx', 'xxhixx', 'xxhixx', 'xxhixx', 'xxhixx', 'xxhixx', 'xxhixx', 'xxhixx', 'xxhixx', 'xxhixx', 'xxhixx'] ['xxhixx'] ['xxhixx']
-'xyxhixyx' ['xyxhixyx', 'xyxhixyx', 'xyxhixyx', 'yxhixy', 'yxhixyx', 'xyxhixy', 'hi', 'hixyx', 'xyxhi', 'xyxhixyx', 'xyxhixyx', 'xyxhixyx', 'xyxhixyx', 'xyxhixyx', 'xyxhixyx', 'xyxhixyx', 'xyxhixyx', 'xyxhixyx', 'xyxhixyx', 'xyxhixyx', 'xyxhixyx'] ['xyxhixyx'] ['xyxhixyx']
-'' ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''] [] []
-'xxx' ['xxx', 'xxx', 'xxx', '', '', '', '', '', '', 'xxx', 'xxx', 'xxx', 'xxx', 'xxx', 'xxx', 'xxx', 'xxx', 'xxx', 'xxx', 'xxx', 'xxx'] ['xxx'] ['xxx']
-'\thi\n ' ['hi', 'hi\n ', '\thi', '\thi\n ', '\thi\n ', '\thi\n ', '\thi\n ', '\thi\n ', '\thi\n ', '\thi\n ', '\thi\n ', '\thi\n ', '\thi\n ', '\thi\n ', '\thi\n ', '\thi\n ', '\thi\n ', '\thi\n ', 'hi', 'hi\n ', '\thi'] ['hi'] ['hi']
-'ααhiα' ['ααhiα', 'ααhiα', 'ααhiα', 'ααhiα', 'ααhiα', 'ααhiα', 'ααhiα', 'ααhiα', 'ααhiα', 'ααhiα', 'ααhiα', 'ααhiα', 'hi', 'hiα', 'ααhi', 'ααhiα', 'ααhiα', 'ααhiα', 'ααhiα', 'ααhiα', 'ααhiα'] ['ααhiα'] ['ααhiα']
-'a\x1cb\x1d' ['a\x1cb', 'a\x1cb\x1d', 'a\x1cb', 'a\x1cb\x1d', 'a\x1cb\x1d', 'a\x1cb\x1d', 'a\x1cb\x1d', 'a\x1cb\x1d', 'a\x1cb\x1d', 'a\x1cb\x1d', 'a\x1cb\x1d', 'a\x1cb\x1d', 'a\x1cb\x1d', 'a\x1cb\x1d', 'a\x1cb\x1d', '\x1cb\x1d', '\x1cb\x1d', 'a\x1cb\x1d', 'a\x1cb', 'a\x1cb\x1d', 'a\x1cb'] ['a', 'b'] ['a', 'b']
-'\x1c\x1e hi \x1f' ['hi', 'hi \x1f', '\x1c\x1e hi', '\x1c\x1e hi \x1f', '\x1c\x1e hi \x1f', '\x1c\x1e hi \x1f', '\x1c\x1e hi \x1f', '\x1c\x1e hi \x1f', '\x1c\x1e hi \x1f', '\x1c\x1e hi \x1f', '\x1c\x1e hi \x1f', '\x1c\x1e hi \x1f', '\x1c\x1e hi \x1f', '\x1c\x1e hi \x1f', '\x1c\x1e hi \x1f', '\x1c\x1e hi \x1f', '\x1c\x1e hi \x1f', '\x1c\x1e hi \x1f', 'hi', 'hi \x1f', '\x1c\x1e hi'] ['hi'] ['hi']
+--- str.strip([chars])
+'  hi  ' ['hi', '  hi  ', '  hi  ', '  hi  ', '  hi  ', '  hi  ', 'hi'] ['hi']
+'xxhixx' ['xxhixx', 'hi', 'hi', 'xxhixx', 'xxhixx', 'xxhixx', 'xxhixx'] ['xxhixx']
+'xyxhixyx' ['xyxhixyx', 'yxhixy', 'hi', 'xyxhixyx', 'xyxhixyx', 'xyxhixyx', 'xyxhixyx'] ['xyxhixyx']
+'' ['', '', '', '', '', '', ''] []
+'xxx' ['xxx', '', '', 'xxx', 'xxx', 'xxx', 'xxx'] ['xxx']
+'\thi\n ' ['hi', '\thi\n ', '\thi\n ', '\thi\n ', '\thi\n ', '\thi\n ', 'hi'] ['hi']
+'ααhiα' ['ααhiα', 'ααhiα', 'ααhiα', 'ααhiα', 'hi', 'ααhiα', 'ααhiα'] ['ααhiα']
+'a\x1cb\x1d' ['a\x1cb', 'a\x1cb\x1d', 'a\x1cb\x1d', 'a\x1cb\x1d', 'a\x1cb\x1d', '\x1cb\x1d', 'a\x1cb'] ['a', 'b']
+'\x1c\x1e hi \x1f' ['hi', '\x1c\x1e hi \x1f', '\x1c\x1e hi \x1f', '\x1c\x1e hi \x1f', '\x1c\x1e hi \x1f', '\x1c\x1e hi \x1f', 'hi'] ['hi']
+--- str.count(sub)
+'abcabc' [2, 7, 2, 0, 0]
+'abc' [1, 4, 1, 0, 0]
+'' [0, 1, 0, 0, 0]
+'haééha' [0, 7, 0, 2, 0]
+'😀x😀' [0, 4, 0, 0, 2]
 --- bytes.find(sub[, start[, end]])
 b'abcabc' b'b' [1, 1, -1, 1, 1, -1, 1, 1, 4, -1, -1, 4, -1, -1, 4, -1, -1, -1, -1, -1, -1, -1, 1, -1, 1, 1, -1, 1, 1, 4, -1, -1, 4, -1, -1, 4, -1, -1, -1, -1, -1, -1, -1]
 b'abcabc' b'' [0, 0, 0, 0, 0, 0, 0, 0, 2, -1, 2, 2, -1, 2, 2, 5, -1, -1, 5, -1, -1, 5, 0, 0, 0, 0, 0, 0, 0, 2, -1, 2, 2, -1, 2, 2, -1, -1, -1, -1, -1, -1, -1]
@@ -300,12 +306,18 @@ b'\x00a\xff' b'ab' b'yy' [b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff'
 b'\x00a\xff' b'\xc3\xa9' b'X' [b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff']
 b'\x00a\xff' b'\xc3\xa9' b'' [b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff']
 b'\x00a\xff' b'\xc3\xa9' b'yy' [b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff']
---- bytes.strip / lstrip / rstrip([chars])
-b'abcabc' [b'abcabc', b'abcabc', b'abcabc', b'bcabc', b'bcabc', b'abcabc', b'cabc', b'cabc', b'abcabc', b'abcabc', b'abcabc', b'abcabc', b'abcabc', b'abcabc', b'abcabc', b'abcabc', b'abcabc', b'abcabc']
-b'abc' [b'abc', b'abc', b'abc', b'bc', b'bc', b'abc', b'c', b'c', b'abc', b'abc', b'abc', b'abc', b'abc', b'abc', b'abc', b'abc', b'abc', b'abc']
-b'' [b'', b'', b'', b'', b'', b'', b'', b'', b'', b'', b'', b'', b'', b'', b'', b'', b'', b'']
-b'\xc3\xa9x\xc3\xa9' [b'\xc3\xa9x\xc3\xa9', b'\xc3\xa9x\xc3\xa9', b'\xc3\xa9x\xc3\xa9', b'\xc3\xa9x\xc3\xa9', b'\xc3\xa9x\xc3\xa9', b'\xc3\xa9x\xc3\xa9', b'\xc3\xa9x\xc3\xa9', b'\xc3\xa9x\xc3\xa9', b'\xc3\xa9x\xc3\xa9', b'\xc3\xa9x\xc3\xa9', b'\xc3\xa9x\xc3\xa9', b'\xc3\xa9x\xc3\xa9', b'\xc3\xa9x\xc3\xa9', b'\xc3\xa9x\xc3\xa9', b'\xc3\xa9x\xc3\xa9', b'\xc3\xa9x\xc3\xa9', b'\xc3\xa9x\xc3\xa9', b'\xc3\xa9x\xc3\xa9']
-b'\x00a\xff' [b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'a', b'a\xff', b'\x00a', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff']
+--- bytes.strip([chars])
+b'abcabc' [b'abcabc', b'bcabc', b'cabc', b'abcabc', b'abcabc', b'abcabc']
+b'abc' [b'abc', b'bc', b'c', b'abc', b'abc', b'abc']
+b'' [b'', b'', b'', b'', b'', b'']
+b'\xc3\xa9x\xc3\xa9' [b'\xc3\xa9x\xc3\xa9', b'\xc3\xa9x\xc3\xa9', b'\xc3\xa9x\xc3\xa9', b'\xc3\xa9x\xc3\xa9', b'\xc3\xa9x\xc3\xa9', b'\xc3\xa9x\xc3\xa9']
+b'\x00a\xff' [b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'\x00a\xff', b'a', b'\x00a\xff']
+--- bytes.count(sub)
+b'abcabc' [2, 7, 2, 0, 0]
+b'abc' [1, 4, 1, 0, 0]
+b'' [0, 1, 0, 0, 0]
+b'\xc3\xa9x\xc3\xa9' [0, 6, 0, 2, 0]
+b'\x00a\xff' [0, 4, 0, 0, 1]
 --- scanning with a moving start
 0 4 b'a: 1'
 6 10 b'b: 2'

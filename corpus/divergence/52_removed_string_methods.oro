@@ -1,0 +1,198 @@
+# Removals are loud. Every method the string surface used to carry raises, and
+# the message names what to write instead — the rule the whole language runs on:
+# reject with an error that names the replacement, never silently redefine.
+#
+# CPython cannot check this file: under CPython every call below succeeds, which
+# is exactly the point. Reviewed by hand — if a message changes, the change is
+# what wants reviewing.
+
+try:
+    "abc".lstrip()
+    print('"abc".lstrip()', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
+    "abc".rstrip()
+    print('"abc".rstrip()', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
+    "a,b".rsplit(",")
+    print('"a,b".rsplit(",")', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
+    "abc".rfind("b")
+    print('"abc".rfind("b")', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
+    "7".zfill(3)
+    print('"7".zfill(3)', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
+    "abc".index("b")
+    print('"abc".index("b")', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
+    "abc".removeprefix("a")
+    print('"abc".removeprefix("a")', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
+    "abc".removesuffix("c")
+    print('"abc".removesuffix("c")', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
+    "123".isdigit()
+    print('"123".isdigit()', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
+    "abc".isalpha()
+    print('"abc".isalpha()', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
+    "a1".isalnum()
+    print('"a1".isalnum()', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
+    " ".isspace()
+    print('" ".isspace()', "-> still here")
+except AttributeError as e:
+    print(e)
+
+print("---")
+
+try:
+    b"abc".lstrip()
+    print('b"abc".lstrip()', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
+    b"abc".rstrip()
+    print('b"abc".rstrip()', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
+    b"a,b".rsplit(b",")
+    print('b"a,b".rsplit(b",")', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
+    b"abc".rfind(b"b")
+    print('b"abc".rfind(b"b")', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
+    b"7".zfill(3)
+    print('b"7".zfill(3)', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
+    b"abc".index(b"b")
+    print('b"abc".index(b"b")', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
+    b"abc".removeprefix(b"a")
+    print('b"abc".removeprefix(b"a")', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
+    b"abc".removesuffix(b"c")
+    print('b"abc".removesuffix(b"c")', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
+    b"123".isdigit()
+    print('b"123".isdigit()', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
+    b"abc".isalpha()
+    print('b"abc".isalpha()', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
+    b"a1".isalnum()
+    print('b"a1".isalnum()', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
+    b" ".isspace()
+    print('b" ".isspace()', "-> still here")
+except AttributeError as e:
+    print(e)
+
+print("---")
+
+# `side` is validated by name. A typo is a ValueError that names the three
+# values, not a strip that quietly did nothing.
+for side in ["both", "left", "right", "middle", "LEFT", ""]:
+    try:
+        print(repr(side), repr("  hi  ".strip(side=side)))
+    except ValueError as e:
+        print(repr(side), "ValueError:", e)
+
+try:
+    "hi".strip(side=1)
+except TypeError as e:
+    print("TypeError:", e)
+
+print("---")
+
+# Only `strip` and `find` take a keyword, and only their own.
+try:
+    "hi".upper(side="left")
+except TypeError as e:
+    print("TypeError:", e)
+
+try:
+    "hi".strip(bogus=1)
+except TypeError as e:
+    print("TypeError:", e)
+
+try:
+    "hi".find("h", bogus=1)
+except TypeError as e:
+    print("TypeError:", e)
+
+print("---")
+
+# The one place the `is_*` predicates are not CPython's answer. They read the
+# Unicode properties Rust's standard library exposes (`Alphabetic`, `Numeric`)
+# where CPython tests the general categories `L` and `N`. The two agree on all
+# of ASCII and on the letters and digits of every script; they differ on 12,194
+# code points — combining marks and non-decimal numerals — and every difference
+# runs in this direction, Oro true where CPython is false, never the reverse.
+print("\u0345".is_alpha(), "CPython: False (U+0345 is a combining mark)")
+print("\u00bd".is_digit(), "CPython: False (\u00bd is numeric but not a digit)")
+print("\u2167".is_digit(), "CPython: False (\u2167 is a Roman numeral)")

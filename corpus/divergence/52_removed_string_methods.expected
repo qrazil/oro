@@ -1,0 +1,41 @@
+`lstrip` is not in Oro — use `strip(side="left")`
+`rstrip` is not in Oro — use `strip(side="right")`
+`rsplit` is not in Oro — use `split(sep, maxsplit)`, or `find(sub, reverse=true)` to locate the last separator yourself
+`rfind` is not in Oro — use `find(sub, reverse=true)`
+`zfill` is not in Oro — a format spec pads: f"{n:05d}", f"{s:0>5}", or f"{s:0>{width}}" for a width computed at run time
+`index` is not in Oro — use `find(sub)`, which answers -1 rather than raising
+`removeprefix` is spelled `rm_prefix` in Oro
+`removesuffix` is spelled `rm_suffix` in Oro
+`isdigit` is spelled `is_digit` in Oro
+`isalpha` is spelled `is_alpha` in Oro
+`isalnum` is spelled `is_alnum` in Oro
+`isspace` is spelled `is_space` in Oro
+---
+`lstrip` is not in Oro — use `strip(side="left")`
+`rstrip` is not in Oro — use `strip(side="right")`
+`rsplit` is not in Oro — use `split(sep, maxsplit)`, or `find(sub, reverse=true)` to locate the last separator yourself
+`rfind` is not in Oro — use `find(sub, reverse=true)`
+`zfill` is not in Oro — a format spec pads: f"{n:05d}", f"{s:0>5}", or f"{s:0>{width}}" for a width computed at run time
+`index` is not in Oro — use `find(sub)`, which answers -1 rather than raising
+`removeprefix` is spelled `rm_prefix` in Oro
+`removesuffix` is spelled `rm_suffix` in Oro
+`isdigit` is spelled `is_digit` in Oro
+`isalpha` is spelled `is_alpha` in Oro
+`isalnum` is spelled `is_alnum` in Oro
+`isspace` is spelled `is_space` in Oro
+---
+'both' 'hi'
+'left' 'hi  '
+'right' '  hi'
+'middle' ValueError: strip(): side must be "both", "left" or "right", not 'middle'
+'LEFT' ValueError: strip(): side must be "both", "left" or "right", not 'LEFT'
+'' ValueError: strip(): side must be "both", "left" or "right", not ''
+TypeError: strip(): side must be str, not 'int'
+---
+TypeError: upper() takes no keyword arguments
+TypeError: strip() got an unexpected keyword argument 'bogus'
+TypeError: find() got an unexpected keyword argument 'bogus'
+---
+True CPython: False (U+0345 is a combining mark)
+True CPython: False (½ is numeric but not a digit)
+True CPython: False (Ⅷ is a Roman numeral)

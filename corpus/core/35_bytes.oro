@@ -55,12 +55,11 @@ print(type(b"x"), isinstance(b"x", bytes), isinstance("x", bytes), isinstance(b"
 # --- Methods ----------------------------------------------------------------
 line = b"  Content-Type: text/html \t\n"
 print(line.strip())
-print(line.lstrip(), line.rstrip())
 print(b"\x0b\x0c ab \x0b\x0c".strip())
 print(line.strip().upper(), line.strip().lower())
 # Case folding is ASCII-only: an octet is not a character.
 print(b"AbC\xff".lower(), b"AbC\xff".upper())
-print(b"a,b,,c".split(b","), b"a,b,c".split(b",", 1), b"a,b,c".rsplit(b",", 1))
+print(b"a,b,,c".split(b","), b"a,b,c".split(b",", 1))
 print(b"a b\x0bc  d".split(), b" a b c ".split(None, 1))
 print(b"".split(b","), b"x".split(b","))
 print(b",".join([b"a", b"b", b"c"]), b"".join([b"a", b"b"]), b",".join([]))
@@ -68,7 +67,7 @@ print(b"abc".find(b"b"), b"abc".find(b"z"), b"abc".find(b""), b"abc".find(b"abcd
 print(b"aXbXc".replace(b"X", b"-"), b"abc".replace(b"", b"."), b"abc".replace(b"z", b"!"))
 print(b"abc".startswith(b"ab"), b"abc".startswith(b"b"), b"abc".startswith(b""))
 print(b"abc".endswith(b"bc"), b"abc".endswith(b"b"), b"abc".endswith(b""))
-print(b"7".zfill(3), b"-7".zfill(4), b"+7".zfill(4), b"abcd".zfill(2))
+print(b"abcabc".count(b"bc"), b"abc".count(b""), b"".count(b"x"))
 print(b"\xff\x00A".hex(), b"".hex())
 
 # --- A byte-level parse, which is what the type is for -----------------------

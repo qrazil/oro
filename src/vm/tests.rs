@@ -1004,11 +1004,10 @@ fn bytes_methods_mirror_the_str_set() {
     assert_eq!(eval("r = b\"AbC\".upper()\n").repr(), "b'ABC'");
     // Vertical tab and form feed count as whitespace, as they do in CPython.
     assert_eq!(eval("r = b\" \\x0b a b \\t\\n\".strip()\n").repr(), "b'a b'");
-    assert_eq!(eval("r = b\"  ab  \".lstrip()\n").repr(), "b'ab  '");
-    assert_eq!(eval("r = b\"  ab  \".rstrip()\n").repr(), "b'  ab'");
+    assert_eq!(eval("r = b\"  ab  \".strip(side=\"left\")\n").repr(), "b'ab  '");
+    assert_eq!(eval("r = b\"  ab  \".strip(side=\"right\")\n").repr(), "b'  ab'");
     assert_eq!(eval("r = b\"a,b,,c\".split(b\",\")\n").repr(), "[b'a', b'b', b'', b'c']");
     assert_eq!(eval("r = b\"a,b,c\".split(b\",\", 1)\n").repr(), "[b'a', b'b,c']");
-    assert_eq!(eval("r = b\"a,b,c\".rsplit(b\",\", 1)\n").repr(), "[b'a,b', b'c']");
     assert_eq!(eval("r = b\"a b\\x0bc\".split()\n").repr(), "[b'a', b'b', b'c']");
     assert_eq!(eval("r = [b\"a\", b\"b\"].join(b\"-\")\n").repr(), "b'a-b'");
     assert_eq!(eval("r = b\"-\".join([b\"a\", b\"b\"])\n").repr(), "b'a-b'");
@@ -1019,8 +1018,108 @@ fn bytes_methods_mirror_the_str_set() {
     assert_eq!(eval("r = b\"abc\".replace(b\"b\", b\"XY\")\n").repr(), "b'aXYc'");
     assert!(eval("r = b\"abc\".startswith(b\"ab\")\n").truthy());
     assert!(eval("r = b\"abc\".endswith(b\"bc\")\n").truthy());
-    assert_eq!(eval("r = b\"-7\".zfill(4)\n").repr(), "b'-007'");
+    // `find(sub, reverse=true)` is the whole of what `rfind` used to be.
+    assert_eq!(int(&eval("r = b\"abcabc\".find(b\"bc\", reverse=True)\n")), 4);
+    assert_eq!(int(&eval("r = b\"abc\".count(b\"\")\n")), 4);
+    assert_eq!(eval("r = b\"a.png\".rm_suffix(b\".png\")\n").repr(), "b'a'");
+    assert_eq!(eval("r = b\"a.png\".rm_suffix(b\".gif\")\n").repr(), "b'a.png'");
+    assert!(eval("r = b\"12\".is_digit()\n").truthy());
+    assert!(!eval("r = b\"\".is_digit()\n").truthy());
     assert_eq!(eval("r = b\"\\xff\\x00A\".hex()\n").repr(), "'ff0041'");
+}
+
+/// The `str` surface after the strip/find fold: one `strip` with a `side=`
+/// keyword, one `find` with a `reverse=` keyword, and the four `is_*`
+/// predicates. Every CPython-shaped answer here is oracled by
+/// `corpus/core/38_str_bytes_optional_args.oro` as well; these pin the
+/// Oro-only spellings, which CPython cannot check.
+#[test]
+fn str_strip_takes_a_side_and_find_takes_a_reverse() {
+    assert_eq!(eval("r = \"  ab  \".strip()\n").repr(), "'ab'");
+    assert_eq!(eval("r = \"  ab  \".strip(side=\"left\")\n").repr(), "'ab  '");
+    assert_eq!(eval("r = \"  ab  \".strip(side=\"right\")\n").repr(), "'  ab'");
+    assert_eq!(eval("r = \"  ab  \".strip(side=\"both\")\n").repr(), "'ab'");
+    // `chars` is a cut set, and it composes with `side` rather than replacing it.
+    assert_eq!(eval("r = \"xyaxy\".strip(\"xy\")\n").repr(), "'a'");
+    assert_eq!(eval("r = \"xyaxy\".strip(\"xy\", side=\"left\")\n").repr(), "'axy'");
+    assert_eq!(eval("r = \"xyaxy\".strip(\"xy\", side=\"right\")\n").repr(), "'xya'");
+    // Anything but the three is a ValueError that names the three.
+    let e = run_err("r = \"x\".strip(side=\"middle\")\n");
+    assert!(e.message.contains("ValueError"), "got: {}", e.message);
+    assert!(e.message.contains("\"both\", \"left\" or \"right\""), "got: {}", e.message);
+
+    assert_eq!(int(&eval("r = \"abcabc\".find(\"bc\")\n")), 1);
+    assert_eq!(int(&eval("r = \"abcabc\".find(\"bc\", reverse=True)\n")), 4);
+    // The positional window still applies, from whichever end.
+    assert_eq!(int(&eval("r = \"abcabc\".find(\"bc\", 0, 4, reverse=True)\n")), 1);
+    assert_eq!(int(&eval("r = \"abcabc\".find(\"zz\", reverse=True)\n")), -1);
+    assert_eq!(int(&eval("r = \"abc\".find(\"\", reverse=True)\n")), 3);
+}
+
+/// `rm_prefix`/`rm_suffix` exist because `strip(chars)` is a character *set*
+/// and gets mistaken for suffix removal. The two lines here are the footgun and
+/// its answer, side by side.
+#[test]
+fn rm_prefix_and_rm_suffix_are_literal() {
+    assert_eq!(eval("r = \"ping.png\".strip(\".png\", side=\"right\")\n").repr(), "'pi'");
+    assert_eq!(eval("r = \"ping.png\".rm_suffix(\".png\")\n").repr(), "'ping'");
+    assert_eq!(eval("r = \"ping.png\".rm_suffix(\".gif\")\n").repr(), "'ping.png'");
+    assert_eq!(eval("r = \"ping.png\".rm_prefix(\"ping\")\n").repr(), "'.png'");
+    assert_eq!(eval("r = \"abc\".rm_prefix(\"\")\n").repr(), "'abc'");
+}
+
+/// `count` and the four `is_*` predicates, including the empty-sequence rule
+/// (`false` for all four) that CPython also has and everyone forgets.
+#[test]
+fn count_and_the_is_predicates() {
+    assert_eq!(int(&eval("r = \"abcabc\".count(\"bc\")\n")), 2);
+    assert_eq!(int(&eval("r = \"aaa\".count(\"aa\")\n")), 1);
+    assert_eq!(int(&eval("r = \"abc\".count(\"\")\n")), 4);
+    assert!(eval("r = \"123\".is_digit()\n").truthy());
+    assert!(!eval("r = \"12a\".is_digit()\n").truthy());
+    assert!(eval("r = \"caf\u{e9}\".is_alpha()\n").truthy());
+    assert!(eval("r = \"a1\".is_alnum()\n").truthy());
+    assert!(eval("r = \" \\t\\n\".is_space()\n").truthy());
+    for m in ["is_digit", "is_alpha", "is_alnum", "is_space"] {
+        assert!(!eval(&format!("r = \"\".{m}()\n")).truthy(), "empty {m}");
+        assert!(!eval(&format!("r = b\"\".{m}()\n")).truthy(), "empty bytes {m}");
+    }
+}
+
+/// A removed method names its replacement. Answering "no such attribute" would
+/// leave the reader to guess whether it moved or never existed.
+#[test]
+fn removed_string_methods_name_their_replacement() {
+    let cases = [
+        ("\"x\".lstrip()", "strip(side=\"left\")"),
+        ("\"x\".rstrip()", "strip(side=\"right\")"),
+        ("\"x\".rsplit(\",\")", "split(sep, maxsplit)"),
+        ("\"x\".rfind(\"a\")", "find(sub, reverse=true)"),
+        ("\"x\".zfill(3)", "f\"{n:05d}\""),
+        ("\"x\".index(\"a\")", "find(sub)"),
+        ("b\"x\".lstrip()", "strip(side=\"left\")"),
+        ("b\"x\".zfill(3)", "f\"{n:05d}\""),
+        ("\"x\".removeprefix(\"a\")", "`rm_prefix`"),
+        ("\"x\".removesuffix(\"a\")", "`rm_suffix`"),
+        ("\"x\".isdigit()", "`is_digit`"),
+        ("\"x\".isspace()", "`is_space`"),
+    ];
+    for (src, want) in cases {
+        let e = run_err(&format!("r = {src}\n"));
+        assert!(e.message.contains("AttributeError"), "{src}: {}", e.message);
+        assert!(e.message.contains(want), "{src} should name {want}, got: {}", e.message);
+    }
+}
+
+/// Only `strip` and `find` take a keyword, and only their own.
+#[test]
+fn other_methods_refuse_keywords() {
+    let e = run_err("r = \"x\".upper(side=\"left\")\n");
+    assert!(e.message.contains("takes no keyword arguments"), "got: {}", e.message);
+    let e = run_err("r = \"x\".strip(bogus=1)\n");
+    assert!(e.message.contains("unexpected keyword argument 'bogus'"), "got: {}", e.message);
+    let e = run_err("r = \"x\".find(\"x\", bogus=1)\n");
+    assert!(e.message.contains("unexpected keyword argument 'bogus'"), "got: {}", e.message);
 }
 
 /// The two conversions at the wire/program boundary. `to_bytes` cannot fail

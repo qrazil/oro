@@ -1568,10 +1568,8 @@ impl Vm {
                     {
                         return Ok(step);
                     }
-                    if !kwargs.is_empty() {
-                        return Err(self.err("methods take no keyword arguments in this build"));
-                    }
-                    let r = self.wrap(crate::builtins::call_method(&m.receiver, name, args))?;
+                    let r =
+                        self.wrap(crate::builtins::call_method(&m.receiver, name, args, kwargs))?;
                     self.push(r);
                     Ok(Step::Next)
                 }
@@ -1933,7 +1931,7 @@ impl Vm {
                 Value::Method(m) => {
                     let r = match &m.kind {
                         MethodKind::Native(name) => {
-                            self.wrap(crate::builtins::call_method(&m.receiver, name, call_args))?
+                            self.wrap(crate::builtins::call_method(&m.receiver, name, call_args, Vec::new()))?
                         }
                         MethodKind::User { func, defclass } => {
                             if self.task.frames.len() >= MAX_FRAMES {
@@ -2381,7 +2379,7 @@ impl Vm {
                 Value::Method(m) => {
                     let key = match &m.kind {
                         MethodKind::Native(name) => self
-                            .wrap(crate::builtins::call_method(&m.receiver, name, vec![item]))?,
+                            .wrap(crate::builtins::call_method(&m.receiver, name, vec![item], Vec::new()))?,
                         _ => return Err(self.err("sort key must be a plain function")),
                     };
                     self.task.sort_jobs.last_mut().unwrap().keys.push(key);
@@ -3715,6 +3713,8 @@ fn get_attr(obj: &Value, name: &str) -> Result<Value, String> {
                     receiver: obj.clone(),
                     kind: MethodKind::Native(Rc::from(name)),
                 })))
+            } else if let Some(msg) = crate::builtins::cut_method_message(obj, name) {
+                Err(msg.to_string())
             } else {
                 Err(format!("'{}' object has no attribute '{}'", obj.type_name(), name))
             }
@@ -3875,7 +3875,12 @@ fn classify_error(msg: &str) -> &'static str {
         "KeyError"
     } else if m.contains("is not defined") {
         "NameError"
-    } else if m.contains("has no attribute") {
+    } else if m.contains("has no attribute")
+        // A removed method: the message names the replacement, but it is still
+        // an attribute that is not there, and still catchable as one.
+        || m.contains("is not in Oro —")
+        || m.contains("is spelled")
+    {
         "AttributeError"
     } else if m.contains("arg not in range")
         || m.contains("values to unpack")
@@ -3897,6 +3902,9 @@ fn classify_error(msg: &str) -> &'static str {
         || m.contains("found no delimiter")
         || m.contains("on a closed ")
         || m.contains("on a stream open for")
+        // `strip(side="middle")`. The quote is what separates it from
+        // `side must be str`, which is a TypeError like every other bad type.
+        || m.contains("side must be \"")
     {
         "ValueError"
     } else if m.contains("expected a character")
@@ -3916,6 +3924,7 @@ fn classify_error(msg: &str) -> &'static str {
         || m.contains("takes")
         || m.contains("missing a required argument")
         || m.contains("object is not")
+        || m.contains("unexpected keyword argument")
     {
         "TypeError"
     } else {

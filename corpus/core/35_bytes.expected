@@ -24,11 +24,10 @@ empty bytes are falsy
 a zero octet is still one octet
 <class 'bytes'> True False False
 b'Content-Type: text/html'
-b'Content-Type: text/html \t\n' b'  Content-Type: text/html'
 b'ab'
 b'CONTENT-TYPE: TEXT/HTML' b'content-type: text/html'
 b'abc\xff' b'ABC\xff'
-[b'a', b'b', b'', b'c'] [b'a', b'b,c'] [b'a,b', b'c']
+[b'a', b'b', b'', b'c'] [b'a', b'b,c']
 [b'a', b'b', b'c', b'd'] [b'a', b'b c ']
 [b''] [b'x']
 b'a,b,c' b'ab' b''
@@ -36,7 +35,7 @@ b'a,b,c' b'ab' b''
 b'a-b-c' b'.a.b.c.' b'abc'
 True False True
 True False True
-b'007' b'-007' b'+007' b'abcd'
+2 4 0
 ff0041 
 True b'Host' b'example.com'
 b'GET' 3

@@ -1,0 +1,156 @@
+--- strip(side=...)
+'  hi  ' ['hi', 'hi  ', '  hi', 'hi']
+'xxhixx' ['xxhixx', 'xxhixx', 'xxhixx', 'xxhixx']
+'xyxhixyx' ['xyxhixyx', 'xyxhixyx', 'xyxhixyx', 'xyxhixyx']
+'' ['', '', '', '']
+'xxx' ['xxx', 'xxx', 'xxx', 'xxx']
+'\thi\n ' ['hi', 'hi\n ', '\thi', 'hi']
+'ααhiα' ['ααhiα', 'ααhiα', 'ααhiα', 'ααhiα']
+--- strip(chars, side=...)
+'  hi  ' 'x'   hi     hi     hi  
+'  hi  ' 'xy'   hi     hi     hi  
+'  hi  ' ''   hi     hi     hi  
+'  hi  ' 'α'   hi     hi     hi  
+'  hi  ' 'abc'   hi     hi     hi  
+'  hi  ' None hi hi     hi
+'xxhixx' 'x' hi hixx xxhi
+'xxhixx' 'xy' hi hixx xxhi
+'xxhixx' '' xxhixx xxhixx xxhixx
+'xxhixx' 'α' xxhixx xxhixx xxhixx
+'xxhixx' 'abc' xxhixx xxhixx xxhixx
+'xxhixx' None xxhixx xxhixx xxhixx
+'xyxhixyx' 'x' yxhixy yxhixyx xyxhixy
+'xyxhixyx' 'xy' hi hixyx xyxhi
+'xyxhixyx' '' xyxhixyx xyxhixyx xyxhixyx
+'xyxhixyx' 'α' xyxhixyx xyxhixyx xyxhixyx
+'xyxhixyx' 'abc' xyxhixyx xyxhixyx xyxhixyx
+'xyxhixyx' None xyxhixyx xyxhixyx xyxhixyx
+'' 'x'   
+'' 'xy'   
+'' ''   
+'' 'α'   
+'' 'abc'   
+'' None   
+'xxx' 'x'   
+'xxx' 'xy'   
+'xxx' '' xxx xxx xxx
+'xxx' 'α' xxx xxx xxx
+'xxx' 'abc' xxx xxx xxx
+'xxx' None xxx xxx xxx
+'\thi\n ' 'x' 	hi
+  	hi
+  	hi
+ 
+'\thi\n ' 'xy' 	hi
+  	hi
+  	hi
+ 
+'\thi\n ' '' 	hi
+  	hi
+  	hi
+ 
+'\thi\n ' 'α' 	hi
+  	hi
+  	hi
+ 
+'\thi\n ' 'abc' 	hi
+  	hi
+  	hi
+ 
+'\thi\n ' None hi hi
+  	hi
+'ααhiα' 'x' ααhiα ααhiα ααhiα
+'ααhiα' 'xy' ααhiα ααhiα ααhiα
+'ααhiα' '' ααhiα ααhiα ααhiα
+'ααhiα' 'α' hi hiα ααhi
+'ααhiα' 'abc' ααhiα ααhiα ααhiα
+'ααhiα' None ααhiα ααhiα ααhiα
+--- bytes.strip(side=...)
+b'hi' b'hi  ' b'  hi'
+b'  hi  ' b'  hi  ' b'  hi  '
+b'aabaa' b'aabaa' b'aabaa'
+b'b' b'baa' b'aab'
+b'' b'' b''
+b'' b'' b''
+b'\x00a\xff' b'\x00a\xff' b'\x00a\xff'
+b'\x00a\xff' b'\x00a\xff' b'\x00a\xff'
+--- find(sub, reverse=True)
+'abcabc' 'b' [1, 4, 4, 4, 4, -1, 1, 4]
+'abcabc' '' [0, 6, 6, 6, 6, 0, 3, 6]
+'abcabc' 'abc' [0, 3, 3, 3, -1, -1, 0, 3]
+'abcabc' 'é' [-1, -1, -1, -1, -1, -1, -1, -1]
+'abcabc' 'zz' [-1, -1, -1, -1, -1, -1, -1, -1]
+'abc' 'b' [1, 1, 1, 1, 1, -1, 1, 1]
+'abc' '' [0, 3, 3, 3, 3, 0, 3, 3]
+'abc' 'abc' [0, 0, 0, -1, -1, -1, 0, 0]
+'abc' 'é' [-1, -1, -1, -1, -1, -1, -1, -1]
+'abc' 'zz' [-1, -1, -1, -1, -1, -1, -1, -1]
+'' 'b' [-1, -1, -1, -1, -1, -1, -1, -1]
+'' '' [0, 0, 0, -1, 0, 0, 0, 0]
+'' 'abc' [-1, -1, -1, -1, -1, -1, -1, -1]
+'' 'é' [-1, -1, -1, -1, -1, -1, -1, -1]
+'' 'zz' [-1, -1, -1, -1, -1, -1, -1, -1]
+'haééha' 'b' [-1, -1, -1, -1, -1, -1, -1, -1]
+'haééha' '' [0, 6, 6, 6, 6, 0, 3, 6]
+'haééha' 'abc' [-1, -1, -1, -1, -1, -1, -1, -1]
+'haééha' 'é' [2, 3, 3, 3, -1, -1, 2, 3]
+'haééha' 'zz' [-1, -1, -1, -1, -1, -1, -1, -1]
+--- bytes find, reversed
+1 4 4
+0 6 6
+0 3 3
+-1 -1 -1
+1 1 1
+0 3 3
+0 0 -1
+-1 -1 -1
+-1 -1 -1
+0 0 -1
+-1 -1 -1
+-1 -1 -1
+-1 -1 -1
+0 3 3
+-1 -1 -1
+2 2 2
+--- rm_prefix / rm_suffix
+'ping.png' 'pi' 'ping'
+'ping.png' 'g.png' 'g.png'
+'banana.png' 'banana' 'banana'
+'banana.png' 'banana.png' 'banana.png'
+'png' '' 'png'
+'png' 'g' 'png'
+'' '' ''
+'' '' ''
+'x.png.png' 'x' 'x.png'
+'x.png.png' 'x.png.png' 'x.png.png'
+'abc' 'abc'
+b'a' b'a.png' b'png'
+--- count(sub)
+'abcabc' [2, 7, 2, 0, 0]
+'abc' [1, 4, 1, 0, 0]
+'' [0, 1, 0, 0, 0]
+'haééha' [0, 7, 0, 2, 0]
+[2, 7, 2, 0]
+[1, 4, 1, 0]
+[0, 1, 0, 0]
+[0, 4, 0, 1]
+--- is_digit / is_alpha / is_alnum / is_space
+'123' True False True False
+'12a' False False True False
+'abc' False True True False
+'café' False True True False
+'a1' False False True False
+'' False False False False
+' ' False False False True
+' \t\n' False False False True
+'\x1c' False False False True
+'３' True False True False
+'ｄ' False True True False
+b'123' True False True False
+b'12a' False False True False
+b'abc' False True True False
+b'a1' False False True False
+b'' False False False False
+b' ' False False False True
+b' \t\x0b' False False False True
+b'\xff' False False False False

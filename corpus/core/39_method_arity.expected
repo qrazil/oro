@@ -2,10 +2,6 @@
 "abc".upper(1, 2, 3) -> TypeError
 "abc".lower(1) -> TypeError
 "abc".strip("x", "y") -> TypeError
-"abc".lstrip("x", "y") -> TypeError
-"abc".rstrip("x", "y") -> TypeError
-"abc".zfill() -> TypeError
-"abc".zfill(5, 5) -> TypeError
 "abc".find() -> TypeError
 "abc".find("a", 1, 2, 3) -> TypeError
 "abc".find(1) -> TypeError
@@ -18,14 +14,14 @@
 "abc".endswith() -> TypeError
 "abc".endswith("a", 0, 1, 2) -> TypeError
 "a b".split("b", 1, 2) -> TypeError
-"a b".rsplit("b", 1, 2) -> TypeError
+"abc".count() -> TypeError
+"abc".count("a", "b") -> TypeError
+b"abc".count() -> TypeError
 "-".join(["a"], 2) -> TypeError
 "-".join() -> TypeError
 b"abc".upper(1) -> TypeError
 b"abc".lower(1) -> TypeError
 b"abc".strip(b"x", b"y") -> TypeError
-b"abc".zfill() -> TypeError
-b"abc".zfill(5, 5) -> TypeError
 b"abc".find() -> TypeError
 b"abc".find(b"a", 1, 2, 3) -> TypeError
 b"abc".replace(b"a") -> TypeError

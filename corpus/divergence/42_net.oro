@@ -20,7 +20,7 @@ import io
 # --- A listener, and the port the kernel picked -----------------------------
 ln = net.listen("127.0.0.1:0")
 addr = ln.local
-print(type(ln), addr.startswith("127.0.0.1:"), addr.rsplit(":", 1)[1] != "0")
+print(type(ln), addr.startswith("127.0.0.1:"), addr[addr.find(":", reverse=True) + 1:] != "0")
 
 # `dial` completes into the listen backlog, so it returns before anything has
 # accepted it — which is why this whole file works on one thread, with no
@@ -30,8 +30,8 @@ srv = ln.accept()
 print(type(conn), type(srv))
 conn.set_timeout(5)
 srv.set_timeout(5)
-# Addresses are strings, not an `Address` type: `addr.rsplit(":", 1)` is the
-# parsing, with methods that already exist.
+# Addresses are strings, not an `Address` type: `addr.find(":", reverse=True)`
+# is the parsing, with methods that already exist.
 print(conn.peer == addr, srv.local == addr, srv.peer == conn.local)
 
 # --- The io protocol, with no special-casing --------------------------------

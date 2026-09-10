@@ -1,0 +1,81 @@
+# The string surface Oro spells differently from CPython. Every answer here is
+# still CPython's answer — the *names* diverge, not the semantics — so this file
+# has a twin (51_string_surface.twin.py) written in CPython's spellings, and the
+# .expected below is that twin's output:
+#
+#   python3 corpus/divergence/51_string_surface.twin.py | diff - corpus/divergence/51_string_surface.expected
+#
+#   s.strip(side="left")     -> s.lstrip()
+#   s.strip(side="right")    -> s.rstrip()
+#   s.find(sub, reverse=True) -> s.rfind(sub)
+#   s.rm_prefix(p)           -> s.removeprefix(p)
+#   s.rm_suffix(p)           -> s.removesuffix(p)
+#   s.is_digit() ...         -> s.isdigit() ...
+#
+# The four `is_*` predicates are supersets of CPython's on non-ASCII (combining
+# marks and non-decimal numerals); 52_removed_string_methods.oro shows one, and
+# every case here is one the two agree on.
+
+STRS = ["  hi  ", "xxhixx", "xyxhixyx", "", "xxx", "\thi\n ", "ααhiα"]
+CUTS = ["x", "xy", "", "α", "abc", None]
+
+print("--- strip(side=...)")
+for s in STRS:
+    print(repr(s), [s.strip(), s.strip(side="left"), s.strip(side="right"), s.strip(side="both")])
+
+print("--- strip(chars, side=...)")
+for s in STRS:
+    for c in CUTS:
+        print(repr(s), repr(c), s.strip(c), s.strip(c, side="left"), s.strip(c, side="right"))
+
+print("--- bytes.strip(side=...)")
+for b in [b"  hi  ", b"aabaa", b"", b"\x00a\xff"]:
+    print(b.strip(), b.strip(side="left"), b.strip(side="right"))
+    print(b.strip(b"a"), b.strip(b"a", side="left"), b.strip(b"a", side="right"))
+
+# `find(sub, reverse=True)` replaces `rfind` — one name, one keyword, and the
+# same positional window from either end.
+print("--- find(sub, reverse=True)")
+FIND = ["abcabc", "abc", "", "haééha"]
+SUBS = ["b", "", "abc", "é", "zz"]
+for s in FIND:
+    for sub in SUBS:
+        row = [s.find(sub), s.find(sub, reverse=True)]
+        for start in [0, 1, -2]:
+            row.append(s.find(sub, start, reverse=True))
+        for end in [0, 3, 99]:
+            row.append(s.find(sub, 0, end, reverse=True))
+        print(repr(s), repr(sub), row)
+
+print("--- bytes find, reversed")
+for b in [b"abcabc", b"abc", b"", b"\x00a\xff"]:
+    for sub in [b"b", b"", b"abc", b"\xff"]:
+        print(b.find(sub), b.find(sub, reverse=True), b.find(sub, 1, reverse=True))
+
+# The reason these two exist: `strip(chars)` is a character *set*, and reading
+# it as a suffix is the classic Python footgun. Both spellings are printed side
+# by side so the difference is impossible to miss.
+print("--- rm_prefix / rm_suffix")
+for s in ["ping.png", "banana.png", "png", "", "x.png.png"]:
+    print(repr(s), repr(s.strip(".png", side="right")), repr(s.rm_suffix(".png")))
+    print(repr(s), repr(s.strip("pin", side="left")), repr(s.rm_prefix("pin")))
+print(repr("abc".rm_prefix("")), repr("abc".rm_suffix("")))
+print(b"a.png".rm_suffix(b".png"), b"a.png".rm_suffix(b".gif"), b"a.png".rm_prefix(b"a."))
+
+print("--- count(sub)")
+for s in FIND:
+    row = []
+    for sub in SUBS:
+        row.append(s.count(sub))
+    print(repr(s), row)
+for b in [b"abcabc", b"abc", b"", b"\x00a\xff"]:
+    row = []
+    for sub in [b"b", b"", b"abc", b"\xff"]:
+        row.append(b.count(sub))
+    print(row)
+
+print("--- is_digit / is_alpha / is_alnum / is_space")
+for s in ["123", "12a", "abc", "café", "a1", "", " ", " \t\n", "\x1c", "３", "ｄ"]:
+    print(repr(s), s.is_digit(), s.is_alpha(), s.is_alnum(), s.is_space())
+for b in [b"123", b"12a", b"abc", b"a1", b"", b" ", b" \t\x0b", b"\xff"]:
+    print(b, b.is_digit(), b.is_alpha(), b.is_alnum(), b.is_space())

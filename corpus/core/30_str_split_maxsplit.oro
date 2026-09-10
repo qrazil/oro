@@ -1,13 +1,16 @@
-# str.split/rsplit honour maxsplit; zfill pads (keeping any sign in front).
+# str.split honours maxsplit. There is no `rsplit`: `split(sep, maxsplit)` is
+# the one splitter, and a format spec is the one way to pad (there is no
+# `zfill` either — see the last three lines).
 print("a=b=c".split("=", 1))
-print("a=b=c".rsplit("=", 1))
 print("a=b=c".split("="))
-print("a=b=c".rsplit("="))
 print("a b c".split(" ", 2))
 print("x:y".split(":", 0))
-print("x:y".rsplit(":", 0))
 print(" a  b  c ".split(None, 1))
-print(" a  b  c ".rsplit(None, 1))
 print(" a  b  c ".split(None))
 print("one".split(",", 5))
-print("7".zfill(3), "-7".zfill(4), "+7".zfill(4), "12345".zfill(3), "".zfill(2))
+# What `zfill` used to spell. `{:05d}` pads a number, `{:0>5}` pads a string,
+# and `{:0>{w}}` takes the width at run time — none of which `zfill` could do.
+print(f"{7:03d}", f"{-7:04d}", f"{12345:03d}")
+print(f"{'7':0>3}", f"{'-7':0>4}", f"{'':0>2}")
+W = 6
+print(f"{'42':0>{W}}", f"{42:0{W}d}")

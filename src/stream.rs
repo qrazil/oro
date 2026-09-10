@@ -279,7 +279,8 @@ impl OroStream {
     ///
     /// These are plain strings, not an `Address` type: `"127.0.0.1:8080"`, with
     /// Go's bracket form for IPv6 (`"[::1]:8080"`). A type would buy parsing
-    /// that is rarely wanted, and `addr.rsplit(":", 1)` covers it when it is.
+    /// that is rarely wanted, and `addr.find(":", reverse=true)` covers it when
+    /// it is.
     pub fn addr_attr(&self, name: &str) -> VResult<String> {
         match (&self.kind, name) {
             (StreamKind::TcpStream { peer, .. }, "peer") => Ok(peer.clone()),

@@ -187,7 +187,7 @@ per index on an interpreter that is already 1.7×–5.7× slower than CPython.
 ```
 b.find(sub)              -> int, -1 if absent
 b.split(sep, maxsplit=?) -> list of bytes
-b.strip() .lstrip() .rstrip()   -> bytes   (ASCII whitespace only)
+b.strip(side=...)               -> bytes   (ASCII whitespace only)
 b.startswith(p) .endswith(s)    -> bool
 b.replace(old, new)             -> bytes
 b.to_str()                      -> str     (UTF-8 decode, strict)
@@ -671,11 +671,11 @@ Writing everything is already guaranteed by the protocol.
 **`io.lines` — cut.** It is a compose of primitives that already exist:
 
 ```python
-lines = io.read(f).to_str().rstrip("\n").split("\n")
+lines = io.read(f).to_str().strip("\n", side="right").split("\n")
 ```
 
 The trailing-empty papercut is real (`"a\nb\n".split("\n")` is
-`['a', 'b', '']`, which is why the `rstrip` is there) — and it is
+`['a', 'b', '']`, which is why the right-hand `strip` is there) — and it is
 CPython-identical, so the oracle covers it, which is the strongest thing that
 can be said for any behaviour in this language. Oro has no `splitlines`, and
 this is not the moment to add one: it would arrive owing an answer about `\r\n`,
@@ -783,7 +783,7 @@ consequence, and the migration note should carry all of them at once.
 
 - **`File.readline`, `File.readlines`, and line iteration over a file.** All
   three are the text file object, which no longer exists. The replacement is
-  `io.read(f).to_str().rstrip("\n").split("\n")`, per `io.lines` above.
+  `io.read(f).to_str().strip("\n", side="right").split("\n")`, per `io.lines` above.
   `corpus/core/22_files.oro` is rewritten in byte mode, and moves to
   `corpus/divergence/` with it (§2).
 - **`sys.stdout` / `sys.stderr` / `sys.stdin` as string placeholders.** They
@@ -1346,7 +1346,7 @@ is the spelling it will arrive under, not a flag that exists today.
 
 **Addresses are strings.** `"host:port"`, with Go's bracket form for IPv6
 (`"[::1]:8080"`). No `Address` type. A type would buy parsing that is rarely
-needed, and when it is, `addr.rsplit(":", 1)` covers it with methods that already
+needed, and when it is, `addr.find(":", reverse=true)` covers it with methods that already
 exist. Go made this call and it has aged well.
 
 **A `TcpStream` *is* a Reader and a Writer**, with exactly the §2 semantics:

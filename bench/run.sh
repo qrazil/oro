@@ -44,6 +44,7 @@ BENCHES=(
   "fib"
   "loop"
   "strjoin"
+  "strops"
   "dictops"
   "oo"
   "genpipe"

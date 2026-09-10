@@ -158,8 +158,24 @@ Implemented and working today:
   `enumerate` and `zip` return lists rather than lazy iterators — the same eager
   choice `dict.keys()` already makes. Type names (`str`, `int`, `list`, …) are
   deliberately *not* callable; see the `to_` casts below.
-- **Methods:** the common `str`/`bytes`/`list`/`dict` methods, the `to_`
+- **Methods:** the `str`/`bytes` surface — sixteen names, the same sixteen on
+  both types (`bytes` adds `hex`) — plus the `list`/`dict` methods, the `to_`
   conversions on every value, and the collection protocol below.
+
+  `strip` `split` `find` `count` `startswith` `endswith` `rm_prefix`
+  `rm_suffix` `upper` `lower` `join` `replace` `is_digit` `is_alpha`
+  `is_alnum` `is_space`
+
+  Two of them take a keyword, and only their own. `strip(chars=None,
+  side="both")` takes `side="left"` / `"right"` — which is why there is no
+  `lstrip`/`rstrip` — and `chars` is a character *set*, CPython's cutset
+  semantics unchanged. `find(sub, start, end, reverse=false)` takes
+  `reverse=true` for the last occurrence, spelled the way `sorted(reverse=…)`
+  already is, which is why there is no `rfind`. `rm_prefix`/`rm_suffix` remove
+  a *literal* affix and exist precisely because `strip(chars)` gets mistaken
+  for one: `"ping.png".strip(".png", side="right")` is `"pi"`, and
+  `"ping.png".rm_suffix(".png")` is what was meant. The four `is_*` predicates
+  are whole-sequence and answer `false` for an empty sequence, as CPython's do.
 - **The collection protocol**, on lists, tuples, dicts, ranges and generators.
   Chains replaced comprehensions; this is what lets them replace *loops* too.
 
@@ -271,6 +287,30 @@ Each of these is omitted on purpose. The reason matters more than the list.
   new types. The one case that genuinely needs a mutable window is a buffered
   reader, which belongs in Rust and never shows Oro code its buffer.
 
+- **No `lstrip`/`rstrip`, no `rfind`, no `index`, no `rsplit`, no `zfill`.**
+  Five names removed from the string surface, each because one name already
+  covers it.
+
+  `lstrip`/`rstrip` are `strip(side="left"/"right")`: three methods for one
+  operation, distinguished by a letter, is exactly the accretion the thesis
+  rejects — and the letter is the least readable part of the call. `rfind` is
+  `find(sub, reverse=true)`, for the same reason and with the keyword Oro
+  already uses for direction in `sorted`. `index` is `find` that raises instead
+  of answering `-1`; two spellings of one search, and the one that raises makes
+  every caller choose between a `try` and a method they did not need.
+
+  `rsplit` is not a variant of `split` — it is a different *answer* (`"a=b=c"`
+  split once from the right is `["a=b", "c"]`, from the left `["a", "b=c"]`),
+  and the case that wants it is almost always "split off the last field", which
+  `find(sep, reverse=true)` says outright. `zfill` is fully redundant with the
+  format mini-language: `f"{42:05d}"`, `f"{'42':0>5}"`, and `f"{s:0>{w}}"` for
+  a width computed at run time — which `zfill` cannot express any more briefly
+  and cannot generalise to any other pad character.
+
+  All five raise, naming the replacement. So do CPython's `removeprefix`,
+  `removesuffix`, `isdigit`, `isalpha`, `isalnum` and `isspace`, which exist
+  here under Oro's own names (`rm_prefix`, `rm_suffix`, `is_digit`, …).
+
 - **No `re.match`.** It anchors at the start of the string — almost always not
   what people mean, and endlessly confused with `re.search`. Use `re.search`, or
   a leading `^` to anchor on purpose.
@@ -376,7 +416,7 @@ stated rather than discovered:
   ```python
   f = open(path, "r")
   s = io.read(f).to_str()                              # a whole file, as text
-  lines = io.read(f).to_str().rstrip("\n").split("\n")  # …and its lines
+  lines = io.read(f).to_str().strip("\n", side="right").split("\n")  # …its lines
   ```
 
 - **`read(n)` may return fewer than `n` bytes without being at EOF**, because
@@ -545,7 +585,7 @@ growth path for the standard library, not a temporary arrangement.
 
   **Addresses are strings**, `"host:port"`, with Go's bracket form for IPv6
   (`"[::1]:8080"`). There is no `Address` type: it would buy parsing that is
-  rarely wanted, and `addr.rsplit(":", 1)` covers it when it is. A listener has
+  rarely wanted, and `addr.find(":", reverse=true)` covers it when it is. A listener has
   `accept()`, `close()` and `local`, and deliberately no `read` — it is not a
   stream of bytes, so it does not pretend to be one.
 
@@ -642,7 +682,7 @@ different.
 |---|---|---|
 | `open(p, "r").read()` | `io.read(open(p, "r"))` | `open` returns bytes in every mode; a whole-stream read is a free function |
 | `open(p, "rb")` | `open(p, "r")` | With text mode gone, the `b` contrasts with nothing |
-| `f.readline()` / `f.readlines()` / `for line in f` | `io.read(f).to_str().rstrip("\n").split("\n")` | There is no text stream type and no line iterator |
+| `f.readline()` / `f.readlines()` / `for line in f` | `io.read(f).to_str().strip("\n", side="right").split("\n")` | There is no text stream type and no line iterator |
 | `f.write("text")` | `f.write("text".to_bytes())` | Streams take bytes, in both directions, everywhere |
 | `f.flush()` | *(nothing)* | Writers are unbuffered, so there is nothing pending |
 | `sys.stdout` as a name | `sys.stdout.write(b"…")` | It is a real stream on fd 1 now |
@@ -654,6 +694,13 @@ different.
 | `list(xs)`, `dict(pairs)` | `xs.to_list()`, `pairs.to_dict()` | as above |
 | `list()`, `dict()`, `str()`, `int()` | `[]`, `{}`, `""`, `0` | Literals build; type names are not callable |
 | `lambda x: x * 2` | `x => x * 2` | Shorter, and the point of a lambda is brevity |
+| `s.lstrip(…)` / `s.rstrip(…)` | `s.strip(…, side="left")` / `side="right"` | One strip with a named end, not three methods |
+| `s.rfind(sub)` | `s.find(sub, reverse=true)` | One find with a named direction; `reverse=` as in `sorted` |
+| `s.index(sub)` | `s.find(sub)` | Two spellings of one search, one of which raises; `-1` is the answer |
+| `s.rsplit(sep, n)` | `s.split(sep, n)`, or `s.find(sep, reverse=true)` | Splitting from the right is a different *answer*, not a different need |
+| `s.zfill(n)` | `f"{n:05d}"`, `f"{s:0>5}"`, `f"{s:0>{w}}"` | Fully covered by the format spec, which also pads with anything else |
+| `s.removeprefix(p)` / `s.removesuffix(p)` | `s.rm_prefix(p)` / `s.rm_suffix(p)` | Same method, shorter name |
+| `s.isdigit()` / `isalpha()` / `isalnum()` / `isspace()` | `s.is_digit()` / `is_alpha()` / `is_alnum()` / `is_space()` | Same predicates, in the language's own naming |
 
 `f"{x}"` is unchanged and is usually the better replacement for `str(x)` in
 string building — it also still runs under CPython, which keeps those programs
@@ -752,7 +799,11 @@ has already bitten once (a baseline was first captured showing a
 consequences follow: keep as much as possible in `core/` where CPython still
 checks it — when a test only needs a cast, split the file rather than moving the
 whole thing — and read every divergence baseline as if reviewing a diff, because
-that review is the only thing standing behind it. `corpus/known-failing/` is the opposite — it
+that review is the only thing standing behind it. Where a program diverges only
+in *spelling* — `strip(side="left")` for `lstrip`, `find(sub, reverse=true)` for
+`rfind` — it carries a `.twin.py`: the same program in CPython's names, whose
+output *is* the `.expected`. That puts the oracle back behind a file CPython
+cannot run, and the twin is the review. `corpus/known-failing/` is the opposite — it
 holds programs that are *correct Python which Oro currently gets wrong* and that
 we intend to fix. `run.sh` reports its count separately and never fails the build
 on it, so those bugs stay **visible** instead of being quietly omitted; when a

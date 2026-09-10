@@ -647,6 +647,60 @@ pub fn is_collection(v: &Value) -> bool {
     )
 }
 
+/// The sixteen names on `str` — and, plus `hex`, on `bytes`. One list, so the
+/// two types can never drift apart.
+pub fn is_str_method(name: &str) -> bool {
+    matches!(
+        name,
+        "strip"
+            | "split"
+            | "find"
+            | "count"
+            | "startswith"
+            | "endswith"
+            | "rm_prefix"
+            | "rm_suffix"
+            | "upper"
+            | "lower"
+            | "join"
+            | "replace"
+            | "is_digit"
+            | "is_alpha"
+            | "is_alnum"
+            | "is_space"
+    )
+}
+
+/// A `str`/`bytes` method that used to exist and no longer does. Removals name
+/// their replacement — silently answering "no such attribute" would leave the
+/// reader to guess what happened to it.
+pub fn cut_method_message(recv: &Value, name: &str) -> Option<&'static str> {
+    if !matches!(recv, Value::Str(_) | Value::Bytes(_)) {
+        return None;
+    }
+    Some(match name {
+        "lstrip" => "`lstrip` is not in Oro — use `strip(side=\"left\")`",
+        "rstrip" => "`rstrip` is not in Oro — use `strip(side=\"right\")`",
+        "rsplit" => {
+            "`rsplit` is not in Oro — use `split(sep, maxsplit)`, or \
+             `find(sub, reverse=true)` to locate the last separator yourself"
+        }
+        "rfind" => "`rfind` is not in Oro — use `find(sub, reverse=true)`",
+        "index" => "`index` is not in Oro — use `find(sub)`, which answers -1 rather than raising",
+        "zfill" => {
+            "`zfill` is not in Oro — a format spec pads: f\"{n:05d}\", f\"{s:0>5}\", \
+             or f\"{s:0>{width}}\" for a width computed at run time"
+        }
+        "removeprefix" => "`removeprefix` is spelled `rm_prefix` in Oro",
+        "removesuffix" => "`removesuffix` is spelled `rm_suffix` in Oro",
+        "isdigit" => "`isdigit` is spelled `is_digit` in Oro",
+        "isalpha" => "`isalpha` is spelled `is_alpha` in Oro",
+        "isalnum" => "`isalnum` is spelled `is_alnum` in Oro",
+        "isspace" => "`isspace` is spelled `is_space` in Oro",
+        _ => return None,
+    })
+}
+
 pub fn method_exists(recv: &Value, name: &str) -> bool {
     if is_cast_method(name) {
         return true;
@@ -658,19 +712,10 @@ pub fn method_exists(recv: &Value, name: &str) -> bool {
         return true;
     }
     match recv {
-        Value::Str(_) => matches!(
-            name,
-            "split" | "rsplit" | "join" | "strip" | "lstrip" | "rstrip" | "upper"
-                | "lower" | "replace" | "startswith" | "endswith" | "find" | "zfill"
-        ),
-        // The same names `str` carries — every one of them exists on CPython's
-        // `bytes` with the same meaning — plus `hex`, which only bytes needs.
-        Value::Bytes(_) => matches!(
-            name,
-            "split" | "rsplit" | "join" | "strip" | "lstrip" | "rstrip" | "upper"
-                | "lower" | "replace" | "startswith" | "endswith" | "find" | "zfill"
-                | "hex"
-        ),
+        Value::Str(_) => is_str_method(name),
+        // The same sixteen names `str` carries, plus `hex`, which only bytes
+        // needs.
+        Value::Bytes(_) => is_str_method(name) || name == "hex",
         Value::List(_) => {
             matches!(name, "append" | "pop" | "extend" | "sort" | "reverse" | "map" | "filter")
         }
@@ -714,13 +759,28 @@ pub fn method_exists(recv: &Value, name: &str) -> bool {
     }
 }
 
+/// The only native methods that take a keyword: `strip(side=…)` and
+/// `find(…, reverse=…)`, on `str` and `bytes`. Everything else refuses one, so
+/// a misplaced keyword is an error rather than a silently discarded argument.
+fn takes_kwargs(recv: &Value, name: &str) -> bool {
+    matches!(recv, Value::Str(_) | Value::Bytes(_)) && matches!(name, "strip" | "find")
+}
+
 /// Dispatch a bound method call.
-pub fn call_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
+pub fn call_method(
+    recv: &Value,
+    name: &str,
+    args: Vec<Value>,
+    kwargs: Vec<(String, Value)>,
+) -> VResult<Value> {
+    if !kwargs.is_empty() && !takes_kwargs(recv, name) {
+        return Err(format!("{name}() takes no keyword arguments"));
+    }
     match recv {
         _ if is_cast_method(name) => cast_method(recv, name, args),
         _ if is_collection(recv) && is_seq_native(name) => seq_native_method(recv, name, args),
-        Value::Str(_) => str_method(recv, name, args),
-        Value::Bytes(b) => bytes_method(b, name, args),
+        Value::Str(_) => str_method(recv, name, args, &kwargs),
+        Value::Bytes(b) => bytes_method(b, name, args, &kwargs),
         Value::List(l) => list_method(l, name, args),
         Value::Dict(d) => dict_method(d, name, args),
         Value::Stream(s) => stream_method(s, name, args),
@@ -954,6 +1014,156 @@ fn str_find_in(os: &OroStr, needle: &str, start: usize, end: usize) -> i64 {
     }
 }
 
+/// `str.find(sub, ..., reverse=true)`, restricted to the character window
+/// `[start, end)`: the *last* occurrence, as a character index, or -1. The twin
+/// of [`str_find_in`], and the reason there is no `rfind`.
+fn str_rfind_in(os: &OroStr, needle: &str, start: usize, end: usize) -> i64 {
+    let (b0, b1) = char_window_bytes(os, start, end);
+    match os.s[b0..b1].rfind(needle) {
+        Some(off) if os.is_ascii => (b0 + off) as i64,
+        Some(off) => (start + os.s[b0..b0 + off].chars().count()) as i64,
+        None => -1,
+    }
+}
+
+/// Which end(s) `strip` removes from — the `side=` keyword, which is the whole
+/// reason `lstrip`/`rstrip` are gone.
+#[derive(Clone, Copy, PartialEq)]
+enum Side {
+    Both,
+    Left,
+    Right,
+}
+
+impl Side {
+    fn cuts_left(self) -> bool {
+        self != Side::Right
+    }
+    fn cuts_right(self) -> bool {
+        self != Side::Left
+    }
+}
+
+/// The one keyword `strip` takes. Keyword-only, and validated by name: a value
+/// outside the three is a `ValueError` that *names the three*, because a strip
+/// that silently did nothing is exactly the class of bug this language exists
+/// to refuse.
+fn strip_side(kwargs: &[(String, Value)]) -> VResult<Side> {
+    let mut side = Side::Both;
+    for (k, v) in kwargs {
+        if k != "side" {
+            return Err(format!("strip() got an unexpected keyword argument '{k}'"));
+        }
+        let Value::Str(s) = v else {
+            return Err(format!("strip(): side must be str, not '{}'", v.type_name()));
+        };
+        side = match &*s.s {
+            "both" => Side::Both,
+            "left" => Side::Left,
+            "right" => Side::Right,
+            other => {
+                return Err(format!(
+                    "strip(): side must be \"both\", \"left\" or \"right\", not {}",
+                    crate::value::repr_str(other)
+                ))
+            }
+        };
+    }
+    Ok(side)
+}
+
+/// `strip`'s trim, with the end(s) chosen by `side`.
+fn trim_with(s: &str, side: Side, hit: impl Fn(char) -> bool + Copy) -> &str {
+    let s = if side.cuts_left() { s.trim_start_matches(hit) } else { s };
+    if side.cuts_right() {
+        s.trim_end_matches(hit)
+    } else {
+        s
+    }
+}
+
+/// The one keyword `find` takes: `reverse=true` asks for the last occurrence
+/// rather than the first. Spelled the way `sorted(reverse=…)` already is.
+fn find_reverse(kwargs: &[(String, Value)]) -> VResult<bool> {
+    let mut reverse = false;
+    for (k, v) in kwargs {
+        if k != "reverse" {
+            return Err(format!("find() got an unexpected keyword argument '{k}'"));
+        }
+        reverse = v.truthy();
+    }
+    Ok(reverse)
+}
+
+/// Non-overlapping occurrences of `sub`, CPython's `count`: an empty needle
+/// sits between every pair of characters and at both ends, so it is found
+/// `len + 1` times.
+fn count_sub(hay: &str, sub: &str) -> i64 {
+    if sub.is_empty() {
+        return hay.chars().count() as i64 + 1;
+    }
+    hay.matches(sub).count() as i64
+}
+
+/// [`count_sub`] over octets.
+fn count_bytes(hay: &[u8], sub: &[u8]) -> i64 {
+    if sub.is_empty() {
+        return hay.len() as i64 + 1;
+    }
+    let (mut i, mut n) = (0usize, 0i64);
+    while i + sub.len() <= hay.len() {
+        if hay[i..i + sub.len()] == *sub {
+            n += 1;
+            i += sub.len();
+        } else {
+            i += 1;
+        }
+    }
+    n
+}
+
+/// The four `is_*` predicates, for `str`. Whole-sequence semantics, matching
+/// CPython's `isdigit`/`isalpha`/`isalnum`/`isspace` — including that the empty
+/// string is `false` for all four, which is the part people get wrong.
+///
+/// `is_space` is exact (see [`is_py_space`]). The other three read the Unicode
+/// properties Rust's standard library exposes — `Alphabetic` and `Numeric` —
+/// where CPython tests the stricter general categories `L` and `N`. Checked
+/// against CPython over every code point: they agree on all of ASCII, and on
+/// the letters and digits of every script; they differ on 12,194 code points,
+/// all of them combining marks (`Other_Alphabetic`), non-decimal numerals
+/// (`Ⅷ`, `½`), or characters newer than the host CPython's tables. Every one of
+/// those differences is in the same direction — Oro says `true` where CPython
+/// says `false`, never the reverse — because these are supersets, not a
+/// different answer. Closing the gap needs a Unicode general-category table,
+/// which is a dependency (or a copy of one that goes stale) for a case no
+/// scripting program has.
+fn str_is_class(s: &str, name: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    s.chars().all(|c| match name {
+        "is_digit" => c.is_numeric(),
+        "is_alpha" => c.is_alphabetic(),
+        "is_alnum" => c.is_alphanumeric(),
+        _ => is_py_space(c),
+    })
+}
+
+/// The same four for `bytes`, where an octet is not a character: ASCII only,
+/// which is exactly what CPython's `bytes.isdigit` and friends do.
+fn bytes_is_class(b: &[u8], name: &str) -> bool {
+    if b.is_empty() {
+        return false;
+    }
+    b.iter().all(|&x| match name {
+        "is_digit" => x.is_ascii_digit(),
+        "is_alpha" => x.is_ascii_alphabetic(),
+        "is_alnum" => x.is_ascii_alphanumeric(),
+        _ => is_bytes_space(x),
+    })
+}
+
 /// CPython's `tailmatch`, shared by `startswith` and `endswith` for both `str`
 /// and `bytes`: the window shrinks by the affix's length first, so a window too
 /// small to hold the affix fails *before* an empty affix is considered true.
@@ -974,22 +1184,15 @@ fn str_arg(args: &[Value], i: usize, who: &str) -> VResult<String> {
     }
 }
 
-/// `str.split`/`rsplit` on an explicit separator, honouring `maxsplit`
-/// (negative = unlimited). `rsplit` consumes separators from the right, so the
-/// *unsplit* remainder ends up in the first element.
-fn split_sep_n(s: &str, sep: &str, maxsplit: i64, from_right: bool) -> Vec<String> {
+/// `str.split` on an explicit separator, honouring `maxsplit`
+/// (negative = unlimited).
+fn split_sep_n(s: &str, sep: &str, maxsplit: i64) -> Vec<String> {
     if maxsplit < 0 {
         return s.split(sep).map(|p| p.to_string()).collect();
     }
     // maxsplit splits => maxsplit + 1 pieces.
     let n = (maxsplit as usize).saturating_add(1);
-    if from_right {
-        let mut parts: Vec<String> = s.rsplitn(n, sep).map(|p| p.to_string()).collect();
-        parts.reverse();
-        parts
-    } else {
-        s.splitn(n, sep).map(|p| p.to_string()).collect()
-    }
+    s.splitn(n, sep).map(|p| p.to_string()).collect()
 }
 
 /// `str.split(None, maxsplit)`: runs of whitespace separate, leading/trailing
@@ -1009,62 +1212,35 @@ fn split_whitespace_all(s: &str) -> Vec<String> {
 }
 
 /// returned verbatim (interior whitespace and all).
-fn split_whitespace_n(s: &str, maxsplit: i64, from_right: bool) -> Vec<String> {
+fn split_whitespace_n(s: &str, maxsplit: i64) -> Vec<String> {
     if maxsplit < 0 {
         return split_whitespace_all(s);
     }
     let limit = maxsplit as usize;
     let chars: Vec<char> = s.chars().collect();
     let mut parts: Vec<String> = Vec::new();
-
-    if !from_right {
-        let mut i = 0usize;
-        while parts.len() < limit {
-            while i < chars.len() && is_py_space(chars[i]) {
-                i += 1;
-            }
-            if i >= chars.len() {
-                return parts;
-            }
-            let start = i;
-            while i < chars.len() && !is_py_space(chars[i]) {
-                i += 1;
-            }
-            parts.push(chars[start..i].iter().collect());
-        }
-        // Remainder: drop only the whitespace that separated it from the last field.
+    let mut i = 0usize;
+    while parts.len() < limit {
         while i < chars.len() && is_py_space(chars[i]) {
             i += 1;
         }
-        if i < chars.len() {
-            parts.push(chars[i..].iter().collect());
+        if i >= chars.len() {
+            return parts;
         }
-        parts
-    } else {
-        let mut i = chars.len();
-        while parts.len() < limit {
-            while i > 0 && is_py_space(chars[i - 1]) {
-                i -= 1;
-            }
-            if i == 0 {
-                parts.reverse();
-                return parts;
-            }
-            let end = i;
-            while i > 0 && !is_py_space(chars[i - 1]) {
-                i -= 1;
-            }
-            parts.push(chars[i..end].iter().collect());
+        let start = i;
+        while i < chars.len() && !is_py_space(chars[i]) {
+            i += 1;
         }
-        while i > 0 && is_py_space(chars[i - 1]) {
-            i -= 1;
-        }
-        if i > 0 {
-            parts.push(chars[..i].iter().collect());
-        }
-        parts.reverse();
-        parts
+        parts.push(chars[start..i].iter().collect());
     }
+    // Remainder: drop only the whitespace that separated it from the last field.
+    while i < chars.len() && is_py_space(chars[i]) {
+        i += 1;
+    }
+    if i < chars.len() {
+        parts.push(chars[i..].iter().collect());
+    }
+    parts
 }
 
 /// The conversion methods, available on every value: `to_str`, `to_int`,
@@ -1462,7 +1638,12 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
     }
 }
 
-fn str_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
+fn str_method(
+    recv: &Value,
+    name: &str,
+    args: Vec<Value>,
+    kwargs: &[(String, Value)],
+) -> VResult<Value> {
     // Borrowed, not cloned: `find` and `replace` are on hot paths, and the
     // arms that hand the receiver straight back clone the `Rc` instead of the
     // characters.
@@ -1480,25 +1661,16 @@ fn str_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
             exactly(&args, 0, "lower")?;
             Ok(Value::str(s.to_lowercase()))
         }
-        "strip" | "lstrip" | "rstrip" => {
+        "strip" => {
             at_most(&args, 1, name)?;
+            let side = strip_side(kwargs)?;
             // `chars` is a *set* of characters to remove from the end(s), not a
-            // prefix or a suffix: `"xyx".strip("xy")` is `""`. Omitted (or
-            // None), whitespace is stripped instead.
+            // prefix or a suffix: `"xyx".strip("xy")` is `""`. That is the
+            // footgun `rm_prefix`/`rm_suffix` exist to answer. Omitted (or
+            // null), whitespace is stripped instead.
             let trimmed = match args.first() {
-                None | Some(Value::None) => match name {
-                    "strip" => s.trim_matches(is_py_space),
-                    "lstrip" => s.trim_start_matches(is_py_space),
-                    _ => s.trim_end_matches(is_py_space),
-                },
-                Some(Value::Str(set)) => {
-                    let hit = |c: char| set.s.contains(c);
-                    match name {
-                        "strip" => s.trim_matches(hit),
-                        "lstrip" => s.trim_start_matches(hit),
-                        _ => s.trim_end_matches(hit),
-                    }
-                }
+                None | Some(Value::None) => trim_with(s, side, is_py_space),
+                Some(Value::Str(set)) => trim_with(s, side, |c| set.s.contains(c)),
                 Some(other) => {
                     return Err(format!(
                         "{name}() argument must be str, not '{}'",
@@ -1510,6 +1682,30 @@ fn str_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
                 return Ok(Value::Str(os.clone()));
             }
             Ok(Value::str(trimmed.to_string()))
+        }
+        "rm_prefix" | "rm_suffix" => {
+            exactly(&args, 1, name)?;
+            let affix = str_arg(&args, 0, name)?;
+            // A *literal* prefix or suffix, removed once if it is there. This
+            // is the method people reach for `strip` and get a character set.
+            let rest = if name == "rm_prefix" {
+                s.strip_prefix(&affix)
+            } else {
+                s.strip_suffix(&affix)
+            };
+            match rest {
+                Some(r) => Ok(Value::str(r.to_string())),
+                None => Ok(Value::Str(os.clone())),
+            }
+        }
+        "count" => {
+            exactly(&args, 1, "count")?;
+            let sub = str_arg(&args, 0, "count")?;
+            Ok(Value::Int(count_sub(s, &sub)))
+        }
+        "is_digit" | "is_alpha" | "is_alnum" | "is_space" => {
+            exactly(&args, 0, name)?;
+            Ok(Value::Bool(str_is_class(s, name)))
         }
         "startswith" | "endswith" => {
             at_most(&args, 3, name)?;
@@ -1534,12 +1730,18 @@ fn str_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
         }
         "find" => {
             at_most(&args, 3, "find")?;
+            let reverse = find_reverse(kwargs)?;
             let needle = str_arg(&args, 0, "find")?;
             let len = os.char_len() as i64;
             let Some((start, end)) = search_window(&args, 1, "find", len)? else {
                 return Ok(Value::Int(-1));
             };
-            Ok(Value::Int(str_find_in(os, &needle, start as usize, end as usize)))
+            let (start, end) = (start as usize, end as usize);
+            Ok(Value::Int(if reverse {
+                str_rfind_in(os, &needle, start, end)
+            } else {
+                str_find_in(os, &needle, start, end)
+            }))
         }
         "replace" => {
             at_most(&args, 3, "replace")?;
@@ -1552,19 +1754,18 @@ fn str_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
             }
             Ok(Value::str(s.replacen(&from, &to, count as usize)))
         }
-        "split" | "rsplit" => {
+        "split" => {
             at_most(&args, 2, name)?;
             // maxsplit < 0 (the default) means "no limit"; maxsplit == n caps the
             // number of *splits*, so at most n + 1 pieces come back.
             let maxsplit = opt_int_arg(&args, 1, name, -1)?;
-            let from_right = name == "rsplit";
             let parts: Vec<String> = match args.first() {
-                None | Some(Value::None) => split_whitespace_n(s, maxsplit, from_right),
+                None | Some(Value::None) => split_whitespace_n(s, maxsplit),
                 Some(Value::Str(sep)) => {
                     if sep.s.is_empty() {
                         return Err("empty separator".to_string());
                     }
-                    split_sep_n(s, &sep.s, maxsplit, from_right)
+                    split_sep_n(s, &sep.s, maxsplit)
                 }
                 Some(other) => {
                     return Err(format!(
@@ -1575,23 +1776,6 @@ fn str_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
             };
             let parts = parts.into_iter().map(Value::str).collect::<Vec<_>>();
             Ok(Value::List(Rc::new(RefCell::new(parts))))
-        }
-        "zfill" => {
-            exactly(&args, 1, "zfill")?;
-            let width = opt_int_arg(&args, 0, "zfill", 0)?;
-            let len = os.char_len() as i64;
-            if len >= width {
-                return Ok(Value::Str(os.clone()));
-            }
-            let pad = "0".repeat((width - len) as usize);
-            // A leading sign stays in front of the padding: "-7".zfill(4) -> "-007".
-            let mut it = s.chars();
-            match it.next() {
-                Some(c) if c == '-' || c == '+' => {
-                    Ok(Value::str(format!("{c}{pad}{}", it.as_str())))
-                }
-                _ => Ok(Value::str(format!("{pad}{s}"))),
-            }
         }
         "join" => {
             exactly(&args, 1, "join")?;
@@ -1641,6 +1825,18 @@ fn bytes_find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
+/// The offset of the *last* `needle` in `hay`, or `None` — what
+/// `find(sub, reverse=true)` answers. The empty needle sits at the end.
+fn bytes_rfind(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(hay.len());
+    }
+    if needle.len() > hay.len() {
+        return None;
+    }
+    hay.windows(needle.len()).rposition(|w| w == needle)
+}
+
 /// `bytes.replace` with CPython's `count`: negative means every occurrence.
 /// An empty `from` inserts `to` between every pair of octets and at both ends,
 /// which is what `str.replace` does with an empty pattern — and `count` caps
@@ -1677,38 +1873,22 @@ fn bytes_replace(hay: &[u8], from: &[u8], to: &[u8], count: i64) -> Vec<u8> {
     out
 }
 
-/// `bytes.split`/`rsplit` on an explicit separator — the byte-level twin of
+/// `bytes.split` on an explicit separator — the byte-level twin of
 /// [`split_sep_n`], with the same `maxsplit` rule (negative = unlimited).
-fn split_sep_bytes(s: &[u8], sep: &[u8], maxsplit: i64, from_right: bool) -> Vec<Vec<u8>> {
+fn split_sep_bytes(s: &[u8], sep: &[u8], maxsplit: i64) -> Vec<Vec<u8>> {
     let limit = if maxsplit < 0 { usize::MAX } else { maxsplit as usize };
     let mut parts: Vec<Vec<u8>> = Vec::new();
-    if !from_right {
-        let (mut start, mut i) = (0usize, 0usize);
-        while parts.len() < limit && i + sep.len() <= s.len() {
-            if s[i..i + sep.len()] == *sep {
-                parts.push(s[start..i].to_vec());
-                i += sep.len();
-                start = i;
-            } else {
-                i += 1;
-            }
+    let (mut start, mut i) = (0usize, 0usize);
+    while parts.len() < limit && i + sep.len() <= s.len() {
+        if s[i..i + sep.len()] == *sep {
+            parts.push(s[start..i].to_vec());
+            i += sep.len();
+            start = i;
+        } else {
+            i += 1;
         }
-        parts.push(s[start..].to_vec());
-    } else {
-        let (mut end, mut i) = (s.len(), s.len());
-        while parts.len() < limit && i >= sep.len() {
-            let j = i - sep.len();
-            if s[j..i] == *sep {
-                parts.push(s[i..end].to_vec());
-                end = j;
-                i = j;
-            } else {
-                i -= 1;
-            }
-        }
-        parts.push(s[..end].to_vec());
-        parts.reverse();
     }
+    parts.push(s[start..].to_vec());
     parts
 }
 
@@ -1716,56 +1896,30 @@ fn split_sep_bytes(s: &[u8], sep: &[u8], maxsplit: i64, from_right: bool) -> Vec
 /// [`split_whitespace_n`]: runs of whitespace separate, leading and trailing
 /// whitespace is discarded, and the remainder after `maxsplit` splits comes
 /// back verbatim.
-fn split_space_bytes(s: &[u8], maxsplit: i64, from_right: bool) -> Vec<Vec<u8>> {
+fn split_space_bytes(s: &[u8], maxsplit: i64) -> Vec<Vec<u8>> {
     let limit = if maxsplit < 0 { usize::MAX } else { maxsplit as usize };
     let mut parts: Vec<Vec<u8>> = Vec::new();
-    if !from_right {
-        let mut i = 0usize;
-        while parts.len() < limit {
-            while i < s.len() && is_bytes_space(s[i]) {
-                i += 1;
-            }
-            if i >= s.len() {
-                return parts;
-            }
-            let start = i;
-            while i < s.len() && !is_bytes_space(s[i]) {
-                i += 1;
-            }
-            parts.push(s[start..i].to_vec());
-        }
+    let mut i = 0usize;
+    while parts.len() < limit {
         while i < s.len() && is_bytes_space(s[i]) {
             i += 1;
         }
-        if i < s.len() {
-            parts.push(s[i..].to_vec());
+        if i >= s.len() {
+            return parts;
         }
-        parts
-    } else {
-        let mut i = s.len();
-        while parts.len() < limit {
-            while i > 0 && is_bytes_space(s[i - 1]) {
-                i -= 1;
-            }
-            if i == 0 {
-                parts.reverse();
-                return parts;
-            }
-            let end = i;
-            while i > 0 && !is_bytes_space(s[i - 1]) {
-                i -= 1;
-            }
-            parts.push(s[i..end].to_vec());
+        let start = i;
+        while i < s.len() && !is_bytes_space(s[i]) {
+            i += 1;
         }
-        while i > 0 && is_bytes_space(s[i - 1]) {
-            i -= 1;
-        }
-        if i > 0 {
-            parts.push(s[..i].to_vec());
-        }
-        parts.reverse();
-        parts
+        parts.push(s[start..i].to_vec());
     }
+    while i < s.len() && is_bytes_space(s[i]) {
+        i += 1;
+    }
+    if i < s.len() {
+        parts.push(s[i..].to_vec());
+    }
+    parts
 }
 
 /// The `bytes` methods. Deliberately the same names `str` carries — every one
@@ -1773,7 +1927,12 @@ fn split_space_bytes(s: &[u8], maxsplit: i64, from_right: bool) -> Vec<Vec<u8>> 
 /// whole set — plus `hex`, which has no `str` counterpart. Case folding is
 /// ASCII-only: an octet is not a character, and there is no encoding here to
 /// case a non-ASCII one under.
-fn bytes_method(b: &Rc<Vec<u8>>, name: &str, args: Vec<Value>) -> VResult<Value> {
+fn bytes_method(
+    b: &Rc<Vec<u8>>,
+    name: &str,
+    args: Vec<Value>,
+    kwargs: &[(String, Value)],
+) -> VResult<Value> {
     match name {
         "upper" => {
             exactly(&args, 0, "upper")?;
@@ -1783,10 +1942,11 @@ fn bytes_method(b: &Rc<Vec<u8>>, name: &str, args: Vec<Value>) -> VResult<Value>
             exactly(&args, 0, "lower")?;
             Ok(Value::bytes(b.to_ascii_lowercase()))
         }
-        "strip" | "lstrip" | "rstrip" => {
+        "strip" => {
             at_most(&args, 1, name)?;
+            let side = strip_side(kwargs)?;
             // As for `str`, the argument is a *set* of octets to remove from
-            // the end(s); omitted (or None), whitespace is removed instead.
+            // the end(s); omitted (or null), whitespace is removed instead.
             let cut: Box<dyn Fn(u8) -> bool> = match args.first() {
                 None | Some(Value::None) => Box::new(is_bytes_space),
                 Some(Value::Bytes(set)) => {
@@ -1800,23 +1960,45 @@ fn bytes_method(b: &Rc<Vec<u8>>, name: &str, args: Vec<Value>) -> VResult<Value>
                     ))
                 }
             };
-            let lead = if name == "rstrip" {
-                0
-            } else {
+            let lead = if side.cuts_left() {
                 b.iter().take_while(|&&x| cut(x)).count()
+            } else {
+                0
             };
             if lead == b.len() {
                 return Ok(Value::bytes(Vec::new()));
             }
-            let trail = if name == "lstrip" {
-                0
-            } else {
+            let trail = if side.cuts_right() {
                 b[lead..].iter().rev().take_while(|&&x| cut(x)).count()
+            } else {
+                0
             };
             if lead == 0 && trail == 0 {
                 return Ok(Value::Bytes(b.clone()));
             }
             Ok(Value::bytes(b[lead..b.len() - trail].to_vec()))
+        }
+        "rm_prefix" | "rm_suffix" => {
+            exactly(&args, 1, name)?;
+            let affix = bytes_arg(&args, 0, name)?;
+            let rest = if name == "rm_prefix" {
+                b.strip_prefix(&affix[..])
+            } else {
+                b.strip_suffix(&affix[..])
+            };
+            match rest {
+                Some(r) => Ok(Value::bytes(r.to_vec())),
+                None => Ok(Value::Bytes(b.clone())),
+            }
+        }
+        "count" => {
+            exactly(&args, 1, "count")?;
+            let sub = bytes_arg(&args, 0, "count")?;
+            Ok(Value::Int(count_bytes(b, &sub)))
+        }
+        "is_digit" | "is_alpha" | "is_alnum" | "is_space" => {
+            exactly(&args, 0, name)?;
+            Ok(Value::Bool(bytes_is_class(b, name)))
         }
         "startswith" | "endswith" => {
             at_most(&args, 3, name)?;
@@ -1833,12 +2015,18 @@ fn bytes_method(b: &Rc<Vec<u8>>, name: &str, args: Vec<Value>) -> VResult<Value>
         }
         "find" => {
             at_most(&args, 3, "find")?;
+            let reverse = find_reverse(kwargs)?;
             let needle = bytes_arg(&args, 0, "find")?;
             let Some((start, end)) = search_window(&args, 1, "find", b.len() as i64)? else {
                 return Ok(Value::Int(-1));
             };
             let (start, end) = (start as usize, end as usize);
-            Ok(Value::Int(match bytes_find(&b[start..end], &needle) {
+            let hit = if reverse {
+                bytes_rfind(&b[start..end], &needle)
+            } else {
+                bytes_find(&b[start..end], &needle)
+            };
+            Ok(Value::Int(match hit {
                 Some(i) => (start + i) as i64,
                 None => -1,
             }))
@@ -1850,17 +2038,16 @@ fn bytes_method(b: &Rc<Vec<u8>>, name: &str, args: Vec<Value>) -> VResult<Value>
             let count = opt_int_arg(&args, 2, "replace", -1)?;
             Ok(Value::bytes(bytes_replace(b, &from, &to, count)))
         }
-        "split" | "rsplit" => {
+        "split" => {
             at_most(&args, 2, name)?;
             let maxsplit = opt_int_arg(&args, 1, name, -1)?;
-            let from_right = name == "rsplit";
             let parts: Vec<Vec<u8>> = match args.first() {
-                None | Some(Value::None) => split_space_bytes(b, maxsplit, from_right),
+                None | Some(Value::None) => split_space_bytes(b, maxsplit),
                 Some(Value::Bytes(sep)) => {
                     if sep.is_empty() {
                         return Err("empty separator".to_string());
                     }
-                    split_sep_bytes(b, sep, maxsplit, from_right)
+                    split_sep_bytes(b, sep, maxsplit)
                 }
                 Some(other) => {
                     return Err(format!(
@@ -1871,28 +2058,6 @@ fn bytes_method(b: &Rc<Vec<u8>>, name: &str, args: Vec<Value>) -> VResult<Value>
             };
             let parts = parts.into_iter().map(Value::bytes).collect::<Vec<_>>();
             Ok(Value::List(Rc::new(RefCell::new(parts))))
-        }
-        "zfill" => {
-            exactly(&args, 1, "zfill")?;
-            let width = opt_int_arg(&args, 0, "zfill", 0)?;
-            let len = b.len() as i64;
-            if len >= width {
-                return Ok(Value::Bytes(b.clone()));
-            }
-            let pad = (width - len) as usize;
-            let mut out = Vec::with_capacity(width as usize);
-            // A leading sign stays in front of the padding: b"-7".zfill(4) is
-            // b"-007".
-            let rest = match b.first() {
-                Some(&c) if c == b'-' || c == b'+' => {
-                    out.push(c);
-                    &b[1..]
-                }
-                _ => &b[..],
-            };
-            out.extend(std::iter::repeat_n(b'0', pad));
-            out.extend_from_slice(rest);
-            Ok(Value::bytes(out))
         }
         "join" => {
             exactly(&args, 1, "join")?;

@@ -33,7 +33,7 @@
 #
 #   s = io.read(f).to_str()                          # a whole file, as text
 #   f.write(s.to_bytes())                            # text, written
-#   lines = io.read(f).to_str().rstrip("\n").split("\n")
+#   lines = io.read(f).to_str().strip("\n", side="right").split("\n")
 
 # The two things in this module that cannot be written in Oro: a `Buffer` is a
 # Rust type, and a whole-stream read must `stat` and allocate once (below).
