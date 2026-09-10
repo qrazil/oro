@@ -140,6 +140,25 @@ impl RangeVal {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// CPython's `range.__eq__`, which compares the *sequence* rather than the
+    /// three fields: two ranges are equal when they have the same length and
+    /// yield the same values, so `range(0) == range(2, 2, 7)` is true and
+    /// `step` only matters once there are at least two elements to step
+    /// between.
+    fn equals(&self, other: &RangeVal) -> bool {
+        let n = self.len();
+        if n != other.len() {
+            return false;
+        }
+        if n == 0 {
+            return true;
+        }
+        if self.start != other.start {
+            return false;
+        }
+        n == 1 || self.step == other.step
+    }
 }
 
 /// The state backing a live iterator. Each `ForIter` step advances it.
@@ -181,6 +200,44 @@ pub struct Builtin {
 pub struct BoundMethod {
     pub receiver: Value,
     pub kind: MethodKind,
+}
+
+impl BoundMethod {
+    /// CPython's `method.__eq__`: two bound methods are equal when they bind
+    /// the same function to the same receiver.
+    ///
+    /// The subtlety worth knowing is that `a.m is a.m` is **false** — a fresh
+    /// bound method is built on every attribute access, in CPython as here —
+    /// while `a.m == a.m` is **true**. Identity would answer the first
+    /// question when the reader asked the second, so this is the one reference
+    /// type that is not compared by address.
+    fn equals(&self, other: &BoundMethod) -> bool {
+        if !self.receiver.equals(&other.receiver) {
+            return false;
+        }
+        match (&self.kind, &other.kind) {
+            (MethodKind::User { func: a, .. }, MethodKind::User { func: b, .. }) => {
+                Rc::ptr_eq(a, b)
+            }
+            // A native method has no function object to point at; its name is
+            // its identity, and the receiver's type fixes what the name means.
+            (MethodKind::Native(a), MethodKind::Native(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    /// The [`HKey`] half of [`BoundMethod::equals`] — the same two components,
+    /// so equal methods hash alike. Unhashable exactly when the receiver is:
+    /// `[].append` is no more a dict key than `[]` is, which is CPython's rule
+    /// too.
+    fn hkey(&self) -> VResult<HKey> {
+        let recv = HKey::from_value(&self.receiver)?;
+        let func = match &self.kind {
+            MethodKind::User { func, .. } => HKey::Id(Rc::as_ptr(func) as *const () as usize),
+            MethodKind::Native(name) => HKey::Str(name.to_string()),
+        };
+        Ok(HKey::Method(Box::new(recv), Box::new(func)))
+    }
 }
 
 #[derive(Clone)]
@@ -346,11 +403,16 @@ impl OroDict {
     }
 }
 
-/// A hashable projection of a [`Value`], used as a dict/set key.
+/// A hashable projection of a [`Value`], used as a dict key.
 ///
 /// Numeric keys are normalised so that `True`, `1` and `1.0` collide, matching
-/// Python (`{1: "a", True: "b", 1.0: "c"}` has a single entry). Unhashable
-/// values (list, dict, set, function, ...) produce an error.
+/// Python (`{1: "a", True: "b", 1.0: "c"}` has a single entry). The mutable
+/// containers — `list` and `dict` — are unhashable, as they are in CPython, and
+/// so is an instance of a class that defines its own `__eq__`.
+///
+/// Everything else *is* a key, including the reference types, keyed by
+/// [`Value::identity`]. That is what makes a registry keyed by connection, task
+/// or handler writable at all — `docs/stdlib-server-design.md` §7 item 13.
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum HKey {
     None,
@@ -361,6 +423,38 @@ enum HKey {
     Str(String),
     Bytes(Vec<u8>),
     Tuple(Vec<HKey>),
+    /// A `range`, by the sequence it denotes rather than its three fields:
+    /// `(len, start, step)` with the last two zeroed exactly where
+    /// [`RangeVal::equals`] stops looking at them, so equal ranges hash alike.
+    ///
+    /// Three plain integers rather than the `Option`s that read more honestly.
+    /// The honest spelling made this the widest variant in the enum — 40 bytes
+    /// against `Big`'s 32 — and paying for that in `HKey`'s layout is paying
+    /// for it on every dict operation in every program. Measured at +3% on
+    /// `bench/progs/dictops.oro`, which is 1M integer-keyed hashes and no
+    /// ranges at all.
+    Range(usize, i64, i64),
+    /// A reference type, by the address of its heap cell — see
+    /// [`Value::identity`].
+    ///
+    /// **Why a raw address is sound as a key.** An address identifies an object
+    /// only while that object is alive, and every address that reaches a
+    /// comparison here belongs to a live object: the probe is built from a
+    /// `Value` the caller is holding, and a stored key is held by
+    /// [`OroDict::entries`], which owns the key `Value` for as long as the
+    /// entry exists. Two live objects never share an address, so a match here
+    /// is identity and nothing else.
+    Id(usize),
+    /// A builtin, by name.
+    ///
+    /// Not by address, because there is no single address to use: the builtin
+    /// cache is per call site, so `len` in two places is two `Rc<Builtin>`s
+    /// wrapping the same function. The name is what CPython's `len is len`
+    /// actually means here, and it is unique per builtin.
+    Builtin(&'static str),
+    /// A bound method: the receiver's key and the function's. See
+    /// [`BoundMethod::hkey`].
+    Method(Box<HKey>, Box<HKey>),
 }
 
 impl HKey {
@@ -387,11 +481,59 @@ impl HKey {
                 }
                 HKey::Tuple(parts)
             }
-            other => {
-                return Err(format!("unhashable type: '{}'", other.type_name()));
-            }
+            // Everything else is a reference type or an error, and neither is
+            // on any hot path. Out of line so that `from_value` — which runs on
+            // every dict read and write in the program — stays the size it was.
+            other => return hkey_cold(other),
         })
     }
+}
+
+/// The [`HKey::from_value`] arms that are not the common case: the reference
+/// types, and the three things that are not keys.
+#[inline(never)]
+fn hkey_cold(v: &Value) -> VResult<HKey> {
+    Ok(match v {
+        Value::Range(r) => {
+            let n = r.len();
+            HKey::Range(
+                n,
+                if n > 0 { r.start } else { 0 },
+                if n > 1 { r.step } else { 0 },
+            )
+        }
+        Value::Builtin(b) => HKey::Builtin(b.name),
+        Value::Method(m) => m.hkey()?,
+        // An instance is keyed by identity, which is only honest while the
+        // class has not taken equality over. There is no `__hash__` in Oro's
+        // dunder set to restore it with — CPython's escape hatch — so a class
+        // that decides its own equality is not a key, and says so rather than
+        // silently keying by address and losing lookups.
+        Value::Instance(i) => {
+            if Class::find(&i.class, "__eq__").is_some() {
+                return Err(format!(
+                    "unhashable type: '{}' — it defines __eq__, so its identity is \
+                     not what equality means for it",
+                    i.class.name
+                ));
+            }
+            HKey::Id(Rc::as_ptr(i) as *const () as usize)
+        }
+        // The mutable containers, and the internal sentinel. `list` and `dict`
+        // are unhashable in CPython for the reason that outlives every other
+        // argument about it: a key that can change is a key that can be lost.
+        Value::List(_) | Value::Dict(_) | Value::Unbound => {
+            return Err(format!("unhashable type: '{}'", v.type_name()));
+        }
+        other => match other.identity() {
+            Some(id) => HKey::Id(id),
+            // Unreachable: every variant is either handled in `from_value` or
+            // above, or is a reference type with an identity. Spelled as an
+            // error rather than `unreachable!` because a panic in the dict path
+            // would be a worse answer than a diagnostic.
+            None => return Err(format!("unhashable type: '{}'", other.type_name())),
+        },
+    })
 }
 
 impl Value {
@@ -590,8 +732,57 @@ impl Value {
         }
     }
 
-    /// Structural equality as used by `==`, `!=`, `in`, and membership. Numbers
-    /// compare across `bool`/`int`/`float`; unlike types are simply unequal.
+    /// The address of the heap cell behind a reference type, or `None` for a
+    /// value type. Oro's `id()`, without the builtin.
+    ///
+    /// These are the types CPython compares and hashes by *identity* rather
+    /// than by content, and the reason is the same for all of them: a function
+    /// is not the same function because it has the same body, and a stream is
+    /// not the same stream because it points at the same file. Two closures
+    /// over one code object are two functions, which falls out of this for
+    /// free — the `Rc<Function>`s differ even though the `Rc<CodeObject>`s do
+    /// not.
+    ///
+    /// Nothing here pairs up variants, and it does not have to: two *live*
+    /// values at one address are the same object, because an `Rc<Function>` and
+    /// an `Rc<OroStream>` cannot occupy one address at one time. Every caller
+    /// holds both values across the comparison, which is what makes "live"
+    /// true of both.
+    ///
+    /// `Builtin` and `Method` are absent on purpose. A builtin has no single
+    /// address — the builtin cache is per call site — so it is compared by
+    /// name; a bound method is built fresh on every attribute access, so
+    /// `a.m is a.m` is false in CPython too, and it is compared by
+    /// (receiver, function) instead. See [`BoundMethod::equals`].
+    pub fn identity(&self) -> Option<usize> {
+        let p = match self {
+            Value::Func(f) => Rc::as_ptr(f) as *const (),
+            Value::Generator(g) => Rc::as_ptr(g) as *const (),
+            Value::Class(c) => Rc::as_ptr(c) as *const (),
+            Value::Instance(i) => Rc::as_ptr(i) as *const (),
+            Value::Module(m) => Rc::as_ptr(m) as *const (),
+            Value::Stream(s) => Rc::as_ptr(s) as *const (),
+            Value::Task(t) => Rc::as_ptr(t) as *const (),
+            Value::Channel(c) => Rc::as_ptr(c) as *const (),
+            Value::Regex(r) => Rc::as_ptr(r) as *const (),
+            Value::Match(m) => Rc::as_ptr(m) as *const (),
+            Value::Iter(i) => Rc::as_ptr(i) as *const (),
+            Value::Super(s) => Rc::as_ptr(s) as *const (),
+            _ => return None,
+        };
+        Some(p as usize)
+    }
+
+    /// Equality as used by `==`, `!=`, `in`, and membership. Numbers compare
+    /// across `bool`/`int`/`float`; unlike types are simply unequal.
+    ///
+    /// Value types compare by content and reference types by identity, which is
+    /// CPython's split and was not Oro's: before this, `f == f` was **false**
+    /// for a function, a generator, a stream and a task, because there was no
+    /// identity arm at all and everything fell through to `_ => false`. A
+    /// function that is not equal to itself is a plain correctness bug, and it
+    /// is also what stopped a connection registry from being a `dict`
+    /// (`docs/stdlib-server-design.md` §7 item 13).
     pub fn equals(&self, other: &Value) -> bool {
         if let (Some(a), Some(b)) = (self.as_number(), other.as_number()) {
             return a.equals(&b);
@@ -609,11 +800,22 @@ impl Value {
                         b.get(k).ok().flatten().map(|bv| bv.equals(v)).unwrap_or(false)
                     })
             }
-            // Default identity equality; a __eq__ dunder, when present, is
-            // dispatched by the VM before this fallback is used.
-            (Value::Instance(a), Value::Instance(b)) => Rc::ptr_eq(a, b),
-            (Value::Class(a), Value::Class(b)) => Rc::ptr_eq(a, b),
-            _ => false,
+            // A `range` is a sequence, and CPython compares it as one.
+            (Value::Range(a), Value::Range(b)) => a.equals(b),
+            // The two reference types that are *not* their address.
+            (Value::Builtin(a), Value::Builtin(b)) => a.name == b.name,
+            (Value::Method(a), Value::Method(b)) => a.equals(b),
+            // Identity for everything else that has one — instances included,
+            // where a `__eq__` dunder, when present, is dispatched by the VM
+            // before this fallback is reached. Unlike types have no identity in
+            // common and fall out as unequal.
+            //
+            // Out of line on purpose. `equals` is called on every `==`, `!=`,
+            // `in` and dict comparison in the program, and it is small enough
+            // to inline into those call sites; folding two `identity()` matches
+            // into its body would have cost that, for arms that are reached
+            // only when both operands are reference types.
+            _ => identity_eq(self, other),
         }
     }
 
@@ -677,6 +879,16 @@ pub fn exception_repr(inst: &Instance) -> String {
     let args = exception_args(inst);
     let parts: Vec<String> = args.iter().map(|v| v.repr()).collect();
     format!("{}({})", inst.class.name, parts.join(", "))
+}
+
+/// The identity arm of [`Value::equals`], kept out of that function's body so
+/// the hot path stays inlinable. See the call site.
+#[inline(never)]
+fn identity_eq(a: &Value, b: &Value) -> bool {
+    match (a.identity(), b.identity()) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
 }
 
 fn seq_eq(a: &[Value], b: &[Value]) -> bool {

@@ -1,0 +1,107 @@
+# Reference types are equal to themselves, and are dict keys.
+#
+# Before this they were neither: `f == f` was `false` for a function, a
+# generator, a stream and a task, and none of them could be a key. A function
+# that is not equal to itself is a plain correctness bug independent of any of
+# the concurrency this came up in.
+#
+# Everything below is CPython's answer, so the oracle generates it. The types
+# CPython has no word for — Task, Channel — are in
+# divergence/55_identity_of_runtime_types.oro, together with the two places Oro
+# deliberately differs.
+
+def f(x):
+    return x
+
+
+def other(x):
+    return x
+
+
+def counting():
+    for i in range(3):
+        yield i
+
+
+def make(n):
+    # Two calls make two closures over one code object. They must not be one
+    # function: the shortcut of comparing code objects gets exactly this wrong.
+    def inner():
+        return n
+
+    return inner
+
+
+class C:
+    def m(self):
+        return 1
+
+
+class D(C):
+    pass
+
+
+import json
+import re
+
+c = C()
+gen = counting()
+
+print("--- equal to itself, and to nothing else")
+print(f == f, f == other)
+print(make(1) == make(1), make(1) == make(2))
+print(gen == gen, gen == counting())
+print(C == C, C == D, c == c, c == C())
+print(json == json, json == re)
+print(len == len, len == print)
+print(c.m == c.m, c.m == C().m, c.m == D().m)
+print("ab".upper == "ab".upper, "ab".upper == "ab".lower, "ab".upper == "cd".upper)
+
+# `!=` is the negation and not a second rule.
+print(f != f, f != other, gen != gen)
+
+print("--- a range is a sequence, and compares as one")
+print(range(3) == range(3), range(3) == range(4))
+print(range(0) == range(2, 2, 7), range(5, 5) == range(9, 9, 3))
+print(range(1, 2) == range(1, 2, 5), range(1, 4) == range(1, 4, 2))
+print(range(0, 4, 2) == range(0, 5, 2), range(0, 4, 2) == range(0, 4, 3))
+
+print("--- membership follows equality")
+print(f in [other, f], f in [other], gen in [gen])
+print(range(3) in [range(4), range(3)])
+
+print("--- and they are dict keys")
+registry = {}
+registry[f] = "f"
+registry[other] = "other"
+registry[gen] = "gen"
+registry[C] = "C"
+registry[c] = "c"
+registry[json] = "json"
+registry[len] = "len"
+registry[c.m] = "c.m"
+registry[range(3)] = "range(3)"
+for k in [f, other, gen, C, c, json, len, c.m, range(3)]:
+    print(registry[k])
+print(len(registry))
+
+# A key is the object, not what it looks like: a second closure over the same
+# code, and a second bound method on a different instance, are new keys.
+registry[make(1)] = "a closure"
+registry[C().m] = "another receiver"
+print(len(registry))
+
+# Two empty ranges are one key, because they are equal.
+r = {}
+r[range(0)] = "a"
+r[range(2, 2, 7)] = "b"
+print(len(r), r[range(0)])
+
+print("--- what stays unhashable")
+for v in [[1, 2], {"a": 1}]:
+    try:
+        d = {}
+        d[v] = 1
+        print("UNREACHABLE")
+    except TypeError as e:
+        print(e)

@@ -17,6 +17,78 @@ fn value_is_two_words() {
     );
 }
 
+/// Identity semantics, at the `Value` level: a reference type is equal to
+/// itself and to nothing else, and it is a dict key.
+///
+/// Everything reachable from Oro is covered by the corpus; this pins the two
+/// properties the type system cannot — that identity is by *allocation* rather
+/// than by content, and that two `Rc`s of one object agree.
+#[test]
+fn reference_types_are_equal_to_themselves_and_hashable() {
+    // Two modules with the *same name* — the content-equal pair that a
+    // "compare what is inside" shortcut would wrongly fold into one.
+    let module = || {
+        Value::Module(Rc::new(Module {
+            name: Rc::from("m"),
+            members: RefCell::new(HashMap::new()),
+        }))
+    };
+    let a = module();
+    let b = module();
+    assert!(a.equals(&a), "an object must equal itself");
+    assert!(a.equals(&a.clone()), "a clone is a refcount bump, not a new object");
+    assert!(!a.equals(&b), "two objects with identical contents are two objects");
+
+    let mut d = OroDict::new();
+    d.insert(a.clone(), Value::Int(1)).unwrap();
+    d.insert(b.clone(), Value::Int(2)).unwrap();
+    assert_eq!(d.len(), 2, "two distinct objects are two keys");
+    assert!(d.get(&a).unwrap().unwrap().equals(&Value::Int(1)));
+    assert!(d.get(&b).unwrap().unwrap().equals(&Value::Int(2)));
+
+    // Identity is by allocation, and a value type never has one.
+    assert!(a.identity().is_some());
+    assert!(Value::Int(1).identity().is_none());
+    assert!(Value::str("s").identity().is_none());
+    assert!(Value::Tuple(Rc::new(vec![Value::Int(1)])).identity().is_none());
+}
+
+/// A `range` is a sequence, and CPython compares it as one: same length, same
+/// values. `step` stops mattering below two elements, and `start` below one.
+#[test]
+fn ranges_compare_and_hash_as_the_sequence_they_denote() {
+    let r = |start, stop, step| Value::Range(Rc::new(RangeVal { start, stop, step }));
+    assert!(r(0, 3, 1).equals(&r(0, 3, 1)));
+    // Two empty ranges are equal however they got there.
+    assert!(r(0, 0, 1).equals(&r(2, 2, 7)));
+    // One element: `step` is unobservable.
+    assert!(r(1, 2, 1).equals(&r(1, 2, 5)));
+    // Different lengths, and same length with a different step.
+    assert!(!r(1, 4, 1).equals(&r(1, 4, 2)));
+    assert!(!r(0, 4, 2).equals(&r(0, 4, 3)));
+
+    // Hashing agrees with all of it, or a dict would lose keys.
+    let mut d = OroDict::new();
+    d.insert(r(0, 3, 1), Value::Int(1)).unwrap();
+    d.insert(r(2, 2, 7), Value::Int(2)).unwrap();
+    d.insert(r(0, 0, 1), Value::Int(3)).unwrap();
+    assert_eq!(d.len(), 2, "the two empty ranges are one key");
+    assert!(d.get(&r(0, 3, 1)).unwrap().unwrap().equals(&Value::Int(1)));
+    assert!(d.get(&r(0, 0, 1)).unwrap().unwrap().equals(&Value::Int(3)));
+}
+
+/// The two things that stay unhashable, and the one that newly is not.
+#[test]
+fn mutable_containers_stay_unhashable() {
+    let mut d = OroDict::new();
+    let list = Value::List(Rc::new(RefCell::new(vec![Value::Int(1)])));
+    let dict = Value::Dict(Rc::new(RefCell::new(OroDict::new())));
+    for v in [list, dict] {
+        let e = d.insert(v.clone(), Value::Int(0)).expect_err("must not be a key");
+        assert!(e.contains("unhashable type"), "got: {e}");
+    }
+}
+
 #[test]
 fn bytes_repr_matches_cpython() {
     // Printable ASCII stays literal; everything else is \xNN, including the

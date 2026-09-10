@@ -881,7 +881,9 @@ shutdown flag cover the rest.
 discovered:* "a cache is a `dict`" is true of a dict keyed by a string or an
 int, and false of a dict keyed by a **task, a stream or a function** — those
 types are unhashable today, and `task == task` is `false`. A connection registry
-is the first such dict anyone writes on top of `net`. §7 item 13.
+is the first such dict anyone writes on top of `net`. §7 item 13. *Closed: every
+reference type is now equal to itself and hashable by identity, so the registry
+is a `dict` and the claim above is true as written.*
 
 So: **`select` is not shipped.** It is additive and can arrive later if a real
 program needs it, in which case it should be a function — `select([a, b])`
@@ -1987,8 +1989,20 @@ because none of them is fixed yet.
     prefix fixes it, with the location, the exception and the exit code
     unchanged. Cheap now; a compatibility question about log output once
     anything greps for it.
-13. **Identity equality and hashing are missing, and it undercuts §3's own best
-    argument.** Measured: `f == f`, `gen == gen`, `task == task` and
+13. **~~Identity equality and hashing are missing~~, and it undercuts §3's own
+    best argument.** *Fixed.* Every reference type is equal to itself and
+    hashable by identity — functions, generators, classes, instances, modules,
+    streams, patterns, matches, tasks and channels — with two deliberate
+    exceptions that are CPython's rules rather than shortcuts: a builtin is
+    compared by *name*, because the builtin cache is per call site and there is
+    no single address to point at, and a bound method by (receiver, function),
+    because a fresh one is built on every attribute access and `a.m is a.m` is
+    false in CPython too. Two things the audit found that were not on the list:
+    `is` itself answered `false` for everything past `Func`, and `range(3) ==
+    range(3)` was `false` where CPython compares a range as the sequence it
+    denotes. A class that defines `__eq__` is not a key, which is CPython's rule
+    minus the `__hash__` escape hatch Oro's dunder set does not have. The
+    original entry follows. Measured, before the fix: `f == f`, `gen == gen`, `task == task` and
     `buf == buf` are all **`false`**, and all four types are **unhashable** —
     where CPython has functions, generators and file objects hashable by
     identity and equal to themselves. §3's strongest claim is that tasks share

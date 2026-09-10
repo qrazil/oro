@@ -269,6 +269,20 @@ Implemented and working today:
   and exit 0 anyway). The reasoning is `docs/stdlib-server-design.md` §3.
 - **Python truthiness** and Python's cross-type numeric equality (`1 == 1.0 ==
   true`).
+- **Value types compare by content, reference types by identity** — CPython's
+  split. A function, generator, class, instance, module, stream, pattern, match,
+  task or channel is equal to itself and to nothing else, and is a `dict` key,
+  which is what makes a registry keyed by connection or by task writable at all.
+  Two closures over one code object are two functions. A `builtin` is compared
+  by name rather than address (`len is len`, and the builtin cache is per call
+  site, so there is no one address); a bound method by receiver and function,
+  which is why `a.m == a.m` is true and `a.m is a.m` is false — a new one is
+  built per access, in CPython too. `list` and `dict` stay unhashable, and so
+  does an instance of a class that defines `__eq__`: CPython clears `__hash__`
+  there and lets the class define one back, and Oro's dunder set has no
+  `__hash__`, so it is permanent. There is no `hash()` builtin, and dict order
+  is insertion order, so hashing by address is not observable from a program —
+  nothing about a run depends on where the allocator put something.
 
 ### What is cut, and why
 

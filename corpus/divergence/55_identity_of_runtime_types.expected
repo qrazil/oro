@@ -1,0 +1,17 @@
+a task equals itself: true false
+a task is itself: true false
+a channel equals itself: true false
+chan(0) and chan(0) are two channels: false
+a stream equals itself: true false
+two readers of one path are two streams: false
+registry size: 5
+first reader / second reader
+the first task / the second task
+the channel
+a.join() 1 b.join() 2
+still the same key after joining: the first task
+pattern equals itself: true
+two compiles of one pattern (CPython: true): false
+__eq__ still decides equality: true false
+unhashable type: 'Point' — it defines __eq__, so its identity is not what equality means for it
+a plain instance keys by identity: 2 kept

@@ -302,9 +302,12 @@ pub struct CodeObject {
     /// *builtins* are cached: exception classes have a per-VM `Rc` identity
     /// (`ValueError == ValueError` is a pointer comparison), and a code object
     /// could in principle be run by a second `Vm`, so caching those would be
-    /// unsound. A builtin has no observable identity — `Value::Builtin` is
-    /// unhashable and never compares equal, even to itself — so caching one is
-    /// invisible to any program.
+    /// unsound. A builtin's identity is its *name*, not the address of the
+    /// `Rc<Builtin>` wrapping it — `==`, `is` and hashing all go through
+    /// `Builtin::name` — so a per-call-site cache is invisible to any program.
+    /// That is the reason for the name rule and not a happy consequence of it:
+    /// with this cache there is no single address a builtin could be compared
+    /// by, since `len` at two call sites is two wrappers around one function.
     ///
     /// Without it, every `len(...)` in a loop hashed a string, walked a match
     /// arm per builtin name, and then *allocated* a fresh `Rc<Builtin>` wrapper

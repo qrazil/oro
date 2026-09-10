@@ -1,0 +1,102 @@
+# INTENTIONAL DIVERGENCE.
+# The identity story for the types CPython has no counterpart for — `Task` and
+# `Channel` — plus the two places Oro's answer differs from CPython's for a type
+# it does have. The oracled half is core/43_identity_equality.oro.
+#
+# The point of this file is `docs/stdlib-server-design.md` §7 item 13: §3's
+# strongest claim is that tasks share plain mutable state with no locks, and
+# that "a cache is a dict". The first dict anyone writes on top of `net` is a
+# registry keyed by connection or by task, and until now that raised
+# `unhashable type`.
+
+def work(n):
+    return n
+
+
+# --- Task and Channel: identity is a free choice, and the obvious one ---------
+# Neither exists in CPython. A task handle and a channel are objects, not
+# values: two channels of the same capacity are two channels, and there is
+# nothing else they could sensibly be compared by.
+a = spawn(work, 1)
+b = spawn(work, 2)
+print("a task equals itself:", a == a, a == b)
+print("a task is itself:", a is a, a is b)
+ch1 = chan()
+ch2 = chan()
+print("a channel equals itself:", ch1 == ch1, ch1 == ch2)
+print("chan(0) and chan(0) are two channels:", chan(0) == chan(0))
+
+# --- A stream is an identity, not a path -------------------------------------
+# CPython agrees (file objects hash by identity); it is here rather than in
+# core/ because `open(path, "w")` is Oro's spelling and the whole file surface
+# lives in divergence for that reason (§2).
+w = open("/tmp/oro_identity_probe.txt", "w")
+w.write(b"x")
+w.close()
+r1 = open("/tmp/oro_identity_probe.txt", "r")
+r2 = open("/tmp/oro_identity_probe.txt", "r")
+print("a stream equals itself:", r1 == r1, r1 == r2)
+print("two readers of one path are two streams:", r1 == r2)
+
+# --- The registry §3 said was writable, actually written ----------------------
+conns = {}
+conns[r1] = "first reader"
+conns[r2] = "second reader"
+conns[a] = "the first task"
+conns[b] = "the second task"
+conns[ch1] = "the channel"
+print("registry size:", len(conns))
+print(conns[r1], "/", conns[r2])
+print(conns[a], "/", conns[b])
+print(conns[ch1])
+print("a.join()", a.join(), "b.join()", b.join())
+
+# A task handle keeps working as a key after the task has finished — the key is
+# the handle, not the state behind it.
+print("still the same key after joining:", conns[a])
+
+r1.close()
+r2.close()
+
+# --- Where Oro differs from CPython for a type it does have -------------------
+import re
+
+# 1. `re.compile(p)` is a fresh Pattern every time. CPython caches compiled
+#    patterns, so `re.compile("a") is re.compile("a")` is True there and false
+#    here. Oro has no pattern cache; the identity rule is the same, the number
+#    of objects is not.
+p1 = re.compile("a")
+p2 = re.compile("a")
+print("pattern equals itself:", p1 == p1)
+print("two compiles of one pattern (CPython: true):", p1 == p2)
+
+# 2. A class that defines `__eq__` is not a dict key, and cannot be made one.
+#    CPython says the same by default — `__eq__` without `__hash__` clears
+#    `__hash__` — but CPython lets the class define `__hash__` and take it
+#    back. Oro's dunder set has no `__hash__`, so this is permanent.
+class Point:
+    def __init__(self, x):
+        self.x = x
+
+    def __eq__(self, other):
+        return self.x == other.x
+
+
+print("__eq__ still decides equality:", Point(1) == Point(1), Point(1) == Point(2))
+try:
+    d = {}
+    d[Point(1)] = "nope"
+    print("UNREACHABLE")
+except TypeError as e:
+    print(e)
+
+# A class without `__eq__` is a key, by identity.
+class Plain:
+    pass
+
+
+q = Plain()
+d = {}
+d[q] = "kept"
+d[Plain()] = "other"
+print("a plain instance keys by identity:", len(d), d[q])

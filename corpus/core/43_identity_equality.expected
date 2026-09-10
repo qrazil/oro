@@ -1,0 +1,34 @@
+--- equal to itself, and to nothing else
+true false
+false false
+true false
+true false true false
+true false
+true false
+true false false
+true false false
+false true false
+--- a range is a sequence, and compares as one
+true false
+true true
+true false
+false false
+--- membership follows equality
+true false true
+true
+--- and they are dict keys
+f
+other
+gen
+C
+c
+json
+len
+c.m
+range(3)
+9
+11
+1 b
+--- what stays unhashable
+unhashable type: 'list'
+unhashable type: 'dict'
