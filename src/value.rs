@@ -544,12 +544,11 @@ pub enum MethodKind {
 pub struct Class {
     pub name: Rc<str>,
     pub base: Option<Rc<Class>>,
-    /// Methods and class-level attributes, by name.
-    ///
-    /// Keyed by `Rc<str>`, not `String`: the names come from the code object's
-    /// interned name table, so storing one is a refcount bump rather than a
-    /// fresh heap allocation. Lookups still take a `&str` (`Rc<str>: Borrow<str>`).
-    pub members: RefCell<HashMap<Rc<str>, Value>>,
+    /// Methods and class-level attributes, by name. A [`Fields`] for the same
+    /// reasons an instance's attributes are one, and on a hotter path than
+    /// theirs: `obj.m()` reaches the class table only *after* missing in the
+    /// instance, so every method call in the program pays for this lookup.
+    pub members: RefCell<Fields>,
     /// True when this class descends from `BaseException`. Such instances get
     /// native message storage/rendering and are what `raise`/`except` operate on.
     pub is_exception: bool,
@@ -653,6 +652,14 @@ impl Fields {
             }
         }
         None
+    }
+
+    pub fn with_capacity(n: usize) -> Fields {
+        Fields { entries: Vec::with_capacity(n) }
+    }
+
+    pub fn contains_key(&self, name: &str) -> bool {
+        self.get(name).is_some()
     }
 
     pub fn insert(&mut self, name: Rc<str>, value: Value) {

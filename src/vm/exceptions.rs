@@ -58,7 +58,7 @@ pub fn build_registry() -> HashMap<&'static str, Rc<Class>> {
         let class = Rc::new(Class {
             name: Rc::from(*name),
             base,
-            members: RefCell::new(HashMap::new()),
+            members: RefCell::new(crate::value::Fields::new()),
             is_exception: true,
         });
         m.insert(name, class);

@@ -775,7 +775,7 @@ impl Vm {
             proc_class: Rc::new(Class {
                 name: Rc::from("Completed"),
                 base: None,
-                members: RefCell::new(HashMap::new()),
+                members: RefCell::new(Fields::new()),
                 is_exception: false,
             }),
             next_task_id: 0,
@@ -3501,7 +3501,7 @@ impl Vm {
         } else {
             None
         };
-        let mut members = HashMap::with_capacity(spec.members.len());
+        let mut members = Fields::with_capacity(spec.members.len());
         for (n, v) in spec.members.iter().zip(member_vals) {
             members.insert(n.clone(), v);
         }
