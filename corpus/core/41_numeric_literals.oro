@@ -1,0 +1,57 @@
+# Hex, octal, binary and `_` separators. Every line here is valid Python too,
+# so the oracle generates the whole file — the accept side of the feature is
+# fully checked against CPython. The *reject* side cannot be: CPython answers
+# with a SyntaxError before the program runs, and a program that does not run
+# has no output to diff. Those cases are the lexer unit tests in
+# `src/lexer/tests.rs`, each one checked against `python3` by hand.
+#
+# `0x1f` used to lex as `0` followed by the identifier `x1f`.
+
+print(0x1f, 0X1F, 0xff, 0xdeadBEEF, 0xDEADbeef)
+print(0o17, 0O17, 0o755, 0o0)
+print(0b1010, 0B1010, 0b0, 0b1111_1111)
+print(0, 00, 000, 0_0)
+
+# Separators are the author's, not the value's: they change nothing but how the
+# number reads.
+print(1_000, 1_000_000, 1_000 == 1000)
+print(0x_1f, 0x1_f, 0b_1, 0o_7)
+print(0xff_ff, 0b1010_1010, 0o7_7)
+
+# Floats take them in the digits, the fraction and the exponent.
+print(1_000.5, .5_0, 1e1_0, 1_0e1_0, 10_0.0_1e1_0, 1.5e-3, 1e10, .5)
+
+# The bigint promotion path takes the same route. A hex literal past `i64` must
+# promote, not overflow — the invariant is that a `Big` never holds a value that
+# fits in an `i64`, so the two spellings below have to land on the same value in
+# the same representation.
+print(0x7fffffffffffffff, 0x8000000000000000)
+print(0xFFFFFFFFFFFFFFFFFF)
+print(0xFFFFFFFFFFFFFFFFFF == 4722366482869645213695)
+print(0b10 ** 100, 0x2 ** 100)
+print(0xFFFF_FFFF_FFFF_FFFF_FF == 0xFFFFFFFFFFFFFFFFFF)
+print(-0xff, -0b1010, 0xff * 0o10)
+
+# They are values like any other: arithmetic, comparison, dict keys, and the
+# subject of a `match`.
+print(0xff + 1, 0xff / 0x10, 0b101 * 0o2)
+print(0xff > 0o377 - 1, 0b1010 == 10)
+d = {0xff: "hex", 0o17: "oct"}
+print(d[255], d[15])
+
+for n in [0xf, 0o7, 0b1, 1_0]:
+    match n:
+        case 0xf:
+            print(n, "matched the hex pattern")
+        case 0o7:
+            print(n, "matched the octal pattern")
+        case 0b1:
+            print(n, "matched the binary pattern")
+        case _:
+            print(n, "matched nothing")
+
+# The spelling is source, not value: a hex literal prints as decimal unless the
+# format spec asks otherwise, and the two spellings of 255 are indistinguishable
+# once compiled.
+print(f"{0xff}", f"{0xff:x}", f"{0xff:08b}", f"{0o17:o}", f"{1_000}")
+print(repr(0xff), repr(1_000), repr(0b1010_1010), repr(1_000.5))

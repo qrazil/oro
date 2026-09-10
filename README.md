@@ -130,6 +130,18 @@ Implemented and working today:
 - **Values:** `int` (inline `i64`, promoting to arbitrary-precision bignum on
   overflow), `float`, `bool`, `str`, `bytes`, `null`, `list`, `tuple`, `dict`,
   `set`, `range`, and functions (including closures over *read* access).
+- **Numeric literals:** decimal, `0x` hex, `0o` octal, `0b` binary (prefix
+  letters and hex digits case-insensitive), `1e10` / `1.5e-3` / `.5` floats, and
+  `_` as a digit separator anywhere between two digits — `1_000`, `0xff_ff`,
+  `1_000.5`, `1e1_0`. CPython's grammar exactly, which is stricter than it
+  looks: `1__0` and `1_` are errors, `_1` is a name, a radix prefix needs a
+  digit after it, and `01` is refused outright rather than read as 1 or as
+  octal — `0o` is the spelling for what that meant. A literal may not run into
+  a name either, so `0x1f` is a number and `123abc` is an error, where both
+  used to lex as a number followed by an identifier and fail somewhere else,
+  about something else. `oro fmt` reprints a literal in the spelling it was
+  written in: `0xff` and `255` are the same value and not the same statement
+  about it.
 - **`bytes`, a second type and not a redefinition of `str`.** `b"..."` (and
   `rb"..."`) is a sequence of octets: `b[i]` is an `int`, `b[i:j]` is `bytes`,
   iteration yields `int`s, and `len` counts octets. Cross the boundary

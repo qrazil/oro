@@ -221,6 +221,33 @@ fn bytes_literals_reprint_as_octets() {
     }
 }
 
+/// A numeric literal reprints in the spelling the author wrote it in.
+///
+/// This is the one formatter rule for numbers, and it exists because the
+/// alternative loses information: `0xff` and `255` are the same value and are
+/// not the same statement about what the value *is*, and neither are `1_000_000`
+/// and `1000000`. The formatter is not entitled to that choice, so it keeps the
+/// token's raw text — prefix letter case included.
+#[test]
+fn numeric_literals_reprint_in_the_authors_spelling() {
+    for src in [
+        "x = 0xff\n",
+        "x = 0XFF\n",
+        "x = 0o755\n",
+        "x = 0b1010_1010\n",
+        "x = 1_000_000\n",
+        "x = 0x_dead_beef\n",
+        "x = 255\n",
+        "x = 1_000.5\n",
+        "x = 1e1_0\n",
+        "x = .5\n",
+        "x = 0\n",
+        "x = 000\n",
+    ] {
+        assert_eq!(format_source(src).expect("should format"), src, "source: {src:?}");
+    }
+}
+
 /// Every `.oro` file in the repository is already in canonical form, except
 /// the deliberate exceptions named in [`EXPECTED_UNFORMATTED`].
 ///

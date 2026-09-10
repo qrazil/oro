@@ -458,10 +458,9 @@ impl<'a> Codegen<'a> {
     fn literal_value(&self, expr: &Expr) -> CResult<Value> {
         match expr {
             Expr::Int { value, .. } => Ok(parse_int(value)),
-            Expr::Float { value, line, col } => value
-                .parse::<f64>()
+            Expr::Float { value, line, col } => parse_float(value)
                 .map(Value::Float)
-                .map_err(|_| self.err(format!("invalid float literal `{value}`"), *line, *col)),
+                .ok_or_else(|| self.err(format!("invalid float literal `{value}`"), *line, *col)),
             Expr::Str { value, .. } => Ok(Value::str(value.clone())),
             Expr::Bytes { value, .. } => Ok(Value::bytes(value.clone())),
             Expr::Bool { value, .. } => Ok(Value::Bool(*value)),
@@ -1009,7 +1008,7 @@ impl<'a> Codegen<'a> {
                 self.emit(Op::LoadConst(idx), *line, *col);
             }
             Expr::Float { value, line, col } => {
-                let f: f64 = value.parse().map_err(|_| {
+                let f: f64 = parse_float(value).ok_or_else(|| {
                     self.err(format!("invalid float literal `{value}`"), *line, *col)
                 })?;
                 let idx = self.add_const(Value::Float(f));
@@ -1670,11 +1669,63 @@ fn unsupported_dunder(name: &str) -> Option<&'static str> {
 /// Parse an integer literal, using `i64` when it fits and promoting to `BigInt`
 /// otherwise (architecture point 4 — allocation only on overflow).
 fn parse_int(text: &str) -> Value {
-    match text.parse::<i64>() {
+    // The separators are the author's, not the value's. The *spelling* is kept
+    // on the token — `oro fmt` reprints it — and stripped only here, where a
+    // number is being made out of it.
+    let clean: String = text.chars().filter(|c| *c != '_').collect();
+    let (digits, radix) = split_radix(&clean);
+    match i64::from_str_radix(digits, radix) {
         Ok(i) => Value::Int(i),
-        Err(_) => match BigInt::parse_decimal(text) {
+        // Too large for `i64`: the bignum path, which is the whole reason the
+        // lexer hands over text rather than a number. `0xFFFFFFFFFFFFFFFFFF`
+        // promotes exactly as `4722366482869645213695` does.
+        Err(_) => match bigint_in_radix(digits, radix) {
             Some(b) => Value::from_bigint(b),
             None => Value::Int(0), // lexer guarantees digits; unreachable in practice
         },
     }
+}
+
+/// Split a separator-free integer literal into its digits and its radix.
+/// Prefix letters are case-insensitive, as CPython's are.
+fn split_radix(clean: &str) -> (&str, u32) {
+    let mut it = clean.chars();
+    if it.next() == Some('0') {
+        if let Some(radix) = match it.next() {
+            Some('x') | Some('X') => Some(16),
+            Some('o') | Some('O') => Some(8),
+            Some('b') | Some('B') => Some(2),
+            _ => None,
+        } {
+            return (&clean[2..], radix);
+        }
+    }
+    (clean, 10)
+}
+
+/// A `BigInt` from digits in `radix`. Horner, one digit at a time: literals are
+/// short, and this needs no representation-specific arithmetic beyond the
+/// `mul`/`add` [`BigInt`] already has.
+fn bigint_in_radix(digits: &str, radix: u32) -> Option<BigInt> {
+    if radix == 10 {
+        // The decimal path is already written and already tested; going through
+        // it keeps the common case on the code that has always served it.
+        return BigInt::parse_decimal(digits);
+    }
+    let base = BigInt::from_i64(radix as i64);
+    let mut acc = BigInt::zero();
+    for c in digits.chars() {
+        acc = acc.mul(&base).add(&BigInt::from_i64(c.to_digit(radix)? as i64));
+    }
+    Some(acc)
+}
+
+/// The `f64` a float literal denotes. Rust's parser has no notion of Python's
+/// separators, so they come out here — the same rule [`parse_int`] follows, for
+/// the same reason.
+fn parse_float(text: &str) -> Option<f64> {
+    if text.contains('_') {
+        return text.replace('_', "").parse().ok();
+    }
+    text.parse().ok()
 }

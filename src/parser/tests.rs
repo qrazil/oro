@@ -344,13 +344,20 @@ fn literals() {
 
 #[test]
 fn numbers_kept_as_raw_text() {
-    match parse_expr("007") {
-        Expr::Int { value, .. } => assert_eq!(value, "007"),
-        other => panic!("expected int, got {other:?}"),
+    // The spelling survives the parser intact — radix prefix, letter case and
+    // separators included. `oro fmt` reprints this text, so a literal the
+    // author wrote as `0xff` must not come back as `255`.
+    for src in ["0", "000", "0xff", "0XFF", "0o17", "0b1010", "1_000", "0x_dead_beef"] {
+        match parse_expr(src) {
+            Expr::Int { value, .. } => assert_eq!(value, src),
+            other => panic!("expected int for {src}, got {other:?}"),
+        }
     }
-    match parse_expr("1e9") {
-        Expr::Float { value, .. } => assert_eq!(value, "1e9"),
-        other => panic!("expected float, got {other:?}"),
+    for src in ["1e9", "1_000.5", "1e1_0", ".5"] {
+        match parse_expr(src) {
+            Expr::Float { value, .. } => assert_eq!(value, src),
+            other => panic!("expected float for {src}, got {other:?}"),
+        }
     }
 }
 

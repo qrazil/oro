@@ -153,6 +153,87 @@ fn numbers_int_and_float() {
     );
 }
 
+/// Radix prefixes and separators, in the spelling the author wrote.
+///
+/// The token keeps the raw text: the compiler decides the value, and `oro fmt`
+/// reprints the token, so a formatter that rewrote `0xff` to `255` would be
+/// losing information. `0x1f` used to lex as `0` followed by the *name* `x1f`,
+/// which is a confusing way to fail several steps later.
+#[test]
+fn radix_prefixes_and_separators() {
+    assert_eq!(
+        kinds("0x1f 0XFF 0o17 0O7 0b1010 0B1\n"),
+        vec![
+            Int("0x1f".into()),
+            Int("0XFF".into()),
+            Int("0o17".into()),
+            Int("0O7".into()),
+            Int("0b1010".into()),
+            Int("0B1".into()),
+            Newline,
+            Eof
+        ]
+    );
+    assert_eq!(
+        kinds("1_000 0x_de_ad 1_000.5 1e1_0 .5_0\n"),
+        vec![
+            Int("1_000".into()),
+            Int("0x_de_ad".into()),
+            Float("1_000.5".into()),
+            Float("1e1_0".into()),
+            Float(".5_0".into()),
+            Newline,
+            Eof
+        ]
+    );
+    // A method call on a hex literal still reads as one.
+    assert_eq!(
+        kinds("0xff.to_str()\n"),
+        vec![Int("0xff".into()), Dot, ident("to_str"), LParen, RParen, Newline, Eof]
+    );
+}
+
+/// Every way a numeric literal can be malformed, and the fact that each is an
+/// error *here* rather than a number followed by a name that fails elsewhere.
+///
+/// The accept/reject line is CPython's, checked against `python3` case by case:
+/// a separator sits between digits, a prefix needs a digit, a leading zero on a
+/// nonzero decimal is refused, and a literal may not run into a name.
+#[test]
+fn malformed_numeric_literals_are_refused_at_the_literal() {
+    for (src, want) in [
+        ("1__0\n", "invalid decimal literal"),
+        ("1_\n", "invalid decimal literal"),
+        ("1_.5\n", "invalid decimal literal"),
+        ("1e\n", "invalid decimal literal"),
+        ("1e_10\n", "invalid decimal literal"),
+        ("123abc\n", "invalid decimal literal"),
+        ("0x1__f\n", "invalid hexadecimal literal"),
+        ("0x\n", "invalid hexadecimal literal"),
+        ("0x_\n", "invalid hexadecimal literal"),
+        ("0xg\n", "invalid hexadecimal literal"),
+        ("0x1fg\n", "invalid hexadecimal literal"),
+        ("0x1p3\n", "invalid hexadecimal literal"),
+        ("0b1e10\n", "invalid binary literal"),
+        // A digit the radix does not have gets the more specific answer, as
+        // CPython's does: the reader can see a digit and cannot see why.
+        ("0b2\n", "invalid digit '2' in binary literal"),
+        ("0o8\n", "invalid digit '8' in octal literal"),
+        // `01` is neither 1 nor octal, and `0o` is now the spelling for what
+        // was meant.
+        ("01\n", "leading zeros in decimal integer"),
+        ("0_5\n", "leading zeros in decimal integer"),
+        ("007\n", "leading zeros in decimal integer"),
+    ] {
+        let e = err(src);
+        assert!(e.message.contains(want), "{src:?}: wanted {want:?}, got {:?}", e.message);
+    }
+    // All-zero decimals are legal, as CPython's are, and `_1` is a name.
+    assert_eq!(kinds("000\n"), vec![Int("000".into()), Newline, Eof]);
+    assert_eq!(kinds("0_0\n"), vec![Int("0_0".into()), Newline, Eof]);
+    assert_eq!(kinds("_1\n"), vec![ident("_1"), Newline, Eof]);
+}
+
 #[test]
 fn string_escapes_are_decoded() {
     assert_eq!(

@@ -225,8 +225,7 @@ impl Lexer {
         if c.is_ascii_digit()
             || (c == '.' && matches!(self.peek2(), Some(d) if d.is_ascii_digit()))
         {
-            self.scan_number();
-            Ok(())
+            self.scan_number()
         } else if (c == 'f' || c == 'F') && matches!(self.peek2(), Some('\'') | Some('"')) {
             self.advance(); // consume the `f`/`F` prefix
             self.scan_string(true, false)
@@ -261,13 +260,45 @@ impl Lexer {
         }
     }
 
-    fn scan_number(&mut self) {
+    /// Scan a numeric literal, keeping its source spelling.
+    ///
+    /// The token carries the raw text — separators, radix prefix and letter
+    /// case included — for two reasons. An integer literal may exceed `i64`
+    /// and the promotion decision belongs to the compiler, not here; and
+    /// `oro fmt` reprints the token, so a formatter that turned `0xff` into
+    /// `255` would be losing information the author wrote down on purpose.
+    ///
+    /// CPython's grammar exactly, which is stricter than it looks: separators
+    /// sit *between* digits (`1_000` yes, `1__0`, `1_` and `_1` no — the last
+    /// is a name), a radix prefix needs at least one digit after it, a
+    /// leading zero on a nonzero decimal is refused outright, and a literal
+    /// may not run straight into a name.
+    fn scan_number(&mut self) -> Result<(), LexError> {
         let (sl, sc) = (self.line, self.col);
         let mut s = String::new();
-        let mut is_float = false;
 
-        while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
-            s.push(self.advance().unwrap());
+        // `0x` / `0o` / `0b`, in either case. A prefix is only a prefix at the
+        // start of the token, which is what makes `1_0x` impossible rather
+        // than special-cased. Before this, `0x1f` lexed as `0` and then the
+        // name `x1f`, and failed several steps later talking about the wrong
+        // thing.
+        if self.peek() == Some('0') {
+            if let Some((radix, name)) = self.peek2().and_then(radix_prefix) {
+                s.push(self.advance().expect("peeked"));
+                s.push(self.advance().expect("peeked"));
+                self.scan_digits(&mut s, radix, name)?;
+                self.reject_run_on(name)?;
+                self.push_at(TokenKind::Int(s), sl, sc);
+                self.line_has_tokens = true;
+                return Ok(());
+            }
+        }
+
+        let mut is_float = false;
+        // Absent only for `.5`, which `scan_token` guarantees is followed by a
+        // digit.
+        if matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+            self.scan_digits(&mut s, 10, "decimal")?;
         }
 
         // A `.` only starts a fractional part when a digit follows it. Without
@@ -276,13 +307,14 @@ impl Lexer {
         // as a method on the value.
         if self.peek() == Some('.') && matches!(self.peek2(), Some(c) if c.is_ascii_digit()) {
             is_float = true;
-            s.push(self.advance().unwrap());
-            while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
-                s.push(self.advance().unwrap());
-            }
+            s.push(self.advance().expect("peeked"));
+            self.scan_digits(&mut s, 10, "decimal")?;
         }
 
-        // Optional exponent, only consumed if it is well-formed.
+        // Optional exponent, only consumed if it is well-formed. A separator is
+        // legal inside the exponent's digits (`1e1_0`) but not in place of its
+        // first one (`1e_10`), which is CPython's rule and falls out of the
+        // lookahead below plus [`Lexer::scan_digits`].
         if matches!(self.peek(), Some('e') | Some('E')) {
             let after = self.peek2();
             let valid = matches!(after, Some(c) if c.is_ascii_digit())
@@ -290,15 +322,31 @@ impl Lexer {
                     && matches!(self.peek_at(2), Some(c) if c.is_ascii_digit()));
             if valid {
                 is_float = true;
-                s.push(self.advance().unwrap()); // e / E
+                s.push(self.advance().expect("peeked")); // e / E
                 if matches!(self.peek(), Some('+') | Some('-')) {
-                    s.push(self.advance().unwrap());
+                    s.push(self.advance().expect("peeked"));
                 }
-                while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
-                    s.push(self.advance().unwrap());
-                }
+                self.scan_digits(&mut s, 10, "decimal")?;
             }
         }
+
+        // `01` is neither 1 nor octal, and reading it as either is how a C or
+        // Python 2 habit becomes a wrong number. CPython refuses it, and now
+        // that `0o` exists there is a spelling for what was meant. Integers
+        // only: `0.5` and `0e5` are ordinary floats.
+        if !is_float
+            && s.len() > 1
+            && s.starts_with('0')
+            && s.bytes().any(|b| b != b'0' && b != b'_')
+        {
+            return Err(LexError::new(
+                "leading zeros in decimal integer literals are not permitted; \
+                 use an 0o prefix for octal integers",
+                sl,
+                sc,
+            ));
+        }
+        self.reject_run_on("decimal")?;
 
         let kind = if is_float {
             TokenKind::Float(s)
@@ -307,6 +355,64 @@ impl Lexer {
         };
         self.push_at(kind, sl, sc);
         self.line_has_tokens = true;
+        Ok(())
+    }
+
+    /// `(["_"] digit)+` in `radix` — CPython's rule, which is that a separator
+    /// sits *between* digits and a run of them needs at least one.
+    ///
+    /// Every violation is an error here rather than a place to stop the token,
+    /// because the alternative is worse: `1_` would lex as `1` and the name
+    /// `_`, and the program would fail later with a message about something
+    /// else.
+    fn scan_digits(
+        &mut self,
+        out: &mut String,
+        radix: u32,
+        name: &str,
+    ) -> Result<(), LexError> {
+        let mut digits = 0usize;
+        loop {
+            if self.peek() == Some('_') {
+                if !matches!(self.peek2(), Some(c) if c.is_digit(radix)) {
+                    return Err(self.error(format!("invalid {name} literal")));
+                }
+                out.push(self.advance().expect("peeked"));
+            }
+            match self.peek() {
+                Some(c) if c.is_digit(radix) => {
+                    out.push(self.advance().expect("peeked"));
+                    digits += 1;
+                }
+                _ => break,
+            }
+        }
+        // A decimal digit this radix does not have — `0b2`, `0o8`. Checked
+        // before the count, because it is the more specific answer to the same
+        // situation: the reader can see a digit and cannot see why it is
+        // refused. CPython makes the same distinction, in the same order.
+        if let Some(c) = self.peek() {
+            if c.is_ascii_digit() {
+                return Err(self.error(format!("invalid digit '{c}' in {name} literal")));
+            }
+        }
+        if digits == 0 {
+            return Err(self.error(format!("invalid {name} literal")));
+        }
+        Ok(())
+    }
+
+    /// A numeric literal may not run straight into a name. `123abc` used to
+    /// lex as `123` and `abc`, and `0x1p3` would now lex as `0x1` and `p3`;
+    /// both then fail somewhere else, about something else. CPython refuses
+    /// both at the literal, and so does this.
+    fn reject_run_on(&self, name: &str) -> Result<(), LexError> {
+        match self.peek() {
+            Some(c) if c == '_' || c.is_ascii_alphabetic() => {
+                Err(self.error(format!("invalid {name} literal")))
+            }
+            _ => Ok(()),
+        }
     }
 
     fn scan_string(&mut self, is_f: bool, is_raw: bool) -> Result<(), LexError> {
@@ -657,6 +763,18 @@ impl Lexer {
 
     fn push_at(&mut self, kind: TokenKind, line: usize, col: usize) {
         self.tokens.push(Token::new(kind, line, col));
+    }
+}
+
+/// The radix a `0x` / `0o` / `0b` prefix names, and the word its diagnostic
+/// uses. Case-insensitive in the prefix letter, as CPython is — and in the
+/// digits too, since `is_digit(16)` accepts `A`-`F` and `a`-`f` alike.
+fn radix_prefix(c: char) -> Option<(u32, &'static str)> {
+    match c {
+        'x' | 'X' => Some((16, "hexadecimal")),
+        'o' | 'O' => Some((8, "octal")),
+        'b' | 'B' => Some((2, "binary")),
+        _ => None,
     }
 }
 
