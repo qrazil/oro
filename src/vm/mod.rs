@@ -1690,11 +1690,7 @@ impl Vm {
                             if g.done {
                                 None
                             } else {
-                                Some(
-                                    g.frame
-                                        .take()
-                                        .map(|b| *b.downcast::<Frame>().expect("gen frame")),
-                                )
+                                Some(take_gen_frame(&mut g))
                             }
                         };
                         match taken {
@@ -1759,7 +1755,7 @@ impl Vm {
                     // the value to whatever is driving it.
                     let frame = self.task.frames.pop().expect("yield with no frame");
                     let (gen, driver) = self.task.gen_stack.pop().expect("yield outside a generator");
-                    gen.borrow_mut().frame = Some(Box::new(frame));
+                    put_gen_frame(&mut gen.borrow_mut(), frame);
                     match driver {
                         GenDriver::ForLoop(_) => self.push(value),
                         GenDriver::Materialize => {
@@ -2367,7 +2363,8 @@ impl Vm {
                 if f.code.is_generator {
                     // Calling a generator function does not run it; it produces a
                     // generator holding the suspended (unstarted) frame.
-                    let gen = crate::value::GenBox { done: false, frame: Some(Box::new(frame)) };
+                    let gen =
+                        crate::value::GenBox { done: false, frame: Some(Box::new(Some(frame))) };
                     self.push(Value::Generator(Rc::new(RefCell::new(gen))));
                 } else {
                     self.task.frames.push(frame);
@@ -3014,7 +3011,7 @@ impl Vm {
                 if g.done {
                     None
                 } else {
-                    Some(g.frame.take().map(|b| *b.downcast::<Frame>().expect("gen frame")))
+                    Some(take_gen_frame(&mut g))
                 }
             };
             match taken {
@@ -4794,6 +4791,28 @@ impl Vm {
         }
 
         Ok(frame)
+    }
+}
+
+/// Take a suspended generator's frame out of its box, leaving the box.
+///
+/// The box is the point. A `GenBox` used to hold `Box<Frame>`, so every
+/// `yield` allocated one and every resume freed it — a malloc/free pair per
+/// element, on the one path a generator pipeline is made of. It holds
+/// `Box<Option<Frame>>` instead, allocated once when the generator is created
+/// and written through for the rest of its life.
+///
+/// `None` here means the generator is *running* — its frame is on some task's
+/// frame stack right now — which is exactly what an empty box meant before.
+fn take_gen_frame(g: &mut crate::value::GenBox) -> Option<Frame> {
+    g.frame.as_mut()?.downcast_mut::<Option<Frame>>().expect("gen frame").take()
+}
+
+/// Suspend `frame` back into `g`'s box, reusing it if it is still there.
+fn put_gen_frame(g: &mut crate::value::GenBox, frame: Frame) {
+    match g.frame.as_mut() {
+        Some(b) => *b.downcast_mut::<Option<Frame>>().expect("gen frame") = Some(frame),
+        None => g.frame = Some(Box::new(Some(frame))),
     }
 }
 

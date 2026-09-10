@@ -686,9 +686,16 @@ fn same_name(k: &Rc<str>, name: &str) -> bool {
 /// frame layout. `done` is set when the generator is exhausted.
 pub struct GenBox {
     pub done: bool,
-    /// The suspended `Frame`, or `None` while the generator is running or done.
-    /// `yield` is statement-only in Oro, so resuming just continues the frame —
-    /// no sent value to inject.
+    /// The generator's frame slot: a box holding `Some(frame)` while it is
+    /// suspended and `None` while it is running (its frame is then on some
+    /// task's frame stack). `yield` is statement-only in Oro, so resuming just
+    /// continues the frame — there is no sent value to inject.
+    ///
+    /// The concrete type inside is `Option<Frame>`, and the **box is allocated
+    /// once per generator, not once per `yield`**: it used to hold
+    /// `Box<Frame>`, so suspending allocated and resuming freed, a malloc/free
+    /// pair per element produced. The outer `Option` is only ever `None` for a
+    /// generator that has finished.
     pub frame: Option<Box<dyn std::any::Any>>,
 }
 
