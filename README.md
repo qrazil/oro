@@ -281,7 +281,9 @@ Implemented and working today:
   that. `list` and `dict` stay unhashable, and so
   does an instance of a class that defines `__eq__`: CPython clears `__hash__`
   there and lets the class define one back, and Oro's dunder set has no
-  `__hash__`, so it is permanent. There is no `hash()` builtin, and dict order
+  `__hash__`, so it is permanent. The case for leaving it that way — and the
+  tuple key that replaces it — is
+  [`docs/hash-and-equality.md`](docs/hash-and-equality.md). There is no `hash()` builtin, and dict order
   is insertion order, so hashing by address is not observable from a program —
   nothing about a run depends on where the allocator put something.
 
