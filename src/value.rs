@@ -607,11 +607,71 @@ impl Class {
 /// An instance of a user class. Instance attributes live in `fields`.
 pub struct Instance {
     pub class: Rc<Class>,
-    /// Instance attributes, by name. Keyed by `Rc<str>` so that `self.x = v`
-    /// stores a refcount bump rather than allocating a fresh `String` for a
-    /// name the code object already owns — attribute assignment is the single
-    /// most common statement in object-heavy code.
-    pub fields: RefCell<HashMap<Rc<str>, Value>>,
+    /// Instance attributes, by name. See [`Fields`].
+    pub fields: RefCell<Fields>,
+}
+
+/// An instance's attribute table: an association list, scanned linearly.
+///
+/// This was a `HashMap<Rc<str>, Value>`, and the map was the wrong shape for
+/// what it holds. Instances carry a *handful* of attributes — the classes in
+/// this repository's corpus average three, and a class with more than ten is
+/// not idiomatic Oro — while the names are short identifiers, so hashing one
+/// with SipHash costs more than comparing it against every entry there is.
+/// Measured on a loop that keeps its cursor in `self.pos`, the swap is worth
+/// roughly a quarter of the loop's total time.
+///
+/// Two properties make the linear scan safe as well as fast. Nothing anywhere
+/// iterates an instance's fields — they are only ever `get` and `insert`, and
+/// Oro has no `del obj.x` — so the order entries happen to sit in is not
+/// observable, and an entry's index, once assigned, never moves. The first
+/// fact is what allows a `Vec` at all; the second is what would allow a
+/// per-call-site slot cache on top of it later.
+///
+/// The name comparison leads with the pointers because it usually wins: a
+/// field is stored under the very `Rc<str>` the code object interned, so a
+/// later read of the same name from the same code object compares equal
+/// without touching the characters. A read from a *different* code object
+/// (`__init__` stores `self.x`, `add` reads it) falls through to the ordinary
+/// `str` comparison, which for a short identifier is a length check and one
+/// word of `memcmp`.
+#[derive(Default)]
+pub struct Fields {
+    entries: Vec<(Rc<str>, Value)>,
+}
+
+impl Fields {
+    pub fn new() -> Fields {
+        Fields { entries: Vec::new() }
+    }
+
+    #[inline]
+    pub fn get(&self, name: &str) -> Option<&Value> {
+        for (k, v) in &self.entries {
+            if same_name(k, name) {
+                return Some(v);
+            }
+        }
+        None
+    }
+
+    pub fn insert(&mut self, name: Rc<str>, value: Value) {
+        for (k, v) in &mut self.entries {
+            if same_name(k, &name) {
+                *v = value;
+                return;
+            }
+        }
+        self.entries.push((name, value));
+    }
+}
+
+/// Whether an interned field name is the name being looked up. Pointer-equal
+/// `Rc<str>`s are the same string by construction; anything else is decided by
+/// the characters. See [`Fields`].
+#[inline]
+fn same_name(k: &Rc<str>, name: &str) -> bool {
+    (std::ptr::eq(k.as_ptr(), name.as_ptr()) && k.len() == name.len()) || &**k == name
 }
 
 /// The state of a generator. Its suspended activation record is a VM `Frame`,

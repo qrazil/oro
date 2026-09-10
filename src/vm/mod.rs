@@ -32,8 +32,8 @@ use crate::ast::CmpOp;
 use crate::compiler::{CaptureSource, ClassSpec, CodeObject, Op, ParamInfo, VarTarget};
 use crate::task::{TaskHandle, TaskId};
 use crate::value::{
-    BoundMethod, Class, Function, Instance, IterState, MethodKind, OroDict, OroList, OroTuple,
-    RangeVal, SuperProxy, Value,
+    BoundMethod, Class, Fields, Function, Instance, IterState, MethodKind, OroDict, OroList,
+    OroTuple, RangeVal, SuperProxy, Value,
 };
 use std::collections::{HashMap, VecDeque};
 use std::cell::Cell;
@@ -2008,7 +2008,7 @@ impl Vm {
     ) -> Result<(), RuntimeError> {
         let inst = Value::Instance(Rc::new(Instance {
             class: class.clone(),
-            fields: RefCell::new(HashMap::new()),
+            fields: RefCell::new(Fields::new()),
         }));
         match Class::find(&class, "__init__") {
             Some((Value::Func(init), defclass)) => {
@@ -3670,7 +3670,7 @@ impl Vm {
         let truncated =
             output.stdout.len() >= MAX_CAPTURE_BYTES || output.stderr.len() >= MAX_CAPTURE_BYTES;
 
-        let mut fields = HashMap::new();
+        let mut fields = Fields::new();
         fields.insert(Rc::from("returncode"), Value::Int(returncode));
         fields.insert(Rc::from("ok"), Value::Bool(returncode == 0));
         fields.insert(Rc::from("truncated"), Value::Bool(truncated));
@@ -3845,7 +3845,7 @@ impl Vm {
 
     /// Build an exception instance of `class`, storing its args tuple natively.
     fn make_exception_instance(&self, class: Rc<Class>, args: Vec<Value>) -> Value {
-        let mut fields = HashMap::new();
+        let mut fields = Fields::new();
         fields.insert(Rc::from("args"), Value::Tuple(OroTuple::new(args)));
         Value::Instance(Rc::new(Instance { class, fields: RefCell::new(fields) }))
     }
