@@ -174,7 +174,9 @@ Implemented and working today:
   `maxsplit` counts its splits from — which is why there is no `rsplit`.
   `find(sub, start, end, reverse=false)` takes `reverse=true` for the last
   occurrence, spelled the way `sorted(reverse=…)` already is, which is why
-  there is no `rfind`. `rm_prefix`/`rm_suffix` remove
+  there is no `rfind`. `count(sub, start, end)` searches the same window `find`
+  does, by the same rules — "how many" and "where" are asked over the same
+  region of the same string, or they are two surfaces pretending to be one. `rm_prefix`/`rm_suffix` remove
   a *literal* affix and exist precisely because `strip(chars)` gets mistaken
   for one: `"ping.png".strip(".png", side="right")` is `"pi"`, and
   `"ping.png".rm_suffix(".png")` is what was meant. The four `is_*` predicates

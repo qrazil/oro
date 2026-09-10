@@ -11,6 +11,11 @@
 # the window by the affix length *before* an empty affix is considered; a
 # negative `replace` count means "all"; and every one of those runs again over
 # non-ASCII text, where the indices count characters and not bytes.
+#
+# `count` is here for a different reason: it never took a window at all,
+# while `find` did. Two searches over one surface, disagreeing about what
+# they can be asked, is the kind of asymmetry that is cheap to fix once and
+# permanent to leave. It takes CPython's `start`/`end`, off the same helper.
 
 BOUNDS = [-100, -4, -1, 0, 2, 99]
 COUNTS = [-9, -1, 0, 1, 2, 5, 99]
@@ -71,13 +76,19 @@ for s in ["  hi  ", "xxhixx", "xyxhixyx", "", "xxx", "\thi\n ", "ααhiα", "a\x
     print(repr(s), row, s.split())
 
 # `count` is the same non-overlapping count CPython does, including the empty
-# needle sitting between every pair of characters and at both ends.
-print("--- str.count(sub)")
+# needle sitting between every pair of characters and at both ends — and it
+# searches the same `[start, end)` window `find` does, by the same rules. The
+# empty needle is where the window is visible: it is found once per position
+# *in the window*, so the bounds change the answer even when nothing matches.
+print("--- str.count(sub[, start[, end]])")
 for s in STRS:
-    row = []
     for sub in SUBS:
-        row.append(s.count(sub))
-    print(repr(s), row)
+        row = [s.count(sub)]
+        for start in BOUNDS:
+            row.append(s.count(sub, start))
+            for end in BOUNDS:
+                row.append(s.count(sub, start, end))
+        print(repr(s), repr(sub), row)
 
 # The same table on bytes, where an index counts octets rather than characters.
 BYTES = [b"abcabc", b"abc", b"", b"\xc3\xa9x\xc3\xa9", b"\x00a\xff"]
@@ -91,6 +102,16 @@ for s in BYTES:
             row.append(s.find(sub, start))
             for end in BOUNDS:
                 row.append(s.find(sub, start, end))
+        print(repr(s), repr(sub), row)
+
+print("--- bytes.count(sub[, start[, end]])")
+for s in BYTES:
+    for sub in BSUBS:
+        row = [s.count(sub)]
+        for start in BOUNDS:
+            row.append(s.count(sub, start))
+            for end in BOUNDS:
+                row.append(s.count(sub, start, end))
         print(repr(s), repr(sub), row)
 
 print("--- bytes.startswith / endswith(affix[, start[, end]])")

@@ -1136,9 +1136,11 @@ fn find_reverse(kwargs: &[(String, Value)]) -> VResult<bool> {
     Ok(reverse)
 }
 
-/// Non-overlapping occurrences of `sub`, CPython's `count`: an empty needle
-/// sits between every pair of characters and at both ends, so it is found
-/// `len + 1` times.
+/// Non-overlapping occurrences of `sub` in an already-windowed slice,
+/// CPython's `count`: an empty needle sits between every pair of characters and
+/// at both ends, so it is found `len + 1` times — of the *window*, which is why
+/// the caller narrows the slice before getting here rather than passing bounds
+/// in.
 fn count_sub(hay: &str, sub: &str) -> i64 {
     if sub.is_empty() {
         return hay.chars().count() as i64 + 1;
@@ -1788,9 +1790,18 @@ fn str_method(
             }
         }
         "count" => {
-            exactly(&args, 1, "count")?;
+            at_most(&args, 3, "count")?;
             let sub = str_arg(&args, 0, "count")?;
-            Ok(Value::Int(count_sub(s, &sub)))
+            let len = os.char_len() as i64;
+            // The same window `find` searches, read the same way — `count` is
+            // "how many times", `find` is "where", and asking them over
+            // different regions of the same string would be the asymmetry this
+            // surface exists to not have.
+            let Some((start, end)) = search_window(&args, 1, "count", len)? else {
+                return Ok(Value::Int(0));
+            };
+            let (b0, b1) = char_window_bytes(os, start as usize, end as usize);
+            Ok(Value::Int(count_sub(&s[b0..b1], &sub)))
         }
         "is_digit" | "is_alpha" | "is_alnum" | "is_space" => {
             exactly(&args, 0, name)?;
@@ -2140,9 +2151,12 @@ fn bytes_method(
             }
         }
         "count" => {
-            exactly(&args, 1, "count")?;
+            at_most(&args, 3, "count")?;
             let sub = bytes_arg(&args, 0, "count")?;
-            Ok(Value::Int(count_bytes(b, &sub)))
+            let Some((start, end)) = search_window(&args, 1, "count", b.len() as i64)? else {
+                return Ok(Value::Int(0));
+            };
+            Ok(Value::Int(count_bytes(&b[start as usize..end as usize], &sub)))
         }
         "is_digit" | "is_alpha" | "is_alnum" | "is_space" => {
             exactly(&args, 0, name)?;

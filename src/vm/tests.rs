@@ -1106,11 +1106,27 @@ fn rm_prefix_and_rm_suffix_are_literal() {
 
 /// `count` and the four `is_*` predicates, including the empty-sequence rule
 /// (`false` for all four) that CPython also has and everyone forgets.
+///
+/// `count` takes `find`'s window, off the same helper. The whole matrix is
+/// oracled in `corpus/core/38_str_bytes_optional_args.oro`; these are the
+/// three cases worth naming — the window applies, a negative bound counts from
+/// the end, and a start past the end is a negative-width window that not even
+/// the empty needle matches in.
 #[test]
 fn count_and_the_is_predicates() {
     assert_eq!(int(&eval("r = \"abcabc\".count(\"bc\")\n")), 2);
     assert_eq!(int(&eval("r = \"aaa\".count(\"aa\")\n")), 1);
     assert_eq!(int(&eval("r = \"abc\".count(\"\")\n")), 4);
+    assert_eq!(int(&eval("r = \"abcabc\".count(\"bc\", 2)\n")), 1);
+    assert_eq!(int(&eval("r = \"abcabc\".count(\"bc\", 0, 4)\n")), 1);
+    assert_eq!(int(&eval("r = \"abcabc\".count(\"bc\", -3)\n")), 1);
+    assert_eq!(int(&eval("r = \"abc\".count(\"\", 1, 2)\n")), 2);
+    assert_eq!(int(&eval("r = \"abc\".count(\"\", 3)\n")), 1);
+    assert_eq!(int(&eval("r = \"abc\".count(\"\", 99)\n")), 0);
+    // Character indices, not byte offsets — the same rule `find` follows.
+    assert_eq!(int(&eval("r = \"ha\u{e9}\u{e9}ha\".count(\"\u{e9}\", 3)\n")), 1);
+    assert_eq!(int(&eval("r = b\"abcabc\".count(b\"bc\", 2)\n")), 1);
+    assert_eq!(int(&eval("r = b\"abc\".count(b\"\", 99)\n")), 0);
     assert!(eval("r = \"123\".is_digit()\n").truthy());
     assert!(!eval("r = \"12a\".is_digit()\n").truthy());
     assert!(eval("r = \"caf\u{e9}\".is_alpha()\n").truthy());
