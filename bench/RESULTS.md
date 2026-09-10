@@ -32,33 +32,47 @@ harness checks oro and CPython agree before reporting a time.
 
 ## Where things stand
 
-Two optimization passes have run. Pass two is measured against pass one's
-result, interleaved A/B and pinned to one core, best-of-13:
+Two optimization passes have run. Pass two is `perf/pass-two`, rebased onto
+`feat/sane-defaults` after the JSON work landed and **re-measured against it** —
+the baseline below is that branch's own binary, not pass one's, so the slice
+fix and the iterative teardown that arrived in the meantime are already in the
+"before" column. Interleaved A/B, both binaries pinned to one core,
+best-of-13:
 
-| bench | after pass one | after pass two | improvement | vs CPython (pass one → now) |
+| bench | baseline | after pass two | improvement | vs CPython (baseline → now) |
 |---|---|---|---|---|
-| fib | 0.1919s | **0.0913s** | **-52%** | 3.80x → **1.87x** |
-| loop | 0.7392s | **0.2351s** | **-68%** | 1.39x → **0.48x** |
-| strjoin | 0.1376s | **0.1105s** | **-20%** | 1.92x → **1.59x** |
-| strops | 0.3327s | **0.2355s** | **-29%** | 1.73x → **1.34x** |
-| dictops | 0.4076s | **0.2785s** | **-32%** | 1.81x → **1.31x** |
-| dictstr | 0.5565s | **0.3773s** | **-32%** | new → **1.25x** |
-| oo | 0.3729s | **0.2039s** | **-45%** | 2.53x → **1.32x** |
-| genpipe | 0.1871s | **0.1089s** | **-42%** | 2.61x → **1.59x** |
-| exc | 0.1530s | **0.0833s** | **-46%** | 1.30x → **0.81x** |
-| listbuild | 0.3457s | **0.1707s** | **-51%** | 1.72x → **0.86x** |
-| builtins | 0.2748s | **0.1788s** | **-35%** | 0.98x → **0.63x** |
-| chain | 0.1745s | **0.1303s** | **-25%** | 2.41x → **1.91x** |
-| **mean** | | | **-39.8%** | |
+| fib | 0.1657s | **0.0844s** | **-49%** | 4.07x → **1.95x** |
+| loop | 0.6494s | **0.2239s** | **-66%** | 1.41x → **0.50x** |
+| strjoin | 0.1257s | **0.1035s** | **-18%** | 2.00x → **1.62x** |
+| strops | 0.3045s | **0.2193s** | **-28%** | 1.84x → **1.34x** |
+| dictops | 0.3679s | **0.2685s** | **-27%** | 1.81x → **1.32x** |
+| dictstr | 0.5082s | **0.3534s** | **-30%** | 1.95x → **1.32x** |
+| oo | 0.3374s | **0.1906s** | **-44%** | 2.47x → **1.39x** |
+| genpipe | 0.1654s | **0.0978s** | **-41%** | 2.74x → **1.66x** |
+| exc | 0.1377s | **0.0808s** | **-41%** | 1.41x → **0.82x** |
+| listbuild | 0.3082s | **0.1615s** | **-48%** | 1.68x → **0.88x** |
+| builtins | 0.2499s | **0.1685s** | **-33%** | 0.96x → **0.64x** |
+| chain | 0.1585s | **0.1223s** | **-23%** | 2.53x → **1.92x** |
+| json | 0.0950s | **0.0938s** | -1% | 0.70x → **0.70x** |
+| **mean** | | | **-34.4%** | |
 
-Four benchmarks are now faster than CPython 3.12 outright — `loop` at 0.48x,
-`builtins` at 0.63x, `exc` at 0.81x, `listbuild` at 0.86x — and nothing in the
-suite is worse than 1.91x. The A/A control for the session that produced the
-table above (the final binary against a byte-identical copy of itself, same
-harness, same pinning) was **mean -0.07%, worst single benchmark 2.76%**.
+**-37.2%** across the twelve interpreter benchmarks; `json` is included for
+honesty and barely moves, because its time is inside a native codec that this
+pass never touches. Five benchmarks are now faster than CPython 3.12 outright —
+`loop` at 0.50x, `builtins` at 0.64x, `json` at 0.70x, `exc` at 0.82x,
+`listbuild` at 0.88x — and nothing in the suite is worse than 1.95x.
 
-Pass two is the branch `perf/pass-two`; its log is "Pass two — per-optimization
-log" below.
+The A/A control for that session — the baseline binary against a byte-identical
+copy of itself, same harness, same pinning — was **mean +0.16%, worst single
+benchmark 3.38%** (`json`, the shortest program in the suite at 0.09s and the
+noisiest for it).
+
+The per-step tables in "Pass two — per-optimization log" below are the numbers
+each change was measured at when it was made, against pass one's binary. They
+have not been restated against the new baseline: each is a comparison of two
+binaries that differed by exactly one commit, which is what makes it evidence,
+and re-running them all against a moved baseline would only add noise. The
+table above is the one that says where the branch actually lands.
 
 ## Where pass one left things
 
@@ -599,12 +613,13 @@ floor before any claim is read against it. The floors measured were **mean
 -0.14%, worst 2.14%** at the start and **mean -0.07%, worst 2.76%** at the end.
 A single-benchmark move under about 3% is not reported as real.
 
-Every commit was gated on: `cargo test` (387), `./corpus/run.sh` (71 pass, 0
-fail, 2 known-failing), `cargo clippy --all-targets -- -D warnings`, the
-`size_of` tripwires, and a **byte-for-byte diagnostic differential** — stdout,
-stderr and exit code of a set of error-producing programs, compared against the
-pass's base binary. That set grew from 28 programs to **90** as the pass went
-on, with new programs written for each change that could plausibly move a
+Every commit was gated on: `cargo test` **in debug** (401 after the rebase; a
+release-only gate once let a stack overflow through, so this one is not
+optional), `./corpus/run.sh` (80 pass, 0 fail, 0 known-failing),
+`cargo clippy --all-targets -- -D warnings`, the `size_of` tripwires, and a
+**byte-for-byte diagnostic differential** — stdout, stderr and exit code of a
+set of error-producing programs, compared against the pass's base binary. That
+set grew from 28 programs to **91** as the pass went on, with new programs written for each change that could plausibly move a
 message: integer overflow promoting to `Big`, mixed-type and dunder
 comparisons, negative and out-of-range subscripts on load and on store, an
 unhashable dict key, a list mutated during iteration, `super()` with and
@@ -912,6 +927,40 @@ for a net **+1.2%**. Two runs at n=9 and n=13 agree; `#[inline]` on the new
 It is the correct data structure landing in the wrong place. Reverted, because
 the suite is the arbiter and the suite says no. **The benchmark stays** — the
 next person to touch `HKey` should have something that can see it.
+
+### 26. The rebase, and one real regression it exposed
+
+Rebasing onto `feat/sane-defaults` after the JSON work landed produced two
+failures, and only one of them was a merge artifact.
+
+**`Op::CallMethod` bypassed the generator-method fix.** While this pass was in
+flight, a method containing `yield` was made to produce a generator, exactly as
+a plain `def` does; that fix lives in `Vm::invoke`'s `MethodKind::User` arm.
+Step 22 gave `obj.m(...)` a *second* user-method arm in `do_call_method`, which
+did not have it, so an ordinary `obj.m()` on a generator method fell through to
+`invoke_user`'s refusal — the one meant for dunders and chain callbacks, each
+of which has a continuation waiting on a *value* from a frame that runs now.
+Both changes were right alone; together the fast path skipped the case.
+
+The fix is not a second copy of the logic but the removal of the first: the
+frame-build-and-park is now `Vm::make_method_generator`, and both arms call it.
+Two arms that must agree and are written twice will disagree again, so the
+repair is the one that makes disagreement unexpressible.
+
+The rebase also dropped, silently, the generator-*receiver* drain from the
+native-method arm — `nums().to_list()` surfaced `ForIter target is not an
+iterator`, and `58_generator_receiver.oro` caught it — and left one `GenBox`
+construction spelling `Box::new(frame)` where step 24 requires
+`Box::new(Some(frame))`, which would have panicked on the first resume through
+that path. Both restored. The native-method arm is now line-for-line the
+baseline's, modulo the receiver's spelling, and that was checked by diffing the
+two rather than by reading them.
+
+`super()` inside a generator method (resolved on resume, possibly in another
+task), laziness across two `for` loops, a `break` part-way through one, and a
+generator crossing a `spawn`/`chan` boundary are all covered by
+`47_generator_method.oro` and `58_generator_receiver.oro`, which pass
+unmodified, and by program 63 of the diagnostic differential.
 
 ## What is left, ranked (after pass two)
 
