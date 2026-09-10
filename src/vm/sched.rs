@@ -109,7 +109,7 @@ use crate::stream::{Io, OroStream};
 use crate::task::{Channel, TaskHandle, TaskId, TaskState};
 use crate::value::{MethodKind, VResult, Value};
 
-use super::{Frame, ReturnAction, RuntimeError, Step, Task, Vm};
+use super::{Frame, ReturnAction, RuntimeError, Step, Task, Vm, VmError};
 
 /// Why a task is not running, and therefore what has to happen for it to run
 /// again.
@@ -333,7 +333,7 @@ pub(super) enum Slice {
     /// An exception reached the bottom of this task's frame stack. Carries the
     /// exception itself (rule 2 re-raises it in a joiner) and the rendered
     /// diagnostic (rule 3 prints it).
-    Failed(Value, RuntimeError),
+    Failed(Value, VmError),
 }
 
 // --- The reactor -------------------------------------------------------------
@@ -956,7 +956,7 @@ impl Vm {
     /// Retire the running task: publish its outcome, hand it to anyone waiting
     /// in `join`, and drop the scheduler's handle — which is what fires §3's
     /// rule 3 for a task nobody kept.
-    fn finish_task(&mut self, outcome: Result<Value, (Value, RuntimeError)>) {
+    fn finish_task(&mut self, outcome: Result<Value, (Value, VmError)>) {
         let mut task = std::mem::replace(&mut self.task, Task::new());
         let handle = task.handle.take().expect("only a spawned task is retired here");
         let joiners = std::mem::take(&mut *handle.joiners.borrow_mut());
@@ -1018,7 +1018,7 @@ impl Vm {
     /// Returns the main task's value. The main task is not joinable, so its
     /// uncaught exception is the *program's* error rather than a stored
     /// outcome — there is nobody it could be re-raised in.
-    pub(super) fn run_loop(&mut self) -> Result<Value, RuntimeError> {
+    pub(super) fn run_loop(&mut self) -> Result<Value, VmError> {
         let mut main_result: Option<Value> = None;
         let mut finished_main: Option<Task> = None;
         loop {
@@ -1406,11 +1406,11 @@ impl Vm {
         }
     }
 
-    fn deadlock(&self, park: &Park, source: Rc<str>, line: u32, col: u32) -> RuntimeError {
+    fn deadlock(&self, park: &Park, source: Rc<str>, line: u32, col: u32) -> VmError {
         let mut waits: Vec<String> = self.parked.values().map(|p| p.park.what()).collect();
         waits.push(park.what());
         waits.sort();
-        RuntimeError {
+        Box::new(RuntimeError {
             message: format!(
                 "deadlock: every task is blocked and nothing can wake them ({})",
                 waits.join(", ")
@@ -1419,16 +1419,16 @@ impl Vm {
             source,
             line,
             col,
-        }
+        })
     }
 
     /// The same failure seen from the other side: a task *ended*, and what is
     /// left cannot proceed. Whether main is among the blocked is deliberately
     /// not claimed — it may well be.
-    fn deadlock_stuck(&self, source: Rc<str>, line: u32, col: u32) -> RuntimeError {
+    fn deadlock_stuck(&self, source: Rc<str>, line: u32, col: u32) -> VmError {
         let mut waits: Vec<String> = self.parked.values().map(|p| p.park.what()).collect();
         waits.sort();
-        RuntimeError {
+        Box::new(RuntimeError {
             message: format!(
                 "deadlock: nothing is runnable and {} task(s) are blocked forever ({})",
                 self.parked.len(),
@@ -1438,7 +1438,7 @@ impl Vm {
             source,
             line,
             col,
-        }
+        })
     }
 
     // --- `spawn` -------------------------------------------------------------
@@ -1452,7 +1452,7 @@ impl Vm {
         &mut self,
         mut args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
-    ) -> Result<Step, RuntimeError> {
+    ) -> Result<Step, VmError> {
         if !kwargs.is_empty() {
             return Ok(self.raise("TypeError", "spawn() takes no keyword arguments"));
         }
@@ -1524,7 +1524,7 @@ impl Vm {
         &mut self,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
-    ) -> Result<Step, RuntimeError> {
+    ) -> Result<Step, VmError> {
         if !kwargs.is_empty() {
             return Ok(self.raise("TypeError", "yield_now() takes no keyword arguments"));
         }
@@ -1541,7 +1541,7 @@ impl Vm {
     }
 
     /// `t.join()` — §3's rules 1 and 2.
-    pub(super) fn task_join(&mut self, handle: Rc<TaskHandle>) -> Result<Step, RuntimeError> {
+    pub(super) fn task_join(&mut self, handle: Rc<TaskHandle>) -> Result<Step, VmError> {
         if handle.id == self.task.id {
             return Ok(self.raise("RuntimeError", "a task cannot join itself"));
         }
@@ -1579,7 +1579,7 @@ impl Vm {
         &mut self,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
-    ) -> Result<Step, RuntimeError> {
+    ) -> Result<Step, VmError> {
         if !kwargs.is_empty() {
             return Ok(self.raise("TypeError", "chan() takes no keyword arguments"));
         }
@@ -1611,7 +1611,7 @@ impl Vm {
         &mut self,
         ch: Rc<Channel>,
         v: Value,
-    ) -> Result<Step, RuntimeError> {
+    ) -> Result<Step, VmError> {
         if ch.closed.get() {
             return Ok(Step::Raise(self.channel_closed_exc()));
         }
@@ -1668,7 +1668,7 @@ impl Vm {
 
     /// `ch.recv()`. A closed *and drained* channel raises; a closed channel
     /// with items still hands them out first (§3).
-    pub(super) fn chan_recv(&mut self, ch: Rc<Channel>) -> Result<Step, RuntimeError> {
+    pub(super) fn chan_recv(&mut self, ch: Rc<Channel>) -> Result<Step, VmError> {
         if let Some(v) = self.chan_take(&ch) {
             self.push(v);
             return Ok(Step::Next);
@@ -1687,7 +1687,7 @@ impl Vm {
         &mut self,
         ch: Rc<Channel>,
         target: usize,
-    ) -> Result<Step, RuntimeError> {
+    ) -> Result<Step, VmError> {
         if let Some(v) = self.chan_take(&ch) {
             self.push(v);
             return Ok(Step::Next);
@@ -1704,7 +1704,7 @@ impl Vm {
     /// `ch.close()`. Idempotent: closing a closed channel is a no-op, because
     /// in a language whose answer to `with` is deterministic drop, `close()`
     /// gets written defensively and a second one is not a bug.
-    pub(super) fn chan_close(&mut self, ch: Rc<Channel>) -> Result<Step, RuntimeError> {
+    pub(super) fn chan_close(&mut self, ch: Rc<Channel>) -> Result<Step, VmError> {
         if !ch.closed.get() {
             ch.closed.set(true);
             let receivers: Vec<TaskId> = ch.recv_waiters.borrow_mut().drain(..).collect();
@@ -1776,7 +1776,7 @@ impl Vm {
         name: &str,
         args: &[Value],
         kwargs: &[(String, Value)],
-    ) -> Result<Option<Step>, RuntimeError> {
+    ) -> Result<Option<Step>, VmError> {
         let Value::Stream(s) = recv else { return Ok(None) };
         if !matches!(name, "read" | "write" | "read_until" | "accept" | "close") {
             return Ok(None);
@@ -1846,7 +1846,7 @@ impl Vm {
     /// is woken with the exception it would have got had it called the method
     /// one instruction later — `read() on a closed TcpStream`, a plain
     /// `ValueError`, catchable like any other.
-    fn stream_close(&mut self, s: &Rc<OroStream>) -> Result<Step, RuntimeError> {
+    fn stream_close(&mut self, s: &Rc<OroStream>) -> Result<Step, VmError> {
         self.wrap(s.close())?;
         if let Some(token) = s.token() {
             for id in self.reactor.take_waiters(token) {
@@ -1871,7 +1871,7 @@ impl Vm {
     /// The overwhelmingly common case is that it finishes: buffered bytes, a
     /// connection already in the backlog, a write the send buffer takes whole.
     /// Nothing is registered and no `Park` is built for those.
-    fn begin_io(&mut self, stream: Rc<OroStream>, op: IoOp) -> Result<Step, RuntimeError> {
+    fn begin_io(&mut self, stream: Rc<OroStream>, op: IoOp) -> Result<Step, VmError> {
         let mut w = IoWait {
             stream,
             op,
@@ -1900,7 +1900,7 @@ impl Vm {
     /// stream at all, and the `Step` it returns is handed back through
     /// `Vm::step`, so every temporary at the parking site is dropped before the
     /// scheduler ever sees the `Park`.
-    fn park_io(&mut self, mut w: IoWait) -> Result<Step, RuntimeError> {
+    fn park_io(&mut self, mut w: IoWait) -> Result<Step, VmError> {
         let task = self.task.id;
         if let Err(msg) = self.arm_io(task, &mut w) {
             return Err(self.err(msg));
@@ -1960,7 +1960,7 @@ impl Vm {
         &mut self,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
-    ) -> Result<Step, RuntimeError> {
+    ) -> Result<Step, VmError> {
         // Character for character what the generic builtin path said when
         // `net.dial` was one, so moving the dispatch changed no diagnostic.
         if !kwargs.is_empty() {
@@ -1997,7 +1997,7 @@ impl Vm {
         &mut self,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
-    ) -> Result<Step, RuntimeError> {
+    ) -> Result<Step, VmError> {
         if !kwargs.is_empty() {
             return Ok(self.raise("TypeError", "sleep() takes no keyword arguments"));
         }

@@ -1469,14 +1469,32 @@ fn step_stayed_small() {
     // that touches no instruction. That is the same wall the reverted
     // lazy-spans attempt hit, reached from the other side. Assert the whole
     // return value, which is what the dispatch loop actually moves.
+    // The error half is now a `Box` (`vm::VmError`), so the pair is 24 bytes:
+    // the `Result` discriminant rides in `Step`'s own spare tag values and the
+    // error costs one pointer instead of forty inline bytes. It was 48 before
+    // that, and adding the source file to `RuntimeError` (an `Rc<str>` beside
+    // two `usize`s) had already taken it to 64 once: **+14% on `loop`, +6.6%
+    // across the suite**, from a change that touches no instruction. That is
+    // the same wall the reverted lazy-spans attempt hit, reached from the other
+    // side. Assert the whole return value, which is what the dispatch loop
+    // actually moves.
     assert!(
-        std::mem::size_of::<Result<Step, RuntimeError>>() <= 48,
-        "Result<Step, RuntimeError> grew to {} bytes — `Vm::step` returns one of \
+        std::mem::size_of::<Result<Step, super::VmError>>() <= 24,
+        "Result<Step, VmError> grew to {} bytes — `Vm::step` returns one of \
          these on every instruction, through a hidden return pointer that is \
-         written and read back each time. Shrink the payload (a message that is \
-         never appended to is a `Box<str>`; a line and a column are `u32`) \
+         written and read back each time. Keep the error half behind the \
+         `VmError` box and the payload of any new `Step` variant boxed too, \
          rather than paying for the width once per dispatch",
-        std::mem::size_of::<Result<Step, RuntimeError>>()
+        std::mem::size_of::<Result<Step, super::VmError>>()
+    );
+
+    // And the unboxed error stays small enough that boxing it is the only
+    // thing standing between the hot path and a 64-byte return: a message that
+    // is never appended to is a `Box<str>`, a line and a column are `u32`.
+    assert!(
+        std::mem::size_of::<RuntimeError>() <= 40,
+        "RuntimeError grew to {} bytes",
+        std::mem::size_of::<RuntimeError>()
     );
 }
 

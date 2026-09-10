@@ -48,7 +48,7 @@ use std::cell::Cell;
 /// location that pointed at nothing while looking exactly like one that did.
 ///
 /// **This struct must stay 40 bytes.** It is the `E` of the
-/// `Result<Step, RuntimeError>` that [`Vm::step`] returns on *every*
+/// `Result<Step, VmError>` that [`Vm::step`] returns on *every*
 /// instruction, through a hidden return pointer that is written and read back
 /// once per dispatch (see [`Vm::run_slice`]). An `Rc<str>` next to the two
 /// `usize`s that were here takes it to 56 bytes and the `Result` to 64, and
@@ -82,6 +82,24 @@ impl std::fmt::Display for RuntimeError {
 }
 
 impl std::error::Error for RuntimeError {}
+
+/// The error half of every *internal* fallible VM signature, and the reason it
+/// is a `Box`.
+///
+/// `Vm::step` returns `Result<Step, VmError>` once per instruction, through a
+/// hidden return pointer that is written and read back each time. `Step` is 24
+/// bytes; `RuntimeError` is 40 (`{Box<str>, Rc<str>, u32, u32}`), so an inline
+/// error made that return value 48 — twice the width of the half that carries
+/// the actual result, to describe a condition that arises on well under one
+/// instruction in a million. Boxed, the pair fits in 24 bytes: the `Result`
+/// discriminant rides in `Step`'s own spare tag values and the error costs one
+/// pointer.
+///
+/// The allocation this adds is paid only when a diagnostic is actually built,
+/// which is already the `#[cold]` path (see [`Vm::err`]). The public surface
+/// (`vm::run`, `vm::run_main`) still hands back a plain `RuntimeError`; the
+/// unboxing happens once, at the boundary, per program.
+pub(crate) type VmError = Box<RuntimeError>;
 
 /// A guard against runaway recursion. Chosen far above the required 5000 so it
 /// only ever trips on genuine infinite recursion, turning an eventual OOM into a
@@ -222,7 +240,7 @@ enum Step {
     ///
     /// The payload is boxed for one reason: `Step` is the return value of
     /// `Vm::step`, which runs on every instruction, and a `Park` inline would
-    /// widen `Result<Step, RuntimeError>` on the hottest path in the system to
+    /// widen `Result<Step, VmError>` on the hottest path in the system to
     /// buy nothing — parking is rare, so it can afford an allocation.
     ///
     /// **`Park` carries owned values only, and neither it nor `Step` has a
@@ -762,7 +780,7 @@ pub fn add_values(a: &Value, b: &Value) -> Result<Value, String> {
 pub fn run(code: Rc<CodeObject>) -> Result<Value, RuntimeError> {
     let mut vm = Vm::new(Vec::new());
     vm.push_module_frame(code);
-    vm.run_loop()
+    vm.run_loop().map_err(|e| *e)
 }
 
 /// Run a program for the `oro` binary, returning the process exit code (0 on
@@ -796,7 +814,7 @@ pub fn run_main(code: Rc<CodeObject>, argv: Vec<String>) -> Result<i32, RuntimeE
         // rather than reporting it as an error.
         Err(e) => match vm.exit_code {
             Some(code) => Ok(code),
-            None => Err(e),
+            None => Err(*e),
         },
     }
 }
@@ -964,29 +982,29 @@ impl Vm {
     /// for why this is `#[cold]` and out of line.
     #[cold]
     #[inline(never)]
-    fn err(&self, message: impl Into<String>) -> RuntimeError {
-        RuntimeError {
+    fn err(&self, message: impl Into<String>) -> VmError {
+        Box::new(RuntimeError {
             message: message.into().into_boxed_str(),
             source: self.err_source(),
             line: self.task.line,
             col: self.task.col,
-        }
+        })
     }
 
-    fn wrap<T>(&self, r: Result<T, String>) -> Result<T, RuntimeError> {
+    fn wrap<T>(&self, r: Result<T, String>) -> Result<T, VmError> {
         r.map_err(|m| self.err(m))
     }
 
     /// The list at the top of the stack (left in place), for the incremental
     /// call-argument assembly ops.
-    fn expect_list_tos(&mut self, who: &str) -> Result<Rc<OroList>, RuntimeError> {
+    fn expect_list_tos(&mut self, who: &str) -> Result<Rc<OroList>, VmError> {
         match self.top().stack.last() {
             Some(Value::List(l)) => Ok(l.clone()),
             _ => Err(self.err(format!("internal: {who} on non-list"))),
         }
     }
 
-    fn expect_dict_tos(&mut self, who: &str) -> Result<Rc<RefCell<OroDict>>, RuntimeError> {
+    fn expect_dict_tos(&mut self, who: &str) -> Result<Rc<RefCell<OroDict>>, VmError> {
         match self.top().stack.last() {
             Some(Value::Dict(d)) => Ok(d.clone()),
             _ => Err(self.err(format!("internal: {who} on non-dict"))),
@@ -1033,7 +1051,7 @@ impl Vm {
             // than through `step`.
             //
             // `step` is one enormous match that returns
-            // `Result<Step, RuntimeError>` — 48 bytes, written through a
+            // `Result<Step, VmError>` — 48 bytes, written through a
             // hidden return pointer and read back — and it is far too large
             // for LLVM to inline into this loop. Every `i = i + 1` therefore
             // paid a call, a 48-byte store and a 48-byte load to move one
@@ -1375,7 +1393,7 @@ impl Vm {
     }
 
     /// Execute a single instruction, reporting how the loop should proceed.
-    fn step(&mut self, op: Op) -> Result<Step, RuntimeError> {
+    fn step(&mut self, op: Op) -> Result<Step, VmError> {
             match op {
                 Op::LoadConst(i) => {
                     let v = self.task.frames.last().unwrap().code.consts[i as usize].clone();
@@ -1966,7 +1984,7 @@ impl Vm {
 
     // --- Closures ------------------------------------------------------------
 
-    fn make_function(&mut self, idx: usize) -> Result<(), RuntimeError> {
+    fn make_function(&mut self, idx: usize) -> Result<(), VmError> {
         let proto = self.task.frames.last().unwrap().code.protos[idx].clone();
         let defaults = self.popn(proto.n_defaults);
         let frame = self.task.frames.last().unwrap();
@@ -1985,7 +2003,7 @@ impl Vm {
 
     // --- Calls ---------------------------------------------------------------
 
-    fn do_call(&mut self, n: usize) -> Result<Step, RuntimeError> {
+    fn do_call(&mut self, n: usize) -> Result<Step, VmError> {
         // Fast path: a plain Oro function whose parameters are all positional
         // and exactly covered by the arguments already sitting on the operand
         // stack. Binding straight off that stack is what keeps a call from
@@ -2025,7 +2043,7 @@ impl Vm {
 
     /// Move `n` arguments from the caller's operand stack straight into a fresh
     /// frame's slots. No argument vector, no re-copy — the values are moved once.
-    fn call_fast(&mut self, func: Rc<Function>, n: usize) -> Result<Step, RuntimeError> {
+    fn call_fast(&mut self, func: Rc<Function>, n: usize) -> Result<Step, VmError> {
         if self.task.frames.len() >= MAX_FRAMES {
             return Err(self.err("maximum recursion depth exceeded"));
         }
@@ -2057,7 +2075,7 @@ impl Vm {
 
     /// Call what `LoadMethod` prepared: three slots and `argc` arguments above
     /// them. See [`Op::LoadMethod`] for what the slots hold.
-    fn do_call_method(&mut self, pair: usize) -> Result<Step, RuntimeError> {
+    fn do_call_method(&mut self, pair: usize) -> Result<Step, VmError> {
         let (name_idx, argc) = self.task.frames.last().expect("no active frame").code.pairs[pair];
         let n = argc as usize;
         let tag_is = {
@@ -2140,7 +2158,7 @@ impl Vm {
     /// The Oro-method twin of [`Vm::call_fast`]: the receiver is the first
     /// parameter, so receiver and arguments move from the caller's operand
     /// stack into the callee's slots in one pass, with no argument vector.
-    fn call_method_fast(&mut self, n: usize) -> Result<Step, RuntimeError> {
+    fn call_method_fast(&mut self, n: usize) -> Result<Step, VmError> {
         let (func, defclass) = {
             let stack = &self.task.frames.last().expect("no active frame").stack;
             let func = match &stack[stack.len() - n - 2] {
@@ -2177,7 +2195,7 @@ impl Vm {
         Ok(Step::Next)
     }
 
-    fn do_call_ex(&mut self) -> Result<Step, RuntimeError> {
+    fn do_call_ex(&mut self) -> Result<Step, VmError> {
         let kwdict = self.pop();
         let poslist = self.pop();
         let callee = self.pop();
@@ -2218,7 +2236,7 @@ impl Vm {
         name: &Rc<str>,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
-    ) -> Result<Step, RuntimeError> {
+    ) -> Result<Step, VmError> {
         // Task and channel methods are dispatched ahead of
         // everything else in this arm for two reasons. They are the
         // ones that can *park*, so they must reach the VM rather
@@ -2364,7 +2382,7 @@ impl Vm {
         callee: Value,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
-    ) -> Result<Step, RuntimeError> {
+    ) -> Result<Step, VmError> {
         match callee {
             Value::Builtin(b) => {
                 // A few builtins may need to run an Oro dunder (which must go
@@ -2503,7 +2521,7 @@ impl Vm {
         name: &str,
         args: &[Value],
         kwargs: &[(String, Value)],
-    ) -> Result<Option<Step>, RuntimeError> {
+    ) -> Result<Option<Step>, VmError> {
         let (task_recv, chan_recv) = match receiver {
             Value::Task(h) => (Some(h.clone()), None),
             Value::Channel(c) => (None, Some(c.clone())),
@@ -2571,7 +2589,7 @@ impl Vm {
         defclass: Rc<Class>,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
-    ) -> Result<Step, RuntimeError> {
+    ) -> Result<Step, VmError> {
         if self.task.frames.len() >= MAX_FRAMES {
             return Err(self.err("maximum recursion depth exceeded"));
         }
@@ -2594,7 +2612,7 @@ impl Vm {
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
         action: ReturnAction,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<(), VmError> {
         if self.task.frames.len() >= MAX_FRAMES {
             return Err(self.err("maximum recursion depth exceeded"));
         }
@@ -2628,7 +2646,7 @@ impl Vm {
         class: Rc<Class>,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<(), VmError> {
         let inst = Value::Instance(Rc::new(Instance {
             class: class.clone(),
             fields: RefCell::new(Fields::new()),
@@ -2663,7 +2681,7 @@ impl Vm {
 
     /// `str()`/`repr()` of an instance: run `__str__` (or `__repr__` when
     /// `want_repr`), falling back to the other, then to the default text.
-    fn stringify_instance(&mut self, value: Value, want_repr: bool) -> Result<(), RuntimeError> {
+    fn stringify_instance(&mut self, value: Value, want_repr: bool) -> Result<(), VmError> {
         let inst = match &value {
             Value::Instance(i) => i.clone(),
             _ => unreachable!("stringify_instance on a non-instance"),
@@ -2685,7 +2703,7 @@ impl Vm {
         Ok(())
     }
 
-    fn dunder_len(&mut self, value: Value) -> Result<(), RuntimeError> {
+    fn dunder_len(&mut self, value: Value) -> Result<(), VmError> {
         let inst = match &value {
             Value::Instance(i) => i.clone(),
             _ => unreachable!(),
@@ -2712,7 +2730,7 @@ impl Vm {
         receiver: &Value,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<(), VmError> {
         let who = op.name();
         if !kwargs.is_empty() {
             return Err(self.err(format!("{who}() takes no keyword arguments")));
@@ -2779,7 +2797,7 @@ impl Vm {
         &mut self,
         who: &str,
         receiver: &Value,
-    ) -> Result<(SeqShape, Vec<Value>), RuntimeError> {
+    ) -> Result<(SeqShape, Vec<Value>), VmError> {
         Ok(match receiver {
             Value::List(l) => (SeqShape::List, l.borrow().clone()),
             Value::Tuple(t) => (SeqShape::Tuple, t.as_slice().to_vec()),
@@ -2803,7 +2821,7 @@ impl Vm {
         })
     }
 
-    fn drive_seq(&mut self) -> Result<(), RuntimeError> {
+    fn drive_seq(&mut self) -> Result<(), VmError> {
         loop {
             let (item, func, shape, op) = {
                 let job = self.task.seq_jobs.last().expect("active seq job");
@@ -2912,7 +2930,7 @@ impl Vm {
     /// comes back is governed by [`SeqOp::preserves_shape`]: operations that
     /// select or reorder keep the receiver's type, operations that reshape the
     /// data return a list.
-    fn finish_seq(&mut self, job: SeqJob) -> Result<(), RuntimeError> {
+    fn finish_seq(&mut self, job: SeqJob) -> Result<(), VmError> {
         let SeqJob { op, shape, items, results, .. } = job;
 
         // Scalar answers first — these do not rebuild a collection at all.
@@ -3083,7 +3101,7 @@ impl Vm {
         callee: &Value,
         args: &[Value],
         kwargs: &[(String, Value)],
-    ) -> Result<Option<Step>, RuntimeError> {
+    ) -> Result<Option<Step>, VmError> {
         if !args.iter().any(|a| matches!(a, Value::Generator(_))) {
             return Ok(None);
         }
@@ -3105,7 +3123,7 @@ impl Vm {
         callee: &Value,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
-    ) -> Result<Option<Step>, RuntimeError> {
+    ) -> Result<Option<Step>, VmError> {
         if !matches!(args.first(), Some(Value::Generator(_))) {
             return Ok(None);
         }
@@ -3123,7 +3141,7 @@ impl Vm {
     /// Advance the active materialisation job: resume the generator being
     /// drained, move to the next generator argument, or — when none are left —
     /// pop the job and retry the original call with lists in their place.
-    fn drive_materialize(&mut self) -> Result<Step, RuntimeError> {
+    fn drive_materialize(&mut self) -> Result<Step, VmError> {
         loop {
             let next_gen = {
                 let job = self.task.mat_jobs.last_mut().expect("materialise job");
@@ -3195,7 +3213,7 @@ impl Vm {
         &mut self,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
-    ) -> Result<Step, RuntimeError> {
+    ) -> Result<Step, VmError> {
         // sorted() is intercepted before the generic builtin path, so the
         // generator drain has to be requested explicitly here too.
         if let Some(callee) = crate::builtins::lookup("sorted") {
@@ -3220,7 +3238,7 @@ impl Vm {
         who: &'static str,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
-    ) -> Result<Step, RuntimeError> {
+    ) -> Result<Step, VmError> {
         if let Some(callee) = crate::builtins::lookup(who) {
             if let Some(step) = self.materialize_generator_args(&callee, &args, &kwargs)? {
                 return Ok(step);
@@ -3244,7 +3262,7 @@ impl Vm {
         &mut self,
         who: &str,
         kwargs: Vec<(String, Value)>,
-    ) -> Result<(Option<Value>, bool), RuntimeError> {
+    ) -> Result<(Option<Value>, bool), VmError> {
         let mut keyfn: Option<Value> = None;
         let mut reverse = false;
         for (k, v) in kwargs {
@@ -3278,7 +3296,7 @@ impl Vm {
         keyfn: Option<Value>,
         reverse: bool,
         in_place: Option<Rc<OroList>>,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<(), VmError> {
         let keyfn = match keyfn {
             Some(f) => f,
             None => {
@@ -3299,7 +3317,7 @@ impl Vm {
         self.drive_sort()
     }
 
-    fn drive_sort(&mut self) -> Result<(), RuntimeError> {
+    fn drive_sort(&mut self) -> Result<(), VmError> {
         loop {
             let (item, keyfn) = {
                 let job = self.task.sort_jobs.last().expect("active sort job");
@@ -3362,7 +3380,7 @@ impl Vm {
         &mut self,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<(), VmError> {
         // print() accepts sep= and end=; both must be str or None (None means
         // "use the default"), matching CPython. `file=` and `flush=` are not
         // accepted — Oro has no writable stream objects to point them at.
@@ -3393,7 +3411,7 @@ impl Vm {
         self.drive_print()
     }
 
-    fn drive_print(&mut self) -> Result<(), RuntimeError> {
+    fn drive_print(&mut self) -> Result<(), VmError> {
         loop {
             let next_val = {
                 let job = self.task.prints.last().expect("active print job");
@@ -3441,7 +3459,7 @@ impl Vm {
     /// Begin rendering a container `value` to a string, running element
     /// `__repr__` dunders through frames. If nothing needs a dunder, the string
     /// is built immediately; otherwise a [`StrJob`] drives the dunder calls.
-    fn begin_stringify(&mut self, value: Value, cont: StrCont) -> Result<(), RuntimeError> {
+    fn begin_stringify(&mut self, value: Value, cont: StrCont) -> Result<(), VmError> {
         let mut instances = Vec::new();
         let mut path = Vec::new();
         collect_repr_instances(&value, &mut instances, &mut path);
@@ -3451,7 +3469,7 @@ impl Vm {
 
     /// Advance the top str job by one element `__repr__` call, or finish it.
     /// Re-entered via the `DriveStr` return action after each dunder returns.
-    fn drive_str(&mut self) -> Result<(), RuntimeError> {
+    fn drive_str(&mut self) -> Result<(), VmError> {
         let next_inst = {
             let job = self.task.str_jobs.last().expect("active str job");
             (job.next < job.instances.len()).then(|| job.instances[job.next].clone())
@@ -3503,7 +3521,7 @@ impl Vm {
     /// * **There is no identity shortcut.** `a == a` runs `__eq__` and answers
     ///   `false` if that is what it says, while `a in [a]` is `true` without
     ///   calling anything.
-    fn try_compare_dunder(&mut self, cmp: CmpOp, a: &Value, b: &Value) -> Result<bool, RuntimeError> {
+    fn try_compare_dunder(&mut self, cmp: CmpOp, a: &Value, b: &Value) -> Result<bool, VmError> {
         let Some(name) = rich_dunder(cmp) else {
             // `in` and `not in` have no rich-comparison dunder.
             return Ok(false);
@@ -3545,7 +3563,7 @@ impl Vm {
     /// hottest non-arithmetic instruction in the language and this branch is
     /// taken only by programs with a comparison dunder in them.
     #[inline(never)]
-    fn compare_slow(&mut self, cmp: CmpOp, a: Value, b: Value) -> Result<(), RuntimeError> {
+    fn compare_slow(&mut self, cmp: CmpOp, a: Value, b: Value) -> Result<(), VmError> {
         // A dunder on the operands themselves is dispatched from here, so that
         // its value reaches the program unconverted: CPython's `a == b` is
         // whatever `__eq__` returned, not its truthiness.
@@ -3572,7 +3590,7 @@ impl Vm {
         a: Value,
         b: Value,
         negate: bool,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<(), VmError> {
         self.task.cmp_jobs.push(CmpJob { levels: Vec::new(), cont: CmpCont::Push { negate } });
         let next = match op {
             CmpOp::In | CmpOp::NotIn => {
@@ -3592,7 +3610,7 @@ impl Vm {
     /// The comparison machine's loop. Runs until the whole comparison is
     /// decided, or until a dunder frame is pushed — at which point it returns,
     /// and `ReturnAction::DriveCmp` calls it again with the answer.
-    fn drive_cmp(&mut self, mut next: CmpNext) -> Result<(), RuntimeError> {
+    fn drive_cmp(&mut self, mut next: CmpNext) -> Result<(), VmError> {
         loop {
             match next {
                 CmpNext::Ask(a, b, op) => match self.step_pair(a, b, op)? {
@@ -3613,7 +3631,7 @@ impl Vm {
     }
 
     /// Deliver the finished comparison.
-    fn finish_cmp(&mut self, cont: CmpCont, v: bool) -> Result<(), RuntimeError> {
+    fn finish_cmp(&mut self, cont: CmpCont, v: bool) -> Result<(), VmError> {
         match cont {
             CmpCont::Push { negate } => {
                 self.push(Value::Bool(v != negate));
@@ -3625,7 +3643,7 @@ impl Vm {
 
     /// Decide one pair. Either it falls out natively, or a dunder is dispatched
     /// for it, or it is structural and becomes a level of its own.
-    fn step_pair(&mut self, a: Value, b: Value, op: CmpOp) -> Result<PairStep, RuntimeError> {
+    fn step_pair(&mut self, a: Value, b: Value, op: CmpOp) -> Result<PairStep, VmError> {
         // Native first: this is the same code the fast path runs, and it
         // answers every pair with no user dunder underneath it.
         if let Some(r) = self.wrap(try_compare_op(op, &a, &b))? {
@@ -3705,7 +3723,7 @@ impl Vm {
     /// Advance the innermost level, folding in the answer it was waiting on
     /// (`None` when the level has only just been pushed). A level that finishes
     /// is popped and its answer flows to the level beneath it.
-    fn advance_top(&mut self, incoming: Option<bool>) -> Result<CmpNext, RuntimeError> {
+    fn advance_top(&mut self, incoming: Option<bool>) -> Result<CmpNext, VmError> {
         // A loop, not a self-call: `LevelStep::Retry` fires once per element
         // settled by the identity shortcut, and a list of ten thousand
         // references to one object would otherwise be ten thousand Rust frames
@@ -3721,7 +3739,7 @@ impl Vm {
 
     /// One step of [`advance_top`]. `None` means the level settled an element
     /// without asking anything and wants to be advanced again.
-    fn advance_once(&mut self, incoming: Option<bool>) -> Result<Option<CmpNext>, RuntimeError> {
+    fn advance_once(&mut self, incoming: Option<bool>) -> Result<Option<CmpNext>, VmError> {
         let job = self.task.cmp_jobs.last_mut().expect("cmp job");
         let level = job.levels.last_mut().expect("cmp level");
         let step = match level {
@@ -3815,7 +3833,7 @@ impl Vm {
         items: Vec<Value>,
         keys: Vec<Value>,
         reverse: bool,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<(), VmError> {
         self.begin_order_to(kind, items, keys, reverse, OrdCont::Push)
     }
 
@@ -3828,7 +3846,7 @@ impl Vm {
         keys: Vec<Value>,
         reverse: bool,
         cont: OrdCont,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<(), VmError> {
         // The same predicate the entry points use, asked again here because
         // `sort_by`, `min_by` and `sorted(key=…)` arrive with keys a callback
         // produced, which nothing could have scanned earlier.
@@ -3868,7 +3886,7 @@ impl Vm {
         keys: Vec<Value>,
         reverse: bool,
         cont: OrdCont,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<(), VmError> {
         match kind {
             OrdKind::Extreme { want_min, who } => {
                 let want =
@@ -3901,7 +3919,7 @@ impl Vm {
         kind: OrdKind,
         out: Vec<Value>,
         cont: OrdCont,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<(), VmError> {
         let v = match kind {
             OrdKind::SortInPlace(list) => {
                 *list.borrow_mut() = out;
@@ -3914,7 +3932,7 @@ impl Vm {
     }
 
     /// Hand a finished ordering to whatever asked for it.
-    fn deliver_order(&mut self, cont: OrdCont, v: Value) -> Result<(), RuntimeError> {
+    fn deliver_order(&mut self, cont: OrdCont, v: Value) -> Result<(), VmError> {
         match cont {
             OrdCont::Push => {
                 self.push(v);
@@ -3943,7 +3961,7 @@ impl Vm {
         name: &str,
         args: Vec<Value>,
         cont: OrdCont,
-    ) -> Result<Option<Vec<Value>>, RuntimeError> {
+    ) -> Result<Option<Vec<Value>>, VmError> {
         if !matches!(name, "sorted" | "min" | "max") || !ord_needs_vm(&args) {
             return Ok(Some(args));
         }
@@ -3963,7 +3981,7 @@ impl Vm {
     /// The ordering machine's loop: run until the ordering is finished, or
     /// until a `<` has to be decided by Oro code. `answer` is the `<` the
     /// previous suspension asked for.
-    fn drive_ord(&mut self, mut answer: Option<bool>) -> Result<(), RuntimeError> {
+    fn drive_ord(&mut self, mut answer: Option<bool>) -> Result<(), VmError> {
         loop {
             let (ask, op) = {
                 let job = self.task.ord_jobs.last_mut().expect("ord job");
@@ -4091,7 +4109,7 @@ impl Vm {
     }
 
     /// Undecorate: turn the finished permutation back into values.
-    fn finish_ord_job(&mut self, job: OrdJob) -> Result<(), RuntimeError> {
+    fn finish_ord_job(&mut self, job: OrdJob) -> Result<(), VmError> {
         match job.state {
             OrdState::Fold { best, .. } => {
                 let v = job.items[best].clone();
@@ -4108,7 +4126,7 @@ impl Vm {
 
     /// Assemble a class from the member values on the stack (see
     /// [`Op::BuildClass`]) and push it.
-    fn build_class(&mut self, spec: &ClassSpec) -> Result<(), RuntimeError> {
+    fn build_class(&mut self, spec: &ClassSpec) -> Result<(), VmError> {
         let member_vals = self.popn(spec.members.len());
         let base = if spec.has_base {
             match self.pop() {
@@ -4155,7 +4173,7 @@ impl Vm {
         &mut self,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<(), VmError> {
         // The command must be a list of separate strings.
         let list = match args.first() {
             Some(Value::List(l)) => l.borrow().clone(),
@@ -4316,7 +4334,7 @@ impl Vm {
     /// Import the module named by the dotted `path`: a built-in, a cached user
     /// module, or a freshly loaded one whose body runs once (as a frame) before
     /// its namespace is captured. Pushes the module value (or raises).
-    fn import_module(&mut self, path: &str) -> Result<Step, RuntimeError> {
+    fn import_module(&mut self, path: &str) -> Result<Step, VmError> {
         // Built-in modules first — except the underscored ones, which exist
         // only to hand an Oro-written stdlib module the two or three things
         // that must be Rust. They are not language surface, so they resolve
@@ -4445,7 +4463,7 @@ impl Vm {
     /// Turn a `raise EXPR` operand into the exception instance to propagate:
     /// a class is instantiated with no args; an existing exception instance is
     /// raised as-is; anything else is a TypeError.
-    fn normalize_raise(&mut self, v: Value) -> Result<Value, RuntimeError> {
+    fn normalize_raise(&mut self, v: Value) -> Result<Value, VmError> {
         match v {
             Value::Class(c) if c.is_exception => {
                 Ok(self.make_exception_instance(c, Vec::new()))
@@ -4481,7 +4499,7 @@ impl Vm {
 
     /// Whether `exc` is an instance of the exception class `class` (or a
     /// subclass) — the `except` matching test.
-    fn exc_matches(&self, exc: &Value, class: &Value) -> Result<bool, RuntimeError> {
+    fn exc_matches(&self, exc: &Value, class: &Value) -> Result<bool, VmError> {
         let cls = match class {
             Value::Class(c) if c.is_exception => c,
             other => {
@@ -4534,7 +4552,7 @@ impl Vm {
     /// Return `value` from the current frame, but first run any pending
     /// `finally` blocks in this frame (innermost first) so cleanup happens even
     /// on an early `return`.
-    fn do_return(&mut self, value: Value) -> Result<Step, RuntimeError> {
+    fn do_return(&mut self, value: Value) -> Result<Step, VmError> {
         // Run the innermost enclosing finally, if any, deferring the return.
         while let Some(b) = self.top().blocks.pop() {
             if let BlockKind::Finally = b.kind {
@@ -4682,7 +4700,7 @@ impl Vm {
 
     /// A generator frame reached `return` (or fell off the end): mark it done
     /// and route its driver's `for` loop to the exhaustion target.
-    fn generator_stop(&mut self) -> Result<Step, RuntimeError> {
+    fn generator_stop(&mut self) -> Result<Step, VmError> {
         if let Some(frame) = self.task.frames.pop() {
             self.recycle(frame);
         }
@@ -4816,7 +4834,7 @@ impl Vm {
     /// `source` is the file that was running when the exception was raised,
     /// taken by [`Vm::unwind`] before it popped the frame it came from — by the
     /// time an exception is known to be uncaught, its frame is gone.
-    fn uncaught_error(&self, exc: &Value, source: Rc<str>) -> RuntimeError {
+    fn uncaught_error(&self, exc: &Value, source: Rc<str>) -> VmError {
         let (name, msg) = match exc {
             Value::Instance(i) => {
                 (i.class.name.to_string(), crate::value::exception_message(i))
@@ -4824,12 +4842,12 @@ impl Vm {
             other => ("Exception".to_string(), other.display()),
         };
         let message = if msg.is_empty() { name } else { format!("{name}: {msg}") };
-        RuntimeError {
+        Box::new(RuntimeError {
             message: message.into_boxed_str(),
             source,
             line: self.task.line,
             col: self.task.col,
-        }
+        })
     }
 
     /// Bind arguments to a fresh frame's slots and cells.
@@ -4851,7 +4869,7 @@ impl Vm {
         receiver: Option<Value>,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
-    ) -> Result<Frame, RuntimeError> {
+    ) -> Result<Frame, VmError> {
         let mut frame = self.take_frame(func.code.clone(), &func.freevars);
         let code = &func.code;
 
