@@ -1487,6 +1487,24 @@ pub fn is_seq_native(name: &str) -> bool {
     )
 }
 
+/// Whether a native method reads its receiver *as a sequence*, and therefore
+/// needs a generator receiver drained into a list before it can run.
+///
+/// Native code cannot re-enter the interpreter, so it cannot resume a
+/// generator; the VM drains one a frame at a time and retries the call. That
+/// already happened for a generator handed to a builtin, and for the
+/// callback-driven half of the collection protocol (`g().map(f)`), but not for
+/// the native half — which is why `g().to_list()` used to surface an internal
+/// invariant message and `g().sum()` claimed a generator had no such method,
+/// both of which the README promises work.
+///
+/// `to_str` and `to_bool` are deliberately not here: they ask about the
+/// generator, not about its elements, and draining would make an empty
+/// generator falsy and print a list where `<generator>` is the honest answer.
+pub fn drains_generator_receiver(name: &str) -> bool {
+    matches!(name, "to_list" | "to_dict") || is_seq_native(name)
+}
+
 /// The elements of a collection, plus how to put one back together. A dict's
 /// elements are its `(key, value)` pairs, so selecting and reordering a dict
 /// gives back a dict.

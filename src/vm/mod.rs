@@ -1818,6 +1818,26 @@ impl Vm {
                         };
                         return self.begin_order(kind, items, keys, false).map(|()| Step::Next);
                     }
+                    // A generator *receiver* is drained the same way a
+                    // generator argument is, for the same reason: the native
+                    // method below iterates it, and native code can never
+                    // resume a generator. The retry arrives back here with a
+                    // list in the receiver's place. The `matches!` keeps the
+                    // name test — and the vector it builds — off the path every
+                    // other native method call takes.
+                    if matches!(m.receiver, Value::Generator(_))
+                        && crate::builtins::drains_generator_receiver(name)
+                    {
+                        let callee = Value::Method(m.clone());
+                        let with_recv = std::iter::once(m.receiver.clone())
+                            .chain(args.iter().cloned())
+                            .collect::<Vec<_>>();
+                        if let Some(step) =
+                            self.materialize_receiver(&callee, with_recv, kwargs.clone())?
+                        {
+                            return Ok(step);
+                        }
+                    }
                     if let Some(step) =
                         self.materialize_generator_args(&Value::Method(m.clone()), &args, &kwargs)?
                     {
