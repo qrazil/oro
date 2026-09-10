@@ -75,6 +75,17 @@ pub(super) enum Park {
     Join(Rc<TaskHandle>),
     /// Another task is running this module's body. See [`Vm::import_module`].
     Import(Rc<str>),
+    /// `yield_now()` — the odd one out, and deliberately in this enum anyway.
+    ///
+    /// Every other variant names something the task is *waiting for*; this one
+    /// names nothing, because a yielding task is already runnable and goes to
+    /// the back of the ready queue rather than into `parked`. It rides on
+    /// `Park` because the constraint that shapes `Park` is exactly the one
+    /// `yield_now` needs: a suspension point cannot hold a `RefCell` borrow
+    /// across the hand-off, and the way that is enforced is that `Step::Park`
+    /// is the only way out of `Vm::step` that suspends. A second mechanism
+    /// beside it would be a second place to get that wrong.
+    Yield,
 }
 
 impl Park {
@@ -91,6 +102,12 @@ impl Park {
             }
             Park::Join(h) => format!("join(task {})", h.id),
             Park::Import(p) => format!("import '{p}'"),
+            // Not reachable through the deadlock diagnostic: a yielding task is
+            // requeued, never filed under `parked`, and the yield arm in
+            // `run_loop` runs before the deadlock check. Spelled rather than
+            // `unreachable!` because a diagnostic that panics is worse than a
+            // diagnostic that is briefly wrong.
+            Park::Yield => "yield_now()".to_string(),
         }
     }
 }
@@ -152,6 +169,22 @@ impl Vm {
             .stack
             .push(v);
         self.ready.push_back(p.task);
+    }
+
+    /// Put the running task straight back on the ready queue, with `v` as the
+    /// value its call produces.
+    ///
+    /// The same resume protocol [`Vm::wake_with_value`] uses, for a task that
+    /// was never not-runnable: `yield_now()` hands over the CPU without ever
+    /// being blocked on anything.
+    fn requeue_current(&mut self, v: Value) {
+        let mut task = std::mem::replace(&mut self.task, Task::new());
+        task.frames
+            .last_mut()
+            .expect("a yielding task always has a frame")
+            .stack
+            .push(v);
+        self.ready.push_back(task);
     }
 
     /// Wake `id` and raise `exc` in it. The exception cannot be unwound from
@@ -255,6 +288,14 @@ impl Vm {
             let slice = self.run_slice();
             let (line, col) = (self.task.line, self.task.col);
             match slice {
+                Slice::Parked(park) if matches!(*park, Park::Yield) => {
+                    // A yield is not a wait. The task goes to the back of the
+                    // ready queue with its `null` already pushed, so with a
+                    // peer waiting the two alternate, and with nothing else
+                    // ready it is picked straight back up — a `yield_now()` in
+                    // a single-task program is a no-op, never a deadlock.
+                    self.requeue_current(Value::None);
+                }
                 Slice::Parked(park) => {
                     // Nothing else is runnable and, with no reactor, nothing
                     // outside the VM can wake anyone: this is a real deadlock,
@@ -423,6 +464,40 @@ impl Vm {
         self.ready.push_back(task);
         self.push(Value::Task(handle));
         Ok(Step::Next)
+    }
+
+    // --- `yield_now` ---------------------------------------------------------
+
+    /// `yield_now()` — hand the CPU to the next ready task, and answer `null`.
+    ///
+    /// The only way to yield used to be `spawn(nothing).join()`: two
+    /// allocations, a stack segment and a scheduler round trip to express a
+    /// no-op. §7 item 11 reopened it, and this is the answer.
+    ///
+    /// Named `yield_now` because `yield` is a keyword (`def yield()` does not
+    /// parse) and because it is the term of art — Rust's `yield_now`, Go's
+    /// `Gosched`.
+    ///
+    /// It cannot be a plain native builtin: a builtin returns a `Value`, and
+    /// the whole content of this one is the `Step` it returns instead.
+    pub(super) fn do_yield_now(
+        &mut self,
+        args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
+    ) -> Result<Step, RuntimeError> {
+        if !kwargs.is_empty() {
+            return Ok(self.raise("TypeError", "yield_now() takes no keyword arguments"));
+        }
+        if !args.is_empty() {
+            return Ok(self.raise(
+                "TypeError",
+                format!("yield_now() takes 0 argument(s) but {} were given", args.len()),
+            ));
+        }
+        // Nothing is pushed here: the scheduler pushes the `null` when it
+        // requeues the task, which is the same resume protocol every other
+        // park point uses.
+        Ok(Step::Park(Box::new(Park::Yield)))
     }
 
     /// `t.join()` — §3's rules 1 and 2.

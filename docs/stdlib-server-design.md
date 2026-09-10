@@ -821,7 +821,16 @@ for msg in ch:                 # iterates until the channel is closed and draine
     ...
 ```
 
-Six names total: `spawn`, `chan`, `send`, `recv`, `close`, `join`.
+Seven names total: `spawn`, `chan`, `send`, `recv`, `close`, `join`,
+`yield_now`.
+
+**`yield_now()`** hands the CPU to the next ready task and answers `null`. It
+was cut from this section and reinstated by §7 item 11, whose argument is that
+the limitation it works around — cooperative scheduling — is the one this
+section *keeps* for 1.0 on four separate grounds, so it is not a workaround at
+all. With nothing else ready it returns immediately: a yielding task is still
+runnable, so it goes to the back of the ready queue rather than into the parked
+map, and it can no more deadlock than a `pass` can.
 
 **`spawn(f, *args)`** creates the task for `f(*args)` and enqueues it
 immediately; the *spawner* keeps running, and gets the `Task` back. It is a
@@ -971,8 +980,9 @@ timing.
 
 ### Cooperative, not preemptive
 
-**Tasks yield only at I/O, channel operations, and `time.sleep`.** A CPU-bound
-task starves every other task in its VM until it finishes.
+**Tasks yield only at I/O, channel operations, `time.sleep`, and an explicit
+`yield_now()`.** A CPU-bound task starves every other task in its VM until it
+finishes, or until it says otherwise.
 
 Two of those three do not yet do it. `time.sleep` is still
 `std::thread::sleep`: it stops the whole VM, every task, for the duration.
@@ -1857,8 +1867,9 @@ These are the load-bearing spellings. Getting one wrong is expensive forever.
 - **UDP, Unix sockets, TLS** — not shipped, additive later (§4).
 - **`int.to_bytes` and binary packing** — waiting for a real binary protocol.
 - **Preemption** — an implementation property with no surface, changeable at any
-  time (§3). `yield_now()` is *not* in this category: it would be surface, and
-  it is currently missing rather than deliberately absent (item 11 below).
+  time (§3). `yield_now()` was *not* in this category: it is surface, and it was
+  missing rather than deliberately absent (item 11 below). It has since landed,
+  and is frozen with the rest of §3's list.
 - **Buffering** — that every reader buffers, how large the buffer is, and when it
   is allocated are Rust-side properties with no Oro-visible handle (§2). That is
   what makes them safe to change; it is also why exposing any of them later would
@@ -1936,7 +1947,11 @@ The next three are not risks. They are things the build settled wrongly or left
 out, recorded here because this is where the section that names them belongs and
 because none of them is fixed yet.
 
-11. **No `yield_now()`, and the argument for cutting it does not hold.** §3
+11. **~~No `yield_now()`~~, and the argument for cutting it does not hold.**
+    *Reopened and shipped.* `yield_now()` is a builtin; it parks through
+    `Park::Yield` and is requeued rather than filed under `parked`, so a yield
+    with no peer costs a `push_back` and a `pop_front` and nothing else. The
+    original entry is kept below because the reasoning is the record. §3
     rejected it as a second spelling for a limitation that might be deleted —
     but the limitation is cooperative scheduling, and §3 also *keeps*
     cooperative scheduling for 1.0, on four separate grounds. A workaround for a

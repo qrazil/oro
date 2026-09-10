@@ -1458,6 +1458,7 @@ impl Vm {
                     // owns, and both must be able to answer with a `Step`.
                     "spawn" => return self.do_spawn(args, kwargs),
                     "chan" => return self.do_chan(args, kwargs),
+                    "yield_now" => return self.do_yield_now(args, kwargs),
                     "print" => return self.do_print(args, kwargs).map(|()| Step::Next),
                     // sorted(key=…) has to call Oro code, so it is driven from
                     // the VM rather than run as a pure native builtin.

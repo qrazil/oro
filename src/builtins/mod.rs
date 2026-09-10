@@ -50,13 +50,15 @@ pub fn lookup(name: &str) -> Option<Value> {
         "round" => bi_round,
         "chr" => bi_chr,
         "ord" => bi_ord,
-        // The two concurrency builtins. They are named here so `LoadGlobal`
-        // resolves them like any other global, but they never run as native
-        // functions: the VM intercepts both by name in `invoke`, because
-        // `spawn` builds a stack segment the VM owns and `chan` has to be
-        // dispatched alongside it. See `crate::vm::sched`.
+        // The three concurrency builtins. They are named here so `LoadGlobal`
+        // resolves them like any other global, but none of them ever runs as a
+        // native function: the VM intercepts all three by name in `invoke`,
+        // because `spawn` builds a stack segment the VM owns, `chan` has to be
+        // dispatched alongside it, and `yield_now` can only be answered with a
+        // `Step`. See `crate::vm::sched`.
         "spawn" => bi_vm_dispatched,
         "chan" => bi_vm_dispatched,
+        "yield_now" => bi_vm_dispatched,
         _ => return None,
     };
     Some(Value::Builtin(Rc::new(Builtin { name: intern(name), func: f })))
@@ -94,6 +96,7 @@ fn intern(name: &str) -> &'static str {
         "ord" => "ord",
         "spawn" => "spawn",
         "chan" => "chan",
+        "yield_now" => "yield_now",
         _ => "builtin",
     }
 }

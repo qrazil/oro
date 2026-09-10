@@ -1,0 +1,84 @@
+# INTENTIONAL DIVERGENCE.
+# `yield_now()` has no CPython counterpart. CPython's nearest things are
+# `time.sleep(0)`, which is a syscall on a preemptive scheduler, and
+# `asyncio`'s `await asyncio.sleep(0)`, which colours the function it is in —
+# so there is no oracle and this baseline is reviewed by hand.
+#
+# Everything printed here is a *claim in words*, not a dump, because a reviewed
+# baseline can only catch what a reader can read.
+#
+# The rule under test is `docs/stdlib-server-design.md` §7 item 11: there was no
+# way for a task to hand over the CPU without touching a channel, and the only
+# spelling that worked — `spawn(nothing).join()` — was two allocations and a
+# scheduler round trip to express a no-op.
+
+# --- two tasks alternate ----------------------------------------------------
+# Cooperative scheduling means a task runs until it parks. Without a yield the
+# first worker runs its whole loop before the second starts; with one they
+# interleave, and the interleaving is the whole observable content of the call.
+log = []
+
+def counting(out, name, n):
+    for i in range(n):
+        out.append(name + i.to_str())
+        yield_now()
+
+a = spawn(counting, log, "a", 3)
+b = spawn(counting, log, "b", 3)
+a.join()
+b.join()
+print("two tasks alternate:", log)
+print("strict alternation:", log == ["a0", "b0", "a1", "b1", "a2", "b2"])
+
+# The same two workers without the yield, for the contrast. Each runs to
+# completion before the other starts — the property `yield_now` exists to let a
+# program opt out of.
+log2 = []
+
+def greedy(out, name, n):
+    for i in range(n):
+        out.append(name + i.to_str())
+
+c = spawn(greedy, log2, "c", 3)
+d = spawn(greedy, log2, "d", 3)
+c.join()
+d.join()
+print("without a yield, no interleaving:", log2)
+
+# --- alone, it is a no-op ---------------------------------------------------
+# A yield is not a wait: the yielding task is still runnable, so it goes to the
+# back of the ready queue rather than into the parked map. With nothing else
+# ready it is picked straight back up. This must not be the deadlock diagnostic
+# that a `recv()` on an empty channel with no peers correctly is.
+print("---")
+print("yield_now() answers:", yield_now())
+n = 0
+for i in range(1000):
+    yield_now()
+    n = n + 1
+print("1000 yields in a single-task program:", n)
+
+# The main task is a task like any other, and so is one blocked behind it: main
+# can yield while a peer sits parked on a channel, and neither is disturbed.
+ch = chan()
+
+def receiver(c):
+    return c.recv()
+
+r = spawn(receiver, ch)
+yield_now()
+yield_now()
+ch.send("delivered")
+print("a parked peer is untouched by a yield:", r.join())
+
+# --- it takes nothing -------------------------------------------------------
+print("---")
+try:
+    yield_now(1)
+except TypeError as e:
+    print("TypeError:", e)
+
+try:
+    yield_now(after=1)
+except TypeError as e:
+    print("TypeError:", e)

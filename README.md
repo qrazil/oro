@@ -211,17 +211,22 @@ Implemented and working today:
   (`g().map(f)`), not just drive a `for` loop. Builtins run in Rust and can
   never re-enter the interpreter, so the generator is drained a frame at a time
   and the call is retried — the native stack never grows with it.
-- **Green threads: `spawn` and `chan`, six names in total.** `spawn(f, *args)`
-  starts `f(*args)` as a task and returns a handle; `t.join()` waits and returns
-  the function's value. `chan()` is a rendezvous and `chan(n)` a buffer of `n`,
-  with `send`, `recv`, `close`, and `for msg in ch` iterating until the channel
-  is closed and drained. A task costs a few hundred bytes and a handful of small
+- **Green threads: `spawn`, `chan` and `yield_now`, seven names in total.**
+  `spawn(f, *args)` starts `f(*args)` as a task and returns a handle;
+  `t.join()` waits and returns the function's value. `chan()` is a rendezvous
+  and `chan(n)` a buffer of `n`, with `send`, `recv`, `close`, and
+  `for msg in ch` iterating until the channel is closed and drained.
+  `yield_now()` hands the CPU to the next ready task and answers `null` — the
+  one way to yield without touching a channel, and a no-op rather than a
+  deadlock when nothing else is ready. It is spelled `yield_now` and not
+  `yield` because `yield` is a keyword, and because that is the term of art
+  (Rust's `yield_now`, Go's `Gosched`). A task costs a few hundred bytes and a handful of small
   allocations — frames are already heap cells, so nothing is copied and the
   native stack is never involved.
 
   Three consequences worth stating plainly. **Scheduling is cooperative**: a
-  task yields at a channel operation and nowhere else, so a CPU-bound handler
-  starves its peers until it finishes. **There is no parallelism inside one VM**,
+  task yields at a channel operation or a `yield_now()` and nowhere else, so a
+  CPU-bound handler starves its peers until it finishes. **There is no parallelism inside one VM**,
   which is why there is no `select` and no locks — a shutdown flag is a
   variable, a cache is a `dict`, and sharing them is free. And **an uncaught
   exception in a task kills only that task**: it is re-raised in whoever joins

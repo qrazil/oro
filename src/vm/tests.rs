@@ -1660,6 +1660,52 @@ fn spawn_rejects_what_cannot_park() {
     }
 }
 
+/// `yield_now()` hands the CPU over and answers `null`.
+///
+/// The two properties worth pinning: with a peer ready the tasks alternate,
+/// and with nothing else ready the yield returns immediately instead of
+/// declaring a deadlock — a yielding task is not waiting for anything, so it
+/// never reaches `parked`.
+#[test]
+fn yield_now_hands_over_and_never_deadlocks() {
+    let v = eval_var(
+        "\
+out = []
+def w(log, name):
+    for i in range(2):
+        log.append(name + i.to_str())
+        yield_now()
+a = spawn(w, out, \"a\")
+b = spawn(w, out, \"b\")
+a.join()
+b.join()
+",
+        "out",
+    );
+    assert_eq!(v.repr(), "['a0', 'b0', 'a1', 'b1']");
+
+    // Alone in the program, and inside a generator's frame, it is a no-op that
+    // evaluates to `null`.
+    assert_eq!(eval("r = yield_now()\n").repr(), "null");
+    let v = eval_var(
+        "\
+out = []
+def g():
+    for i in range(2):
+        yield_now()
+        yield i
+for x in g():
+    out.append(x)
+",
+        "out",
+    );
+    assert_eq!(v.repr(), "[0, 1]");
+
+    // It takes nothing, and says so rather than discarding an argument.
+    assert!(run_err("yield_now(1)\n").message.contains("takes 0 argument(s)"));
+    assert!(run_err("yield_now(x=1)\n").message.contains("no keyword arguments"));
+}
+
 /// `chan(0)` is the default spelled out, not an error; a negative or
 /// non-integer capacity is.
 #[test]
