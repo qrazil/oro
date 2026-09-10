@@ -987,6 +987,41 @@ which needs no new API — but it needs a `time.sleep` that *parks*, which is
 M3b's timer list. Today that sleep would stop the drain it is supposed to be
 timing.
 
+**Built, and three things in that sketch did not survive it.** The mechanism
+did: closing the listener *is* the whole shutdown API, and the exception a
+parked `accept()` wakes with is a `ValueError` — `accept() on a closed
+TcpListener`, character for character what the call would have raised one
+instruction later — rather than the `OSError` the comment guesses at. What
+changed is everything around it.
+
+*The module globals are gone.* `_shutting_down` and `_listener` make `serve`
+non-reentrant and one-server-per-VM to express something the listener object
+already expresses on its own. `serve(addr, handler, ready=null)` takes a
+channel and sends the listener it bound down it before accepting anything,
+which is both how a caller learns the port when it asked for `":0"` and how
+another task stops the server. The flag became per-connection state in a
+registry keyed by the connection — the `dict` §7 item 13 exists to make
+writable.
+
+*The implicit join-all is not a drain.* It is unbounded, it happens after
+`serve` has returned, and it cannot tell a request in flight from a browser
+holding an idle keep-alive connection open. `serve` drains explicitly: tell
+every connection this is its last round, close the idle ones *at once*
+(an idle connection has nothing to lose, and waiting for it is waiting for
+nothing), give the in-flight ones a bounded `drain`, then close what is left
+and join every task. Distinguishing idle from busy is the one thing that
+cannot be inferred from outside the connection loop, so `serve_conn` gained
+an optional `watch` object with a `busy` attribute it sets and a `stopping`
+attribute it reads.
+
+*And the deadline is not `time.sleep` plus `sys.exit`.* `sys.exit` kills every
+task including the ones that were about to finish, which is the opposite of
+graceful; the bound wanted here is on the *wait*, not on the process. It is a
+`time.sleep` poll of the registry against a `time.monotonic()` deadline — and
+that works now for exactly the reason the paragraph above says it would not
+have: the sleep parks the task, so the drain it is timing carries on
+underneath it.
+
 ### Cooperative, not preemptive
 
 **Tasks yield only at I/O, channel operations, `time.sleep`, and an explicit
@@ -1926,10 +1961,22 @@ is the argument for why those are the right two answers to the same question.
 `should_keep_alive` — a connection served over a `Buffer` is how the whole layer
 is tested, and a test cannot call a private name. The parser gained token and
 field-value validation that the sketch below waves at. And `http.serve(addr,
-handler)` does **not** exist yet: an accept loop needs `net` and the scheduler in
-the same room, which is M6. `serve_conn(conn, handler)` is the seam that exists
-today, and it is deliberately the one the tests use — see §8's parallel-track
+handler)` did **not** exist: an accept loop needs `net` and the scheduler in
+the same room, which is M6. `serve_conn(conn, handler)` was the seam that
+existed, and it is deliberately the one the tests use — see §8's parallel-track
 argument, which this is the payoff of.
+
+**`serve` has since landed**, and it is `net.listen` plus `while true:` plus
+`spawn` — thirty lines with no `select`, no readiness state machine and no
+second colour of function in them, which is the whole claim of §3 cashed. Its
+shape, its shutdown and the four judgement calls under it (unjoined connection
+tasks, `accept()`'s three classes of failure, what happens at the connection
+cap, and why the requests-per-connection cap is an argument rather than a
+constant) are documented above `serve` in `std/http.oro` and revised into §3's
+shutdown section above. `serve_conn` gained two optional arguments in the
+process — `max_requests`, so the cap is a deployment's number rather than the
+module's, and `watch`, which is how a shutdown tells an idle connection from a
+busy one.
 
 ### Types
 
@@ -2567,6 +2614,16 @@ demo with `http.serve`.
 `Router`; the multi-VM launcher that forks N processes (or N OS threads, each
 with its own `Vm`) sharing a `SO_REUSEPORT` listener; graceful shutdown via the
 flag plus listener close; `http.serve(addr, handler, workers=N)`.
+
+**Landed, apart from the scale-out.** `Router` shipped with M5. `serve` and its
+graceful shutdown are in `std/http.oro`, covered by
+`corpus/divergence/60_http_serve.oro` and demonstrated by
+`examples/server.oro`. `workers=N` and `SO_REUSEPORT` are the half that is not
+built: they need a second VM in a second thread, which is a claim about the
+runtime rather than about `http`, and `serve` is deliberately shaped so that
+adding it changes nothing above the listener — N processes each calling
+`serve` on a shared `SO_REUSEPORT` listener is the same function called N
+times.
 
 ### What can be built in parallel
 

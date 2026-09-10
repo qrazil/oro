@@ -43,11 +43,12 @@ fn oro_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Every directory in the repository that holds `.oro` source.
-const ORO_DIRS: [&str; 6] = [
+const ORO_DIRS: [&str; 7] = [
     "corpus/core",
     "corpus/divergence",
     "corpus/known-failing",
     "std",
+    "examples",
     "tests/programs",
     "bench/progs",
 ];

@@ -1,0 +1,19 @@
+serve() handed back the listener it bound: true
+the fast client was served while the slow one waited: true
+and both of them got an answer: true
+http: handler raised <class 'KeyError'>: 'nope'
+a raising handler answered: ['500', 'internal server error', false]
+and the same connection still serves the next request: true
+request 1 of a 2-request connection: ['200', 'fast', false]
+request 2 is the last, and says so: ['200', 'fast', true]
+and the connection is then at EOF: true
+at the cap, the second connection is closed with nothing written: true
+and the one that got in was still served: true
+the request in flight was answered, not cut off: true
+the idle keep-alive connection was closed: true
+nothing had to be forced at the deadline: true
+and shutdown took about as long as the request, not the drain: true
+four connections over the server's life: true true
+two of them were still open at the shutdown, and both finished: true
+the capped server refused nobody: true
+the one-connection server refused one: true

@@ -812,13 +812,9 @@ measurement, and the reason the same argument does not move `http`.
   `OSError` — a deadline `TimeoutError`, and a bind to a port already in use a
   plain `OSError`. Catch at whichever width you mean.
 
-  **Everything blocks, for now.** `accept`, `read` and `write` stop the whole
-  interpreter until the kernel answers, which is one connection at a time and is
-  no way to run a server. Green threads are the next milestone and change those
-  three syscalls and nothing above them — a parked task instead of a parked
-  process, with not one line of Oro different. Also absent on purpose: UDP (not
-  a stream, so it cannot satisfy the protocol), Unix domain sockets, TLS, and
-  `SO_REUSEPORT`. The reasoning is `docs/stdlib-server-design.md` §4.
+  Absent on purpose: UDP (not a stream, so it cannot satisfy the protocol),
+  Unix domain sockets, TLS, and `SO_REUSEPORT`. The reasoning is
+  `docs/stdlib-server-design.md` §4.
 - **`json`** — `json.parse(text)` and `json.stringify(value, indent=null)`.
   `stringify` requires `str` dict keys rather than silently stringifying an int
   one, and `parse` takes `str`, not octets — the decode is a step the program
@@ -832,11 +828,43 @@ measurement, and the reason the same argument does not move `http`.
   `read_until` for the header block, `bytes.split` for the lines, `bytes.find`
   for the colon and `bytes.scan` for the three grammar classes are generic
   building blocks that earn their place on their own, and everything above them
-  is per *request* rather than per *byte*. `http.read_request(r)` parses one request off any Reader (`null` at a
-  clean EOF); `http.write_response(w, req, resp, keep_alive)` sends the head
-  and a sized body in **one** `write`; `http.serve_conn(conn, handler)` is the
-  keep-alive loop; `http.Router().add(method, path, handler)` chains routes and
-  binds `/users/:id` segments into `req.params`. A request body is always a
+  is per *request* rather than per *byte*.
+
+  ```python
+  import http
+
+  routes = http.Router().add("GET", "/health", req => http.text("ok\n"))
+  http.serve("0.0.0.0:8080", req => routes.dispatch(req))
+  ```
+
+  `http.serve(addr, handler)` is the accept loop: bind, then **one green
+  thread per connection**, for as long as the listener is open. There is no
+  `select` and no readiness machine in it — a loop that reads exactly like the
+  blocking one-connection-at-a-time server everybody writes first *is*, as
+  written, a concurrent one, because `accept`, `read` and `write` park the task
+  and not the VM. A handler that raises is a 500 for that request and nothing
+  more. Underneath it: `http.read_request(r)` parses one request off any Reader
+  (`null` at a clean EOF); `http.write_response(w, req, resp, keep_alive)`
+  sends the head and a sized body in **one** `write`;
+  `http.serve_conn(conn, handler)` is the keep-alive loop;
+  `http.Router().add(method, path, handler)` chains routes and binds
+  `/users/:id` segments into `req.params`.
+
+  **Shutdown is closing the listener, and nothing else.** `serve` takes an
+  optional `ready` channel and sends the bound listener down it before
+  accepting anything, which is both how you learn the port when you bound
+  `":0"` and how another task stops the server: `ln.close()` wakes the parked
+  `accept()`, every connection is told this is its last round, idle keep-alive
+  connections are closed at once, in-flight requests get a bounded `drain`
+  (five seconds by default), and whatever is still there is closed under
+  itself. `serve` then returns a tally of `accepted` / `refused` / `drained` /
+  `forced`. Its other keyword arguments are the numbers a deployment has to be
+  able to change: `max_conns` (512; at the cap a connection is accepted and
+  closed with nothing written), `max_requests` per connection (1000, or `null`
+  for no cap) and `timeout` (30s, one scheduler deadline covering any single
+  read or write on the connection).
+
+  A request body is always a
   Reader, framed by `Content-Length` or `Transfer-Encoding: chunked` — a
   request carrying both is a 400, because guessing which one an intermediary
   meant is how a request smuggles another one in behind it. Everything it is
@@ -844,9 +872,8 @@ measurement, and the reason the same argument does not move `http`.
   obsolete line folding is refused, and a header block that goes over the limit
   is a 431 rather than a memory leak. Deliberately absent: `Expect:
   100-continue`, HTTP/2, HTTP/3, WebSocket upgrade, multipart, cookies,
-  sessions, static files, compression, and a client. (The module and its four
-  corpus files are complete; the one-line entry in the embedded module table in
-  `src/vm/stdlib.rs` that makes `import http` resolve lands with it.)
+  sessions, static files, compression, and a client. `examples/server.oro` is
+  the whole of it in one screen — see [Examples](#examples).
 - **`proc`** — exactly one function,
   `run(args, check=…, quiet=…, cwd=…, env=…, timeout=…)`, returning a
   `CompletedProcess` with `.returncode`, `.ok`, `.truncated`, `.stdout`,
@@ -1125,6 +1152,71 @@ Run the CPython differential corpus:
 ./corpus/run.sh      # run every core program through oro and diff vs CPython
 ```
 
+## Examples
+
+`examples/server.oro` is a working HTTP server in one screen: five routes, a
+logging middleware written as a function, and no framework holding any of it.
+
+```sh
+./target/release/oro examples/server.oro            # 127.0.0.1:8080
+./target/release/oro examples/server.oro 0.0.0.0:9000
+```
+
+Then, from another terminal:
+
+```sh
+curl localhost:8080/                    # text
+curl localhost:8080/json                # JSON, encoded from a dict
+curl localhost:8080/hello/ada           # a bound path segment -> req.params
+curl -d '{"n": 1}' localhost:8080/echo  # a request body, decoded and echoed
+curl -i localhost:8080/boom             # a handler that raises
+```
+
+```
+oro http
+{"server":"oro","uptime":7.132592982999999,"query":{}}
+hello, ada
+{"you_sent":{"n":1}}
+HTTP/1.1 500 Internal Server Error
+```
+
+`/boom` is the interesting one: the handler raises `KeyError`, that request
+gets a 500, the server logs one line, and nothing else notices — not the
+connection, which serves the next request on it, and not the other clients.
+
+### The part that matters
+
+```sh
+curl localhost:8080/slow &   # sleeps two seconds
+curl localhost:8080/json     # answered immediately, in the middle of it
+```
+
+The server's own log is the proof, and it is a log of *one OS thread*:
+
+```
+  7.156  -->  GET /slow
+  7.363  -->  GET /json
+  7.363  <--  200 /json
+  7.569  -->  GET /hello/world
+  7.570  <--  200 /hello/world
+  9.159  <--  200 /slow
+```
+
+Two whole request/response cycles opened and closed inside `/slow`'s two
+seconds. There is no `async` in that program, no `await`, no callback and no
+event loop written by hand: `slow` is an ordinary function that calls
+`time.sleep(2)`, and `time.sleep` parks the green thread running it rather
+than the process. The same is true of every socket read and write in the
+stack — which is why `http.serve` is a `while true:` around `accept()` and a
+`spawn` per connection, and why that is enough.
+
+Ctrl-C on this demo is a hard kill, because the program has nothing but the
+accept loop in it. A *graceful* shutdown needs a second task holding the
+listener, and `corpus/divergence/60_http_serve.oro` is that program: it starts
+`serve` with a `ready` channel, takes the listener back off it, and closes it
+with one request in flight and one idle keep-alive connection open — then
+checks that the first was answered and the second was not waited for.
+
 ## Layout
 
 - `src/lexer/` — hand-written lexer with an INDENT/DEDENT engine (tabs rejected).
@@ -1136,6 +1228,9 @@ Run the CPython differential corpus:
 - `src/format.rs` — the f-string format mini-language.
 - `src/bigint.rs` — arbitrary-precision integers for overflow promotion.
 - `src/value.rs` — the runtime `Value` type and its containers.
+- `std/` — the Oro-written half of the standard library (`io`, `json`, `http`),
+  baked into the binary by `src/vm/stdlib.rs`.
+- `examples/` — runnable programs; `examples/server.oro` is the HTTP server.
 - `corpus/` — the CPython-generated differential test suite.
 
 ## License

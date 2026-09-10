@@ -9,10 +9,12 @@
 #
 # API
 # ---
+#   http.serve(addr, handler, ready=null, ...)  -> dict, the shutdown tally
 #   http.read_request(r)                     -> Request | null at a clean EOF
 #   http.write_response(w, req, resp, keep)  -> null, in one write() call
 #   http.should_keep_alive(req, resp)        -> bool
-#   http.serve_conn(conn, handler)           -> int, requests served
+#   http.serve_conn(conn, handler, max_requests=1000, watch=null)
+#                                            -> int, requests served
 #
 #   http.Request(method, path, query, version, headers, body)
 #   http.Response(status=200, headers=null, body=b"")
@@ -21,13 +23,14 @@
 #   http.Router().add(method, path, handler) -> Router (chains)
 #   http.BadRequest(message, status=400)     -> Exception
 #
-# A connection is served by handing `serve_conn` anything that is a Reader
-# and a Writer, which on a real server is the socket and in every test in
-# `corpus/divergence/` is an `io.buffer()`. There are no wrapper objects in
-# the loop: every reader buffers by construction, so `read_until` works on
-# the connection directly, and `write_response` batches its own output with
-# the list-append-and-join idiom, so there is nothing to flush and no
-# `flush()` to forget.
+# `serve` is the accept loop: bind, and then one green thread per connection
+# for as long as the listener is open. `serve_conn` is the seam underneath
+# it, and it is served by handing it anything that is a Reader and a Writer —
+# on a real server the socket, and in every test in `corpus/divergence/` an
+# `io.buffer()`. There are no wrapper objects in the loop: every reader
+# buffers by construction, so `read_until` works on the connection directly,
+# and `write_response` batches its own output with the list-append-and-join
+# idiom, so there is nothing to flush and no `flush()` to forget.
 #
 # Not here, deliberately: `Expect: 100-continue` (answered 417 and moved
 # past), HTTP/2, HTTP/3, WebSocket upgrade, multipart parsing, cookie jars,
@@ -37,6 +40,7 @@
 
 import io
 import json
+import net
 import sys
 import time
 
@@ -51,7 +55,51 @@ _MAX_HEADERS = 100
 _MAX_CHUNK_LINE = 32
 _MAX_TRAILER_LINE = 8192
 _MAX_DRAIN = 65536
+
+# How many requests one connection may carry before the server hangs up and
+# makes the client come back. This is not a memory bound — an Oro connection
+# task costs the same after a thousand requests as after one — it is a
+# fairness bound against `_MAX_CONNS` below: without it, `_MAX_CONNS` clients
+# trickling one request a second each hold every slot on the server forever
+# and no new client ever gets in. It is a *default*, and `serve` takes it as
+# an argument, because "how long may one client keep one slot" is a
+# deployment's question and not a stdlib's: a public edge wants it low, an
+# internal RPC service reconnecting every 1000 calls is pure overhead, and
+# `max_requests=null` turns it off for a service that is already behind
+# something that limits connections for it.
 _MAX_REQUESTS_PER_CONN = 1000
+
+# --- server limits --------------------------------------------------------
+# The accept loop's numbers, all of them `serve` keyword arguments with these
+# as the defaults. See `serve` for what each one does at its limit.
+
+# Concurrent connections. `spawn` is cheap — one `Frame` on a `Vec` — but it
+# is not free, and "unbounded" means an anonymous client chooses how much
+# memory this process holds.
+_MAX_CONNS = 512
+
+# One deadline per connection, both directions, the whole of any single
+# operation (§4: it is a scheduler deadline, so a `read_until` spanning four
+# packets is bounded once rather than per packet — which is what stops a peer
+# dribbling one byte under the limit from holding a slot forever).
+_CONN_TIMEOUT = 30
+
+# How long a graceful shutdown waits for the requests that are already in
+# flight, before closing what is left underneath them.
+_DRAIN_SECONDS = 5.0
+
+# The drain's poll interval. It is a `time.sleep`, which parks the task and
+# not the VM, so the drain this is timing goes on underneath it.
+_DRAIN_TICK = 0.01
+
+# `accept()` failed for a reason that is neither "a client vanished" nor "the
+# listener is closed". Back off so a listener that is failing for a transient
+# reason (out of file descriptors) does not spin a core, and give up after
+# enough consecutive failures that a listener which is simply dead is not
+# retried forever. Any success resets both.
+_ACCEPT_BACKOFF = 0.005
+_ACCEPT_BACKOFF_MAX = 1.0
+_MAX_ACCEPT_ERRORS = 32
 
 # Bytes per read when a streamed response body is re-framed as chunks. Large
 # enough that a chunk is worth the syscall it costs; a chunked response is
@@ -875,24 +923,49 @@ def _error_response(status, message):
 # requests and a request timeout mid-request, through `conn.set_timeout()`.
 # That method arrives with `net`; a `Buffer` does not have it, and a type
 # check here to decide whether to call it would be exactly the smell the io
-# protocol exists to avoid. The two timeouts therefore belong to whatever
-# owns the socket, not to this loop, which stays true to the protocol.
-def serve_conn(conn, handler):
+# protocol exists to avoid. The timeout therefore belongs to whatever owns
+# the socket — `serve` sets one, once, per connection — not to this loop,
+# which stays true to the protocol.
+#
+# `max_requests` caps how many requests one connection may carry; `null`
+# means no cap. `watch`, if given, is anything with two attributes, in the
+# same naming-convention-not-a-declared-type spirit as the io protocol:
+#
+#     watch.busy      # set here: true while a request is being served,
+#                     # false between them. Read by `serve`, which may close
+#                     # an idle connection at once during a shutdown but must
+#                     # never close a busy one.
+#     watch.stopping  # read here: the server is shutting down, so this
+#                     # response is the connection's last.
+#
+# Four guarded lines, and they buy a shutdown that is prompt rather than one
+# that always costs a full drain timeout because a browser left a keep-alive
+# connection sitting idle. The alternative — inferring busy-ness from outside
+# by wrapping the handler — cannot see the window between the handler
+# returning and the response reaching the socket, and closing a connection in
+# that window truncates a reply that was already written.
+def serve_conn(conn, handler, max_requests=_MAX_REQUESTS_PER_CONN, watch=null):
     served = 0
-    while served < _MAX_REQUESTS_PER_CONN:
+    while max_requests == null or served < max_requests:
         req = _try_read(conn)
         if req == null:
             return served
+        if watch != null:
+            watch.busy = true
         resp = _dispatch(handler, req)
         # Drained before the response is written, not after, so that the
         # Connection header this response carries is the truth about what
         # happens next rather than a promise made before checking.
         drained = _drain(req.body)
-        keep = drained and served + 1 < _MAX_REQUESTS_PER_CONN
+        keep = drained and (max_requests == null or served + 1 < max_requests)
         if keep:
             keep = should_keep_alive(req, resp)
+        if keep and watch != null and watch.stopping:
+            keep = false
         write_response(conn, req, resp, keep)
         served = served + 1
+        if watch != null:
+            watch.busy = false
         if not keep:
             return served
     return served
@@ -944,6 +1017,230 @@ def _dispatch(handler, req):
 def _answer(conn, status, message):
     blank = Request("GET", "/", {}, "1.1", {}, io.buffer(b""))
     write_response(conn, blank, _error_response(status, message), false)
+
+
+# --- the accept loop ------------------------------------------------------
+#
+# One task per connection, and nothing else. There is no `select`, no
+# multiplexing and no readiness state machine in this file, because
+# `docs/stdlib-server-design.md` §3's whole claim is that green threads make
+# those unnecessary: `accept`, `read` and `write` park the task and not the
+# VM, so a loop that reads exactly like the blocking one-connection-at-a-time
+# server everybody writes first is, as written, a concurrent one.
+
+
+# One live connection, and the two attributes `serve_conn` writes to and
+# reads from. It is a class rather than a dict because `entry.busy = true` in
+# the connection loop must not be a dict subscript in the hot path, and
+# because the two names are the whole contract — see `serve_conn`.
+class _Live:
+    def __init__(self, conn):
+        self.conn = conn
+        # Captured now: `peer` is the only thing a log line can identify a
+        # dead connection by, and it is wanted at the moment the connection
+        # has just failed.
+        self.peer = conn.peer
+        self.task = null
+        self.busy = false
+        self.stopping = false
+
+
+# Serve HTTP on `addr` until the listener is closed, one green thread per
+# connection; return the shutdown tally.
+#
+#     http.serve("0.0.0.0:8080", req => router.dispatch(req))
+#
+# The tally is a dict, and it is the only thing a server that has stopped can
+# tell an operator, so it is four numbers rather than one:
+#
+#     accepted  connections handed a task, over the whole run
+#     refused   connections closed unanswered at `max_conns`, over the run
+#     drained   connections still open when the listener closed that then
+#               finished on their own
+#     forced    connections still open when the drain deadline passed, and
+#               closed underneath whatever they were doing
+#
+# `drained` and `forced` describe the shutdown, not the run, so they do not
+# add up to `accepted` — most of a server's connections are long finished by
+# the time it stops.
+#
+# `ready`, if given, is a channel `serve` sends the bound listener down
+# before it accepts anything. That listener is two things a caller cannot
+# otherwise have: the address actually bound (`ln.local`, which is the only
+# way to use `":0"` and learn the port), and the stop button (`ln.close()`).
+# It is the whole shutdown API, and it is deliberately not a module-level
+# `_listener` plus a `shutdown()` the way §3 sketched it — a module global
+# makes `serve` non-reentrant and one-server-per-VM for no gain, when the
+# listener *is* the handle and a channel is how a task hands one over.
+#
+# --- what shutdown means --------------------------------------------------
+#
+# 1. Someone closes the listener. A parked `accept()` wakes with the
+#    ValueError it would have got had it been called one instruction later,
+#    which is the loop's exit. Nothing new is accepted from that moment; the
+#    kernel refuses further connects.
+# 2. Every live connection is told it is the last round (`stopping`), so any
+#    request in flight is answered with `Connection: close` and no connection
+#    can start new work. Every connection that is *idle* — parked waiting for
+#    a keep-alive request that has not arrived — is closed at once, because
+#    an idle connection has nothing to lose and waiting for it is waiting for
+#    nothing.
+# 3. The requests still in flight get `drain` seconds. The wait is a
+#    `time.sleep` poll, and it works for exactly the reason §3's sketch of it
+#    did not: the sleep parks the *task*, so the drain it is timing carries on
+#    underneath it. Under `std::thread::sleep` this loop would have stopped
+#    the drain dead and then declared it timed out.
+# 4. Whatever is left is closed under itself, and every connection task is
+#    joined before `serve` returns. A bounded wait is the point: a graceful
+#    shutdown that a single slow handler can extend forever is a hang.
+#
+# --- and the judgement calls ----------------------------------------------
+#
+# **Connection tasks are not joined while the server runs, and they can
+# never fail.** Joining them in the accept loop would serialise the server
+# down to one connection. Leaving them unjoined would mean §3 rule 3 — an
+# unjoined failed task prints `task failed: …` at drop and sets the process
+# exit status to 1 — so one client resetting a connection mid-response would
+# both spam a server's log with a line that reads like a crash and mark the
+# whole process failed. So `_conn_task` catches instead: a socket error is
+# how connections normally end and says nothing, a real bug gets one line
+# naming the peer, and the task always returns normally. The tasks are joined
+# once, during the drain, which is the only place joining is free.
+#
+# **`accept()` failures are three cases, not one.** A ValueError is the
+# listener being closed, which is the shutdown above and not an error at all.
+# A `ConnectionError` is a client that vanished between the SYN and the
+# accept — per-connection, and the loop simply goes round again; a server
+# that exits on a stray RST is not a server. Anything else is an `OSError`
+# that might be transient (out of file descriptors, which clears when a
+# connection closes) or terminal (the listener's fd is gone), and the two are
+# not distinguishable from Oro without matching on an errno string that is
+# not portable. So: back off, exponentially, from 5 ms to a second, and give
+# up after `_MAX_ACCEPT_ERRORS` *consecutive* failures. Any successful accept
+# resets both. That is the one shape that neither spins a core on a dead
+# socket nor dies of a transient one.
+#
+# **The cap closes, it does not answer.** At `max_conns` the connection is
+# accepted and closed immediately, with nothing written. A 503 would be
+# friendlier and was rejected: writing to a client is an operation whose
+# duration the client controls (it can simply not read), so answering at the
+# cap either blocks the accept loop or needs a task — and a task is precisely
+# the resource the cap exists to protect. Closing is one syscall that cannot
+# be stalled. The count comes back in the tally so an operator can see it.
+def serve(addr, handler, ready=null, max_conns=_MAX_CONNS, max_requests=_MAX_REQUESTS_PER_CONN, timeout=_CONN_TIMEOUT, drain=_DRAIN_SECONDS):
+    ln = net.listen(addr)
+    # Keyed by the connection, which is a dict key because every reference
+    # type in Oro is equal to itself and hashable by identity (§7 item 13).
+    # This registry is the whole of the server's shared state, mutated by
+    # every connection task with no lock anywhere, because one VM means no
+    # parallelism means no data races (§3, "No select").
+    live = {}
+    tally = {"accepted": 0, "refused": 0, "drained": 0, "forced": 0}
+    if ready != null:
+        ready.send(ln)
+    errors = 0
+    backoff = _ACCEPT_BACKOFF
+    while true:
+        # Bound before the `try`, not inside it: a name first bound in a try
+        # body does not survive the block.
+        conn = null
+        closed = false
+        failed = null
+        try:
+            conn = ln.accept()
+        except ValueError as e:
+            closed = true
+        except ConnectionError as e:
+            # A client that went away between the SYN and the accept. There is
+            # no connection to serve and nothing has gone wrong with the
+            # server; `conn` is still null and the loop goes round again.
+            conn = null
+        except OSError as e:
+            failed = e
+        if closed:
+            break
+        if failed != null:
+            errors = errors + 1
+            if errors > _MAX_ACCEPT_ERRORS:
+                ln.close()
+                _drain_live(live, tally, drain)
+                raise failed
+            time.sleep(backoff)
+            backoff = min(backoff * 2, _ACCEPT_BACKOFF_MAX)
+            continue
+        if conn == null:
+            continue
+        errors = 0
+        backoff = _ACCEPT_BACKOFF
+        if len(live) >= max_conns:
+            tally["refused"] = tally["refused"] + 1
+            conn.close()
+            continue
+        if timeout != null:
+            conn.set_timeout(timeout)
+        entry = _Live(conn)
+        live[conn] = entry
+        # `spawn` enqueues and returns, so the handle is stored before the
+        # task's first instruction runs — which is what makes it safe for the
+        # task to read `entry.task` and for the drain to join it.
+        entry.task = spawn(_conn_task, handler, live, entry, max_requests)
+        tally["accepted"] = tally["accepted"] + 1
+    _drain_live(live, tally, drain)
+    return tally
+
+
+# One connection, and the reason a server's log is not full of `task failed`.
+#
+# The three catches are three different statements about the world.
+# `OSError` — a reset peer, a broken pipe, a deadline, or the drain closing
+# the socket under a parked read — is how connections end and is not worth a
+# line; the loop above already turned every *request*-level failure into a
+# 400 or a 500 long before it could get here. A `ValueError` is a closed
+# stream, which during a shutdown is this file's own doing and otherwise is a
+# bug. Anything else is a bug, and gets exactly one line naming the peer.
+def _conn_task(handler, live, entry, max_requests):
+    try:
+        serve_conn(entry.conn, handler, max_requests, entry)
+    except OSError as e:
+        pass
+    except ValueError as e:
+        if not entry.stopping:
+            sys.stderr.write(f"http: connection {entry.peer} closed under it: {e}\n".to_bytes())
+    except Exception as e:
+        sys.stderr.write(f"http: connection {entry.peer} failed: {type(e)}: {e}\n".to_bytes())
+    entry.conn.close()
+    # The last statement, and there is no park point after it, so under
+    # cooperative scheduling "gone from the registry" and "the task has
+    # finished" are the same instant to every other task in the VM.
+    live.pop(entry.conn, null)
+
+
+# Stop accepting, then finish what is in flight, then close the rest.
+def _drain_live(live, tally, drain):
+    waiting = len(live)
+    if waiting == 0:
+        return tally
+    for entry in live.values():
+        entry.stopping = true
+        if not entry.busy:
+            entry.conn.close()
+    # The connections just closed are awake but have not run. A yield hands
+    # them the CPU before anything is timed, so a shutdown with nothing in
+    # flight costs a scheduler turn rather than a tick of the poll below.
+    yield_now()
+    deadline = time.monotonic() + drain
+    while len(live) > 0 and time.monotonic() < deadline:
+        time.sleep(_DRAIN_TICK)
+    rest = live.values()
+    for entry in rest:
+        entry.conn.close()
+    tally["forced"] = tally["forced"] + len(rest)
+    tally["drained"] = tally["drained"] + waiting - len(rest)
+    # Joining is free here and only here: the accept loop is over, so nothing
+    # is waiting on this task, and `_conn_task` cannot raise into it.
+    for entry in rest:
+        entry.task.join()
+    return tally
 
 
 # --- routing --------------------------------------------------------------

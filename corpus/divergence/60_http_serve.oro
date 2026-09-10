@@ -1,0 +1,161 @@
+# INTENTIONAL DIVERGENCE.
+# The accept loop — `docs/stdlib-server-design.md` §3's shutdown sketch and §6's
+# missing `http.serve`. There is nothing to diff this against: CPython's nearest
+# equivalent is `http.server` on threads, or the same program written twice in
+# `asyncio` with an `await` in front of every line. Reviewed by hand.
+#
+# The rules 42_net.oro and 56_reactor.oro set stand here too, and they are what
+# makes a server testable inside a corpus at all: **ephemeral ports only**
+# (`:0`, and read the port back off the listener `serve` hands over), **a
+# deadline on everything that blocks**, and **every line prints a claim in
+# words** rather than a transcript of milliseconds. A time is the machine's; a
+# claim — "the fast client was served while the slow one waited" — is the
+# language's, and it is the one that fails loudly when it stops being true.
+import http
+import io
+import net
+import time
+
+_SLOW = 0.3
+
+
+def handler(req):
+    if req.path == "/slow":
+        time.sleep(_SLOW)
+        return http.text("slow\n")
+    if req.path == "/boom":
+        # §3: a KeyError in one handler must be a 500 for that request and must
+        # not take down the other 9,999 connections.
+        d = {}
+        return d["nope"]
+    return http.text("fast\n")
+
+
+def dial(ln):
+    c = net.dial(ln.local)
+    c.set_timeout(5)
+    return c
+
+
+def get(c, path, extra):
+    c.write(f"GET {path} HTTP/1.1\r\nHost: h\r\n{extra}\r\n".to_bytes())
+    return read_response(c)
+
+
+# A four-line HTTP client, which is all a test needs and all the module has no
+# intention of shipping (§6, "what is deliberately not in http").
+def read_response(c):
+    lines = c.read_until(b"\r\n\r\n", 65536).split(b"\r\n")
+    status = lines[0].split(b" ")[1].to_str()
+    n = 0
+    closing = false
+    for line in lines:
+        field = line.to_str().lower()
+        if field.startswith("content-length:"):
+            n = field[field.find(":") + 1:].strip().to_int()
+        if field.startswith("connection:") and field.find("close") > 0:
+            closing = true
+    body = b""
+    if n > 0:
+        body = io.read(c, n)
+    return [status, body.to_str().strip("\n", side="right"), closing]
+
+
+# --- one task per connection, and the proof it is not a queue ---------------
+# The test that tells a scheduler from a for-loop. A server that accepts, serves
+# and closes one connection at a time passes every hello-world demo and fails
+# this, because the fast client's whole request/response lands inside the slow
+# one's `time.sleep`.
+ready = chan()
+srv = spawn(http.serve, "127.0.0.1:0", handler, ready)
+ln = ready.recv()
+print("serve() handed back the listener it bound:", ln.local.startswith("127.0.0.1:"))
+
+order = []
+
+
+def client(name, path):
+    c = dial(ln)
+    answer = get(c, path, "Connection: close\r\n")
+    order.append(name)
+    c.close()
+    return answer[0]
+
+
+slow = spawn(client, "slow", "/slow")
+# Long enough that the slow request is in the handler, short enough that it is
+# nowhere near done: the window this is placed in is 300 ms wide.
+time.sleep(0.05)
+fast = spawn(client, "fast", "/fast")
+answers = [fast.join(), slow.join()]
+print("the fast client was served while the slow one waited:", order == ["fast", "slow"])
+print("and both of them got an answer:", answers == ["200", "200"])
+
+# --- a handler that raises kills that request, and nothing else -------------
+# The 500 is `_dispatch`'s, the line on stderr below it is the server's log, and
+# the third claim is the one that matters: the *connection* survived too, so a
+# keep-alive client does not lose the requests it had queued behind a bug.
+keep = dial(ln)
+print("a raising handler answered:", get(keep, "/boom", ""))
+print("and the same connection still serves the next request:", get(keep, "/fast", "") == ["200", "fast", false])
+
+# --- keep-alive, and the cap on it ------------------------------------------
+# `max_requests` is a `serve` argument rather than a module constant because
+# "how many requests may one client put through one slot" is a deployment's
+# question. At the cap the server says `Connection: close` and hangs up, which
+# is a client's cue to reconnect rather than an error.
+one = chan()
+capped = spawn(http.serve, "127.0.0.1:0", handler, one, 8, 2)
+capln = one.recv()
+c = dial(capln)
+print("request 1 of a 2-request connection:", get(c, "/fast", ""))
+print("request 2 is the last, and says so:", get(c, "/fast", ""))
+print("and the connection is then at EOF:", c.read(64) == b"")
+c.close()
+
+# --- the connection cap ------------------------------------------------------
+# At `max_conns` the connection is accepted and closed with nothing written.
+# A 503 would be friendlier and would need a task to be safe, and a task is
+# exactly what the cap exists to refuse.
+full = chan()
+one_at_a_time = spawn(http.serve, "127.0.0.1:0", handler, full, 1)
+fullln = full.recv()
+held = dial(fullln)
+held.write(b"GET /slow HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n")
+time.sleep(0.05)
+refused = dial(fullln)
+refused.set_timeout(5)
+print("at the cap, the second connection is closed with nothing written:", refused.read(64) == b"")
+refused.close()
+print("and the one that got in was still served:", read_response(held)[0] == "200")
+held.close()
+
+# --- shutdown ----------------------------------------------------------------
+# Closing the listener is the whole shutdown API: it wakes the parked `accept()`
+# with the ValueError it would have got one instruction later, and `serve` takes
+# it from there. There are three connections in three states at this moment —
+# one idle keep-alive (`keep`), one request in flight (`held_up`), and none
+# arriving — and graceful means a different thing for each.
+held_up = spawn(client, "in-flight", "/slow")
+time.sleep(0.05)
+started = time.monotonic()
+ln.close()
+tally = srv.join()
+elapsed = time.monotonic() - started
+print("the request in flight was answered, not cut off:", held_up.join() == "200")
+print("the idle keep-alive connection was closed:", keep.read(64) == b"")
+print("nothing had to be forced at the deadline:", tally["forced"] == 0)
+# The drain defaults to five seconds. If an idle connection were waited *for*
+# rather than closed, this shutdown would have cost all five of them.
+print("and shutdown took about as long as the request, not the drain:", elapsed < _SLOW + 1.0)
+# `accepted` and `refused` count the server's whole life; `drained` and
+# `forced` count only what was still open when the listener closed, which
+# here is the idle one and the in-flight one.
+print("four connections over the server's life:", tally["accepted"] == 4, tally["refused"] == 0)
+print("two of them were still open at the shutdown, and both finished:", tally["drained"] == 2)
+keep.close()
+
+capln.close()
+fullln.close()
+print("the capped server refused nobody:", capped.join()["refused"] == 0)
+print("the one-connection server refused one:", one_at_a_time.join()["refused"] == 1)

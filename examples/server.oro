@@ -1,0 +1,87 @@
+# A real HTTP server, in one screen of Oro.
+#
+#     oro examples/server.oro [addr]        # default 127.0.0.1:8080
+#
+# Then, in another terminal:
+#
+#     curl localhost:8080/                    # text
+#     curl localhost:8080/json                # JSON, from a dict
+#     curl localhost:8080/hello/ada           # a bound path segment
+#     curl -d '{"n": 1}' localhost:8080/echo  # a request body, decoded
+#     curl -i localhost:8080/boom             # a raising handler: 500, once
+#     curl localhost:8080/slow & curl localhost:8080/json
+#
+# The last line is the point of the whole file. `/slow` sleeps for two
+# seconds, and the log below shows `/json` arriving, being served and leaving
+# in the middle of it — one OS thread, no `async`, no `await`, and no
+# callback anywhere. Every one of these handlers is an ordinary blocking
+# function; `time.sleep` and the socket reads park the green thread that is
+# running it and hand the CPU to the next one.
+import http
+import sys
+import time
+
+_STARTED = time.monotonic()
+
+
+def index(req):
+    return http.text("oro http\n\ntry /json, /slow, /hello/<name>, /boom, POST /echo\n")
+
+
+def status(req):
+    return http.json_response({
+        "server": "oro",
+        "uptime": time.monotonic() - _STARTED,
+        "query": req.query,
+    })
+
+
+def hello(req):
+    who = req.params["name"]
+    return http.text(f"hello, {who}\n")
+
+
+def slow(req):
+    time.sleep(2)
+    return http.text("that took two seconds, and nobody else waited\n")
+
+
+def echo(req):
+    return http.json_response({"you_sent": req.json()}, 201)
+
+
+# A handler that raises answers 500, logs one line on stderr, and takes
+# nothing else with it — not this connection's next request, and not the
+# other connections. That is the single most important property of a server
+# runtime, so the demo has a button for it.
+def boom(req):
+    d = {}
+    return d["nope"]
+
+
+# Middleware in a language with first-class functions is a function that
+# takes a handler and answers a handler. There is no framework holding this.
+def logged(h):
+    return req => _log(h, req)
+
+
+def _log(h, req):
+    print(f"{time.monotonic() - _STARTED:7.3f}  -->  {req.method} {req.path}")
+    resp = h(req)
+    print(f"{time.monotonic() - _STARTED:7.3f}  <--  {resp.status} {req.path}")
+    return resp
+
+
+routes = http.Router()
+routes.add("GET", "/", index)
+routes.add("GET", "/json", status)
+routes.add("GET", "/slow", slow)
+routes.add("GET", "/hello/:name", hello)
+routes.add("POST", "/echo", echo)
+routes.add("GET", "/boom", boom)
+
+addr = "127.0.0.1:8080"
+if len(sys.argv) > 1:
+    addr = sys.argv[1]
+print(f"serving on http://{addr}  — ctrl-c to stop")
+http.serve(addr, logged(req => routes.dispatch(req)))
