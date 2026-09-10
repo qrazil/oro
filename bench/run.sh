@@ -46,6 +46,7 @@ BENCHES=(
   "strjoin"
   "strops"
   "dictops"
+  "dictstr"
   "oo"
   "genpipe"
   "exc"
