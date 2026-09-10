@@ -186,7 +186,7 @@ per index on an interpreter that is already 1.7×–5.7× slower than CPython.
 
 ```
 b.find(sub)              -> int, -1 if absent
-b.split(sep, maxsplit=?) -> list of bytes
+b.split(sep, maxsplit=?, side=?) -> list of bytes
 b.strip(side=...)               -> bytes   (ASCII whitespace only)
 b.startswith(p) .endswith(s)    -> bool
 b.replace(old, new)             -> bytes

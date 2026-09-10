@@ -166,12 +166,15 @@ Implemented and working today:
   `rm_suffix` `upper` `lower` `join` `replace` `is_digit` `is_alpha`
   `is_alnum` `is_space`
 
-  Two of them take a keyword, and only their own. `strip(chars=null,
+  Three of them take a keyword, and only their own. `strip(chars=null,
   side="both")` takes `side="left"` / `"right"` — which is why there is no
   `lstrip`/`rstrip` — and `chars` is a character *set*, CPython's cutset
-  semantics unchanged. `find(sub, start, end, reverse=false)` takes
-  `reverse=true` for the last occurrence, spelled the way `sorted(reverse=…)`
-  already is, which is why there is no `rfind`. `rm_prefix`/`rm_suffix` remove
+  semantics unchanged. `split(sep=null, maxsplit=-1, side="left")` takes the
+  same `side`, in two values rather than three, because that is where
+  `maxsplit` counts its splits from — which is why there is no `rsplit`.
+  `find(sub, start, end, reverse=false)` takes `reverse=true` for the last
+  occurrence, spelled the way `sorted(reverse=…)` already is, which is why
+  there is no `rfind`. `rm_prefix`/`rm_suffix` remove
   a *literal* affix and exist precisely because `strip(chars)` gets mistaken
   for one: `"ping.png".strip(".png", side="right")` is `"pi"`, and
   `"ping.png".rm_suffix(".png")` is what was meant. The four `is_*` predicates
@@ -289,7 +292,8 @@ Each of these is omitted on purpose. The reason matters more than the list.
 
 - **No `lstrip`/`rstrip`, no `rfind`, no `index`, no `rsplit`, no `zfill`.**
   Five names removed from the string surface, each because one name already
-  covers it.
+  covers it — but only four of them were replaced by an existing name, and the
+  fifth is worth reading as a correction.
 
   `lstrip`/`rstrip` are `strip(side="left"/"right")`: three methods for one
   operation, distinguished by a letter, is exactly the accretion the thesis
@@ -299,10 +303,17 @@ Each of these is omitted on purpose. The reason matters more than the list.
   of answering `-1`; two spellings of one search, and the one that raises makes
   every caller choose between a `try` and a method they did not need.
 
-  `rsplit` is not a variant of `split` — it is a different *answer* (`"a=b=c"`
-  split once from the right is `["a=b", "c"]`, from the left `["a", "b=c"]`),
-  and the case that wants it is almost always "split off the last field", which
-  `find(sep, reverse=true)` says outright. `zfill` is fully redundant with the
+  `rsplit` is a different *answer* from `split`, not a different need
+  (`"a=b=c"` split once from the right is `["a=b", "c"]`, from the left
+  `["a", "b=c"]`) — so the name went and the answer stayed, as
+  `split(sep, maxsplit, side="right")`. That was not the first attempt. The
+  first was to point at `find(sep, reverse=true)`, on the theory that the case
+  wanting a right split is really "split off the last field"; it is, and the
+  replacement was still wrong, because `find` hands back an *index* and leaves
+  the caller to write `s[:i]`, `s[i + 1:]` and the `-1` check — three chances
+  to be off by one where there had been none. A removal has to leave the
+  capability behind. `side=` does, on the keyword `strip` already uses, and
+  costs no new name. `zfill` is fully redundant with the
   format mini-language: `f"{42:05d}"`, `f"{'42':0>5}"`, and `f"{s:0>{w}}"` for
   a width computed at run time — which `zfill` cannot express any more briefly
   and cannot generalise to any other pad character.
@@ -734,7 +745,7 @@ different.
 | `s.lstrip(…)` / `s.rstrip(…)` | `s.strip(…, side="left")` / `side="right"` | One strip with a named end, not three methods |
 | `s.rfind(sub)` | `s.find(sub, reverse=true)` | One find with a named direction; `reverse=` as in `sorted` |
 | `s.index(sub)` | `s.find(sub)` | Two spellings of one search, one of which raises; `-1` is the answer |
-| `s.rsplit(sep, n)` | `s.split(sep, n)`, or `s.find(sep, reverse=true)` | Splitting from the right is a different *answer*, not a different need |
+| `s.rsplit(sep, n)` | `s.split(sep, n, side="right")` | Same answer, on the `side=` keyword `strip` already uses; no second name |
 | `s.zfill(n)` | `f"{n:05d}"`, `f"{s:0>5}"`, `f"{s:0>{w}}"` | Fully covered by the format spec, which also pads with anything else |
 | `s.removeprefix(p)` / `s.removesuffix(p)` | `s.rm_prefix(p)` / `s.rm_suffix(p)` | Same method, shorter name |
 | `s.isdigit()` / `isalpha()` / `isalnum()` / `isspace()` | `s.is_digit()` / `is_alpha()` / `is_alnum()` / `is_space()` | Same predicates, in the language's own naming |

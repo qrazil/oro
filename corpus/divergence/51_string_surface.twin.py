@@ -56,6 +56,36 @@ for s in ["ping.png", "banana.png", "png", "", "x.png.png"]:
 print(repr("abc".removeprefix("")), repr("abc".removesuffix("")))
 print(b"a.png".removesuffix(b".png"), b"a.png".removesuffix(b".gif"), b"a.png".removeprefix(b"a."))
 
+# `split(sep, maxsplit, side="right")` is what `rsplit(sep, maxsplit)` did. The
+# *right* arm of the split matrix; the left arm is oracled directly in
+# core/30_str_split_maxsplit.oro, over the same inputs.
+print('--- split(sep, maxsplit, side="right")')
+SPLITS = [("a.b.c", "."), ("a..b", "."), (".a.", "."), ("", "."), ("aXXbXXc", "XX")]
+for s, sep in SPLITS:
+    for m in [-1, 0, 1, 2, 5]:
+        print(repr(s), repr(sep), m, s.rsplit(sep, m))
+
+print('--- split(null, maxsplit, side="right")')
+for s in [" a  b  c ", "  a b  ", "   ", "", "a"]:
+    for m in [-1, 0, 1, 2, 5]:
+        print(repr(s), m, s.rsplit(None, m))
+
+print('--- bytes.split(sep, maxsplit, side="right")')
+for m in [-1, 0, 1, 2, 5]:
+    print(m, b"a.b.c".rsplit(b".", m), b"a..b".rsplit(b".", m))
+
+print('--- bytes.split(null, maxsplit, side="right")')
+for m in [-1, 0, 1, 2, 5]:
+    print(m, b" a  b  c ".rsplit(None, m), b"  a b  ".rsplit(None, m))
+
+# The case the removal made worse, written both ways. `find(sep, reverse=True)`
+# hands back an index and leaves the `+ 1` and the slice to the caller; `side=`
+# hands back the fields.
+print("--- split off the last field")
+for path in ["a/b/c.txt", "c.txt", "/leading", "trailing/", ""]:
+    i = path.rfind("/")
+    print(repr(path), [path[:i], path[i + 1:]], path.rsplit("/", 1))
+
 print("--- count(sub)")
 for s in FIND:
     row = []

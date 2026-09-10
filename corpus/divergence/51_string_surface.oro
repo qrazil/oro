@@ -10,6 +10,7 @@
 #   s.strip(side="left")     -> s.lstrip()
 #   s.strip(side="right")    -> s.rstrip()
 #   s.find(sub, reverse=true) -> s.rfind(sub)
+#   s.split(sep, n, side="right") -> s.rsplit(sep, n)
 #   s.rm_prefix(p)           -> s.removeprefix(p)
 #   s.rm_suffix(p)           -> s.removesuffix(p)
 #   s.is_digit() ...         -> s.isdigit() ...
@@ -63,6 +64,36 @@ for s in ["ping.png", "banana.png", "png", "", "x.png.png"]:
     print(repr(s), repr(s.strip("pin", side="left")), repr(s.rm_prefix("pin")))
 print(repr("abc".rm_prefix("")), repr("abc".rm_suffix("")))
 print(b"a.png".rm_suffix(b".png"), b"a.png".rm_suffix(b".gif"), b"a.png".rm_prefix(b"a."))
+
+# `split(sep, maxsplit, side="right")` is what `rsplit(sep, maxsplit)` did. The
+# *right* arm of the split matrix; the left arm is oracled directly in
+# core/30_str_split_maxsplit.oro, over the same inputs.
+print('--- split(sep, maxsplit, side="right")')
+SPLITS = [("a.b.c", "."), ("a..b", "."), (".a.", "."), ("", "."), ("aXXbXXc", "XX")]
+for s, sep in SPLITS:
+    for m in [-1, 0, 1, 2, 5]:
+        print(repr(s), repr(sep), m, s.split(sep, m, side="right"))
+
+print('--- split(null, maxsplit, side="right")')
+for s in [" a  b  c ", "  a b  ", "   ", "", "a"]:
+    for m in [-1, 0, 1, 2, 5]:
+        print(repr(s), m, s.split(null, m, side="right"))
+
+print('--- bytes.split(sep, maxsplit, side="right")')
+for m in [-1, 0, 1, 2, 5]:
+    print(m, b"a.b.c".split(b".", m, side="right"), b"a..b".split(b".", m, side="right"))
+
+print('--- bytes.split(null, maxsplit, side="right")')
+for m in [-1, 0, 1, 2, 5]:
+    print(m, b" a  b  c ".split(null, m, side="right"), b"  a b  ".split(null, m, side="right"))
+
+# The case the removal made worse, written both ways. `find(sep, reverse=true)`
+# hands back an index and leaves the `+ 1` and the slice to the caller; `side=`
+# hands back the fields.
+print("--- split off the last field")
+for path in ["a/b/c.txt", "c.txt", "/leading", "trailing/", ""]:
+    i = path.find("/", reverse=true)
+    print(repr(path), [path[:i], path[i + 1:]], path.split("/", 1, side="right"))
 
 print("--- count(sub)")
 for s in FIND:

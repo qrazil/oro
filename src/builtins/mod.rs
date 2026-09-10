@@ -682,8 +682,7 @@ pub fn cut_method_message(recv: &Value, name: &str) -> Option<&'static str> {
         "lstrip" => "`lstrip` is not in Oro — use `strip(side=\"left\")`",
         "rstrip" => "`rstrip` is not in Oro — use `strip(side=\"right\")`",
         "rsplit" => {
-            "`rsplit` is not in Oro — use `split(sep, maxsplit)`, or \
-             `find(sub, reverse=true)` to locate the last separator yourself"
+            "`rsplit` is not in Oro — use `split(sep, maxsplit, side=\"right\")`"
         }
         "rfind" => "`rfind` is not in Oro — use `find(sub, reverse=true)`",
         "index" => "`index` is not in Oro — use `find(sub)`, which answers -1 rather than raising",
@@ -759,11 +758,12 @@ pub fn method_exists(recv: &Value, name: &str) -> bool {
     }
 }
 
-/// The only native methods that take a keyword: `strip(side=…)` and
-/// `find(…, reverse=…)`, on `str` and `bytes`. Everything else refuses one, so
-/// a misplaced keyword is an error rather than a silently discarded argument.
+/// The only native methods that take a keyword: `strip(side=…)`,
+/// `split(…, side=…)` and `find(…, reverse=…)`, on `str` and `bytes`.
+/// Everything else refuses one, so a misplaced keyword is an error rather than
+/// a silently discarded argument.
 fn takes_kwargs(recv: &Value, name: &str) -> bool {
-    matches!(recv, Value::Str(_) | Value::Bytes(_)) && matches!(name, "strip" | "find")
+    matches!(recv, Value::Str(_) | Value::Bytes(_)) && matches!(name, "strip" | "split" | "find")
 }
 
 /// Dispatch a bound method call.
@@ -1026,8 +1026,10 @@ fn str_rfind_in(os: &OroStr, needle: &str, start: usize, end: usize) -> i64 {
     }
 }
 
-/// Which end(s) `strip` removes from — the `side=` keyword, which is the whole
-/// reason `lstrip`/`rstrip` are gone.
+/// Which end(s) an operation works from — the `side=` keyword, shared by
+/// `strip` and `split`, and the whole reason `lstrip`/`rstrip`/`rsplit` are
+/// gone. `strip` takes all three values; `split` takes two, because a split
+/// has no "both".
 #[derive(Clone, Copy, PartialEq)]
 enum Side {
     Both,
@@ -1064,6 +1066,45 @@ fn strip_side(kwargs: &[(String, Value)]) -> VResult<Side> {
             other => {
                 return Err(format!(
                     "strip(): side must be \"both\", \"left\" or \"right\", not {}",
+                    crate::value::repr_str(other)
+                ))
+            }
+        };
+    }
+    Ok(side)
+}
+
+/// The one keyword `split` takes: which end `maxsplit` counts its splits from.
+/// `"right"` is what `rsplit` did.
+///
+/// Two values, not `strip`'s three, and the error names two: a split from
+/// "both" ends is not a thing that has a meaning, so accepting the word would
+/// be answering a question that was not asked.
+///
+/// **`side` with no `maxsplit` is a no-op, deliberately, not an error.** With
+/// the splits unlimited both ends produce the same list — CPython's `rsplit`
+/// behaves the same way — so nothing is silently wrong. It could not be an
+/// error honestly anyway: "`side` had no effect" is a property of the *data*
+/// (`maxsplit` at or above the number of separators), not of the call, so a
+/// check could only fire on the syntactic absence of the argument. That would
+/// reject `split(sep, side="right")` while waving through `split(sep, -1,
+/// side="right")` and `split(sep, 99, side="right")`, which are equally inert.
+/// A rule that catches one of its three cases is worse than no rule.
+fn split_side(kwargs: &[(String, Value)]) -> VResult<Side> {
+    let mut side = Side::Left;
+    for (k, v) in kwargs {
+        if k != "side" {
+            return Err(format!("split() got an unexpected keyword argument '{k}'"));
+        }
+        let Value::Str(s) = v else {
+            return Err(format!("split(): side must be str, not '{}'", v.type_name()));
+        };
+        side = match &*s.s {
+            "left" => Side::Left,
+            "right" => Side::Right,
+            other => {
+                return Err(format!(
+                    "split(): side must be \"left\" or \"right\", not {}",
                     crate::value::repr_str(other)
                 ))
             }
@@ -1185,18 +1226,26 @@ fn str_arg(args: &[Value], i: usize, who: &str) -> VResult<String> {
 }
 
 /// `str.split` on an explicit separator, honouring `maxsplit`
-/// (negative = unlimited).
-fn split_sep_n(s: &str, sep: &str, maxsplit: i64) -> Vec<String> {
+/// (negative = unlimited) and the end it counts from.
+///
+/// With `maxsplit` unlimited the two sides give the same list, so `side` only
+/// reaches the branch below when it can change the answer.
+fn split_sep_n(s: &str, sep: &str, maxsplit: i64, side: Side) -> Vec<String> {
     if maxsplit < 0 {
         return s.split(sep).map(|p| p.to_string()).collect();
     }
     // maxsplit splits => maxsplit + 1 pieces.
     let n = (maxsplit as usize).saturating_add(1);
+    if side == Side::Right {
+        // `rsplitn` walks from the right and yields right to left, so the
+        // pieces come back in reverse source order.
+        let mut parts: Vec<String> = s.rsplitn(n, sep).map(|p| p.to_string()).collect();
+        parts.reverse();
+        return parts;
+    }
     s.splitn(n, sep).map(|p| p.to_string()).collect()
 }
 
-/// `str.split(None, maxsplit)`: runs of whitespace separate, leading/trailing
-/// whitespace is discarded, and once `maxsplit` splits are made the remainder is
 /// The characters CPython calls whitespace: Unicode `White_Space`, plus the
 /// four ASCII separators U+001C..U+001F that `str.isspace()` counts and Rust's
 /// `char::is_whitespace` does not. Checked against CPython over every code
@@ -1211,10 +1260,16 @@ fn split_whitespace_all(s: &str) -> Vec<String> {
     s.split(is_py_space).filter(|p| !p.is_empty()).map(|p| p.to_string()).collect()
 }
 
-/// returned verbatim (interior whitespace and all).
-fn split_whitespace_n(s: &str, maxsplit: i64) -> Vec<String> {
+/// `str.split(null, maxsplit)`: runs of whitespace separate, leading and
+/// trailing whitespace is discarded, and once `maxsplit` splits are made the
+/// remainder is returned verbatim (interior whitespace and all) — from
+/// whichever end `side` names.
+fn split_whitespace_n(s: &str, maxsplit: i64, side: Side) -> Vec<String> {
     if maxsplit < 0 {
         return split_whitespace_all(s);
+    }
+    if side == Side::Right {
+        return split_whitespace_n_right(s, maxsplit);
     }
     let limit = maxsplit as usize;
     let chars: Vec<char> = s.chars().collect();
@@ -1240,6 +1295,40 @@ fn split_whitespace_n(s: &str, maxsplit: i64) -> Vec<String> {
     if i < chars.len() {
         parts.push(chars[i..].iter().collect());
     }
+    parts
+}
+
+/// [`split_whitespace_n`] scanning from the right — what `rsplit(null, n)`
+/// does. Written as its own walk rather than a direction flag on the one
+/// above: the two loops differ in every bound, and a shared body would be a
+/// worse thing to read than a mirror of a short one.
+fn split_whitespace_n_right(s: &str, maxsplit: i64) -> Vec<String> {
+    let limit = maxsplit as usize;
+    let chars: Vec<char> = s.chars().collect();
+    let mut parts: Vec<String> = Vec::new();
+    let mut i = chars.len();
+    while parts.len() < limit {
+        while i > 0 && is_py_space(chars[i - 1]) {
+            i -= 1;
+        }
+        if i == 0 {
+            parts.reverse();
+            return parts;
+        }
+        let end = i;
+        while i > 0 && !is_py_space(chars[i - 1]) {
+            i -= 1;
+        }
+        parts.push(chars[i..end].iter().collect());
+    }
+    // Remainder: drop only the whitespace that separated it from the last field.
+    while i > 0 && is_py_space(chars[i - 1]) {
+        i -= 1;
+    }
+    if i > 0 {
+        parts.push(chars[..i].iter().collect());
+    }
+    parts.reverse();
     parts
 }
 
@@ -1757,15 +1846,18 @@ fn str_method(
         "split" => {
             at_most(&args, 2, name)?;
             // maxsplit < 0 (the default) means "no limit"; maxsplit == n caps the
-            // number of *splits*, so at most n + 1 pieces come back.
+            // number of *splits*, so at most n + 1 pieces come back. `side`
+            // picks the end those n splits are counted from, and is what
+            // `rsplit` used to be.
+            let side = split_side(kwargs)?;
             let maxsplit = opt_int_arg(&args, 1, name, -1)?;
             let parts: Vec<String> = match args.first() {
-                None | Some(Value::None) => split_whitespace_n(s, maxsplit),
+                None | Some(Value::None) => split_whitespace_n(s, maxsplit, side),
                 Some(Value::Str(sep)) => {
                     if sep.s.is_empty() {
                         return Err("empty separator".to_string());
                     }
-                    split_sep_n(s, &sep.s, maxsplit)
+                    split_sep_n(s, &sep.s, maxsplit, side)
                 }
                 Some(other) => {
                     return Err(format!(
@@ -1874,9 +1966,13 @@ fn bytes_replace(hay: &[u8], from: &[u8], to: &[u8], count: i64) -> Vec<u8> {
 }
 
 /// `bytes.split` on an explicit separator — the byte-level twin of
-/// [`split_sep_n`], with the same `maxsplit` rule (negative = unlimited).
-fn split_sep_bytes(s: &[u8], sep: &[u8], maxsplit: i64) -> Vec<Vec<u8>> {
+/// [`split_sep_n`], with the same `maxsplit` rule (negative = unlimited) and
+/// the same `side`.
+fn split_sep_bytes(s: &[u8], sep: &[u8], maxsplit: i64, side: Side) -> Vec<Vec<u8>> {
     let limit = if maxsplit < 0 { usize::MAX } else { maxsplit as usize };
+    if side == Side::Right {
+        return split_sep_bytes_right(s, sep, limit);
+    }
     let mut parts: Vec<Vec<u8>> = Vec::new();
     let (mut start, mut i) = (0usize, 0usize);
     while parts.len() < limit && i + sep.len() <= s.len() {
@@ -1892,12 +1988,35 @@ fn split_sep_bytes(s: &[u8], sep: &[u8], maxsplit: i64) -> Vec<Vec<u8>> {
     parts
 }
 
-/// `bytes.split(None, maxsplit)` — the byte-level twin of
+/// [`split_sep_bytes`] scanning from the right. The separator is non-empty
+/// (`split` rejects an empty one before this is reached), so the window can
+/// never be zero-width and the walk always terminates.
+fn split_sep_bytes_right(s: &[u8], sep: &[u8], limit: usize) -> Vec<Vec<u8>> {
+    let mut parts: Vec<Vec<u8>> = Vec::new();
+    let (mut end, mut i) = (s.len(), s.len());
+    while parts.len() < limit && i >= sep.len() {
+        if s[i - sep.len()..i] == *sep {
+            parts.push(s[i..end].to_vec());
+            i -= sep.len();
+            end = i;
+        } else {
+            i -= 1;
+        }
+    }
+    parts.push(s[..end].to_vec());
+    parts.reverse();
+    parts
+}
+
+/// `bytes.split(null, maxsplit)` — the byte-level twin of
 /// [`split_whitespace_n`]: runs of whitespace separate, leading and trailing
 /// whitespace is discarded, and the remainder after `maxsplit` splits comes
-/// back verbatim.
-fn split_space_bytes(s: &[u8], maxsplit: i64) -> Vec<Vec<u8>> {
+/// back verbatim, from whichever end `side` names.
+fn split_space_bytes(s: &[u8], maxsplit: i64, side: Side) -> Vec<Vec<u8>> {
     let limit = if maxsplit < 0 { usize::MAX } else { maxsplit as usize };
+    if side == Side::Right {
+        return split_space_bytes_right(s, limit);
+    }
     let mut parts: Vec<Vec<u8>> = Vec::new();
     let mut i = 0usize;
     while parts.len() < limit {
@@ -1919,6 +2038,35 @@ fn split_space_bytes(s: &[u8], maxsplit: i64) -> Vec<Vec<u8>> {
     if i < s.len() {
         parts.push(s[i..].to_vec());
     }
+    parts
+}
+
+/// [`split_space_bytes`] scanning from the right — the mirror of
+/// [`split_whitespace_n_right`], over octets.
+fn split_space_bytes_right(s: &[u8], limit: usize) -> Vec<Vec<u8>> {
+    let mut parts: Vec<Vec<u8>> = Vec::new();
+    let mut i = s.len();
+    while parts.len() < limit {
+        while i > 0 && is_bytes_space(s[i - 1]) {
+            i -= 1;
+        }
+        if i == 0 {
+            parts.reverse();
+            return parts;
+        }
+        let end = i;
+        while i > 0 && !is_bytes_space(s[i - 1]) {
+            i -= 1;
+        }
+        parts.push(s[i..end].to_vec());
+    }
+    while i > 0 && is_bytes_space(s[i - 1]) {
+        i -= 1;
+    }
+    if i > 0 {
+        parts.push(s[..i].to_vec());
+    }
+    parts.reverse();
     parts
 }
 
@@ -2040,14 +2188,15 @@ fn bytes_method(
         }
         "split" => {
             at_most(&args, 2, name)?;
+            let side = split_side(kwargs)?;
             let maxsplit = opt_int_arg(&args, 1, name, -1)?;
             let parts: Vec<Vec<u8>> = match args.first() {
-                None | Some(Value::None) => split_space_bytes(b, maxsplit),
+                None | Some(Value::None) => split_space_bytes(b, maxsplit, side),
                 Some(Value::Bytes(sep)) => {
                     if sep.is_empty() {
                         return Err("empty separator".to_string());
                     }
-                    split_sep_bytes(b, sep, maxsplit)
+                    split_sep_bytes(b, sep, maxsplit, side)
                 }
                 Some(other) => {
                     return Err(format!(

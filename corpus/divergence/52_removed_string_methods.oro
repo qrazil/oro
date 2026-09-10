@@ -169,7 +169,31 @@ except TypeError as e:
 
 print("---")
 
-# Only `strip` and `find` take a keyword, and only their own.
+# `split` takes the same keyword and two of the three values: a split has no
+# "both" end, so the error names two. `side` with no `maxsplit` is a no-op and
+# not an error — with the splits unlimited both ends give the same list, and
+# "had no effect" is a property of the data, not of the call.
+for side in ["left", "right", "both", "middle", ""]:
+    try:
+        print(repr(side), "a.b.c".split(".", 1, side=side))
+    except ValueError as e:
+        print(repr(side), "ValueError:", e)
+
+print("a.b.c".split(".", side="right"), "a.b.c".split(".", -1, side="right"))
+
+try:
+    "hi".split(".", side=1)
+except TypeError as e:
+    print("TypeError:", e)
+
+try:
+    "hi".split(".", bogus=1)
+except TypeError as e:
+    print("TypeError:", e)
+
+print("---")
+
+# Only `strip`, `split` and `find` take a keyword, and only their own.
 try:
     "hi".upper(side="left")
 except TypeError as e:

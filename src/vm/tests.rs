@@ -1056,6 +1056,42 @@ fn str_strip_takes_a_side_and_find_takes_a_reverse() {
     assert_eq!(int(&eval("r = \"abc\".find(\"\", reverse=true)\n")), 3);
 }
 
+/// `split(sep, maxsplit, side="right")` — the capability `rsplit` had. Every
+/// answer here is CPython's `rsplit(sep, maxsplit)`; the corpus twin
+/// `divergence/51_string_surface.twin.py` checks the whole matrix against it,
+/// and these pin the shape of the call.
+#[test]
+fn split_takes_a_side() {
+    assert_eq!(eval("r = \"a.b.c\".split(\".\", 1)\n").repr(), "['a', 'b.c']");
+    assert_eq!(eval("r = \"a.b.c\".split(\".\", 1, side=\"left\")\n").repr(), "['a', 'b.c']");
+    assert_eq!(eval("r = \"a.b.c\".split(\".\", 1, side=\"right\")\n").repr(), "['a.b', 'c']");
+    // Unlimited splits: the two ends agree, and `side` is a no-op rather than
+    // an error. See `split_side` for why an error could not be honest here.
+    assert_eq!(eval("r = \"a.b.c\".split(\".\", side=\"right\")\n").repr(), "['a', 'b', 'c']");
+    // Whitespace splitting keeps the remainder verbatim at the far end.
+    assert_eq!(eval("r = \" a  b  c \".split(null, 1, side=\"right\")\n").repr(), "[' a  b', 'c']");
+    assert_eq!(eval("r = \" a  b \".split(null, 0, side=\"right\")\n").repr(), "[' a  b']");
+    assert_eq!(eval("r = \"   \".split(null, 1, side=\"right\")\n").repr(), "[]");
+    // Empty fields survive from either end.
+    assert_eq!(eval("r = \"a..b\".split(\".\", 1, side=\"right\")\n").repr(), "['a.', 'b']");
+    assert_eq!(eval("r = \".a.\".split(\".\", 1, side=\"right\")\n").repr(), "['.a', '']");
+    // And on bytes, the same sixteen names meaning the same sixteen things.
+    assert_eq!(eval("r = b\"a.b.c\".split(b\".\", 1, side=\"right\")\n").repr(), "[b'a.b', b'c']");
+    assert_eq!(
+        eval("r = b\" a  b  c \".split(null, 1, side=\"right\")\n").repr(),
+        "[b' a  b', b'c']"
+    );
+
+    // A split has no "both" end, so the error names two values, not three.
+    let e = run_err("r = \"x\".split(\".\", 1, side=\"both\")\n");
+    assert!(e.message.contains("ValueError"), "got: {}", e.message);
+    assert!(e.message.contains("\"left\" or \"right\""), "got: {}", e.message);
+    let e = run_err("r = \"x\".split(\".\", 1, side=1)\n");
+    assert!(e.message.contains("TypeError"), "got: {}", e.message);
+    let e = run_err("r = \"x\".split(\".\", bogus=1)\n");
+    assert!(e.message.contains("unexpected keyword argument"), "got: {}", e.message);
+}
+
 /// `rm_prefix`/`rm_suffix` exist because `strip(chars)` is a character *set*
 /// and gets mistaken for suffix removal. The two lines here are the footgun and
 /// its answer, side by side.
@@ -1093,7 +1129,7 @@ fn removed_string_methods_name_their_replacement() {
     let cases = [
         ("\"x\".lstrip()", "strip(side=\"left\")"),
         ("\"x\".rstrip()", "strip(side=\"right\")"),
-        ("\"x\".rsplit(\",\")", "split(sep, maxsplit)"),
+        ("\"x\".rsplit(\",\")", "split(sep, maxsplit, side=\"right\")"),
         ("\"x\".rfind(\"a\")", "find(sub, reverse=true)"),
         ("\"x\".zfill(3)", "f\"{n:05d}\""),
         ("\"x\".index(\"a\")", "find(sub)"),
