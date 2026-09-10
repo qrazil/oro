@@ -16,11 +16,19 @@ path = "src/main.rs"
 name = "oro_lang"
 path = "src/lib.rs"
 
-# The `re` module is backed by the `regex` crate — a deliberate, approved
-# exception to the zero-dependency rule. `regex` is a Thompson-NFA engine with a
-# guaranteed linear-time match (no ReDoS); a correct linear-time engine is a
-# serious project and a hand-rolled backtracker can hang on inputs like (a+)+b,
-# so the dependency budget is well spent here. Everything else is std only.
+# Minimal and steady library imports on the Rust side — the policy is in the
+# README, and the short form is that a dependency is taken for a problem that is
+# hard, never one that is merely tedious, and only where the crate is stable
+# enough that importing it is not a commitment to track someone else's churn.
+#
+# `regex` backs the `re` module: a Thompson-NFA engine with a guaranteed
+# linear-time match (no ReDoS). A correct linear-time engine is a serious
+# project and a hand-rolled backtracker can hang on inputs like (a+)+b.
+#
+# `mio` will join it when the I/O reactor lands (docs/stdlib-server-design.md
+# §3) — std has no readiness API at all. It is deliberately NOT listed here
+# yet: nothing in the tree uses it, and a dependency that is declared before it
+# is needed is a dependency nobody re-argues.
 [dependencies]
 regex = "1"
 

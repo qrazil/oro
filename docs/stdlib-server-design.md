@@ -1254,6 +1254,14 @@ carry two, and the second is the one that touches syscalls. That sentence should
 be rewritten deliberately, with both exceptions and both reasons in it, rather
 than quietly amended.
 
+*Done, ahead of the crate itself.* The claim is now a stated policy — minimal
+and steady library imports on the Rust side, each taken for a problem that is
+hard rather than tedious, each named with its reason — which is a thing that can
+survive a second entry, where a count could only be defended or abandoned. mio
+is described there as coming rather than present, and is deliberately still
+absent from `Cargo.toml`: a dependency declared before it is needed is a
+dependency nobody re-argues.
+
 **The static-musl-linkable requirement survives intact.** `libc` is a *bindings*
 crate — declarations, not an implementation — so musl still links statically.
 That stays a release-gate check rather than an assumption, alongside the

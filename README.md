@@ -3,10 +3,30 @@
 Oro (named for the *ouroboros*) is a small, deliberately frozen subset of
 Python, implemented in Rust and executed on a bytecode virtual machine. It
 compiles to a single self-contained binary. The lexer, parser, compiler, and VM
-are all hand-written with **no dependencies**; the sole exception is the
-[`regex`](https://docs.rs/regex) crate behind the `re` module — a deliberate,
-approved choice for its guaranteed linear-time matching (see [the `re`
-module](#standard-library-surface)).
+are all hand-written.
+
+**Minimal and steady library imports on the Rust side.** Not zero — that is a
+number, and a number is a thing to defend rather than a policy. The policy is
+that a dependency is taken only for a problem that is *hard*, never for one
+that is merely tedious, and only where the crate itself is stable enough that
+importing it is not a standing commitment to track someone else's churn. Each
+one is named here with the reason.
+
+- [`regex`](https://docs.rs/regex) (4 transitive), behind the `re` module. A
+  Thompson-NFA engine with a guaranteed linear-time match, so no pattern can
+  ReDoS an Oro program. A correct linear-time engine is a serious project and a
+  hand-rolled backtracker hangs on inputs like `(a+)+b`. See [the `re`
+  module](#standard-library-surface).
+- [`mio`](https://docs.rs/mio) (with `libc` and `log`) will arrive with the I/O
+  reactor, and has not landed yet. std exposes no readiness API — there is no
+  `epoll`, `kqueue` or IOCP in it — so this is one of the few places where "do
+  it yourself" means writing per-platform `unsafe` syscall bindings, and mio is
+  the same battle-tested wrapper tokio is built on with the runtime taken off
+  the top. The reasoning, including why not tokio, is in
+  [`docs/stdlib-server-design.md`](docs/stdlib-server-design.md) §3.
+
+The single-file static musl build survives that: `libc` is a *bindings* crate —
+declarations, not an implementation — and musl still links statically.
 
 The point of Oro is not to be a bigger Python. It is to be a *smaller* one that
 never grows: one way to do each thing, a language and API that freeze, and a
