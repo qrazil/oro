@@ -29,7 +29,7 @@ _BIG = 1000000
 # How many calls this file makes to the Oro server (not the raw one). One
 # connection each, because `fetch` and `stream` say `Connection: close` and
 # mean it — the tally at the bottom is the proof there is no pool hiding here.
-_CALLS = 11
+_CALLS = 14
 
 
 # --- the server half --------------------------------------------------------
@@ -141,6 +141,21 @@ print("a POST with a body was echoed:", r.status == 201, f"{r.json()}" == "{'you
 
 r = http.fetch("GET", base + "/hello/ada?x=1&y=two")
 print("the path and query reached the router intact:", r.text() == "ada {'x': '1', 'y': 'two'}\n")
+
+# `params=` is the argument the client shipped without, because until there
+# was an encoder there was no correct way to spell a value containing an `&`
+# and a convenience that quietly sends a different request is worse than no
+# convenience. These three lines are the whole proof that it is correct now:
+# the encoder writes the target, this module's own parser reads it back off a
+# real socket, and what the handler sees is what the caller wrote.
+r = http.fetch("GET", base + "/hello/ada", params={"q": "a&b", "n": 2})
+print("params= sends one parameter and not two:", r.text() == "ada {'q': 'a&b', 'n': '2'}\n")
+
+r = http.fetch("GET", base + "/hello/ada?x=1", params={"y": "a b/c"})
+print("params= extends a query the URL already has:", r.text() == "ada {'x': '1', 'y': 'a b/c'}\n")
+
+r = http.fetch("GET", base + "/hello/ada", params={"t": ["x", "y"]})
+print("a repeated key goes out repeated:", r.text() == "ada {'t': 'y'}\n")
 
 r = http.fetch("GET", base + "/chunked")
 print("a chunked response was decoded:", r.status == 200, len(r.body) == 30000)

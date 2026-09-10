@@ -6,6 +6,8 @@
 //! re-entered. Type methods (string and a few container helpers) are dispatched
 //! by name through [`call_method`].
 
+pub mod pct;
+
 use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::rc::Rc;

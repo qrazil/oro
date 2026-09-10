@@ -1,0 +1,117 @@
+# INTENTIONAL DIVERGENCE, AND THE FILE THAT SAYS WHERE. 63_percent.oro is the
+# half where Oro's percent-codec and CPython's agree byte for byte, and its
+# twin proves it. This is the other half: five places where they deliberately
+# do not, and the surface that has no `urllib` counterpart at all. There is
+# nothing to diff it against, so the baseline is reviewed by hand.
+#
+# The five, in the order they appear:
+#
+#   1. A malformed escape raises. `urllib.parse.unquote("%zz")` hands back
+#      "%zz" and `unquote("%4")` hands back "%4". Guessing what a bad escape
+#      meant is how two intermediaries end up disagreeing about what the path
+#      was, which is a request-smuggling primitive rather than a leniency —
+#      the rule `std/http.oro` has always had on the way in, now reachable
+#      from outside.
+#   2. Octets that are not UTF-8 raise, where `urllib` substitutes U+FFFD by
+#      default. The same rule as `bytes.to_str()` and for the same reason: a
+#      replacement character is a decode failure that has been made to look
+#      like data.
+#   3. A non-ASCII `safe=` raises, where `urllib` silently drops it. `safe` is
+#      the argument that decides what leaves unescaped; a typo in it changes
+#      the request and says nothing.
+#   4. `quote` and `unquote` return the type they were given. `urllib`'s
+#      always return str, and its bytes-out decode is a fourth function,
+#      `unquote_to_bytes`.
+#   5. `urlencode` is `encode_query`, and a list value expands into repeated
+#      keys instead of being stringified. `urlencode({"t": ["x", "y"]})`
+#      without `doseq=True` sends `t=%5B%27x%27%2C+%27y%27%5D`, which is the
+#      exact failure mode — a request quietly different from the one written
+#      — that the whole of this surface exists to remove.
+import http
+
+
+def failure(f):
+    try:
+        return f()
+    except ValueError as e:
+        return f"ValueError: {e}"
+    except TypeError as e:
+        return f"TypeError: {e}"
+
+
+def check(label, got, want):
+    if got == want:
+        print(f"{label} -> {want}")
+    else:
+        print(f"{label} -> MISMATCH: got {got}, want {want}")
+
+
+# --- 1. a malformed escape is refused ---------------------------------------
+print("--- a bad escape is an error, not a literal '%'")
+check("non-hex digits", failure(() => http.unquote("a%zzb")), "ValueError: invalid percent-escape in 'a%zzb'")
+check("one digit short", failure(() => http.unquote("a%4")), "ValueError: truncated percent-escape in 'a%4'")
+check("a bare percent", failure(() => http.unquote("100%")), "ValueError: truncated percent-escape in '100%'")
+check("a percent then a percent", failure(() => http.unquote("%%41")), "ValueError: invalid percent-escape in '%%41'")
+check("good escapes before the bad one", failure(() => http.unquote("%41%42%4")), "ValueError: truncated percent-escape in '%41%42%4'")
+check("the fault is found past a valid escape", failure(() => http.unquote("%41%zz")), "ValueError: invalid percent-escape in '%41%zz'")
+# And the same refusal arriving through the parsers that always had it.
+check("in a URL", failure(() => http.parse_url("http://h/a%zz")), "ValueError: invalid percent-escape in the URL")
+check("in a URL's query", failure(() => http.parse_url("http://h/a?k=%4")), "ValueError: truncated percent-escape in the URL")
+
+
+# --- 2. an escape that decodes to something that is not UTF-8 ---------------
+print("--- octets that are not UTF-8 raise rather than becoming U+FFFD")
+check("a lone 0xff", failure(() => http.unquote("%ff")), "ValueError: bytes could not be decoded as UTF-8: invalid byte 0xff at position 0")
+check("a truncated sequence", failure(() => http.unquote("%c3")), "ValueError: bytes could not be decoded as UTF-8: invalid byte 0xc3 at position 0")
+# Bytes in, bytes out: the octets come back as octets and nothing is decoded,
+# which is the only way to read a component that is not UTF-8 at all.
+check("bytes in, bytes out", http.unquote(b"%ff%fe"), b"\xff\xfe")
+
+
+# --- 3. safe= is checked rather than filtered -------------------------------
+print("--- a non-ASCII safe= is a mistake, not an empty set")
+check("an accented character", failure(() => http.quote("x", safe="é")), "ValueError: safe='é' has a non-ASCII character in it, and only ASCII can be marked safe in a URL")
+check("through quote_plus too", failure(() => http.quote_plus("x", safe="ß")), "ValueError: safe='ß' has a non-ASCII character in it, and only ASCII can be marked safe in a URL")
+check("and it must be a str", failure(() => http.quote("x", safe=b"/")), "TypeError: safe= must be str, not <class 'bytes'>")
+# An empty safe set is legal and means "escape everything but the unreserved".
+check("empty is fine", http.quote("a/b", safe=""), "a%2Fb")
+
+
+# --- 4. the type in is the type out -----------------------------------------
+print("--- str in, str out; bytes in, bytes out")
+check("quote of a str", http.quote("a b", safe=""), "a%20b")
+check("quote of bytes", http.quote(b"a b", safe=""), b"a%20b")
+check("quote_plus of bytes", http.quote_plus(b"a b"), b"a+b")
+check("unquote of a str", http.unquote("a%20b"), "a b")
+check("unquote of bytes", http.unquote(b"a%20b"), b"a b")
+check("neither is a number", failure(() => http.quote(7)), "TypeError: quote() takes str or bytes, not <class 'int'>")
+check("nor is null", failure(() => http.unquote(null)), "TypeError: unquote() takes str or bytes, not <class 'null'>")
+# The property the two halves exist to have, stated once here in words: for
+# any bytes, encode then decode is the identity. 63_percent.oro checks it over
+# every octet and every pair of them.
+check("the round trip", http.unquote(http.quote(b"\x00\xff+ %/?&=", safe="")), b"\x00\xff+ %/?&=")
+
+
+# --- 5. encode_query --------------------------------------------------------
+print("--- a query is built from pairs, and a list is repeated keys")
+check("a list value", http.encode_query({"t": ["x", "y", "z"]}), "t=x&t=y&t=z")
+check("an empty list contributes nothing", http.encode_query({"t": [], "u": "1"}), "u=1")
+check("a list of numbers", http.encode_query({"n": [1, 2]}), "n=1&n=2")
+check("bytes are octets, not text", http.encode_query({"k": b"\xff"}), "k=%FF")
+check("a valueless parameter is the empty string", http.encode_query({"flag": ""}), "flag=")
+check("null is refused, and says what to write", failure(() => http.encode_query({"k": null})), 'TypeError: a query value cannot be null — write "" for a parameter with no value')
+check("and so is a null key", failure(() => http.encode_query({null: "v"})), 'TypeError: a query key cannot be null — write "" for a parameter with no value')
+check("a dict has no spelling in a query", failure(() => http.encode_query({"k": {"a": 1}})), "TypeError: a query value cannot be <class 'dict'>")
+check("pairs work as well as a dict", http.encode_query([["a", "1"], ["a", "2"]]), "a=1&a=2")
+
+
+# --- what a query string means, read back -----------------------------------
+# The encoder and this module's own decoder are the two ends of one wire, and
+# the check that matters is that the second undoes the first. `_parse_query`
+# keeps the last of a repeated key, which is a limit of a dict and not of the
+# encoding — the wire carries both.
+print("--- built here, read back by this module's own parser")
+for q in [{"q": "a&b"}, {"q": "a=b"}, {"q": "a+b"}, {"q": "a b"}, {"q": "a%b"}, {"q": "a/b?c#d"}, {"q": "café ☕"}, {"": ""}, {"q": ""}]:
+    encoded = http.encode_query(q)
+    back = http.parse_url("http://h/?" + encoded).query
+    print(f"    {q} -> {encoded} -> {back} {back == q}")

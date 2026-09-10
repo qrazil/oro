@@ -1,0 +1,47 @@
+--- a bad escape is an error, not a literal '%'
+non-hex digits -> ValueError: invalid percent-escape in 'a%zzb'
+one digit short -> ValueError: truncated percent-escape in 'a%4'
+a bare percent -> ValueError: truncated percent-escape in '100%'
+a percent then a percent -> ValueError: invalid percent-escape in '%%41'
+good escapes before the bad one -> ValueError: truncated percent-escape in '%41%42%4'
+the fault is found past a valid escape -> ValueError: invalid percent-escape in '%41%zz'
+in a URL -> ValueError: invalid percent-escape in the URL
+in a URL's query -> ValueError: truncated percent-escape in the URL
+--- octets that are not UTF-8 raise rather than becoming U+FFFD
+a lone 0xff -> ValueError: bytes could not be decoded as UTF-8: invalid byte 0xff at position 0
+a truncated sequence -> ValueError: bytes could not be decoded as UTF-8: invalid byte 0xc3 at position 0
+bytes in, bytes out -> b'\xff\xfe'
+--- a non-ASCII safe= is a mistake, not an empty set
+an accented character -> ValueError: safe='é' has a non-ASCII character in it, and only ASCII can be marked safe in a URL
+through quote_plus too -> ValueError: safe='ß' has a non-ASCII character in it, and only ASCII can be marked safe in a URL
+and it must be a str -> TypeError: safe= must be str, not <class 'bytes'>
+empty is fine -> a%2Fb
+--- str in, str out; bytes in, bytes out
+quote of a str -> a%20b
+quote of bytes -> b'a%20b'
+quote_plus of bytes -> b'a+b'
+unquote of a str -> a b
+unquote of bytes -> b'a b'
+neither is a number -> TypeError: quote() takes str or bytes, not <class 'int'>
+nor is null -> TypeError: unquote() takes str or bytes, not <class 'null'>
+the round trip -> b'\x00\xff+ %/?&='
+--- a query is built from pairs, and a list is repeated keys
+a list value -> t=x&t=y&t=z
+an empty list contributes nothing -> u=1
+a list of numbers -> n=1&n=2
+bytes are octets, not text -> k=%FF
+a valueless parameter is the empty string -> flag=
+null is refused, and says what to write -> TypeError: a query value cannot be null — write "" for a parameter with no value
+and so is a null key -> TypeError: a query key cannot be null — write "" for a parameter with no value
+a dict has no spelling in a query -> TypeError: a query value cannot be <class 'dict'>
+pairs work as well as a dict -> a=1&a=2
+--- built here, read back by this module's own parser
+    {'q': 'a&b'} -> q=a%26b -> {'q': 'a&b'} true
+    {'q': 'a=b'} -> q=a%3Db -> {'q': 'a=b'} true
+    {'q': 'a+b'} -> q=a%2Bb -> {'q': 'a+b'} true
+    {'q': 'a b'} -> q=a+b -> {'q': 'a b'} true
+    {'q': 'a%b'} -> q=a%25b -> {'q': 'a%b'} true
+    {'q': 'a/b?c#d'} -> q=a%2Fb%3Fc%23d -> {'q': 'a/b?c#d'} true
+    {'q': 'café ☕'} -> q=caf%C3%A9+%E2%98%95 -> {'q': 'café ☕'} true
+    {'': ''} -> = -> {'': ''} true
+    {'q': ''} -> q= -> {'q': ''} true

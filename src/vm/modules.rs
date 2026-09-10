@@ -20,6 +20,7 @@ pub fn build(name: &str, argv: &[String]) -> Option<Value> {
         "net" => Some(build_net()),
         "_io" => Some(build_native_io()),
         "_json" => Some(build_native_json()),
+        "_pct" => Some(crate::builtins::pct::build()),
         _ => None,
     }
 }

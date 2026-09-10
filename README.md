@@ -880,7 +880,10 @@ measurement, and the reason the same argument does not move `http`.
   `read_until` for the header block, `bytes.split` for the lines, `bytes.find`
   for the colon and `bytes.scan` for the grammar classes are generic
   building blocks that earn their place on their own, and everything above them
-  is per *message* rather than per *byte*.
+  is per *message* rather than per *byte*. The one loop underneath that is not
+  a `bytes` method is the percent-codec (below), and it is not HTTP either:
+  the `%HH` form is RFC 3986 and the set of characters it leaves alone is an
+  argument.
 
   ```python
   import http
@@ -924,6 +927,35 @@ measurement, and the reason the same argument does not move `http`.
   wire for something too large to hold in memory, and hands the caller the
   obligation to `resp.close()`; `fetch` is six lines written on top of it, and
   those six lines are a `max_body` cap and that `close()`.
+
+  **Building a URL is four functions, and the hard part is not the escaping.**
+
+  ```python
+  http.quote("a/b c")                       # 'a/b%20c'   — a path
+  http.quote("a/b c", safe="")              # 'a%2Fb%20c' — one path segment
+  http.quote_plus("a b+c")                  # 'a+b%2Bc'   — a query value
+  http.encode_query({"q": "a&b", "page": 2})  # 'q=a%26b&page=2'
+
+  http.fetch("GET", url, params={"q": "a&b"})
+  ```
+
+  A caller who wants `?q=a&b` — a query *value* containing an `&` — needs an
+  encoder, and the naive one silently sends a different request than the one
+  they wrote, splitting one parameter into two. That is why the client shipped
+  without a `params=` until there was something correct to build it on. The
+  escaping itself is one loop and it is in Rust; what is *not* one answer is
+  which characters have to be escaped, because a path segment, a query value,
+  a form body and a fragment each have a different set and picking the wrong
+  one is how an encoder works until somebody types a `+` or a `/`. So every
+  set is in `std/http.oro`, in Oro, spelled out and readable. The names and
+  the behaviour are `urllib.parse`'s, checked against it over every octet
+  (`corpus/divergence/63_percent.oro` and its twin), with three deliberate
+  differences: a malformed escape raises rather than passing through as a
+  literal `%`, a non-ASCII `safe=` raises rather than being silently dropped,
+  and `urlencode` is `encode_query` and expands a list value into repeated
+  keys (`{"t": ["x", "y"]}` is `t=x&t=y`) rather than stringifying the list.
+  `http.unquote` is the inverse, and `unquote(quote(b, safe="")) == b` holds
+  for arbitrary bytes.
 
   **`https://` raises at `http.parse_url`, before a socket exists.** Oro has no
   TLS, and the only alternative to refusing is opening a plaintext connection

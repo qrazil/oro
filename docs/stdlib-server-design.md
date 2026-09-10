@@ -1812,6 +1812,7 @@ irrelevant next to the syscalls.
 | `sys.stdout`/`stderr`/`stdin` | fds |
 | `bytes.scan` | a character-class test over every byte of a field (added later; see below) |
 | the JSON codec (`_json`) | a parser *is* the per-byte loop, and a document has no policy in it (added later; see below) |
+| the percent-codec (`_pct`) | `%HH` over every byte, with the safe set as an argument (added later; see below) |
 
 **Oro (`std/`):**
 
@@ -1820,12 +1821,14 @@ irrelevant next to the syscalls.
 | `io.copy`, and `io.read`'s general path | chunk-at-a-time loops over the protocol |
 | the entire HTTP layer | per-request, not per-byte — *and* it is all policy |
 | `Request`, `Response`, headers, routing, keep-alive policy, chunked framing | policy |
-| status codes, date formatting, URL decoding | tables and small loops |
+| status codes and date formatting | tables and small loops |
+| *which* characters a URL escapes, per position; what a bad escape raises | policy, and the whole of it — see the percent-encoding subsection below |
 | `json`'s surface: its two names, its defaults, its docstring | the API, which is not the loop |
 
-The last two rows of each table were not in the original split. They were added
-after the falsifiable test below fired; the subsection after next is the account
-of what that cost.
+The last rows of each table were not in the original split. They were added
+after the falsifiable test below fired — `bytes.scan` and `_json` first, the
+percent-codec later — and the subsections after next are the account of what
+each cost.
 
 ### There is no Rust `http` module, and there should never be one
 
@@ -2106,7 +2109,115 @@ one hid a real abort behind a constant that only happened to be small enough in
 one build profile. When a limit is doing two jobs, the second one is usually the
 one that is wrong.
 
-#### 5. And a general finding that outlived the JSON question
+#### 5. Percent-encoding: the rule's two halves separating cleanly
+
+The third loop to cross the line, and the first one where the two-part test —
+*is it a per-byte loop?* and *does it carry policy?* — answered **yes to both**
+and the thing still moved, because the two answers were about different halves
+of it.
+
+The gap was on the encoding side and it was a hole rather than a slow path:
+`_percent_decode` existed and there was no encoder at all, so a caller who
+wanted `?q=a&b` — a query value containing an `&` — had no correct spelling
+available, and the obvious one splits one parameter into two. The client
+shipped with no `params=` for exactly that reason.
+
+**What was measured before anything was chosen**, because §5's own history is
+two profiles that were not run. A pure-Oro encoder, in three spellings — a
+per-byte loop appending octets, a per-byte loop appending pre-built `b"%HH"`
+strings, and a run-at-a-time composition on `bytes.scan` — against
+`urllib.parse.quote`:
+
+| subject | Oro, per byte | Oro, `scan` runs | CPython `quote` |
+|---|---|---|---|
+| 19 B path, nothing to escape | 10.1 µs | 6.3 µs | 1.60 µs |
+| 11 B `hello world` | 5.9 µs | 2.8 µs | 1.31 µs |
+| 36 B mixed | 19.4 µs | 12.8 µs | 2.42 µs |
+| 87 B UTF-8, escape-heavy | 45.7 µs | 52.4 µs | ~2.5 µs |
+| 199 B, nothing to escape | 91.5 µs | **0.68 µs** | 1.47 µs |
+| 204 B, a space every fifth byte | 112 µs | 54.3 µs | ~2.5 µs |
+
+Three things in that table decided it. The per-byte spelling is **0.5 µs per
+byte** — a 200-byte query value costs more than `read_request` spends parsing
+an entire 430-byte request head (76.4 µs, above), which is the same "the
+interpreter's constant factor is irrelevant next to the syscalls" sentence
+being false a second time. The `scan` composition is *spectacular* on input
+with nothing to escape and no better than the naive loop on input that is
+mostly escapes, because it degenerates to one call and one slice per byte —
+and non-ASCII, the case an encoder exists for, is exactly that input. And the
+`scan` composition also copies the unconsumed remainder once per run, which is
+linear at URL sizes and quadratic in bytes copied above them; nothing at 200
+bytes shows it, which is precisely how that kind of bug ships.
+
+**The decoder was worse, and nobody had looked**, which is the incidental find
+of this milestone. `_percent_decode` is on the server's per-request path, and
+its fast path was `no '%' in it and not plus_is_space` — so every query string
+in the language took the slow path unconditionally, `+` present or not, for
+want of a second `find`. An ordinary `?page=2&sort=name` walked itself byte by
+byte. Measured: 55 µs to decode a 175-byte query string, against 0.55 µs for
+CPython's `unquote_plus`, and 5.7 µs for a 16-byte one with neither a `%` nor
+a `+` anywhere in it.
+
+**Where the line landed.** `_pct.encode(b, safe)` and `_pct.decode(b, plus)`,
+underscored beside `_io` and `_json` and resolvable only from a stdlib module
+body. What went down there is the *form*: `%` and two hex digits, uppercase
+out and either case in, over octets. What stayed up here is everything that is
+a decision:
+
+- **The safe set is an argument**, exactly as `bytes.scan`'s allowed set is.
+  This is the part that made the two-part test read `yes` to policy and move
+  the loop anyway: percent-encoding's policy is not *in* the loop, it is the
+  loop's parameter. A path segment, a query value, a form body and a fragment
+  have four different sets, and every one of them is written out in
+  `std/http.oro` where it can be read and argued with. `_pct` does not know
+  that a URL exists.
+- **What a malformed escape becomes is Oro's.** The codec returns the bytes or
+  `null`; `std/http.oro` decides that `null` is a 400 on the way in and a
+  `ValueError` for a URL the program itself got wrong, and which noun the
+  message names. It also decides *which* malformation it was — a separate Oro
+  loop that runs only on input already known to be bad, so its cost is paid by
+  malformed requests and by nobody else. A codec that raised would have had to
+  choose one exception for both callers, and that is the "moving a loop into
+  the runtime moves its failure modes into the runtime too" lesson from the
+  JSON section, met early instead of late.
+
+The surface is `urllib.parse`'s — `quote`, `quote_plus`, `unquote`, and
+`encode_query` for `urlencode` — and matching it byte for byte is what makes
+the test a *reference* rather than a record of what Oro happens to do. That
+mattered more than it sounds: a percent-encoder is wrong in four independent
+places at once (the unreserved set, the space, the plus, the case of the hex)
+and a Rust unit test whose fixtures came from Oro's own output would have
+ratified every one of them. So `corpus/divergence/63_percent.oro` checks every
+one of the 256 octets in both positions, all 65 536 octet pairs and 2 000
+pseudo-random strings for the encode-then-decode identity, against a CPython
+twin that calls `urllib` — and `64_percent_policy.oro` holds the five places
+Oro deliberately differs, with the reason at each.
+
+**What CPython does that was subtler than it looks**, since the point of
+matching it is to have read it:
+
+- `quote_plus` is not "encode, then turn `%20` into `+`". It adds the space to
+  the safe set, encodes, and *then* replaces the literal space — so a space is
+  the only thing that can become a `+`, and `+` itself, not being unreserved,
+  goes out as `%2B`. That last rule is the one a hand-written encoder always
+  misses, and it is the difference between `q=a+b` meaning `a b` and meaning
+  `a+b`.
+- `quote`'s default `safe` is `"/"` and `quote_plus`'s is `""`, and the
+  difference is not a detail: it is one path *component* versus several.
+- A non-ASCII `safe=` is silently discarded (`safe.encode('ascii','ignore')`).
+  Oro raises instead — `safe` is the argument that decides what leaves
+  unescaped, so a typo in it changes the request and says nothing.
+- `unquote` leaves `%zz` and a truncated `%4` alone. Oro refuses, which is the
+  rule `std/http.oro` already had on the way in: two intermediaries that guess
+  differently about what a path was is a request-smuggling primitive, not a
+  leniency.
+- `urlencode` without `doseq=True` stringifies a list value, so
+  `{"t": ["x","y"]}` goes out as `t=%5B%27x%27%2C+%27y%27%5D`. That is the
+  same class of failure — a request quietly different from the one written —
+  that this whole milestone exists to close, so `encode_query` expands it to
+  `t=x&t=y`.
+
+#### 6. And a general finding that outlived the JSON question
 
 Two measurements came out of this that are about the *language*, not about JSON,
 and both matter more than the module did.

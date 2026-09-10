@@ -4,6 +4,9 @@ and the length it declared is the length it sent: true
 the reason phrase survived the round trip: true
 a POST with a body was echoed: true true
 the path and query reached the router intact: true
+params= sends one parameter and not two: true
+params= extends a query the URL already has: true
+a repeated key goes out repeated: true
 a chunked response was decoded: true true
 and it never had a Content-Length to go by: true true
 a HEAD came back with headers and no body: true true

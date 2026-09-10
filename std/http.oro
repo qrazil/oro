@@ -28,12 +28,31 @@
 # API — the client
 # ----------------
 #   http.fetch(method, url, headers=null, body=null, timeout=30,
-#              max_body=33554432)            -> Response, body in memory
+#              max_body=33554432, params=null)  -> Response, body in memory
 #   http.stream(method, url, ...)            -> Response, body a live Reader
 #   http.write_request(w, method, target, headers=null, body=b"")   -> null
 #   http.read_response(r, method="GET")      -> Response
 #   http.parse_url(url)                      -> Url
 #   http.BadResponse(message)                -> Exception
+#
+# API — building a URL
+# --------------------
+#   http.quote(s, safe="/")                  -> `%HH`, space as `%20`
+#   http.quote_plus(s, safe="")              -> space as `+`, `+` as `%2B`
+#   http.unquote(s, plus=false)              -> raises on a bad escape
+#   http.encode_query(dict | pairs)          -> str, "a=1&b=2"
+#
+# The first three return the type they were given — a str in is a str out,
+# bytes in is bytes out — so `unquote(quote(b, safe="")) == b` holds for any
+# bytes at all.
+#
+# These are `urllib.parse`'s names and `urllib.parse`'s behaviour, with three
+# deliberate differences documented at each: a malformed escape raises, a
+# non-ASCII `safe` raises, and `urlencode` is `encode_query` and expands a
+# list value into repeated keys. The escaping loop is Rust (`_pct`); every
+# set of characters it is asked to leave alone is Oro, in the section named
+# for it, because the set is different for a path, a query, a form and a
+# fragment and that difference is the only hard part.
 #
 # `serve` is the accept loop: bind, and then one green thread per connection
 # for as long as the listener is open. `serve_conn` is the seam underneath
@@ -82,6 +101,7 @@
 # anywhere later. See the note there: dialling 443 in plaintext is the one
 # behaviour worse than refusing.
 
+import _pct
 import io
 import json
 import net
@@ -153,6 +173,11 @@ _STREAM_CHUNK = 8192
 
 _BYTES = "<class 'bytes'>"
 _STR = "<class 'str'>"
+_INT = "<class 'int'>"
+_FLOAT = "<class 'float'>"
+_BOOL = "<class 'bool'>"
+_LIST = "<class 'list'>"
+_DICT = "<class 'dict'>"
 
 # --- byte tables ----------------------------------------------------------
 # `in` on bytes takes bytes, not an int, and iterating bytes yields ints, so
@@ -197,6 +222,19 @@ while _gb < 256:
         _gchars.append(_gb)
     _gb = _gb + 1
 _TARGET_OK = _gchars.to_bytes()
+
+# RFC 3986 §2.3's *unreserved* set, and the one rule a percent-encoder has
+# that is not negotiable: these characters are never escaped. `%41` and `A`
+# name the same character, so escaping one is legal — but two URLs that
+# differ only there are the same URL, and an encoder that escapes what it
+# need not is an encoder whose output nobody can compare. Everything else in
+# a URL is escaped or not depending on *where* it sits, and every one of
+# those sets below is this one plus something.
+#
+# It is written out rather than assembled by loop because it is a quotation:
+# a reader checking Oro against the RFC should be able to read the same
+# sixty-six characters in both places.
+_UNRESERVED = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
 
 # The digits, as a `bytes.scan` class. A status code is exactly three of
 # them, and `scan(_DIGIT_OK) == 3` is that whole question in one call — the
@@ -489,36 +527,50 @@ def _is_target(b):
 # Percent-decode `b`. In a query string `+` also means a space; in a path it
 # does not, which is the whole reason this takes a flag rather than guessing.
 #
-# A truncated or non-hex escape is a failure rather than a literal `%`:
+# The loop itself is `_pct.decode`, in Rust, for the reason
+# `docs/stdlib-server-design.md` §5 gives and for a number that had been
+# hiding in plain sight: this is on the server's per-request path, and the Oro
+# spelling cost 55 µs to decode a 175-byte query string — comparable to the
+# 76 µs the *whole* head parse takes, and about 100× CPython's
+# `unquote_plus`. Worse, its fast path was `no '%' and not plus_is_space`, so
+# an ordinary `?page=2&sort=name` — no escape and no `+` anywhere in it —
+# walked itself byte by byte for want of a second `find`.
+#
+# What stayed here is the part that is a decision rather than a loop. A
+# truncated or non-hex escape is a failure rather than a literal `%`:
 # guessing what a malformed escape meant is how two intermediaries end up
 # disagreeing about a path. *Which* failure is the caller's to say — a 400 on
 # the way in, a ValueError for a URL the program itself got wrong — and so is
 # the noun in the message, which is why `where` rides along with `fail`
-# instead of being hard-coded to "the request target".
+# instead of being hard-coded to "the request target". `_pct.decode` knows
+# none of that: it returns the bytes, or `null` for "this does not decode",
+# and every word of the diagnosis is written here.
 def _percent_decode(b, plus_is_space, fail=_fail_request, where="the request target"):
-    if b.find(b"%") < 0 and not plus_is_space:
-        return b
-    out = []
-    i = 0
-    n = len(b)
-    while i < n:
-        c = b[i]
-        if c == _PERCENT:
-            if i + 2 >= n:
-                fail(f"truncated percent-escape in {where}")
-            hi = _HEX_VALUE.get(b[i + 1])
-            lo = _HEX_VALUE.get(b[i + 2])
-            if hi == null or lo == null:
-                fail(f"invalid percent-escape in {where}")
-            out.append(hi * 16 + lo)
-            i = i + 3
-        elif c == _PLUS and plus_is_space:
-            out.append(_SPACE)
-            i = i + 1
-        else:
-            out.append(c)
-            i = i + 1
-    return out.to_bytes()
+    out = _pct.decode(b, plus_is_space)
+    if out == null:
+        fail(f"{_escape_fault(b)} percent-escape in {where}")
+    return out
+
+
+# Which malformed escape `b` holds — "truncated" (a `%` with fewer than two
+# bytes after it) or "invalid" (two bytes that are not both hex digits).
+#
+# A per-byte-ish loop in Oro, deliberately: it runs only after `_pct.decode`
+# has already refused the input, so its cost is paid by malformed requests
+# and by nobody else. Putting it in Rust would move a *message* across the
+# boundary, and the message is the half of this that is policy.
+def _escape_fault(b):
+    i = b.find(b"%")
+    while i >= 0:
+        if i + 2 >= len(b):
+            return "truncated"
+        if _HEX_VALUE.get(b[i + 1]) == null or _HEX_VALUE.get(b[i + 2]) == null:
+            return "invalid"
+        i = b.find(b"%", i + 3)
+    # Unreachable: `_pct.decode` only refuses on a `%`, so one is always
+    # found. Naming a kind rather than falling off the end keeps a future
+    # third failure mode from arriving as a silent `null` in a 400.
+    return "invalid"
 
 
 # Whether a comma-separated header value lists `token`. `Connection` is the
@@ -1585,6 +1637,216 @@ _DEFAULT_PORT = 80
 _USER_AGENT = "oro"
 
 
+# --- percent-encoding -----------------------------------------------------
+
+# Building a URL, which until now this module could only take apart.
+#
+# The gap this closes, in one line: a caller who wants `?q=a&b` — a query
+# *value* that contains an `&` — had no correct spelling available, and the
+# obvious one silently sends a different request than the one they wrote,
+# splitting one parameter into two. That is why the client shipped without a
+# `params=`: guessing at it is worse than not having it.
+#
+# **The escaping is one loop; the safe set is four different answers.** A
+# path segment, a query value, a form body and a fragment each have their own
+# idea of what may travel unescaped, and an encoder that has only one is an
+# encoder that works until somebody types a `+` or a `/`. So the loop is in
+# Rust (`_pct.encode`, which knows nothing but `%HH`) and every set is here,
+# spelled out, where it can be read and argued with — the same division
+# `bytes.scan` makes, and for the same reason.
+#
+# The names are `urllib.parse`'s, and so is the behaviour, byte for byte:
+# `quote`, `quote_plus`, `unquote`. Matching an encoder that every caller has
+# already met is worth more than a better name would be, and it is what makes
+# `corpus/divergence/63_percent.twin.py` able to be a *reference* rather than
+# a record of what Oro happens to do. Three things deliberately differ, and
+# each is recorded where it happens: a malformed escape raises instead of
+# passing through (`unquote`), a non-ASCII `safe` raises instead of being
+# silently dropped (`_safe_bytes`), and `urlencode` is called `encode_query`
+# and expands a list value instead of stringifying it (`encode_query`).
+
+
+# Percent-encode `s` for use in a **path**: everything outside the unreserved
+# set and `safe` becomes `%HH`, and a space becomes `%20`.
+#
+# `safe="/"` by default, because the overwhelmingly common argument is a path
+# and a path's slashes are structure, not data. Encoding one *segment* — a
+# filename that may legitimately contain a slash — is `quote(seg, safe="")`,
+# and the difference between those two calls is the difference between one
+# path component and several. There is no way to make a default right for
+# both; this one is `urllib`'s, and it is the one that is right when the
+# caller has not thought about it.
+#
+# `s` is str or bytes. A str is encoded as UTF-8 first, which is not a guess:
+# RFC 3986 §2.5 and every URL a browser has ever produced agree that
+# non-ASCII in a URL is UTF-8 octets, each percent-escaped.
+#
+# The result has the *type of the argument*, where `urllib.parse.quote`
+# always returns a str. That is the one place these three functions diverge
+# from `urllib` on shape rather than on policy, and it is `docs/…` §1's rule
+# rather than a preference: a function handed octets and returning characters
+# has decided an encoding on the caller's behalf, which is the thing every
+# other boundary in Oro makes the caller write out. It is also what makes the
+# round trip sayable — `unquote(quote(b, safe="")) == b`, for any bytes at
+# all — and a codec whose two halves do not compose is a codec with a hole in
+# it.
+def quote(s, safe="/"):
+    return _like(s, _pct.encode(_component_bytes(s, "quote"), _safe_bytes(safe)))
+
+
+# Percent-encode `s` for a **query value or a form body**, where a space is
+# `+`.
+#
+# Two things follow from that and both are the point. The default `safe` is
+# empty rather than `"/"` — this is data, and a `/` in it is data too. And
+# `+` is *itself* escaped, to `%2B`, because a literal `+` here would decode
+# back as a space: the plus is a metacharacter in this position and a value
+# that contains one has to say so. That single rule is the difference between
+# `q=a+b` meaning "a b" and meaning "a+b", and it is the one an encoder
+# written by hand always gets wrong.
+#
+# The spelling is `urllib`'s exactly: encode with a space treated as safe,
+# then replace it. Doing it that way rather than translating `%20` afterwards
+# means a space is the *only* thing that can become a `+`.
+def quote_plus(s, safe=""):
+    b = _pct.encode(_component_bytes(s, "quote_plus"), _safe_bytes(safe) + b" ")
+    return _like(s, b.replace(b" ", b"+"))
+
+
+# The inverse of both, and the public name for the decoder the server has
+# always had. `plus=true` reads `+` as a space, which is what a query value
+# or a form body means and what a path does not.
+#
+#     http.unquote("a%2Fb")            -> "a/b"
+#     http.unquote("a+b", plus=true)   -> "a b"
+#
+# **A malformed escape raises**, where `urllib.parse.unquote` hands back the
+# `%zz` unchanged. This is the module's existing rule — see `_percent_decode`
+# — arriving at the surface, and it is a deliberate divergence: a decoder
+# that guesses is a decoder that disagrees with the next one in the chain
+# about what the path was, which is a request-smuggling primitive rather than
+# a convenience. The same goes for the UTF-8: `unquote` returns a str, and
+# octets that are not UTF-8 raise here the way they raise at every other
+# boundary in Oro, instead of `urllib`'s default of quietly substituting
+# U+FFFD for them.
+def unquote(s, plus=false):
+    if type(plus) != _BOOL:
+        raise TypeError(f"plus= is true or false, not {type(plus)}")
+    b = _component_bytes(s, "unquote")
+    out = _pct.decode(b, plus)
+    if out == null:
+        raise ValueError(f"{_escape_fault(b)} percent-escape in {repr(s)}")
+    return _like(s, out)
+
+
+# A dict or a list of pairs -> `"a=1&b=2"`, ready to follow a `?`.
+#
+#     http.encode_query({"q": "a&b", "page": 2})   -> "q=a%26b&page=2"
+#     http.encode_query([["tag", "x"], ["tag", "y"]])  -> "tag=x&tag=y"
+#
+# `urllib` calls this `urlencode`, and that name is one of the worse ones in
+# its standard library: it does not encode a URL, it encodes a *query*, and a
+# caller who reaches for it to escape a path gets a `=` and an `&` they never
+# asked for. The name here says which part of the URL it builds.
+#
+# **A list value expands into repeated keys** — `{"tag": ["x", "y"]}` is
+# `tag=x&tag=y` — where `urlencode` without `doseq=true` would stringify the
+# list itself and send `tag=%5B%27x%27%2C+%27y%27%5D`. That is not a
+# convenience; it is the same class of bug this whole section exists to
+# close, a request quietly different from the one that was written, and there
+# is no other spelling for a repeated key. The cost is that a value which is
+# genuinely a list cannot be sent as one, and a list is not a query value in
+# any server's reading of a query string, so nothing is lost.
+#
+# Keys and values are escaped with `quote_plus`, which is what a query is:
+# space to `+`, everything else that is not unreserved to `%HH`. A repeated
+# key is preserved on the wire; note that this module's own `_parse_query`
+# keeps only the last of them, which is a limit of a dict and not of the
+# encoding.
+def encode_query(params):
+    pairs = params
+    if type(params) == _DICT:
+        pairs = params.items()
+    out = []
+    for k, v in pairs:
+        # `_query_bytes` hands back octets and `quote_plus` returns the type
+        # it was given, so these are bytes — and `.to_str()` on them cannot
+        # fail, because what comes out of a percent-encoder is ASCII.
+        key = quote_plus(_query_bytes(k, "key")).to_str()
+        if type(v) == _LIST:
+            for item in v:
+                out.append(key + "=" + quote_plus(_query_bytes(item, "value")).to_str())
+        else:
+            out.append(key + "=" + quote_plus(_query_bytes(v, "value")).to_str())
+    return "&".join(out)
+
+
+# `out`, as the type `s` was: bytes stay bytes, and anything else — which is
+# to say a str — is decoded as UTF-8 and raises if it is not.
+def _like(s, out):
+    if type(s) == _BYTES:
+        return out
+    return out.to_str()
+
+
+# The unreserved set plus the caller's `safe`, as the byte set `_pct.encode`
+# wants.
+#
+# A non-ASCII character in `safe` raises. `urllib` drops it — `quote(s,
+# safe="é")` silently means `safe=""` — and the silence is the problem: `safe`
+# is the argument that decides what goes out unescaped, so a typo in it
+# changes the request and says nothing. There is also no honest thing to do
+# with it: "é" is two UTF-8 octets, and marking those two octets safe would
+# emit a raw non-ASCII byte in a URL, which is not a URL.
+# `%` in `safe` is legal and is the one thing that breaks the round trip: a
+# literal `%` goes out unescaped and comes back as the start of an escape.
+# It is not refused, because re-quoting a string that is already partly
+# encoded is a real thing to want; it is written down here because a caller
+# who reaches for it has left the property the rest of this section promises.
+def _safe_bytes(safe):
+    if type(safe) != _STR:
+        raise TypeError(f"safe= must be str, not {type(safe)}")
+    b = safe.to_bytes()
+    if len(b) != len(safe):
+        raise ValueError(f"safe='{safe}' has a non-ASCII character in it, and only ASCII can be marked safe in a URL")
+    return _UNRESERVED + b
+
+
+# What `quote` and `unquote` accept: a str, encoded as UTF-8, or bytes
+# already. Not an int, and not `null` — the same refusal `_payload` makes
+# about a request body, for the same reason.
+def _component_bytes(s, who):
+    t = type(s)
+    if t == _STR:
+        return s.to_bytes()
+    if t == _BYTES:
+        return s
+    raise TypeError(f"{who}() takes str or bytes, not {t}")
+
+
+# One key or value of a query, as bytes.
+#
+# Numbers and bools are formatted rather than refused, because `{"page": 2}`
+# is how anyone writes that and `f"{2}"` is not a guess about anything. A
+# `null` is refused, and the message says what to write instead: a parameter
+# with no value is the empty string, `{"flag": ""}` -> `flag=`, which is what
+# `_parse_query` produces reading it back. Everything else — a dict, an
+# object, a nested list — has no agreed spelling in a query string, and
+# inventing one here would be the same silent rewrite `encode_query`'s list
+# rule exists to avoid.
+def _query_bytes(v, part):
+    t = type(v)
+    if t == _STR:
+        return v.to_bytes()
+    if t == _BYTES:
+        return v
+    if t == _INT or t == _FLOAT or t == _BOOL:
+        return f"{v}".to_bytes()
+    if v == null:
+        raise TypeError(f'a query {part} cannot be null — write "" for a parameter with no value')
+    raise TypeError(f"a query {part} cannot be {t}")
+
+
 # --- URLs -----------------------------------------------------------------
 
 # A parsed `http://` URL, and both spellings of the thing it addresses.
@@ -1992,8 +2254,8 @@ class _ResponseChunkedReader(_ChunkedReader):
 # go stale and no half-closed socket to hand to the next caller by mistake.
 # That costs a TCP handshake per call and it is the honest price of a client
 # that has no lifecycle for a caller to get wrong.
-def fetch(method, url, headers=null, body=null, timeout=_CLIENT_TIMEOUT, max_body=_MAX_BODY):
-    resp = stream(method, url, headers, body, timeout)
+def fetch(method, url, headers=null, body=null, timeout=_CLIENT_TIMEOUT, max_body=_MAX_BODY, params=null):
+    resp = stream(method, url, headers, body, timeout, params)
     try:
         resp.body = _read_capped(resp.body, max_body)
         return resp
@@ -2023,8 +2285,8 @@ def fetch(method, url, headers=null, body=null, timeout=_CLIENT_TIMEOUT, max_bod
 # or take one larger than memory. `fetch` is six lines written on top of it,
 # and those six lines are the cap and the `close()` — which is exactly the
 # safety a caller gives up by coming here instead.
-def stream(method, url, headers=null, body=null, timeout=_CLIENT_TIMEOUT):
-    u = parse_url(url)
+def stream(method, url, headers=null, body=null, timeout=_CLIENT_TIMEOUT, params=null):
+    u = _with_params(parse_url(url), params)
     h = _client_headers(u, headers)
     payload = _payload(body)
     conn = net.dial(u.authority())
@@ -2046,6 +2308,46 @@ def stream(method, url, headers=null, body=null, timeout=_CLIENT_TIMEOUT):
         # a socket can fail is not a list this function wants to keep current.
         if not handed_over:
             conn.close()
+
+
+# `u` with `params` appended to its query, or `u` unchanged.
+#
+# This is the argument the client shipped without, and the reason it shipped
+# without it is the reason it can have it now: there was no correct way to
+# spell a query value containing an `&`, so a `params=` would have been a
+# convenience that quietly sent a different request than the caller wrote.
+# `encode_query` is that spelling, and it is the whole of what this adds.
+#
+# **Appended, not replacing.** A URL that already carries a query keeps it and
+# the params follow, because `fetch("GET", base + "/search?lang=en",
+# params={"q": ...})` is how a caller combines a service's own URL with their
+# own arguments, and dropping half of that silently is exactly the failure
+# mode this argument exists to remove. Nothing is deduplicated: two `q=` on
+# the wire is a thing a caller may legitimately mean, and this module's own
+# `_parse_query` is not the only reader there is.
+#
+# The new target is re-split rather than patched onto the old `Url`, so
+# `u.path` and `u.query` describe what is actually going out. `parse_url`'s
+# refusal to re-encode a decoded target is not weakened by that: the bytes
+# `encode_query` produces are ASCII and already escaped, so the target this
+# builds is the target that is sent, byte for byte.
+def _with_params(u, params):
+    if params == null:
+        return u
+    qs = encode_query(params)
+    if qs == "":
+        return u
+    # `?` unless there is already a query to extend — and no separator at all
+    # after a bare trailing `?` or `&`, which are an empty query and not a
+    # first parameter.
+    sep = "?"
+    if u.target.find("?") >= 0:
+        sep = "&"
+    if u.target.endswith("?") or u.target.endswith("&"):
+        sep = ""
+    target = f"{u.target}{sep}{qs}".to_bytes()
+    path, query = _path_and_query(target, _fail_url, "the URL")
+    return Url(u.scheme, u.host, u.port, path, query, target.to_str())
 
 
 # The caller's headers, plus the three a client has to send and would rather

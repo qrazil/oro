@@ -1,0 +1,163 @@
+# INTENTIONAL DIVERGENCE IN SPELLING, NOT IN BEHAVIOUR. `oracle.sh` cannot
+# generate this baseline — the program `import`s Oro's `http`, and CPython's
+# `import http` finds a different module of the same name — so the file has a
+# twin (63_percent.twin.py) written in CPython's spellings, and the .expected
+# below is *that twin's output*:
+#
+#   python3 corpus/divergence/63_percent.twin.py \
+#     | diff - corpus/divergence/63_percent.expected
+#
+# An empty diff is the review, and that is the whole point of this file. A
+# percent-encoder is the kind of code that is easy to write, easy to believe,
+# and wrong in four places at once — the unreserved set, the space, the plus,
+# the case of the hex — and a Rust unit test whose fixtures came from Oro's
+# own output would ratify every one of those mistakes. So the reference is
+# `urllib.parse.quote` / `quote_plus` / `unquote` / `urlencode`, byte for
+# byte, over every octet rather than over a handful of interesting ones.
+#
+# Everything here is a case where Oro and CPython agree exactly. The places
+# they deliberately do not — a malformed escape, a non-ASCII `safe=`, a list
+# value in a query, the return type — are in 64_percent_policy.oro, where
+# there is nothing to compare against and the baseline is reviewed by hand.
+import http
+
+
+def row(items):
+    line = []
+    for it in items:
+        line.append(it)
+    print(" ".join(line))
+
+
+def table(label, f):
+    print(f"--- {label}")
+    i = 0
+    while i < 256:
+        cells = []
+        j = 0
+        while j < 16:
+            cells.append(f([i + j].to_bytes()).to_str())
+            j = j + 1
+        row(cells)
+        i = i + 16
+
+
+# --- every octet, in each of the two positions -----------------------------
+# The unreserved set is the only thing that survives unescaped in either, and
+# the two differ on exactly one byte: 0x20. Reading the tables down the space
+# column is the whole of "a space is %20 in a path and + in a form".
+
+table("quote(b, safe='')", b => http.quote(b, safe=""))
+table("quote_plus(b)", b => http.quote_plus(b))
+
+
+# --- the unreserved set is never escaped, in either --------------------------
+UNRESERVED = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+print("--- unreserved")
+print(http.quote(UNRESERVED, safe=""))
+print(http.quote_plus(UNRESERVED))
+print(http.quote(UNRESERVED, safe="") == UNRESERVED)
+
+
+# --- safe= --------------------------------------------------------------------
+SUBJECT = "a/b?c=d&e f+g:h@i;j,k$l~m"
+print("--- safe=")
+for safe in ["", "/", "/?", ":/?#[]@", "!$&'()*+,;=", "abc", " "]:
+    print(f"safe={safe!r} {http.quote(SUBJECT, safe=safe)}")
+    print(f"safe={safe!r} {http.quote_plus(SUBJECT, safe=safe)}")
+
+
+# --- the default safe= is the difference between one segment and several ------
+print("--- default safe")
+print(http.quote("a/b c"))
+print(http.quote("a/b c", safe=""))
+
+
+# --- non-ASCII is UTF-8 octets, each escaped ----------------------------------
+print("--- utf-8")
+for s in ["café", "☕", "naïve résumé", "日本語", "é", "ÿ", "😀"]:
+    print(http.quote(s, safe=""), http.quote_plus(s))
+
+
+# --- uppercase on the way out, either case on the way in ----------------------
+print("--- hex case")
+print(http.quote("/", safe=""), http.unquote("%2f"), http.unquote("%2F"))
+print(http.unquote("%c3%a9"), http.unquote("%C3%A9"), http.unquote("%c3%A9"))
+
+
+# --- the plus, which is the rule everyone gets wrong ---------------------------
+print("--- plus")
+print(http.quote_plus("a b"), http.quote_plus("a+b"), http.quote_plus("a b+c"))
+print(http.quote("a b", safe=""), http.quote("a+b", safe=""))
+print(http.unquote("a+b"), http.unquote("a+b", plus=true))
+print(http.unquote("a%2Bb"), http.unquote("a%2Bb", plus=true))
+print(http.unquote("a%20b"), http.unquote("a%20b", plus=true))
+
+
+# --- encode_query ---------------------------------------------------------
+print("--- encode_query")
+print(http.encode_query({}))
+print(http.encode_query({"q": "a&b"}))
+print(http.encode_query({"q": "hello world", "page": 2, "ok": true}))
+print(http.encode_query({"redirect": "http://h/a b?x=1&y=2#f"}))
+print(http.encode_query([["a", "1"], ["a", "2"], ["b", ""]]))
+print(http.encode_query({"q": "café ☕"}))
+print(http.encode_query({"a b": "c d"}))
+
+
+# --- the round trip -------------------------------------------------------
+# The property, and the reason the decoder and the encoder are one change and
+# not two: for any bytes at all, and for either meaning of `+`, encoding and
+# then decoding is the identity. Checked over every single octet, every pair
+# of octets — all 65 536 — and a deterministic pseudo-random spread of longer
+# strings, rather than over the six interesting characters someone thought of.
+def roundtrips(b):
+    if http.unquote(http.quote(b, safe="")) != b:
+        return false
+    if http.unquote(http.quote_plus(b), plus=true) != b:
+        return false
+    # `safe=` cannot break it either, as long as the safe set leaves `%`
+    # alone: a safe byte is written literally and read back as itself.
+    if http.unquote(http.quote(b, safe="/ +&=?")) != b:
+        return false
+    return true
+
+
+print("--- round trip")
+bad = 0
+i = 0
+while i < 256:
+    if not roundtrips([i].to_bytes()):
+        bad = bad + 1
+    i = i + 1
+print("every single octet:", bad)
+
+bad = 0
+i = 0
+while i < 256:
+    j = 0
+    while j < 256:
+        if not roundtrips([i, j].to_bytes()):
+            bad = bad + 1
+        j = j + 1
+    i = i + 1
+print("every pair of octets:", bad)
+
+# An LCG, so the twin walks the same 2000 strings. Numbers only; nothing here
+# depends on Oro and CPython agreeing about anything but arithmetic.
+bad = 0
+seed = 12345
+n = 0
+while n < 2000:
+    length = seed % 40
+    parts = []
+    k = 0
+    while k < length:
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        parts.append(seed % 256)
+        k = k + 1
+    seed = (seed * 1103515245 + 12345) % 2147483648
+    if not roundtrips(parts.to_bytes()):
+        bad = bad + 1
+    n = n + 1
+print("2000 pseudo-random strings:", bad)
