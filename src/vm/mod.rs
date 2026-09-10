@@ -1128,18 +1128,29 @@ impl Vm {
                     let frame = self.task.frames.last_mut().expect("no active frame");
                     let n = frame.stack.len();
                     if n >= 2 {
-                        if let (Value::List(l), Value::Int(i)) =
-                            (&frame.stack[n - 2], &frame.stack[n - 1])
-                        {
-                            let l = l.borrow();
-                            let i = *i;
-                            if i >= 0 && (i as usize) < l.len() {
-                                let v = l[i as usize].clone();
-                                drop(l);
-                                frame.stack.truncate(n - 1);
-                                frame.stack[n - 2] = v;
-                                continue;
+                        let hit = match (&frame.stack[n - 2], &frame.stack[n - 1]) {
+                            (Value::List(l), Value::Int(i)) => {
+                                let l = l.borrow();
+                                let i = *i;
+                                if i >= 0 && (i as usize) < l.len() {
+                                    Some(l[i as usize].clone())
+                                } else {
+                                    None
+                                }
                             }
+                            // A missing key is a `KeyError` with a message to
+                            // build, and an unhashable one is an error too, so
+                            // both decline.
+                            (Value::Dict(d), k) => match d.borrow().get(k) {
+                                Ok(Some(v)) => Some(v),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        if let Some(v) = hit {
+                            frame.stack.truncate(n - 1);
+                            frame.stack[n - 2] = v;
+                            continue;
                         }
                     }
                 }
@@ -1147,25 +1158,108 @@ impl Vm {
                     // `xs[i] = v`, same shape and the same declines.
                     let frame = self.task.frames.last_mut().expect("no active frame");
                     let n = frame.stack.len();
-                    let ok = n >= 3
-                        && match (&frame.stack[n - 2], &frame.stack[n - 1]) {
+                    // 0 = decline, 1 = list slot, 2 = hashable dict key.
+                    let shape = if n < 3 {
+                        0
+                    } else {
+                        match (&frame.stack[n - 2], &frame.stack[n - 1]) {
                             (Value::List(l), Value::Int(i)) => {
-                                *i >= 0 && (*i as usize) < l.borrow().len()
+                                if *i >= 0 && (*i as usize) < l.borrow().len() {
+                                    1
+                                } else {
+                                    0
+                                }
                             }
-                            _ => false,
-                        };
-                    if ok {
-                        let i = match frame.stack.pop() {
-                            Some(Value::Int(i)) => i as usize,
-                            _ => unreachable!("checked above"),
-                        };
-                        let list = match frame.stack.pop() {
-                            Some(Value::List(l)) => l,
-                            _ => unreachable!("checked above"),
-                        };
+                            // The four key shapes that are hashable by
+                            // construction, so `insert` cannot fail. Anything
+                            // else — including a key that owes an
+                            // unhashable-type diagnostic — declines rather
+                            // than hash itself twice to find out.
+                            (
+                                Value::Dict(_),
+                                Value::Int(_) | Value::Str(_) | Value::Bool(_) | Value::None,
+                            ) => 2,
+                            _ => 0,
+                        }
+                    };
+                    if shape != 0 {
+                        let index = frame.stack.pop().expect("subscript index");
+                        let target = frame.stack.pop().expect("subscript target");
                         let value = frame.stack.pop().expect("operand stack underflow");
-                        list.borrow_mut()[i] = value;
+                        match (target, index) {
+                            (Value::List(l), Value::Int(i)) => l.borrow_mut()[i as usize] = value,
+                            (Value::Dict(d), k) => {
+                                d.borrow_mut().insert(k, value).expect("key hashed above")
+                            }
+                            _ => unreachable!("checked above"),
+                        }
                         continue;
+                    }
+                }
+                Op::Dup => {
+                    let frame = self.task.frames.last_mut().expect("no active frame");
+                    let v = frame.stack.last().expect("dup on empty stack").clone();
+                    frame.stack.push(v);
+                    continue;
+                }
+                Op::RotTwo => {
+                    let stack = &mut self.task.frames.last_mut().expect("no active frame").stack;
+                    let n = stack.len();
+                    stack.swap(n - 1, n - 2);
+                    continue;
+                }
+                Op::LoadCell(slot) => {
+                    let frame = self.task.frames.last_mut().expect("no active frame");
+                    let v = frame.cells[slot as usize].borrow().clone();
+                    if !matches!(v, Value::Unbound) {
+                        frame.stack.push(v);
+                        continue;
+                    }
+                }
+                Op::LoadFree(slot) => {
+                    let frame = self.task.frames.last_mut().expect("no active frame");
+                    let v = frame.free[slot as usize].borrow().clone();
+                    if !matches!(v, Value::Unbound) {
+                        frame.stack.push(v);
+                        continue;
+                    }
+                }
+                Op::ListAppend => {
+                    let frame = self.task.frames.last_mut().expect("no active frame");
+                    let n = frame.stack.len();
+                    if n >= 2 {
+                        if let Value::List(l) = &frame.stack[n - 2] {
+                            let l = l.clone();
+                            let v = frame.stack.pop().expect("the appended value");
+                            l.borrow_mut().push(v);
+                            continue;
+                        }
+                    }
+                }
+                Op::ForIter(target) => {
+                    // The ordinary iterator: a range, a list, a tuple, a
+                    // string, a dict's keys. A generator resumes a frame and a
+                    // channel can park, so both decline — as does the mutated
+                    // list `iter_next` refuses to walk, which owes a
+                    // diagnostic. `iter_next` does not mutate on its error
+                    // path, so running it again below is the same call twice,
+                    // not a half-taken step.
+                    let frame = self.task.frames.last_mut().expect("no active frame");
+                    let advance = match frame.stack.last() {
+                        Some(it @ Value::Iter(_)) => iter_next(it).ok(),
+                        _ => None,
+                    };
+                    match advance {
+                        Some(Some(v)) => {
+                            frame.stack.push(v);
+                            continue;
+                        }
+                        Some(None) => {
+                            frame.stack.pop().expect("the exhausted iterator");
+                            frame.pc = target as usize;
+                            continue;
+                        }
+                        None => {}
                     }
                 }
                 _ => {}
