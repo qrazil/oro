@@ -586,8 +586,27 @@ impl SymTable {
                     self.resolve_expr(scope_id, v);
                 }
             }
-            // Literals reference nothing.
-            _ => {}
+            // An f-string's fields are ordinary expressions, and a name used
+            // *only* inside one is an ordinary reference — but the parser
+            // leaves the field text unparsed (see "Known limitations"), so
+            // there is nothing in the AST to walk. Parse the fields exactly as
+            // codegen will and resolve what comes back. Skipping this used to
+            // leave codegen resolving a free variable the pass had never
+            // threaded, which aborted the process with no source location.
+            Expr::FString { value, .. } => {
+                for field in super::codegen::fstring_field_exprs(value) {
+                    self.resolve_expr(scope_id, &field);
+                }
+            }
+            // Literals reference nothing. Listed rather than caught by `_` so
+            // that a new expression kind cannot join the language without this
+            // walk being updated — an unwalked name is exactly the bug above.
+            Expr::Int { .. }
+            | Expr::Float { .. }
+            | Expr::Str { .. }
+            | Expr::Bytes { .. }
+            | Expr::Bool { .. }
+            | Expr::NoneLit { .. } => {}
         }
     }
 
@@ -659,26 +678,28 @@ impl SymTable {
     // --- Queries for codegen -------------------------------------------------
 
     /// Resolve a name reference within `scope_id` to its storage location.
-    pub fn resolve_name(&self, scope_id: usize, name: &str) -> Resolution {
+    ///
+    /// `None` means the reference is to an enclosing function's variable that
+    /// [`resolve_module`](Self::resolve_module) never threaded through this
+    /// function — a hole in the resolve walk, not a mistake in the program.
+    /// Codegen turns it into a diagnostic carrying the source location rather
+    /// than aborting, so a walk that misses a name is a report, never a crash.
+    pub fn resolve_name(&self, scope_id: usize, name: &str) -> Option<Resolution> {
         let sym = match self.lookup_anywhere(scope_id, name) {
             Some(s) => s,
-            None => return Resolution::Global,
+            None => return Some(Resolution::Global),
         };
         let curfunc = self.scopes[scope_id].func;
         let owner = self.symbols[sym].owner;
         if owner == curfunc {
             if self.symbols[sym].captured {
-                Resolution::Cell(self.symbols[sym].slot)
+                Some(Resolution::Cell(self.symbols[sym].slot))
             } else {
-                Resolution::Local(self.symbols[sym].slot)
+                Some(Resolution::Local(self.symbols[sym].slot))
             }
         } else {
-            let idx = self.scopes[curfunc]
-                .freevars
-                .iter()
-                .position(|&s| s == sym)
-                .expect("free variable must be threaded through this function") as u16;
-            Resolution::Free(idx)
+            let idx = self.scopes[curfunc].freevars.iter().position(|&s| s == sym)? as u16;
+            Some(Resolution::Free(idx))
         }
     }
 

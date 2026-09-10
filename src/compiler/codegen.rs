@@ -892,8 +892,10 @@ impl<'a> Codegen<'a> {
         let mut infos = Vec::with_capacity(params.len());
         for p in params {
             let target = match self.table.resolve_name(child, &p.name) {
-                Resolution::Local(s) => VarTarget::Local(s),
-                Resolution::Cell(s) => VarTarget::Cell(s),
+                Some(Resolution::Local(s)) => VarTarget::Local(s),
+                Some(Resolution::Cell(s)) => VarTarget::Cell(s),
+                // A parameter is declared in its own function's scope, so it
+                // owns its storage there and can never be free or global.
                 _ => unreachable!("a parameter is always a local of its function"),
             };
             infos.push(ParamInfo {
@@ -929,12 +931,30 @@ impl<'a> Codegen<'a> {
     }
 
     // --- Stores --------------------------------------------------------------
+    /// Where `name` lives in the current scope, as a diagnostic rather than a
+    /// panic when the resolve pass never threaded it. Every expression that can
+    /// hold a name is walked by that pass, so this should be unreachable — but
+    /// an f-string field went unwalked for two releases, and the abort it
+    /// produced named a line in the compiler instead of a line in the program.
+    fn unthreaded_check(&self, name: &str, line: usize, col: usize) -> CResult<Resolution> {
+        self.table.resolve_name(self.scope, name).ok_or_else(|| {
+            self.err(
+                format!(
+                    "internal compiler error: `{name}` refers to an enclosing function's variable \
+                     that the symbol pass did not thread through this function — please report this"
+                ),
+                line,
+                col,
+            )
+        })
+    }
+
 
     /// Emit code that stores the value on top of the stack into `target`.
     fn emit_store(&mut self, target: &Expr) -> CResult<()> {
         match target {
             Expr::Name { name, line, col } => {
-                match self.table.resolve_name(self.scope, name) {
+                match self.unthreaded_check(name, *line, *col)? {
                     Resolution::Local(s) => self.emit(Op::StoreFast(s), *line, *col),
                     Resolution::Cell(s) => self.emit(Op::StoreCell(s), *line, *col),
                     Resolution::Free(s) => self.emit(Op::StoreFree(s), *line, *col),
@@ -1006,7 +1026,7 @@ impl<'a> Codegen<'a> {
                 self.emit(Op::LoadNone, *line, *col);
             }
             Expr::Name { name, line, col } => {
-                match self.table.resolve_name(self.scope, name) {
+                match self.unthreaded_check(name, *line, *col)? {
                     Resolution::Local(s) => self.emit(Op::LoadFast(s), *line, *col),
                     Resolution::Cell(s) => self.emit(Op::LoadCell(s), *line, *col),
                     Resolution::Free(s) => self.emit(Op::LoadFree(s), *line, *col),
@@ -1161,7 +1181,7 @@ impl<'a> Codegen<'a> {
         if args.is_empty() && kwargs.is_empty() {
             if let Expr::Name { name, .. } = func {
                 if name == "super"
-                    && matches!(self.table.resolve_name(self.scope, name), Resolution::Global)
+                    && matches!(self.table.resolve_name(self.scope, name), Some(Resolution::Global))
                 {
                     self.emit(Op::LoadSuper, line, col);
                     return Ok(());
@@ -1216,56 +1236,18 @@ impl<'a> Codegen<'a> {
     // --- f-strings -----------------------------------------------------------
 
     fn emit_fstring(&mut self, raw: &str, line: usize, col: usize) -> CResult<()> {
-        let chars: Vec<char> = raw.chars().collect();
-        let mut i = 0;
-        let mut literal = String::new();
+        let pieces = scan_fstring(raw).map_err(|m| self.err(m, line, col))?;
         let mut parts = 0usize;
-
-        macro_rules! flush {
-            () => {
-                if !literal.is_empty() {
-                    let idx = self.add_const(Value::str(std::mem::take(&mut literal)));
+        for piece in pieces {
+            match piece {
+                FPiece::Lit(text) => {
+                    let idx = self.add_const(Value::str(text));
                     self.emit(Op::LoadConst(idx), line, col);
-                    parts += 1;
                 }
-            };
-        }
-
-        while i < chars.len() {
-            match chars[i] {
-                '{' if chars.get(i + 1) == Some(&'{') => {
-                    literal.push('{');
-                    i += 2;
-                }
-                '}' if chars.get(i + 1) == Some(&'}') => {
-                    literal.push('}');
-                    i += 2;
-                }
-                // Escape sequences in the literal text are decoded (the lexer
-                // keeps f-string text raw so interpolation can be parsed here).
-                '\\' => {
-                    i += 1;
-                    let decoded = decode_escape(&chars, &mut i)
-                        .map_err(|m| self.err(format!("in f-string: {m}"), line, col))?;
-                    literal.push_str(&decoded);
-                }
-                '{' => {
-                    flush!();
-                    i += 1;
-                    let src = self.capture_field(&chars, &mut i, line, col)?;
-                    self.emit_field(&src, line, col)?;
-                    parts += 1;
-                }
-                '}' => {
-                    return Err(self.err("single `}` in f-string", line, col));
-                }
-                c => {
-                    literal.push(c);
-                    i += 1;
-                }
+                FPiece::Field(src) => self.emit_field(&src, line, col)?,
             }
+            parts += 1;
         }
-        flush!();
 
         match parts {
             0 => {
@@ -1280,48 +1262,11 @@ impl<'a> Codegen<'a> {
         Ok(())
     }
 
-    /// Capture the raw text of a replacement field: everything up to the `}`
-    /// that closes it, tracking nested `{ }` (from nested format specs) so the
-    /// spec's own braces don't terminate the field early. `i` points just past
-    /// the opening `{` on entry and just past the closing `}` on return.
-    fn capture_field(
-        &self,
-        chars: &[char],
-        i: &mut usize,
-        line: usize,
-        col: usize,
-    ) -> CResult<String> {
-        let mut depth = 1;
-        let mut src = String::new();
-        while *i < chars.len() && depth > 0 {
-            match chars[*i] {
-                '{' => {
-                    depth += 1;
-                    src.push('{');
-                }
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                    src.push('}');
-                }
-                c => src.push(c),
-            }
-            *i += 1;
-        }
-        if depth != 0 {
-            return Err(self.err("unterminated `{` in f-string", line, col));
-        }
-        *i += 1; // consume the closing '}'
-        Ok(src)
-    }
-
     /// Emit code for one replacement field `expr[!conv][:spec]`: push the value,
     /// push the (possibly nested) format-spec string, then `FormatValue`.
     fn emit_field(&mut self, src: &str, line: usize, col: usize) -> CResult<()> {
         let field = split_field(src);
-        let expr = self.parse_fstring_expr(&field.expr, line, col)?;
+        let expr = parse_field_expr(&field.expr).map_err(|m| self.err(m, line, col))?;
         self.emit_expr(&expr)?;
 
         let conv = match field.conv {
@@ -1353,54 +1298,22 @@ impl<'a> Codegen<'a> {
     /// Build a format-spec string on the stack. A static spec is a single
     /// constant; a spec with nested `{expr}` fields is assembled at runtime.
     fn emit_spec(&mut self, spec: &str, line: usize, col: usize) -> CResult<()> {
-        let chars: Vec<char> = spec.chars().collect();
-        let mut i = 0;
-        let mut literal = String::new();
+        let pieces = scan_spec(spec).map_err(|m| self.err(m, line, col))?;
         let mut parts = 0usize;
-
-        macro_rules! flush {
-            () => {
-                if !literal.is_empty() {
-                    let idx = self.add_const(Value::str(std::mem::take(&mut literal)));
+        for piece in pieces {
+            match piece {
+                FPiece::Lit(text) => {
+                    let idx = self.add_const(Value::str(text));
                     self.emit(Op::LoadConst(idx), line, col);
-                    parts += 1;
                 }
-            };
-        }
-
-        while i < chars.len() {
-            match chars[i] {
-                '{' if chars.get(i + 1) == Some(&'{') => {
-                    literal.push('{');
-                    i += 2;
-                }
-                '}' if chars.get(i + 1) == Some(&'}') => {
-                    literal.push('}');
-                    i += 2;
-                }
-                '{' => {
-                    flush!();
-                    i += 1;
-                    // A nested field may not itself carry a nested spec (Python
-                    // allows only one level), so capture up to a plain `}`.
-                    let mut inner = String::new();
-                    while i < chars.len() && chars[i] != '}' {
-                        inner.push(chars[i]);
-                        i += 1;
-                    }
-                    if i >= chars.len() {
-                        return Err(self.err("unterminated `{` in f-string format spec", line, col));
-                    }
-                    i += 1; // consume '}'
-                    let field = split_field(&inner);
+                FPiece::Field(src) => {
+                    let field = split_field(&src);
+                    // Python allows exactly one level of nesting, so the inner
+                    // field may not carry a spec of its own.
                     if field.spec.is_some() {
-                        return Err(self.err(
-                            "f-string: format spec nested too deeply",
-                            line,
-                            col,
-                        ));
+                        return Err(self.err("f-string: format spec nested too deeply", line, col));
                     }
-                    let expr = self.parse_fstring_expr(&field.expr, line, col)?;
+                    let expr = parse_field_expr(&field.expr).map_err(|m| self.err(m, line, col))?;
                     self.emit_expr(&expr)?;
                     let conv = match field.conv {
                         None => crate::format::CONV_NONE,
@@ -1412,18 +1325,10 @@ impl<'a> Codegen<'a> {
                     let idx = self.add_const(Value::str(String::new()));
                     self.emit(Op::LoadConst(idx), line, col);
                     self.emit(Op::FormatValue(conv), line, col);
-                    parts += 1;
-                }
-                '}' => {
-                    return Err(self.err("single `}` in f-string format spec", line, col));
-                }
-                c => {
-                    literal.push(c);
-                    i += 1;
                 }
             }
+            parts += 1;
         }
-        flush!();
 
         match parts {
             0 => {
@@ -1437,22 +1342,189 @@ impl<'a> Codegen<'a> {
         }
         Ok(())
     }
+}
 
-    fn parse_fstring_expr(&self, src: &str, line: usize, col: usize) -> CResult<Expr> {
-        if src.trim().is_empty() {
-            return Err(self.err("empty expression in f-string", line, col));
-        }
-        let tokens = Lexer::new(src)
-            .tokenize()
-            .map_err(|e| self.err(format!("in f-string: {}", e.message), line, col))?;
-        let prog = Parser::new(tokens)
-            .parse()
-            .map_err(|e| self.err(format!("in f-string: {}", e.message), line, col))?;
-        match prog.as_slice() {
-            [Stmt::Expr { value, .. }] => Ok(value.clone()),
-            _ => Err(self.err("f-string field must be a single expression", line, col)),
+/// One piece of an f-string's raw text: literal text, with escapes already
+/// decoded, or the raw source of a replacement field.
+///
+/// Splitting the scan out from the emit is what lets the symbol pass see the
+/// same fields codegen will. f-string fields are parsed here at code-generation
+/// time rather than by the parser (see "Known limitations" in the README), so
+/// without a shared scanner the two passes disagree about which text is an
+/// expression — and the resolve pass then meets a free variable it never
+/// threaded.
+pub(super) enum FPiece {
+    Lit(String),
+    Field(String),
+}
+
+/// Push `text` as a literal piece unless it is empty (an empty literal would
+/// only add a wasted `BuildString` operand).
+fn flush_lit(text: &mut String, out: &mut Vec<FPiece>) {
+    if !text.is_empty() {
+        out.push(FPiece::Lit(std::mem::take(text)));
+    }
+}
+
+/// Scan an f-string body into literal and field pieces. The single place the
+/// `{`/`}` and escape rules live.
+pub(super) fn scan_fstring(raw: &str) -> Result<Vec<FPiece>, String> {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut i = 0;
+    let mut literal = String::new();
+    let mut out = Vec::new();
+
+    while i < chars.len() {
+        match chars[i] {
+            '{' if chars.get(i + 1) == Some(&'{') => {
+                literal.push('{');
+                i += 2;
+            }
+            '}' if chars.get(i + 1) == Some(&'}') => {
+                literal.push('}');
+                i += 2;
+            }
+            // Escape sequences in the literal text are decoded (the lexer keeps
+            // f-string text raw so interpolation can be parsed here).
+            '\\' => {
+                i += 1;
+                let decoded = decode_escape(&chars, &mut i).map_err(|m| format!("in f-string: {m}"))?;
+                literal.push_str(&decoded);
+            }
+            '{' => {
+                flush_lit(&mut literal, &mut out);
+                i += 1;
+                out.push(FPiece::Field(capture_field(&chars, &mut i)?));
+            }
+            '}' => return Err("single `}` in f-string".to_string()),
+            c => {
+                literal.push(c);
+                i += 1;
+            }
         }
     }
+    flush_lit(&mut literal, &mut out);
+    Ok(out)
+}
+
+/// Capture the raw text of a replacement field: everything up to the `}` that
+/// closes it, tracking nested `{ }` (from nested format specs) so the spec's own
+/// braces don't terminate the field early. `i` points just past the opening `{`
+/// on entry and just past the closing `}` on return.
+fn capture_field(chars: &[char], i: &mut usize) -> Result<String, String> {
+    let mut depth = 1;
+    let mut src = String::new();
+    while *i < chars.len() && depth > 0 {
+        match chars[*i] {
+            '{' => {
+                depth += 1;
+                src.push('{');
+            }
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+                src.push('}');
+            }
+            c => src.push(c),
+        }
+        *i += 1;
+    }
+    if depth != 0 {
+        return Err("unterminated `{` in f-string".to_string());
+    }
+    *i += 1; // consume the closing '}'
+    Ok(src)
+}
+
+/// Scan a format spec into literal and (nested) field pieces. A nested field
+/// may not itself carry a nested spec — Python allows only one level — so this
+/// captures up to a plain `}`, and escapes are *not* decoded here: the spec text
+/// already came through [`scan_fstring`].
+pub(super) fn scan_spec(spec: &str) -> Result<Vec<FPiece>, String> {
+    let chars: Vec<char> = spec.chars().collect();
+    let mut i = 0;
+    let mut literal = String::new();
+    let mut out = Vec::new();
+
+    while i < chars.len() {
+        match chars[i] {
+            '{' if chars.get(i + 1) == Some(&'{') => {
+                literal.push('{');
+                i += 2;
+            }
+            '}' if chars.get(i + 1) == Some(&'}') => {
+                literal.push('}');
+                i += 2;
+            }
+            '{' => {
+                flush_lit(&mut literal, &mut out);
+                i += 1;
+                let mut inner = String::new();
+                while i < chars.len() && chars[i] != '}' {
+                    inner.push(chars[i]);
+                    i += 1;
+                }
+                if i >= chars.len() {
+                    return Err("unterminated `{` in f-string format spec".to_string());
+                }
+                i += 1; // consume '}'
+                out.push(FPiece::Field(inner));
+            }
+            '}' => return Err("single `}` in f-string format spec".to_string()),
+            c => {
+                literal.push(c);
+                i += 1;
+            }
+        }
+    }
+    flush_lit(&mut literal, &mut out);
+    Ok(out)
+}
+
+/// Lex and parse one replacement field's expression source.
+fn parse_field_expr(src: &str) -> Result<Expr, String> {
+    if src.trim().is_empty() {
+        return Err("empty expression in f-string".to_string());
+    }
+    let tokens = Lexer::new(src).tokenize().map_err(|e| format!("in f-string: {}", e.message))?;
+    let prog = Parser::new(tokens).parse().map_err(|e| format!("in f-string: {}", e.message))?;
+    match prog.as_slice() {
+        [Stmt::Expr { value, .. }] => Ok(value.clone()),
+        _ => Err("f-string field must be a single expression".to_string()),
+    }
+}
+
+/// Every expression an f-string literal interpolates, in source order: the
+/// replacement fields, plus any nested fields inside a format spec.
+///
+/// Malformed text yields nothing rather than an error. [`emit_fstring`] scans
+/// the same text again and reports the problem with a source location, so the
+/// symbol pass — which has no diagnostics of its own — stays infallible and
+/// simply has nothing to walk.
+///
+/// [`emit_fstring`]: Compiler::emit_fstring
+pub(super) fn fstring_field_exprs(raw: &str) -> Vec<Expr> {
+    let mut out = Vec::new();
+    let Ok(pieces) = scan_fstring(raw) else { return out };
+    for piece in pieces {
+        let FPiece::Field(src) = piece else { continue };
+        let field = split_field(&src);
+        if let Ok(expr) = parse_field_expr(&field.expr) {
+            out.push(expr);
+        }
+        let Some(spec) = field.spec else { continue };
+        let Ok(inner) = scan_spec(&spec) else { continue };
+        for piece in inner {
+            let FPiece::Field(src) = piece else { continue };
+            let field = split_field(&src);
+            if let Ok(expr) = parse_field_expr(&field.expr) {
+                out.push(expr);
+            }
+        }
+    }
+    out
 }
 
 /// The three pieces of a replacement field: the expression source, an optional

@@ -1,0 +1,91 @@
+# A name used *only* inside an f-string field is a real reference. The symbol
+# pass used to walk every expression except an f-string's fields, so a global
+# mentioned nowhere else in a function reached codegen as a free variable that
+# had never been threaded — and the compiler aborted, with no source location.
+# Every shape below is a name whose sole appearance in its function is inside a
+# field.
+
+GREETING = "hello"
+PRECISION = 3
+COUNT = 7
+
+import re
+
+
+def _reason(n):
+    return "reason-" + repr(n)
+
+
+# A module-level constant.
+def only_constant():
+    return f"{GREETING}"
+
+
+# A module-level function, called from inside the field.
+def only_function():
+    return f"{_reason(1)}"
+
+
+# An imported module name.
+def only_import():
+    return f"{re.search('b+', 'aabbbcc').group(0)}"
+
+
+# A nested field inside the format spec: the *spec* holds the only mention.
+def only_nested_spec(x):
+    return f"{x:.{PRECISION}f}"
+
+
+# `!r` and `!s` conversions.
+def only_conversions():
+    return f"{GREETING!r} {COUNT!s} {GREETING!a}"
+
+
+# Inside a nested function, so the reference crosses a function boundary too.
+def only_in_nested():
+    def inner():
+        return f"{GREETING}-{COUNT}"
+
+    return inner()
+
+
+# Inside a method.
+class Report:
+    def __init__(self, n):
+        self.n = n
+
+    def __str__(self):
+        return f"{_reason(self.n)} at precision {PRECISION}"
+
+    def __repr__(self):
+        return f"<Report {self.n} {GREETING}>"
+
+
+# A closed-over local whose only mention in the inner function is a field. This
+# is the same hole seen from the other side: the capture must be discovered by
+# the f-string walk, or `inner` has no cell to read.
+def capture_only_in_field():
+    local = "captured"
+    width = 12
+
+    def inner():
+        return f"{local:>{width}}|"
+
+    return inner()
+
+
+# Doubled braces and escapes around a field must not confuse the scan.
+def braces_and_escapes():
+    return f"{{{GREETING}}}\t{COUNT:04d}"
+
+
+print(only_constant())
+print(only_function())
+print(only_import())
+print(only_nested_spec(3.14159))
+print(only_conversions())
+print(only_in_nested())
+print(str(Report(2)))
+print(repr(Report(2)))
+print(capture_only_in_field())
+print(braces_and_escapes())
