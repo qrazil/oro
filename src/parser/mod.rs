@@ -34,6 +34,18 @@ use crate::ast::{
 };
 use crate::lexer::{Token, TokenKind};
 
+/// Oro has no type annotations, in any of their three positions.
+///
+/// They used to parse and be thrown away — `def f(a: int) -> int` accepted a
+/// string and said nothing — which is decorative syntax that looks like it
+/// does something, in a language whose whole thesis is that it does not do
+/// that. There is nothing that reads an annotation and nothing that will, so
+/// the removal is the same shape as every other one: reject, and name what to
+/// write instead.
+const ANNOTATION_CUT: &str = "Oro has no type annotations — write `def f(a)` rather than \
+                              `def f(a: int) -> int`, and `x = 5` rather than `x: int = 5`; \
+                              nothing reads them";
+
 /// An error produced while parsing, with a 1-based source position.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParseError {
@@ -297,6 +309,18 @@ impl Parser {
             return Err(self.error("the walrus operator `:=` is not supported in Oro"));
         }
 
+        // `x: int = 5` / `x: int` — a variable annotation, on the three targets
+        // Python allows one on. Already an error before this arm existed, but
+        // one that named the colon rather than the feature.
+        if self.check(&TokenKind::Colon)
+            && matches!(
+                first,
+                Expr::Name { .. } | Expr::Attribute { .. } | Expr::Subscript { .. }
+            )
+        {
+            return Err(self.error(ANNOTATION_CUT));
+        }
+
         match self.cur_kind() {
             TokenKind::Eq => {
                 self.advance();
@@ -558,13 +582,11 @@ impl Parser {
         self.expect(&TokenKind::LParen, "`(` to start the parameter list")?;
         let params = self.param_list()?;
         self.expect(&TokenKind::RParen, "`)` to close the parameter list")?;
-        let ret = if self.eat(&TokenKind::Arrow) {
-            Some(self.expression()?)
-        } else {
-            None
-        };
+        if self.check(&TokenKind::Arrow) {
+            return Err(self.error(ANNOTATION_CUT));
+        }
         let body = self.block()?;
-        Ok(Stmt::Def { name, params, ret, body, line, col })
+        Ok(Stmt::Def { name, params, body, line, col })
     }
 
     /// Parse a `def` parameter list, enforcing the fixed order: positional
@@ -589,9 +611,11 @@ impl Parser {
                     ));
                 }
                 let (name, line, col) = self.expect_ident("a parameter name after `**`")?;
+                if self.check(&TokenKind::Colon) {
+                    return Err(self.error(ANNOTATION_CUT));
+                }
                 params.push(Param {
                     name,
-                    annotation: None,
                     default: None,
                     kind: ParamKind::KwArgs,
                     line,
@@ -615,9 +639,11 @@ impl Parser {
                     ));
                 }
                 let (name, line, col) = self.expect_ident("a parameter name after `*`")?;
+                if self.check(&TokenKind::Colon) {
+                    return Err(self.error(ANNOTATION_CUT));
+                }
                 params.push(Param {
                     name,
-                    annotation: None,
                     default: None,
                     kind: ParamKind::VarArgs,
                     line,
@@ -641,11 +667,9 @@ impl Parser {
                     ));
                 }
                 let (name, line, col) = self.expect_ident("a parameter name")?;
-                let annotation = if self.eat(&TokenKind::Colon) {
-                    Some(self.expression()?)
-                } else {
-                    None
-                };
+                if self.check(&TokenKind::Colon) {
+                    return Err(self.error(ANNOTATION_CUT));
+                }
                 let default = if self.eat(&TokenKind::Eq) {
                     seen_default = true;
                     Some(self.expression()?)
@@ -661,7 +685,6 @@ impl Parser {
                 };
                 params.push(Param {
                     name,
-                    annotation,
                     default,
                     kind: ParamKind::Normal,
                     line,
@@ -1357,14 +1380,13 @@ fn build_infix(op: &TokenKind, left: Expr, right: Expr, line: usize, col: usize)
 }
 
 /// Reinterpret an already-parsed expression as a lambda parameter list. Only
-/// plain names are accepted — no defaults, annotations, or `*args`; a lambda
+/// plain names are accepted — no defaults and no `*args`; a lambda
 /// that needs those is a `def`.
 fn lambda_params(left: &Expr) -> Option<Vec<crate::ast::Param>> {
     fn one(e: &Expr) -> Option<crate::ast::Param> {
         match e {
             Expr::Name { name, line, col } => Some(crate::ast::Param {
                 name: name.clone(),
-                annotation: None,
                 default: None,
                 kind: crate::ast::ParamKind::Normal,
                 line: *line,

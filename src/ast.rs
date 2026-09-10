@@ -103,14 +103,14 @@ pub enum ParamKind {
     KwArgs,
 }
 
-/// A single parameter in a `def` header: `name`, `name: ann`, `name = default`,
-/// `name: ann = default`, or the variadic forms `*args` / `**kwargs`.
+/// A single parameter in a `def` header: `name`, `name = default`, or the
+/// variadic forms `*args` / `**kwargs`.
+///
+/// There is no annotation field. Oro has no type annotations, and a node that
+/// held one nothing ever read is how `def f(a: int)` came to accept a string.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Param {
     pub name: String,
-    /// Optional type annotation (`name: ann`). Kept as an expression; the parser
-    /// does not interpret it. Always `None` for `*args` / `**kwargs`.
-    pub annotation: Option<Expr>,
     /// Optional default value (`name = default`). Never present on `*args` /
     /// `**kwargs`.
     pub default: Option<Expr>,
@@ -210,11 +210,10 @@ pub enum Stmt {
         line: usize,
         col: usize,
     },
-    /// `def name(params) -> ret:`.
+    /// `def name(params):`. There is no return annotation — see [`Param`].
     Def {
         name: String,
         params: Vec<Param>,
-        ret: Option<Expr>,
         body: Vec<Stmt>,
         line: usize,
         col: usize,

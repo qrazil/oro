@@ -508,11 +508,8 @@ impl Printer {
                 self.emit_code(*line, &text);
                 self.body(body)?;
             }
-            Stmt::Def { name, params, ret, body, line, .. } => {
+            Stmt::Def { name, params, body, line, .. } => {
                 let mut text = format!("def {name}({})", def_params_str(&self.breaks, params));
-                if let Some(r) = ret {
-                    text.push_str(&format!(" -> {}", expr(&self.breaks, r, 0)));
-                }
                 text.push(':');
                 self.emit_code(*line, &text);
                 self.body(body)?;
@@ -877,7 +874,7 @@ fn parenthesized_tuple(lb: &LineBreaks, elements: &[Expr], line: usize, col: usi
 }
 
 /// A lambda's own parameter list is always plain names (the parser rejects
-/// anything else at `=>`), so no annotations/defaults/varargs to consider.
+/// anything else at `=>`), so no defaults or varargs to consider.
 fn lambda_params_str(params: &[Param]) -> String {
     match params {
         [only] => only.name.clone(),
@@ -902,16 +899,8 @@ fn def_param_str(lb: &LineBreaks, p: &Param) -> String {
         ParamKind::Normal => {}
     }
     s.push_str(&p.name);
-    if let Some(ann) = &p.annotation {
-        s.push_str(": ");
-        s.push_str(&expr(lb, ann, 0));
-    }
     if let Some(default) = &p.default {
-        if p.annotation.is_some() {
-            s.push_str(" = ");
-        } else {
-            s.push('=');
-        }
+        s.push('=');
         s.push_str(&expr(lb, default, 0));
     }
     s

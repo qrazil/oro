@@ -510,33 +510,36 @@ def f(a, b, c=1, d=2):
     return a
 ";
     match parse_one(src) {
-        Stmt::Def { name, params, ret, body, .. } => {
+        Stmt::Def { name, params, body, .. } => {
             assert_eq!(name, "f");
             assert_eq!(params.len(), 4);
             assert!(params[0].default.is_none());
             assert!(params[2].default.is_some());
-            assert!(ret.is_none());
             assert_eq!(body.len(), 1);
         }
         other => panic!("expected def, got {other:?}"),
     }
 }
 
+/// Annotations parsed and were thrown away, so `def f(a: int)` cheerfully took
+/// a string. Oro has no type annotations; all three positions are rejected.
+///
+/// This lives here rather than in `corpus/divergence/` because it is a *parse*
+/// error: `tests/fmt_test.rs` formats every `.oro` file in the tree, so a
+/// corpus program that does not parse fails four formatter tests. Runtime
+/// removals (`52_removed_string_methods.oro`) and compile-time ones
+/// (`57_hash_dunder.oro`) can live there; parse-time ones cannot.
 #[test]
-fn def_with_annotations_and_return_type() {
-    let src = "\
-def f(a: int, b: str = 'x') -> bool:
-    return true
-";
-    match parse_one(src) {
-        Stmt::Def { params, ret, .. } => {
-            assert!(params[0].annotation.is_some());
-            assert!(params[1].annotation.is_some());
-            assert!(params[1].default.is_some());
-            assert_eq!(sexp(ret.as_ref().unwrap()), "bool");
-        }
-        other => panic!("expected def, got {other:?}"),
-    }
+fn cut_type_annotations() {
+    assert_cut("def f(a: int):\n    pass\n", "no type annotations");
+    assert_cut("def f(a, b=1, *rest: int):\n    pass\n", "no type annotations");
+    assert_cut("def f(**kw: str):\n    pass\n", "no type annotations");
+    assert_cut("def f() -> int:\n    pass\n", "no type annotations");
+    assert_cut("x: int = 5", "no type annotations");
+    assert_cut("x: int", "no type annotations");
+    assert_cut("self.x: int = 5", "no type annotations");
+    assert_cut("d[0]: int = 5", "no type annotations");
+    assert_cut("class C:\n    x: int = 5\n", "no type annotations");
 }
 
 #[test]

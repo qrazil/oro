@@ -354,6 +354,12 @@ Each of these is omitted on purpose. The reason matters more than the list.
   dict's callback takes two arguments — `d.filter((k, v) => v > 1)` — and `map`
   over a dict returns the `(key, value)` pair. `range` and generators have no
   literal to rebuild, so they yield a list.
+- **No type annotations.** `def f(a: int) -> int` and `x: int = 5` are rejected
+  at the parser, in all three positions. They used to parse and be thrown away,
+  which is the one outcome worse than either having them or not: the header
+  said `int` and the function happily took a string. Oro has no static checker
+  and is not getting one, so an annotation would be a comment with syntax —
+  write a comment, or a name that says what it holds.
 - **No decorators.** Implicit `f = deco(f)` rewriting hides control flow behind
   an `@` sigil; write the wrapping explicitly if you want it.
 - **No metaclasses / `__getattr__` / dynamic attribute hooks.** These make it
