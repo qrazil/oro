@@ -1662,6 +1662,15 @@ fn unsupported_dunder(name: &str) -> Option<&'static str> {
         "__setattr__" | "__delattr__" => Some(
             "__setattr__/__delattr__ are not supported in Oro — attribute assignment is direct",
         ),
+        // A dict key is a pure Rust projection of a value with derived
+        // equality, so a lookup never calls Oro code and has nowhere to call a
+        // `__hash__` from. Defining one alone would hash into the right bucket
+        // and then compare by address — a miss, silently. The whole argument is
+        // `docs/hash-and-equality.md`; the replacement is a tuple key.
+        "__hash__" => Some(
+            "__hash__ is not in Oro's dunder set — a class that defines __eq__ is a value type \
+             and is not a dict key; key by the value instead, e.g. d[(self.row, self.col)]",
+        ),
         _ => None,
     }
 }

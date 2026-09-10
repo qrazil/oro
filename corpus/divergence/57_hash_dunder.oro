@@ -1,0 +1,23 @@
+# `__hash__` is not in Oro's dunder set, and defining one is a compile error.
+#
+# It used to be accepted, callable and completely inert — the worst shape a
+# removal can take. A dict key here is a pure Rust projection of the value with
+# derived equality, so a lookup never calls Oro code and has nowhere to call a
+# `__hash__` from; one defined anyway would hash into the right bucket and then
+# compare by address, and miss. The argument is `docs/hash-and-equality.md`.
+#
+# CPython runs this file happily, which is the whole point: reviewed by hand,
+# and the diagnostic is what wants reviewing if it changes. A compile error
+# stops the program, so this file can hold nothing else.
+
+
+class Cell:
+    def __init__(self, row, col):
+        self.row = row
+        self.col = col
+
+    def __eq__(self, other):
+        return self.row == other.row and self.col == other.col
+
+    def __hash__(self):
+        return self.row * 31 + self.col

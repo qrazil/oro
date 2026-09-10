@@ -12,5 +12,5 @@ still the same key after joining: the first task
 pattern equals itself: true
 two compiles of one pattern (CPython: true): false
 __eq__ still decides equality: true false
-unhashable type: 'Point' — it defines __eq__, so its identity is not what equality means for it
+unhashable type: 'Point' — it defines __eq__, so its identity is not what equality means for it; key by the value it compares by, e.g. counts[("a", 1)]
 a plain instance keys by identity: 2 kept

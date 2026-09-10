@@ -545,7 +545,8 @@ fn hkey_cold(v: &Value) -> VResult<HKey> {
             if Class::find(&i.class, "__eq__").is_some() {
                 return Err(format!(
                     "unhashable type: '{}' — it defines __eq__, so its identity is \
-                     not what equality means for it",
+                     not what equality means for it; key by the value it compares by, \
+                     e.g. counts[(\"a\", 1)]",
                     i.class.name
                 ));
             }

@@ -480,6 +480,16 @@ fn unsupported_class_dunder_is_rejected() {
     assert!(err.message.contains("__getattr__"), "got: {}", err.message);
 }
 
+/// `__hash__` used to be accepted, callable and inert — the one shape a removal
+/// must never take. It is rejected at the class now, naming the tuple key that
+/// replaces it (`docs/hash-and-equality.md` §7).
+#[test]
+fn hash_dunder_is_rejected() {
+    let err = compile_err("class X:\n    def __hash__(self):\n        return 0\n");
+    assert!(err.message.contains("__hash__"), "got: {}", err.message);
+    assert!(err.message.contains("d[(self.row, self.col)]"), "got: {}", err.message);
+}
+
 // --- exceptions -----------------------------------------------------------
 
 #[test]

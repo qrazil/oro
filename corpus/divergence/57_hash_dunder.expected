@@ -1,0 +1,1 @@
+divergence/57_hash_dunder.oro:22:5: __hash__ is not in Oro's dunder set — a class that defines __eq__ is a value type and is not a dict key; key by the value instead, e.g. d[(self.row, self.col)]

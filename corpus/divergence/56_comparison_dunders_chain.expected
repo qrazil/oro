@@ -7,9 +7,9 @@ Cell(1)
 [Cell(1)] [Cell(2)]
 [Cell(1)] [true, false]
 --- a class with __eq__ is still not a dict key, and still not hashable
-unhashable type: 'Cell' — it defines __eq__, so its identity is not what equality means for it
+unhashable type: 'Cell' — it defines __eq__, so its identity is not what equality means for it; key by the value it compares by, e.g. counts[("a", 1)]
 {1: [Cell(1)], 2: [Cell(2)]}
-unhashable type: 'Cell' — it defines __eq__, so its identity is not what equality means for it
+unhashable type: 'Cell' — it defines __eq__, so its identity is not what equality means for it; key by the value it compares by, e.g. counts[("a", 1)]
 a
 --- the chain's orderings run __lt__ too
 [V(1), V(2), V(3)]
