@@ -4538,26 +4538,62 @@ fn slice_get(
     }
     match obj {
         Value::Str(s) => {
+            // `s[i:j]` with the default step is by far the common case, and it
+            // is the one a byte-at-a-time parser runs once per token. Taking it
+            // through the general path costs a `Vec<char>` of the *whole*
+            // string plus a `Vec<usize>` of the slice, which makes an
+            // O(slice) operation O(string) — the quadratic that
+            // `std/json.oro` was paying on every number literal. The forward
+            // unit-step case is a byte-range copy instead, O(slice) for ASCII
+            // and O(end) for a string that is not.
+            if step == 1 {
+                let (start, stop) = unit_range(s.char_len(), lo, hi);
+                return Ok(Value::str(s.byte_slice(start, stop).to_string()));
+            }
             let chars: Vec<char> = s.s.chars().collect();
             let idxs = slice_indices(chars.len(), lo, hi, step);
             let out: String = idxs.into_iter().map(|i| chars[i]).collect();
             Ok(Value::str(out))
         }
         Value::Bytes(b) => {
+            if step == 1 {
+                let (start, stop) = unit_range(b.len(), lo, hi);
+                return Ok(Value::bytes(b[start..stop].to_vec()));
+            }
             let idxs = slice_indices(b.len(), lo, hi, step);
             Ok(Value::bytes(idxs.into_iter().map(|i| b[i]).collect::<Vec<u8>>()))
         }
         Value::List(l) => {
             let l = l.borrow();
+            if step == 1 {
+                let (start, stop) = unit_range(l.len(), lo, hi);
+                return Ok(Value::List(Rc::new(RefCell::new(l[start..stop].to_vec()))));
+            }
             let idxs = slice_indices(l.len(), lo, hi, step);
             Ok(Value::List(Rc::new(RefCell::new(idxs.into_iter().map(|i| l[i].clone()).collect()))))
         }
         Value::Tuple(t) => {
+            if step == 1 {
+                let (start, stop) = unit_range(t.len(), lo, hi);
+                return Ok(Value::Tuple(Rc::new(t[start..stop].to_vec())));
+            }
             let idxs = slice_indices(t.len(), lo, hi, step);
             Ok(Value::Tuple(Rc::new(idxs.into_iter().map(|i| t[i].clone()).collect())))
         }
         other => Err(format!("'{}' object is not sliceable", other.type_name())),
     }
+}
+
+/// The `[start, stop)` a `step == 1` slice selects, with Python's clamping and
+/// negative-index rules. `stop` is never below `start`, so the caller can index
+/// with the range directly. This is [`slice_indices`] for the unit-step case
+/// without materialising one index per selected element.
+fn unit_range(len: usize, lower: Option<i64>, upper: Option<i64>) -> (usize, usize) {
+    let n = len as i64;
+    let resolve = |i: i64| (if i < 0 { i + n } else { i }).clamp(0, n) as usize;
+    let start = lower.map_or(0, resolve);
+    let stop = upper.map_or(len, resolve);
+    (start, stop.max(start))
 }
 
 /// Compute the concrete indices a slice selects, applying Python's clamping and

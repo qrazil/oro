@@ -116,6 +116,35 @@ impl OroStr {
             self.s.chars().nth(i).map(|c| c.to_string())
         }
     }
+
+    /// The characters in `start..end` (character indices, already clamped to
+    /// `0 ..= char_len()` with `start <= end`), as a borrowed `&str`.
+    ///
+    /// O(1) for ASCII. For a string that is not, it walks to `end` once rather
+    /// than collecting the whole thing into a `Vec<char>` — so a slice near the
+    /// front of a large string costs what the slice costs, not what the string
+    /// costs.
+    pub fn byte_slice(&self, start: usize, end: usize) -> &str {
+        if self.is_ascii {
+            return &self.s[start..end];
+        }
+        let mut it = self.s.char_indices();
+        let lo = match it.by_ref().nth(start) {
+            Some((b, _)) => b,
+            None => return "",
+        };
+        // `nth(k)` has already consumed `start + 1` characters, so the byte
+        // offset of character `end` is `end - start - 1` further on.
+        let hi = if end <= start {
+            lo
+        } else {
+            match it.nth(end - start - 1) {
+                Some((b, _)) => b,
+                None => self.s.len(),
+            }
+        };
+        &self.s[lo..hi]
+    }
 }
 
 /// A lazy integer range (`range(...)`), never materialised as a list.

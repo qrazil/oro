@@ -174,6 +174,32 @@ fn subscript_and_slice() {
     assert_eq!(eval("r = \"abc\"[::-1]\n").repr(), "'cba'");
 }
 
+/// The `step == 1` fast path in `slice_get` is a *different* code path from the
+/// general one, so it needs its own clamping cases: out-of-range bounds, an
+/// inverted range, and negative indices, on a string that is not ASCII (where
+/// character indices and byte offsets disagree and a naive byte slice would
+/// either panic or cut a character in half).
+#[test]
+fn unit_step_slices_clamp_like_python() {
+    let s = "s = \"a\u{e9}\u{4e2d}\u{1f600}b\"\n";
+    assert_eq!(eval_last(&format!("{s}r = s[1:3]\n")).repr(), "'\u{e9}\u{4e2d}'");
+    assert_eq!(eval_last(&format!("{s}r = s[2:]\n")).repr(), "'\u{4e2d}\u{1f600}b'");
+    assert_eq!(eval_last(&format!("{s}r = s[:2]\n")).repr(), "'a\u{e9}'");
+    assert_eq!(eval_last(&format!("{s}r = s[-2:]\n")).repr(), "'\u{1f600}b'");
+    assert_eq!(eval_last(&format!("{s}r = s[:-3]\n")).repr(), "'a\u{e9}'");
+    // Out of range in both directions, and an inverted range, are all empty
+    // or clamped rather than an error — Python's rule, and the one the general
+    // path already implemented.
+    assert_eq!(eval_last(&format!("{s}r = s[3:1]\n")).repr(), "''");
+    assert_eq!(eval_last(&format!("{s}r = s[9:99]\n")).repr(), "''");
+    assert_eq!(eval_last(&format!("{s}r = s[-99:99]\n")).repr(), "'a\u{e9}\u{4e2d}\u{1f600}b'");
+    assert_eq!(eval_last(&format!("{s}r = s[5:5]\n")).repr(), "''");
+    assert_eq!(eval("r = \"\"[0:5]\n").repr(), "''");
+    assert_eq!(eval("r = [1, 2, 3][2:99]\n").repr(), "[3]");
+    assert_eq!(eval("r = (1, 2, 3)[-99:2]\n").repr(), "(1, 2)");
+    assert_eq!(eval("r = b\"hello\"[3:1]\n").repr(), "b''");
+}
+
 #[test]
 fn augmented_assignment_on_name_and_subscript() {
     assert_eq!(int(&eval("r = 10\nr += 5\nr *= 2\n")), 30);
