@@ -117,7 +117,7 @@ fn dict_remove_keeps_insertion_order_and_the_index_honest() {
     // two-argument `pop` hand back its default.
     assert!(d.remove(&Value::Int(2)).unwrap().is_none());
     // An unhashable key is still an error, not a miss.
-    let list = Value::List(Rc::new(RefCell::new(vec![])));
+    let list = Value::List(OroList::new(vec![]));
     assert!(d.remove(&list).is_err());
 }
 
