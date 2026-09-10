@@ -214,6 +214,12 @@ impl BoundMethod {
     ///
     /// `None`, like everywhere else in this file, means the receivers are a
     /// pair only the VM can decide (see [`Value::try_equals`]).
+    ///
+    /// Out of line for the reason [`try_seq_eq`] is: it calls back into
+    /// [`Value::eq_at`], and inlining it there would make that function
+    /// self-recursive — which would cost it the inlining into every `==` in
+    /// the program, for an arm reached only by comparing two bound methods.
+    #[inline(never)]
     fn try_equals(&self, other: &BoundMethod, depth: u32) -> Option<bool> {
         if !self.kinds_equal(other) {
             return Some(false);
