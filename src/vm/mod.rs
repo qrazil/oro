@@ -2014,6 +2014,20 @@ impl Vm {
                     Value::Func(f) => f,
                     other => unreachable!("LoadMethod pushed a non-function: {}", other.type_name()),
                 };
+                // A method with a `yield` in it produces a generator, the same
+                // as a plain generator `def` — this is an ordinary `obj.m()`,
+                // not a dispatched call, so `invoke_user`'s refusal (which is
+                // for dunders and chain callbacks, each of which has a
+                // continuation waiting on a value) must not be reached.
+                if func.code.is_generator {
+                    return self.make_method_generator(
+                        &func,
+                        recv_or_callee,
+                        defclass,
+                        args,
+                        Vec::new(),
+                    );
+                }
                 self.invoke_user(
                     func,
                     recv_or_callee,
@@ -2214,6 +2228,22 @@ impl Vm {
             };
             return self.begin_order(kind, items, keys, false).map(|()| Step::Next);
         }
+        // A generator *receiver* is drained the same way a generator argument
+        // is, for the same reason: the native method below iterates it, and
+        // native code can never resume a generator. The retry arrives back here
+        // with a list in the receiver's place. The `matches!` keeps the name
+        // test — and the vector it builds — off the path every other native
+        // method call takes.
+        if matches!(receiver, Value::Generator(_))
+            && crate::builtins::drains_generator_receiver(name)
+        {
+            let callee = Self::rebound_method(&receiver, name);
+            let with_recv =
+                std::iter::once(receiver.clone()).chain(args.iter().cloned()).collect::<Vec<_>>();
+            if let Some(step) = self.materialize_receiver(&callee, with_recv, kwargs.clone())? {
+                return Ok(step);
+            }
+        }
         if let Some(step) =
             self.materialize_generator_args(&Self::rebound_method(&receiver, name), &args, &kwargs)?
         {
@@ -2319,30 +2349,14 @@ impl Vm {
                     self.invoke_native_method(m.receiver.clone(), name, args, kwargs)
                 }
                 MethodKind::User { func, defclass } => {
-                    // A `def` with a `yield` in it is a generator function
-                    // wherever it is written, and calling one produces a
-                    // generator rather than running the body. A method is no
-                    // exception in CPython, and is none here: the frame is
-                    // built exactly as the plain-function path builds it and
-                    // handed to a `GenBox` instead of being pushed. The one
-                    // extra step is `super_ctx`, which goes on the frame before
-                    // it is parked, so `super()` still resolves when the
-                    // generator is resumed — possibly in another task, long
-                    // after this call returned.
                     if func.code.is_generator {
-                        if self.task.frames.len() >= MAX_FRAMES {
-                            return Err(self.err("maximum recursion depth exceeded"));
-                        }
-                        let receiver = m.receiver.clone();
-                        let mut frame =
-                            self.bind_call(func, Some(receiver.clone()), args, kwargs)?;
-                        frame.super_ctx = Some((defclass.clone(), receiver));
-                        let gen = crate::value::GenBox {
-                            done: false,
-                            frame: Some(Box::new(frame)),
-                        };
-                        self.push(Value::Generator(Rc::new(RefCell::new(gen))));
-                        return Ok(Step::Next);
+                        return self.make_method_generator(
+                            func,
+                            m.receiver.clone(),
+                            defclass.clone(),
+                            args,
+                            kwargs,
+                        );
                     }
                     self.invoke_user(
                         func.clone(),
@@ -2429,6 +2443,39 @@ impl Vm {
             "recv" => self.chan_recv(ch).map(Some),
             _ => self.chan_close(ch).map(Some),
         }
+    }
+
+    /// `obj.m(...)` where `m` contains a `yield`: produce a generator rather
+    /// than running the body, exactly as calling a plain generator `def` does.
+    ///
+    /// The frame is built the way an ordinary method call builds it and handed
+    /// to a `GenBox` instead of being pushed. The one extra step is
+    /// `super_ctx`, which goes on the frame *before* it is parked, so `super()`
+    /// still resolves when the generator is resumed — possibly in another task,
+    /// long after this call returned.
+    ///
+    /// Shared by both call paths on purpose. `Op::CallMethod` has its own
+    /// user-method arm, and when this logic lived inline in `Vm::invoke`'s the
+    /// two silently disagreed: the fast path fell through to `invoke_user`'s
+    /// refusal and an ordinary `obj.m()` stopped producing a generator. There
+    /// is one copy now, and both arms call it.
+    fn make_method_generator(
+        &mut self,
+        func: &Rc<Function>,
+        receiver: Value,
+        defclass: Rc<Class>,
+        args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
+    ) -> Result<Step, RuntimeError> {
+        if self.task.frames.len() >= MAX_FRAMES {
+            return Err(self.err("maximum recursion depth exceeded"));
+        }
+        let mut frame = self.bind_call(func, Some(receiver.clone()), args, kwargs)?;
+        frame.super_ctx = Some((defclass, receiver));
+        let gen =
+            crate::value::GenBox { done: false, frame: Some(Box::new(Some(frame))) };
+        self.push(Value::Generator(Rc::new(RefCell::new(gen))));
+        Ok(Step::Next)
     }
 
     /// Call an Oro method: push `receiver` as `self`, then the rest, into a
