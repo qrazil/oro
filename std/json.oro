@@ -42,7 +42,7 @@ _BACKSPACE = f"{8:c}"
 _FORMFEED = f"{12:c}"
 
 _NAMED_ESCAPES = {
-    "\"": "\\\"",
+    '"': '\\"',
     "\\": "\\\\",
     "\n": "\\n",
     "\r": "\\r",
@@ -52,7 +52,7 @@ _NAMED_ESCAPES = {
 }
 
 _SIMPLE_UNESCAPES = {
-    "\"": "\"",
+    '"': '"',
     "\\": "\\",
     "/": "/",
     "b": _BACKSPACE,
@@ -118,7 +118,7 @@ class _Parser:
             return self.parse_object()
         if c == "[":
             return self.parse_array()
-        if c == "\"":
+        if c == '"':
             return self.parse_string()
         if c == "-" or c in _DIGITS:
             return self.parse_number()
@@ -142,7 +142,7 @@ class _Parser:
             return result
         while True:
             self.skip_ws()
-            if self.pos >= self.len or self.text[self.pos] != "\"":
+            if self.pos >= self.len or self.text[self.pos] != '"':
                 self.fail("expected a string key")
             key = self.parse_string()
             self.skip_ws()
@@ -192,7 +192,7 @@ class _Parser:
             if self.pos >= self.len:
                 self.fail("unterminated string")
             c = self.text[self.pos]
-            if c == "\"":
+            if c == '"':
                 self.pos = self.pos + 1
                 return out.join("")
             elif c == "\\":
@@ -308,7 +308,7 @@ def _colon_sep(indent):
 
 
 def _escape_string(s):
-    out = ["\""]
+    out = ['"']
     i = 0
     n = len(s)
     while i < n:
@@ -323,7 +323,7 @@ def _escape_string(s):
             else:
                 out.append(c)
         i = i + 1
-    out.append("\"")
+    out.append('"')
     return out.join("")
 
 

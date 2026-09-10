@@ -787,9 +787,37 @@ makes `oro fmt` refuse to run and name the line, rather than move or drop it.
 `r"..."` strings keep their raw form, so regexes do not reformat into
 backslash-doubled soup.
 
-One known gap: a collection literal the author spread over several lines is
-currently collapsed onto one. `gofmt` keeps the author's line breaks in
-composite literals and Oro should too.
+Collection literals keep the author's line breaks, the way `gofmt` does with
+composite literals. One bit of the source decides it — is there a newline
+directly after the opening bracket?
+
+```python
+codes = [200, 404, 500]     # stays on one line, however long
+
+codes = [                   # stays broken, however short
+    200,
+    404,
+    500,
+]
+```
+
+The broken form is one element per line with a trailing comma; a nested literal
+decides for itself, so a broken one can sit inside a one-line one and the other
+way round. This is still "no options, one output" — the output is a
+deterministic function of the input, and the input just carries one more bit of
+signal. There is no line-width setting and no reflowing: `oro fmt` never
+measures a line and never decides to break one for you.
+
+Argument lists and `def` parameter lists always print on one line. An *argument*
+that is a literal still keeps its own breaks, which is what makes a long table
+readable:
+
+```python
+configure({
+    "retries": 3,
+    "timeout": 30,
+})
+```
 
 ## Building and running
 

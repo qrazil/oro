@@ -15,11 +15,60 @@
 //!   same quote rule, and shows every octet outside printable ASCII as `\xNN`.
 //! * Spaces around binary/boolean/comparison operators and after commas; none
 //!   just inside brackets.
-//! * No automatic line wrapping — the corpus this was modeled on never breaks
-//!   a call, literal, or `def` header across lines, so neither does `oro fmt`.
+//! * No automatic line wrapping — `oro fmt` never measures a line and never
+//!   decides to break one. Where a list/tuple/dict literal breaks is the
+//!   author's call, and `oro fmt` reproduces that call exactly (see
+//!   [Collection literals](#collection-literals)).
 //! * Blank lines between statements are reproduced from the source, run
 //!   lengths capped at two, with no leading blank line at the top of a file
 //!   or of a block.
+//!
+//! # Collection literals
+//!
+//! `gofmt`, the model for this formatter, does not reflow a composite literal
+//! to fit a width; it *preserves the author's own line breaks*. Whether the
+//! literal is one line or many is decided by exactly one bit of the source:
+//! **is there a newline directly after the opening bracket?**
+//!
+//! ```text
+//! codes = [200, 404, 500]        # stays on one line, however long
+//!
+//! codes = [                      # stays broken, however short
+//!     200,
+//!     404,
+//!     500,
+//! ]
+//! ```
+//!
+//! This keeps the property Oro actually cares about — no options, one output.
+//! The output is still a pure deterministic function of the input; the input
+//! simply carries one more bit of signal. There is deliberately **no
+//! line-width constant and no reflow algorithm** anywhere in this module: a
+//! width is a knob, and a knob is what `oro fmt` refuses to have.
+//!
+//! The details, all of them forced by idempotence:
+//!
+//! * The broken form is one element per line, indented one level, with a
+//!   **trailing comma** after the last element — `gofmt`'s convention, and the
+//!   one that keeps diffs to a single added line.
+//! * A nested literal decides for itself, from its own opening bracket. A
+//!   broken literal may sit inside a one-line one and vice versa.
+//! * An empty literal always prints `[]` / `{}` / `()`: there are no elements
+//!   to put on lines of their own, so the broken form would be pure noise —
+//!   and `[\n]` would not survive a second pass anyway.
+//! * A *bare* tuple (`a, b = 1, 2`, `return lo, hi`) has no brackets of its
+//!   own, so it has no bit to read and always prints on one line.
+//! * Blank lines *inside* a literal are not reproduced; only the breaks
+//!   between elements are.
+//! * Argument lists and `def` parameter lists do **not** follow this rule —
+//!   they always print on one line. Two reasons. The AST records a call's
+//!   position as its *callee's* position and a `def`'s as the `def` keyword's,
+//!   so neither node can tell you where its `(` is; recovering that bit would
+//!   mean correlating every AST node with the token stream, which for chained
+//!   postfix calls (`a.b(x)(y)`) has no unambiguous handle. And it is not
+//!   needed: the case that motivated this — a long data table — is already
+//!   served, because a literal *argument* keeps its own breaks
+//!   (`configure({\n    "retries": 3,\n})`). One rule, one place.
 //!
 //! # Comments
 //!
@@ -46,6 +95,7 @@
 //! In practice every comment in this repository's own corpus is the simple
 //! leading, own-line, outside-brackets case, so this covers real usage fully.
 
+use std::collections::HashSet;
 use std::fmt;
 
 use crate::ast::{
@@ -126,10 +176,63 @@ impl From<ParseError> for FmtError {
 pub fn format_source(source: &str) -> Result<String, FmtError> {
     let (tokens, comments) = Lexer::new(source).tokenize_with_comments()?;
     let program = Parser::new(tokens.clone()).parse()?;
-    let mut printer =
-        Printer { out: String::new(), indent: 0, last_line: 0, comments, cidx: 0, tokens, tidx: 0 };
+    let breaks = LineBreaks::new(&tokens);
+    let mut printer = Printer {
+        out: String::new(),
+        indent: 0,
+        last_line: 0,
+        comments,
+        cidx: 0,
+        tokens,
+        tidx: 0,
+        breaks,
+    };
     printer.program(&program)?;
     Ok(printer.out)
+}
+
+// --- The author's line breaks ------------------------------------------------
+
+/// Where the author broke the line directly after an opening bracket.
+///
+/// This is the *whole* input to the one-line-vs-many decision for collection
+/// literals (see the module docs). It is read off the real token stream rather
+/// than the AST because the AST carries only each node's start position, not
+/// the whitespace around it — but a literal's start position *is* its opening
+/// bracket (the parser passes the `[`/`{`/`(` position straight into
+/// `Expr::List`/`Expr::Dict`/`Expr::Tuple`), so a set of bracket positions is
+/// all that is needed to look the bit back up.
+struct LineBreaks {
+    /// 1-based `(line, col)` of every `(`/`[`/`{` whose next token starts on a
+    /// later line. Positions are unique, so this is an exact lookup key, not a
+    /// heuristic.
+    opens: HashSet<(usize, usize)>,
+}
+
+impl LineBreaks {
+    fn new(tokens: &[Token]) -> Self {
+        let mut opens = HashSet::new();
+        for (i, t) in tokens.iter().enumerate() {
+            if !matches!(t.kind, TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace) {
+                continue;
+            }
+            // The lexer emits no `Newline`/`Indent`/`Dedent` while a bracket is
+            // open, so `tokens[i + 1]` is literally the next thing the author
+            // wrote — and its line is all this needs to know.
+            if let Some(next) = tokens.get(i + 1) {
+                if next.line > t.line {
+                    opens.insert((t.line, t.col));
+                }
+            }
+        }
+        LineBreaks { opens }
+    }
+
+    /// Did the author put a newline directly after the opening bracket that
+    /// sits at this source position?
+    fn broken(&self, line: usize, col: usize) -> bool {
+        self.opens.contains(&(line, col))
+    }
 }
 
 // --- The printer: statements, blocks, and comment placement -----------------
@@ -153,6 +256,11 @@ struct Printer {
     /// Index of the next not-yet-consumed token — advances monotonically in
     /// lockstep with printing, the same way `cidx` does for comments.
     tidx: usize,
+    /// Which opening brackets the author broke the line after (see
+    /// [`LineBreaks`]). Unlike `tidx`/`cidx` this is a position-keyed lookup,
+    /// not a cursor: expression printing is a set of pure functions with no
+    /// ordering guarantee, so it must not depend on one.
+    breaks: LineBreaks,
 }
 
 impl Printer {
@@ -244,23 +352,27 @@ impl Printer {
         self.last_line = line;
     }
 
-    /// Print one output line of *code* — a statement or a clause header —
-    /// starting at source line `start_line`, then advance `last_line` to
-    /// where that logical line actually ends in the real token stream. Since
-    /// `oro fmt` never wraps a long line, a statement whose expressions
-    /// actually spanned several source lines (a multi-line call, collection
-    /// literal, or condition — implicit line joining inside open brackets)
-    /// still prints as a single output line here — but the *next* line's
-    /// blank-line gap must be measured from where that source statement
-    /// actually ended, not from where it started, or source lines legitimately
-    /// "used up" by the now-collapsed statement would misread as blank lines
-    /// to reproduce. See [`Printer::logical_line_end`].
+    /// Print one *logical* line of code — a statement or a clause header —
+    /// starting at source line `start_line`, then advance `last_line` to where
+    /// that logical line actually ends in the real token stream.
+    ///
+    /// `text` may itself contain newlines (a broken collection literal), in
+    /// which case it still counts as one logical line: the blank-line gap
+    /// before the *next* statement is measured from where this statement ended
+    /// in the *source*, not from how many output lines it took. Source lines
+    /// legitimately "used up" by a multi-line statement must not misread as
+    /// blank lines to reproduce — see [`Printer::logical_line_end`].
     fn emit_code(&mut self, start_line: usize, text: &str) {
         let trailing = self.trailing(start_line);
         self.write_line(start_line, text, trailing);
         self.last_line = self.logical_line_end(start_line);
     }
 
+    /// Write `text` at the current indent, one output line per `\n` in it, and
+    /// append `trailing` (a comment) to the last of those lines. `text` is
+    /// written with *relative* indentation — a broken literal indents its
+    /// elements from column zero — so the current indent is applied to every
+    /// line of it, not just the first.
     fn write_line(&mut self, line: usize, text: &str, trailing: Option<String>) {
         if self.last_line != 0 {
             let gap = line.saturating_sub(self.last_line).saturating_sub(1).min(MAX_BLANK_RUN);
@@ -268,15 +380,22 @@ impl Printer {
                 self.out.push('\n');
             }
         }
-        for _ in 0..self.indent {
-            self.out.push_str(INDENT);
+        let mut rest = text.split('\n').peekable();
+        while let Some(chunk) = rest.next() {
+            if !chunk.is_empty() {
+                for _ in 0..self.indent {
+                    self.out.push_str(INDENT);
+                }
+                self.out.push_str(chunk);
+            }
+            if rest.peek().is_none() {
+                if let Some(c) = &trailing {
+                    self.out.push_str("  ");
+                    self.out.push_str(c);
+                }
+            }
+            self.out.push('\n');
         }
-        self.out.push_str(text);
-        if let Some(c) = trailing {
-            self.out.push_str("  ");
-            self.out.push_str(&c);
-        }
-        self.out.push('\n');
     }
 
     /// The line the logical source line starting at `start_line` actually
@@ -324,7 +443,10 @@ impl Printer {
 
     fn stmt(&mut self, s: &Stmt) -> Result<(), FmtError> {
         match s {
-            Stmt::Expr { value, line, .. } => self.emit_code(*line, &expr_bare(value)),
+            Stmt::Expr { value, line, .. } => {
+                let text = expr_bare(&self.breaks, value);
+                self.emit_code(*line, &text);
+            }
             Stmt::Assign { targets, value, line, .. } => {
                 // The AST cannot distinguish `t = (1, 2, 3)` (a single name
                 // bound to a tuple *value*) from `a, b = 1, 2` (unpacking into
@@ -336,26 +458,33 @@ impl Printer {
                 let unpacking = targets.iter().any(is_nonempty_tuple);
                 let mut text = String::new();
                 for t in targets {
-                    text.push_str(&expr_bare(t));
+                    text.push_str(&expr_bare(&self.breaks, t));
                     text.push_str(" = ");
                 }
                 if unpacking {
-                    text.push_str(&expr_bare(value));
+                    text.push_str(&expr_bare(&self.breaks, value));
                 } else {
-                    text.push_str(&expr(value, 0));
+                    text.push_str(&expr(&self.breaks, value, 0));
                 }
                 self.emit_code(*line, &text);
             }
             Stmt::AugAssign { target, op, value, line, .. } => {
-                let text = format!("{} {} {}", expr_bare(target), augop_str(*op), expr_bare(value));
+                let text = format!(
+                    "{} {} {}",
+                    expr_bare(&self.breaks, target),
+                    augop_str(*op),
+                    expr_bare(&self.breaks, value)
+                );
                 self.emit_code(*line, &text);
             }
             Stmt::If { cond, body, elifs, orelse, line, .. } => {
-                self.emit_code(*line, &format!("if {}:", expr(cond, 0)));
+                let text = format!("if {}:", expr(&self.breaks, cond, 0));
+                self.emit_code(*line, &text);
                 self.body(body)?;
                 for (econd, ebody) in elifs {
                     self.leading(econd.line())?;
-                    self.emit_code(econd.line(), &format!("elif {}:", expr(econd, 0)));
+                    let text = format!("elif {}:", expr(&self.breaks, econd, 0));
+                    self.emit_code(econd.line(), &text);
                     self.body(ebody)?;
                 }
                 if orelse.is_some() {
@@ -366,18 +495,23 @@ impl Printer {
                 }
             }
             Stmt::While { cond, body, line, .. } => {
-                self.emit_code(*line, &format!("while {}:", expr(cond, 0)));
+                let text = format!("while {}:", expr(&self.breaks, cond, 0));
+                self.emit_code(*line, &text);
                 self.body(body)?;
             }
             Stmt::For { target, iter, body, line, .. } => {
-                let text = format!("for {} in {}:", expr_bare(target), expr_bare(iter));
+                let text = format!(
+                    "for {} in {}:",
+                    expr_bare(&self.breaks, target),
+                    expr_bare(&self.breaks, iter)
+                );
                 self.emit_code(*line, &text);
                 self.body(body)?;
             }
             Stmt::Def { name, params, ret, body, line, .. } => {
-                let mut text = format!("def {name}({})", def_params_str(params));
+                let mut text = format!("def {name}({})", def_params_str(&self.breaks, params));
                 if let Some(r) = ret {
-                    text.push_str(&format!(" -> {}", expr(r, 0)));
+                    text.push_str(&format!(" -> {}", expr(&self.breaks, r, 0)));
                 }
                 text.push(':');
                 self.emit_code(*line, &text);
@@ -386,7 +520,7 @@ impl Printer {
             Stmt::Class { name, base, body, line, .. } => {
                 let mut text = format!("class {name}");
                 if let Some(b) = base {
-                    text.push_str(&format!("({})", expr(b, 0)));
+                    text.push_str(&format!("({})", expr(&self.breaks, b, 0)));
                 }
                 text.push(':');
                 self.emit_code(*line, &text);
@@ -394,7 +528,7 @@ impl Printer {
             }
             Stmt::Return { value, line, .. } => {
                 let text = match value {
-                    Some(v) => format!("return {}", expr_bare(v)),
+                    Some(v) => format!("return {}", expr_bare(&self.breaks, v)),
                     None => "return".to_string(),
                 };
                 self.emit_code(*line, &text);
@@ -407,7 +541,8 @@ impl Printer {
                 self.body(body)?;
                 for h in handlers {
                     self.leading(h.line)?;
-                    self.emit_code(h.line, &except_header(h));
+                    let text = except_header(&self.breaks, h);
+                    self.emit_code(h.line, &text);
                     self.body(&h.body)?;
                 }
                 if let Some(fb) = finalbody {
@@ -419,7 +554,7 @@ impl Printer {
             }
             Stmt::Raise { exc, line, .. } => {
                 let text = match exc {
-                    Some(e) => format!("raise {}", expr(e, 0)),
+                    Some(e) => format!("raise {}", expr(&self.breaks, e, 0)),
                     None => "raise".to_string(),
                 };
                 self.emit_code(*line, &text);
@@ -433,7 +568,7 @@ impl Printer {
             }
             Stmt::Yield { value, line, .. } => {
                 let text = match value {
-                    Some(v) => format!("yield {}", expr_bare(v)),
+                    Some(v) => format!("yield {}", expr_bare(&self.breaks, v)),
                     None => "yield".to_string(),
                 };
                 self.emit_code(*line, &text);
@@ -442,7 +577,8 @@ impl Printer {
                 self.emit_code(*line, &format!("global {}", names.join(", ")));
             }
             Stmt::Match { subject, cases, line, .. } => {
-                self.emit_code(*line, &format!("match {}:", expr(subject, 0)));
+                let text = format!("match {}:", expr(&self.breaks, subject, 0));
+                self.emit_code(*line, &text);
                 // `case` clauses are a genuine nested block under `match`
                 // (the parser requires an `Indent` after `match SUBJECT:`),
                 // unlike `elif`/`except`, which are siblings of `if`/`try` at
@@ -450,7 +586,8 @@ impl Printer {
                 self.indent += 1;
                 for c in cases {
                     self.leading(c.line)?;
-                    self.emit_code(c.line, &format!("case {}:", pattern_str(&c.pattern)));
+                    let text = format!("case {}:", pattern_str(&self.breaks, &c.pattern));
+                    self.emit_code(c.line, &text);
                     self.body(&c.body)?;
                 }
                 self.indent -= 1;
@@ -460,8 +597,8 @@ impl Printer {
     }
 }
 
-fn except_header(h: &ExceptHandler) -> String {
-    let mut text = format!("except {}", expr(&h.exc_type, 0));
+fn except_header(lb: &LineBreaks, h: &ExceptHandler) -> String {
+    let mut text = format!("except {}", expr(lb, &h.exc_type, 0));
     if let Some(name) = &h.name {
         text.push_str(&format!(" as {name}"));
     }
@@ -469,9 +606,9 @@ fn except_header(h: &ExceptHandler) -> String {
     text
 }
 
-fn pattern_str(p: &Pattern) -> String {
+fn pattern_str(lb: &LineBreaks, p: &Pattern) -> String {
     match p {
-        Pattern::Literal(e) | Pattern::Dotted(e) => expr(e, 0),
+        Pattern::Literal(e) | Pattern::Dotted(e) => expr(lb, e, 0),
         Pattern::Wildcard => "_".to_string(),
     }
 }
@@ -542,21 +679,24 @@ fn boolop_bp(op: BoolOp) -> (u8, u8, u8) {
 /// a bare tuple from a parenthesized one — both are plain `Expr::Tuple` — so
 /// any non-empty tuple prints bare here; this matches the corpus convention
 /// (`a, b = 1, 2`, `return lo, hi`) and is always a faithful round-trip.
-fn expr_bare(e: &Expr) -> String {
+fn expr_bare(lb: &LineBreaks, e: &Expr) -> String {
     if let Expr::Tuple { elements, .. } = e {
         if !elements.is_empty() {
-            return bare_tuple_elements(elements);
+            return bare_tuple_elements(lb, elements);
         }
     }
-    expr(e, 0)
+    expr(lb, e, 0)
 }
 
 fn is_nonempty_tuple(e: &Expr) -> bool {
     matches!(e, Expr::Tuple { elements, .. } if !elements.is_empty())
 }
 
-fn bare_tuple_elements(elements: &[Expr]) -> String {
-    let parts: Vec<String> = elements.iter().map(|e| expr(e, 0)).collect();
+/// A bare tuple has no brackets of its own, so there is no "newline after the
+/// opening bracket" bit to read and no way to spell the broken form: it always
+/// prints on one line. Its *elements* still decide for themselves.
+fn bare_tuple_elements(lb: &LineBreaks, elements: &[Expr]) -> String {
+    let parts: Vec<String> = elements.iter().map(|e| expr(lb, e, 0)).collect();
     if elements.len() == 1 {
         format!("{},", parts[0])
     } else {
@@ -566,8 +706,8 @@ fn bare_tuple_elements(elements: &[Expr]) -> String {
 
 /// Print `e`, adding parens if `e`'s own precedence is looser than `min_bp`
 /// (see the precedence-table comment above).
-fn expr(e: &Expr, min_bp: u8) -> String {
-    let (text, prec) = expr_inner(e);
+fn expr(lb: &LineBreaks, e: &Expr, min_bp: u8) -> String {
+    let (text, prec) = expr_inner(lb, e);
     if prec < min_bp {
         format!("({text})")
     } else {
@@ -579,15 +719,15 @@ fn expr(e: &Expr, min_bp: u8) -> String {
 /// source parens, since comparisons otherwise chain into one flat node) is
 /// always parenthesized regardless of `min_bp` — comparisons do not
 /// associate, so `(a < b) < c` and `a < b < c` are different programs.
-fn compare_operand(e: &Expr, min_bp: u8) -> String {
+fn compare_operand(lb: &LineBreaks, e: &Expr, min_bp: u8) -> String {
     if matches!(e, Expr::Compare { .. }) {
-        format!("({})", expr(e, 0))
+        format!("({})", expr(lb, e, 0))
     } else {
-        expr(e, min_bp)
+        expr(lb, e, min_bp)
     }
 }
 
-fn expr_inner(e: &Expr) -> (String, u8) {
+fn expr_inner(lb: &LineBreaks, e: &Expr) -> (String, u8) {
     match e {
         Expr::Int { value, .. } | Expr::Float { value, .. } => (value.clone(), ATOM),
         Expr::Str { value, raw, .. } => (quote_str_maybe_raw(value, *raw), ATOM),
@@ -598,22 +738,22 @@ fn expr_inner(e: &Expr) -> (String, u8) {
         Expr::Name { name, .. } => (name.clone(), ATOM),
         Expr::Lambda { data, .. } => {
             let params = lambda_params_str(&data.params);
-            let body = expr(&data.body, 0);
+            let body = expr(lb, &data.body, 0);
             (format!("{params} => {body}"), LAMBDA_PREC)
         }
         Expr::Unary { op: UnaryOp::Not, operand, .. } => {
-            (format!("not {}", expr(operand, NOT_BP)), NOT_PREC)
+            (format!("not {}", expr(lb, operand, NOT_BP)), NOT_PREC)
         }
         Expr::Unary { op: UnaryOp::Neg, operand, .. } => {
-            (format!("-{}", expr(operand, UNARY_BP)), UNARY_PREC)
+            (format!("-{}", expr(lb, operand, UNARY_BP)), UNARY_PREC)
         }
         Expr::Unary { op: UnaryOp::Pos, operand, .. } => {
-            (format!("+{}", expr(operand, UNARY_BP)), UNARY_PREC)
+            (format!("+{}", expr(lb, operand, UNARY_BP)), UNARY_PREC)
         }
         Expr::Binary { op, left, right, .. } => {
             let (lmin, rmin, prec) = binop_bp(*op);
             let text =
-                format!("{} {} {}", expr(left, lmin), binop_str(*op), expr(right, rmin));
+                format!("{} {} {}", expr(lb, left, lmin), binop_str(*op), expr(lb, right, rmin));
             (text, prec)
         }
         Expr::BoolOp { op, left, right, .. } => {
@@ -622,68 +762,120 @@ fn expr_inner(e: &Expr) -> (String, u8) {
                 BoolOp::And => "and",
                 BoolOp::Or => "or",
             };
-            let text = format!("{} {} {}", expr(left, lmin), word, expr(right, rmin));
+            let text = format!("{} {} {}", expr(lb, left, lmin), word, expr(lb, right, rmin));
             (text, prec)
         }
         Expr::Compare { first, rest, .. } => {
-            let mut text = compare_operand(first, CMP_BP);
+            let mut text = compare_operand(lb, first, CMP_BP);
             for (op, rhs) in rest {
                 text.push(' ');
                 text.push_str(cmp_str(*op));
                 text.push(' ');
-                text.push_str(&compare_operand(rhs, CMP_BP + 1));
+                text.push_str(&compare_operand(lb, rhs, CMP_BP + 1));
             }
             (text, CMP_PREC)
         }
         Expr::Call { func, args, kwargs, .. } => {
-            let f = postfix_base(func);
-            (format!("{f}({})", call_args_str(args, kwargs)), ATOM)
+            let f = postfix_base(lb, func);
+            (format!("{f}({})", call_args_str(lb, args, kwargs)), ATOM)
         }
         Expr::Attribute { value, attr, .. } => {
-            (format!("{}.{attr}", postfix_base(value)), ATOM)
+            (format!("{}.{attr}", postfix_base(lb, value)), ATOM)
         }
         Expr::Subscript { value, index, .. } => {
-            (format!("{}[{}]", postfix_base(value), expr(index, 0)), ATOM)
+            (format!("{}[{}]", postfix_base(lb, value), expr(lb, index, 0)), ATOM)
         }
         Expr::Slice { value, lower, upper, step, .. } => {
-            let l = lower.as_deref().map(|e| expr(e, 0)).unwrap_or_default();
-            let u = upper.as_deref().map(|e| expr(e, 0)).unwrap_or_default();
+            let l = lower.as_deref().map(|e| expr(lb, e, 0)).unwrap_or_default();
+            let u = upper.as_deref().map(|e| expr(lb, e, 0)).unwrap_or_default();
             let text = match step {
-                Some(st) => format!("{}[{l}:{u}:{}]", postfix_base(value), expr(st, 0)),
-                None => format!("{}[{l}:{u}]", postfix_base(value)),
+                Some(st) => format!("{}[{l}:{u}:{}]", postfix_base(lb, value), expr(lb, st, 0)),
+                None => format!("{}[{l}:{u}]", postfix_base(lb, value)),
             };
             (text, ATOM)
         }
-        Expr::List { elements, .. } => {
-            let parts: Vec<String> = elements.iter().map(|e| expr(e, 0)).collect();
-            (format!("[{}]", parts.join(", ")), ATOM)
+        Expr::List { elements, line, col } => {
+            let parts: Vec<String> = elements.iter().map(|e| expr(lb, e, 0)).collect();
+            (collection('[', ']', &parts, lb.broken(*line, *col)), ATOM)
         }
-        Expr::Tuple { elements, .. } => (parenthesized_tuple(elements), ATOM),
-        Expr::Dict { entries, .. } => {
-            let parts: Vec<String> =
-                entries.iter().map(|(k, v)| format!("{}: {}", expr(k, 0), expr(v, 0))).collect();
-            (format!("{{{}}}", parts.join(", ")), ATOM)
+        Expr::Tuple { elements, line, col } => {
+            (parenthesized_tuple(lb, elements, *line, *col), ATOM)
+        }
+        Expr::Dict { entries, line, col } => {
+            let parts: Vec<String> = entries
+                .iter()
+                .map(|(k, v)| format!("{}: {}", expr(lb, k, 0), expr(lb, v, 0)))
+                .collect();
+            (collection('{', '}', &parts, lb.broken(*line, *col)), ATOM)
         }
     }
+}
+
+/// Print a collection literal from its already-rendered elements.
+///
+/// `broken` is the author's own bit (see [`LineBreaks`]). When it is set, each
+/// element gets a line of its own, indented one level, with a trailing comma
+/// after the last — including when there is only one element, where that comma
+/// is what keeps a 1-tuple a 1-tuple.
+///
+/// An element may itself be multi-line (a nested broken literal); every line of
+/// it is indented, so nesting composes without the caller knowing about it.
+/// Indentation here is *relative* — the statement's own indent is applied later,
+/// to every line, by [`Printer::write_line`].
+///
+/// An empty literal ignores `broken`: with no elements there is nothing to put
+/// on a line of its own, and `[\n]` would not survive a second pass anyway.
+fn collection(open: char, close: char, parts: &[String], broken: bool) -> String {
+    if parts.is_empty() {
+        return format!("{open}{close}");
+    }
+    if !broken {
+        return format!("{open}{}{close}", parts.join(", "));
+    }
+    let mut out = String::new();
+    out.push(open);
+    for p in parts {
+        for chunk in p.split('\n') {
+            out.push('\n');
+            out.push_str(INDENT);
+            out.push_str(chunk);
+        }
+        out.push(',');
+    }
+    out.push('\n');
+    out.push(close);
+    out
 }
 
 /// Print `value` as the base of a postfix trailer (`.attr`, `(...)`, `[...]`).
 /// Ordinary precedence rules cover this: `42.to_str()` lexes correctly, because
 /// `Lexer::scan_number` only treats a `.` after digits as a decimal point when a
 /// digit actually follows it.
-fn postfix_base(value: &Expr) -> String {
-    expr(value, POSTFIX_MIN)
+fn postfix_base(lb: &LineBreaks, value: &Expr) -> String {
+    expr(lb, value, POSTFIX_MIN)
 }
 
-fn parenthesized_tuple(elements: &[Expr]) -> String {
-    match elements {
-        [] => "()".to_string(),
-        [only] => format!("({},)", expr(only, 0)),
-        many => {
-            let parts: Vec<String> = many.iter().map(|e| expr(e, 0)).collect();
-            format!("({})", parts.join(", "))
-        }
+/// A tuple printed with its parentheses. `line`/`col` are the tuple node's own
+/// position, which for a *parenthesized* tuple is its `(` — so it doubles as
+/// the [`LineBreaks`] lookup key.
+///
+/// The one wrinkle Oro's grammar adds: a **bare** tuple (`t = 1, 2`) is the
+/// same `Expr::Tuple` and records the position of its *first element* instead,
+/// which may itself be an opening bracket (`t = (1, 2), 3` — outer bare tuple
+/// and inner parenthesized tuple share a position). Reading the bit there would
+/// let the inner literal's break decide the outer tuple's shape. The test is
+/// exact rather than heuristic: a real `(` always sits strictly before the
+/// first element, so a tuple whose position *equals* its first element's
+/// position is bare and has no bit of its own.
+fn parenthesized_tuple(lb: &LineBreaks, elements: &[Expr], line: usize, col: usize) -> String {
+    let has_own_paren = !matches!(elements.first(), Some(first) if first.pos() == (line, col));
+    let broken = has_own_paren && lb.broken(line, col);
+    let parts: Vec<String> = elements.iter().map(|e| expr(lb, e, 0)).collect();
+    if !broken && parts.len() == 1 {
+        // The comma is load-bearing: `(x)` is just `x`.
+        return format!("({},)", parts[0]);
     }
+    collection('(', ')', &parts, broken)
 }
 
 /// A lambda's own parameter list is always plain names (the parser rejects
@@ -698,11 +890,13 @@ fn lambda_params_str(params: &[Param]) -> String {
     }
 }
 
-fn def_params_str(params: &[Param]) -> String {
-    params.iter().map(def_param_str).collect::<Vec<_>>().join(", ")
+/// A `def` header's parameter list, always on one line — see the module docs
+/// for why the author's-line-breaks rule stops at collection literals.
+fn def_params_str(lb: &LineBreaks, params: &[Param]) -> String {
+    params.iter().map(|p| def_param_str(lb, p)).collect::<Vec<_>>().join(", ")
 }
 
-fn def_param_str(p: &Param) -> String {
+fn def_param_str(lb: &LineBreaks, p: &Param) -> String {
     let mut s = String::new();
     match p.kind {
         ParamKind::VarArgs => s.push('*'),
@@ -712,7 +906,7 @@ fn def_param_str(p: &Param) -> String {
     s.push_str(&p.name);
     if let Some(ann) = &p.annotation {
         s.push_str(": ");
-        s.push_str(&expr(ann, 0));
+        s.push_str(&expr(lb, ann, 0));
     }
     if let Some(default) = &p.default {
         if p.annotation.is_some() {
@@ -720,23 +914,26 @@ fn def_param_str(p: &Param) -> String {
         } else {
             s.push('=');
         }
-        s.push_str(&expr(default, 0));
+        s.push_str(&expr(lb, default, 0));
     }
     s
 }
 
-fn call_args_str(args: &[Arg], kwargs: &[Kwarg]) -> String {
+/// A call's argument list, always on one line. An individual *argument* may
+/// still be a broken literal — `configure({\n    "retries": 3,\n})` — which is
+/// what makes the narrower rule sufficient; see the module docs.
+fn call_args_str(lb: &LineBreaks, args: &[Arg], kwargs: &[Kwarg]) -> String {
     let mut parts = Vec::with_capacity(args.len() + kwargs.len());
     for a in args {
         match a {
-            Arg::Positional(e) => parts.push(expr(e, 0)),
-            Arg::Star(e) => parts.push(format!("*{}", expr(e, 0))),
+            Arg::Positional(e) => parts.push(expr(lb, e, 0)),
+            Arg::Star(e) => parts.push(format!("*{}", expr(lb, e, 0))),
         }
     }
     for k in kwargs {
         match k {
-            Kwarg::Keyword(name, e) => parts.push(format!("{name}={}", expr(e, 0))),
-            Kwarg::DoubleStar(e) => parts.push(format!("**{}", expr(e, 0))),
+            Kwarg::Keyword(name, e) => parts.push(format!("{name}={}", expr(lb, e, 0))),
+            Kwarg::DoubleStar(e) => parts.push(format!("**{}", expr(lb, e, 0))),
         }
     }
     parts.join(", ")
@@ -863,4 +1060,159 @@ fn quote_fstring(value: &str) -> String {
     }
     let quote = if has_unescaped_double { '\'' } else { '"' };
     format!("f{quote}{value}{quote}")
+}
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests for the one decision this module makes about shape: whether
+    //! a collection literal prints on one line or on many. The rule is the
+    //! author's — a newline directly after the opening bracket — so every case
+    //! here is a pair: the same literal written both ways must come back both
+    //! ways.
+
+    use super::format_source;
+
+    /// Format `src`, asserting success.
+    fn f(src: &str) -> String {
+        format_source(src).unwrap_or_else(|e| panic!("expected {src:?} to format: {e}"))
+    }
+
+    /// Format `src` and assert it equals `want`, then assert the result is a
+    /// fixed point. Every test below goes through this: a shape rule that is
+    /// not idempotent is not a rule, it is a bug with a schedule.
+    fn check(src: &str, want: &str) {
+        let once = f(src);
+        assert_eq!(once, want, "source: {src:?}");
+        let twice = f(&once);
+        assert_eq!(twice, once, "not idempotent, source: {src:?}");
+    }
+
+    #[test]
+    fn one_line_literal_stays_on_one_line_however_long() {
+        // 96 characters, and it stays 96 characters: there is no width to hit.
+        let src = "STATUS = {200: \"OK\", 404: \"Not Found\", 500: \"Internal Server Error\", \
+                   503: \"Service Unavailable\"}\n";
+        check(src, src);
+        check("xs = [1, 2, 3]\n", "xs = [1, 2, 3]\n");
+        check("t = (1, 2)\n", "t = (1, 2)\n");
+    }
+
+    #[test]
+    fn broken_literal_stays_broken_however_short() {
+        check("xs = [\n    1,\n]\n", "xs = [\n    1,\n]\n");
+        check("d = {\n    1: 2,\n}\n", "d = {\n    1: 2,\n}\n");
+        check("t = (\n    1,\n    2,\n)\n", "t = (\n    1,\n    2,\n)\n");
+    }
+
+    #[test]
+    fn only_a_newline_directly_after_the_bracket_counts() {
+        // Broken *between* elements but not after `[` — one line, per gofmt.
+        check("xs = [1,\n    2,\n    3]\n", "xs = [1, 2, 3]\n");
+        // Broken after `[`, joined after that — many lines.
+        check("xs = [\n    1, 2, 3]\n", "xs = [\n    1,\n    2,\n    3,\n]\n");
+    }
+
+    #[test]
+    fn trailing_comma_is_added_when_missing_and_kept_when_present() {
+        check("xs = [\n    1,\n    2\n]\n", "xs = [\n    1,\n    2,\n]\n");
+        check("xs = [\n    1,\n    2,\n]\n", "xs = [\n    1,\n    2,\n]\n");
+        // On one line it is always dropped — except the 1-tuple, where the
+        // comma is the literal's whole meaning.
+        check("xs = [1, 2,]\n", "xs = [1, 2]\n");
+        check("t = (1,)\n", "t = (1,)\n");
+        check("t = (\n    1,\n)\n", "t = (\n    1,\n)\n");
+    }
+
+    #[test]
+    fn empty_literals_never_break() {
+        check("xs = []\n", "xs = []\n");
+        check("d = {}\n", "d = {}\n");
+        check("t = ()\n", "t = ()\n");
+        // Nothing to put on a line of its own, so the break is dropped.
+        check("xs = [\n]\n", "xs = []\n");
+        check("d = {\n}\n", "d = {}\n");
+        check("t = (\n)\n", "t = ()\n");
+    }
+
+    #[test]
+    fn single_element_literals_follow_the_same_rule() {
+        check("xs = [1]\n", "xs = [1]\n");
+        check("xs = [\n    1\n]\n", "xs = [\n    1,\n]\n");
+        check("d = {\n    \"a\": 1\n}\n", "d = {\n    \"a\": 1,\n}\n");
+    }
+
+    #[test]
+    fn a_nested_literal_decides_from_its_own_source() {
+        // Broken inside one-line.
+        check("xs = [{\n    \"a\": 1,\n}]\n", "xs = [{\n    \"a\": 1,\n}]\n");
+        // One-line inside broken.
+        check("xs = [\n    {\"a\": 1},\n]\n", "xs = [\n    {\"a\": 1},\n]\n");
+        // Both broken: the inner one indents relative to the outer.
+        check(
+            "d = {\n    \"a\": [\n        1,\n    ],\n}\n",
+            "d = {\n    \"a\": [\n        1,\n    ],\n}\n",
+        );
+    }
+
+    #[test]
+    fn a_broken_literal_indents_with_the_block_it_sits_in() {
+        check(
+            "def f():\n    return [\n        1,\n    ]\n",
+            "def f():\n    return [\n        1,\n    ]\n",
+        );
+    }
+
+    #[test]
+    fn argument_and_parameter_lists_always_print_on_one_line() {
+        // The rule stops at literals — but a literal *argument* still carries
+        // its own break, which is what makes that sufficient.
+        check("f(\n    1,\n    2,\n)\n", "f(1, 2)\n");
+        check("def g(\n    a,\n    b,\n):\n    pass\n", "def g(a, b):\n    pass\n");
+        check("f({\n    \"a\": 1,\n})\n", "f({\n    \"a\": 1,\n})\n");
+    }
+
+    #[test]
+    fn a_bare_tuple_has_no_bracket_and_so_never_breaks() {
+        // `a, b = ...` unpacking prints bare, on one line, whatever the source
+        // did with the right-hand side's parens.
+        check("a, b = (\n    1,\n    2,\n)\n", "a, b = 1, 2\n");
+        // A bare tuple whose first element is itself a broken literal shares
+        // that literal's source position; only the inner literal may break.
+        check("t = (\n    1,\n), 3\n", "t = ((\n    1,\n), 3)\n");
+    }
+
+    #[test]
+    fn blank_lines_inside_a_literal_are_not_reproduced() {
+        check("xs = [\n    1,\n\n    2,\n]\n", "xs = [\n    1,\n    2,\n]\n");
+    }
+
+    #[test]
+    fn a_break_does_not_disturb_the_blank_lines_around_the_statement() {
+        check(
+            "a = 1\n\nxs = [\n    1,\n    2,\n]\n\nb = 2\n",
+            "a = 1\n\nxs = [\n    1,\n    2,\n]\n\nb = 2\n",
+        );
+    }
+
+    #[test]
+    fn a_comment_inside_a_literal_is_still_refused_rather_than_moved() {
+        // Breaking literals does not make these placeable: the AST carries no
+        // position fine enough to say which element a comment belongs to, so
+        // the documented refusal must survive this change unweakened.
+        for src in [
+            "xs = [\n    1,  # one\n    2,\n]\n",
+            "xs = [\n    # leading\n    1,\n]\n",
+            "xs = [1, 2]  # fine\n",
+        ] {
+            let got = format_source(src);
+            if src.contains("# fine") {
+                assert_eq!(got.expect("trailing comment on a one-line statement"), src);
+            } else {
+                assert!(
+                    matches!(got, Err(super::FmtError::Comment { .. })),
+                    "expected a Comment error for {src:?}"
+                );
+            }
+        }
+    }
 }

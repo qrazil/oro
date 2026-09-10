@@ -1,14 +1,20 @@
 //! Correctness tests for `oro fmt` (see `src/fmt.rs`).
 //!
-//! Two properties are checked across real programs rather than hand-picked
+//! These properties are checked across real programs rather than hand-picked
 //! snippets, because those are the properties a formatter must never violate:
 //!
 //! * **Idempotence** — `fmt(fmt(x)) == fmt(x)` — over every `.oro` file in
-//!   `corpus/` and `tests/programs/`.
+//!   the repository: `corpus/`, `std/`, `tests/programs/` and `bench/progs/`.
 //! * **Semantics preservation** — running a formatted `corpus/core/*.oro`
 //!   file produces the same output as running the original — over every file
 //!   in `corpus/core/` (the files with a `.expected` oracle; see
 //!   `corpus/run.sh`).
+//! * **The tree is clean** — every `.oro` file in the repository is already in
+//!   canonical form, apart from a short, named list that deliberately is not
+//!   (see `only_the_documented_files_are_unformatted`).
+//!
+//! The shape rules themselves — in particular which collection literals break
+//! across lines — are unit-tested next to the code, in `src/fmt.rs`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -36,17 +42,43 @@ fn oro_files(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Every `.oro` file under `corpus/` (all three subdirectories) and
-/// `tests/programs/`.
+/// Every directory in the repository that holds `.oro` source.
+const ORO_DIRS: [&str; 6] = [
+    "corpus/core",
+    "corpus/divergence",
+    "corpus/known-failing",
+    "std",
+    "tests/programs",
+    "bench/progs",
+];
+
+/// Every `.oro` file in the repository.
 fn all_oro_files() -> Vec<PathBuf> {
     let root = repo_root();
     let mut files = Vec::new();
-    for dir in ["corpus/core", "corpus/divergence", "corpus/known-failing", "tests/programs"] {
+    for dir in ORO_DIRS {
         files.extend(oro_files(&root.join(dir)));
     }
     assert!(files.len() > 30, "expected to find a good number of .oro files, found {}", files.len());
     files
 }
+
+/// The `.oro` files that `oro fmt --check` is *expected* to report as dirty.
+///
+/// Both are written the way they are on purpose, and formatting them would
+/// delete the thing they exist to cover:
+///
+/// * `corpus/core/35_bytes.oro` spells its literals in the alternate lexer
+///   forms it is testing (`b'…'`, `B"…"`, `\0\a\b\f\v`); `oro fmt` canonicalises
+///   every one of them away.
+/// * `corpus/divergence/36_json.oro` writes JSON with escaped double quotes
+///   (`"{\"a\": 1}"`) on purpose, where the house quote rule prefers
+///   `'{"a": 1}'`.
+///
+/// Neither is about line breaks. If this list needs to grow, that is a decision
+/// worth making deliberately, which is what this test is for.
+const EXPECTED_UNFORMATTED: [&str; 2] =
+    ["corpus/core/35_bytes.oro", "corpus/divergence/36_json.oro"];
 
 /// `fmt(fmt(x)) == fmt(x)` for every `.oro` file in the repo's test corpora.
 /// A formatter that cannot reach a fixed point on its own output is broken by
@@ -187,4 +219,119 @@ fn bytes_literals_reprint_as_octets() {
     for (src, want) in cases {
         assert_eq!(format_source(src).expect("should format"), want, "source: {src:?}");
     }
+}
+
+/// Every `.oro` file in the repository is already in canonical form, except
+/// the deliberate exceptions named in [`EXPECTED_UNFORMATTED`].
+///
+/// This is `oro fmt --check` over the whole tree, as a test. It is the guard
+/// that keeps the formatter honest in both directions: a formatter nobody can
+/// leave switched on is the bug that motivated the author's-line-breaks rule
+/// in the first place, and a file that quietly stops being checked is how that
+/// comes back.
+#[test]
+fn only_the_documented_files_are_unformatted() {
+    let root = repo_root();
+    let mut dirty = Vec::new();
+    for path in all_oro_files() {
+        let source = std::fs::read_to_string(&path).unwrap();
+        let formatted = format_source(&source)
+            .unwrap_or_else(|e| panic!("{}: expected format to succeed: {e}", path.display()));
+        if formatted != source {
+            dirty.push(
+                path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/"),
+            );
+        }
+    }
+    dirty.sort();
+    let mut want: Vec<String> = EXPECTED_UNFORMATTED.iter().map(|s| s.to_string()).collect();
+    want.sort();
+    assert_eq!(dirty, want, "`oro fmt --check` disagrees with EXPECTED_UNFORMATTED");
+}
+
+/// The author's line breaks survive a round trip through the formatter, over
+/// the repository's own files rather than snippets.
+///
+/// Checked structurally: a list or dict literal the author broke the line after
+/// must still be broken afterwards, and one they did not must still be joined.
+/// `(` is excluded — it is overwhelmingly a call or a grouping rather than a
+/// tuple literal, and argument lists deliberately do not follow the rule; the
+/// tuple cases are covered by the unit tests in `src/fmt.rs`, which can name
+/// them exactly.
+///
+/// Most repository files are already canonical, so for them this restates
+/// idempotence; it earns its keep on the files that are not
+/// ([`EXPECTED_UNFORMATTED`]) and on whatever is added later.
+#[test]
+fn authored_line_breaks_survive_formatting() {
+    use oro_lang::lexer::{Lexer, TokenKind};
+
+    /// Can this token end an expression? If so, a `[` right after it is a
+    /// *subscript*, not a list literal — the same prefix-vs-postfix test the
+    /// parser makes. Subscripts do not follow the author's-line-breaks rule
+    /// (nothing but literals does), so they must not be counted.
+    fn ends_an_expression(k: &TokenKind) -> bool {
+        matches!(
+            k,
+            TokenKind::Ident(_)
+                | TokenKind::Int(_)
+                | TokenKind::Float(_)
+                | TokenKind::Str(_, _)
+                | TokenKind::Bytes(_, _)
+                | TokenKind::FString(_)
+                | TokenKind::True
+                | TokenKind::False
+                | TokenKind::None
+                | TokenKind::RParen
+                | TokenKind::RBracket
+                | TokenKind::RBrace
+        )
+    }
+
+    /// How many list/dict literals in `src` have a newline directly after the
+    /// opening bracket, and how many do not.
+    fn breaks(src: &str) -> (usize, usize) {
+        let tokens = Lexer::new(src).tokenize().expect("tokenize");
+        let mut broken = 0;
+        let mut joined = 0;
+        for (i, t) in tokens.iter().enumerate() {
+            // `{` is always a dict in Oro (sets are cut, and there is no
+            // `{...}` postfix); `[` is a list only in prefix position.
+            let is_literal = match t.kind {
+                TokenKind::LBrace => true,
+                TokenKind::LBracket => {
+                    i == 0 || !ends_an_expression(&tokens[i - 1].kind)
+                }
+                _ => false,
+            };
+            if !is_literal {
+                continue;
+            }
+            match tokens.get(i + 1) {
+                // An empty literal has no elements to break between, so it is
+                // neither: `[\n]` legitimately prints as `[]`.
+                Some(n) if matches!(n.kind, TokenKind::RBracket | TokenKind::RBrace) => {}
+                Some(n) if n.line > t.line => broken += 1,
+                Some(_) => joined += 1,
+                None => {}
+            }
+        }
+        (broken, joined)
+    }
+
+    let mut failures = Vec::new();
+    for path in all_oro_files() {
+        let source = std::fs::read_to_string(&path).unwrap();
+        let formatted = format_source(&source)
+            .unwrap_or_else(|e| panic!("{}: expected format to succeed: {e}", path.display()));
+        let before = breaks(&source);
+        let after = breaks(&formatted);
+        if before != after {
+            failures.push(format!(
+                "{}: (broken, joined) literals went from {before:?} to {after:?}",
+                path.display()
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "line breaks were not preserved:\n{}", failures.join("\n"));
 }
