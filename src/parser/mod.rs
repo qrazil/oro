@@ -14,7 +14,7 @@
 //! or
 //! and
 //! not            (unary prefix)
-//! == != < > <= >= is  is not  in  not in   (comparison, chaining)
+//! == != < > <= >= in  not in                (comparison, chaining)
 //! + -
 //! * / // %
 //! - +            (unary prefix)
@@ -45,6 +45,11 @@ use crate::lexer::{Token, TokenKind};
 const ANNOTATION_CUT: &str = "Oro has no type annotations — write `def f(a)` rather than \
                               `def f(a: int) -> int`, and `x = 5` rather than `x: int = 5`; \
                               nothing reads them";
+
+const CHAINED_ASSIGN_CUT: &str = "Oro has no chained assignment — write `a, b = 1, 2`, which \
+                                  also lets the values differ. `a = b = []` binds *one* list to \
+                                  both names, so appending through `a` changes `b`; `a, b = [], \
+                                  []` makes two";
 
 /// An error produced while parsing, with a 1-based source position.
 #[derive(Debug, Clone, PartialEq)]
@@ -324,11 +329,10 @@ impl Parser {
         match self.cur_kind() {
             TokenKind::Eq => {
                 self.advance();
-                let mut targets = vec![first];
-                let mut value = self.expr_list()?;
-                while self.eat(&TokenKind::Eq) {
-                    targets.push(value);
-                    value = self.expr_list()?;
+                let targets = vec![first];
+                let value = self.expr_list()?;
+                if self.check(&TokenKind::Eq) {
+                    return Err(self.error(CHAINED_ASSIGN_CUT));
                 }
                 Ok(Stmt::Assign { targets, value, line, col })
             }

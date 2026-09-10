@@ -342,6 +342,12 @@ Each of these is omitted on purpose. The reason matters more than the list.
 - **No walrus (`:=`).** Assignment is a statement; a second assignment operator
   that also returns a value is precisely the "more than one way" the thesis
   rejects.
+- **No chained assignment (`a = b = c`).** Tuple unpacking already spells it —
+  `a, b = 1, 2` — and spells the case chaining cannot, where the values differ.
+  Chaining also lies about what it made: `a = b = []` binds *one* list to both
+  names, so appending through `a` changes `b`, while `a, b = [], []` makes two.
+  A second spelling that is shorter only when every value is identical, and
+  silently aliases when they are mutable, is not worth the word.
 - **No `is` (and no `is not`).** `==` already compares a function, generator,
   class, instance, module, stream, pattern, match, task or channel *by
   identity*, and `null`, ints and bools by value, so on everything with an

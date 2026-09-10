@@ -372,12 +372,14 @@ fn simple_assignment() {
 }
 
 #[test]
-fn chained_assignment() {
-    match parse_one("a = b = 3") {
+fn assignment_has_exactly_one_target() {
+    // `a = b = 3` used to parse into two targets; chained assignment is cut and
+    // its rejection is pinned by `cut_chained_assignment`. What is worth keeping
+    // here is the shape that replaced it: `targets` now always holds one.
+    match parse_one("a = 3") {
         Stmt::Assign { targets, value, .. } => {
-            assert_eq!(targets.len(), 2);
+            assert_eq!(targets.len(), 1);
             assert_eq!(sexp(&targets[0]), "a");
-            assert_eq!(sexp(&targets[1]), "b");
             assert_eq!(sexp(&value), "3");
         }
         other => panic!("expected assign, got {other:?}"),
@@ -540,6 +542,23 @@ fn cut_type_annotations() {
     assert_cut("self.x: int = 5", "no type annotations");
     assert_cut("d[0]: int = 5", "no type annotations");
     assert_cut("class C:\n    x: int = 5\n", "no type annotations");
+}
+
+/// `a = b = c` is gone. Tuple unpacking already spells it, spells it for
+/// differing values too, and does not hand two names the same mutable object.
+#[test]
+fn cut_chained_assignment() {
+    assert_cut("a = b = 1", "no chained assignment");
+    assert_cut("a = b = c = null", "no chained assignment");
+    assert_cut("a = b = []", "no chained assignment");
+    assert_cut("d[0] = x = 1", "no chained assignment");
+    assert_cut("self.x = y = 1", "no chained assignment");
+    // The forms that replace it, and ordinary assignment, are untouched.
+    parse("a, b = 1, 2\n");
+    parse("a, b = [], []\n");
+    parse("x = 5\nx = 6\n");
+    parse("a, b = b, a\n");
+    parse("x += 1\n");
 }
 
 #[test]
