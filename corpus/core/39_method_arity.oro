@@ -1,0 +1,291 @@
+# Arity, the other half of the same rule. A method that accepts an argument it
+# then ignores is silently wrong; a method that accepts an argument CPython
+# refuses is only *loudly* different, but it is still different, and it is the
+# same class of mistake seen from the other side. Every call below is a
+# `TypeError` under CPython, so the oracle pins the whole set.
+#
+# Missing-argument and wrong-type cases are here too: they were already errors,
+# and this keeps them from drifting into acceptance.
+
+
+try:
+    "abc".upper(1)
+    print('"abc".upper(1)', "-> no error")
+except TypeError:
+    print('"abc".upper(1)', "-> TypeError")
+
+try:
+    "abc".upper(1, 2, 3)
+    print('"abc".upper(1, 2, 3)', "-> no error")
+except TypeError:
+    print('"abc".upper(1, 2, 3)', "-> TypeError")
+
+try:
+    "abc".lower(1)
+    print('"abc".lower(1)', "-> no error")
+except TypeError:
+    print('"abc".lower(1)', "-> TypeError")
+
+try:
+    "abc".strip("x", "y")
+    print('"abc".strip("x", "y")', "-> no error")
+except TypeError:
+    print('"abc".strip("x", "y")', "-> TypeError")
+
+try:
+    "abc".lstrip("x", "y")
+    print('"abc".lstrip("x", "y")', "-> no error")
+except TypeError:
+    print('"abc".lstrip("x", "y")', "-> TypeError")
+
+try:
+    "abc".rstrip("x", "y")
+    print('"abc".rstrip("x", "y")', "-> no error")
+except TypeError:
+    print('"abc".rstrip("x", "y")', "-> TypeError")
+
+try:
+    "abc".zfill()
+    print('"abc".zfill()', "-> no error")
+except TypeError:
+    print('"abc".zfill()', "-> TypeError")
+
+try:
+    "abc".zfill(5, 5)
+    print('"abc".zfill(5, 5)', "-> no error")
+except TypeError:
+    print('"abc".zfill(5, 5)', "-> TypeError")
+
+try:
+    "abc".find()
+    print('"abc".find()', "-> no error")
+except TypeError:
+    print('"abc".find()', "-> TypeError")
+
+try:
+    "abc".find("a", 1, 2, 3)
+    print('"abc".find("a", 1, 2, 3)', "-> no error")
+except TypeError:
+    print('"abc".find("a", 1, 2, 3)', "-> TypeError")
+
+try:
+    "abc".find(1)
+    print('"abc".find(1)', "-> no error")
+except TypeError:
+    print('"abc".find(1)', "-> TypeError")
+
+try:
+    "abc".find("a", "b")
+    print('"abc".find("a", "b")', "-> no error")
+except TypeError:
+    print('"abc".find("a", "b")', "-> TypeError")
+
+try:
+    "abc".replace("a")
+    print('"abc".replace("a")', "-> no error")
+except TypeError:
+    print('"abc".replace("a")', "-> TypeError")
+
+try:
+    "abc".replace("a", "b", 1, 2)
+    print('"abc".replace("a", "b", 1, 2)', "-> no error")
+except TypeError:
+    print('"abc".replace("a", "b", 1, 2)', "-> TypeError")
+
+try:
+    "abc".replace("a", "b", "c")
+    print('"abc".replace("a", "b", "c")', "-> no error")
+except TypeError:
+    print('"abc".replace("a", "b", "c")', "-> TypeError")
+
+try:
+    "abc".startswith()
+    print('"abc".startswith()', "-> no error")
+except TypeError:
+    print('"abc".startswith()', "-> TypeError")
+
+try:
+    "abc".startswith("a", 0, 1, 2)
+    print('"abc".startswith("a", 0, 1, 2)', "-> no error")
+except TypeError:
+    print('"abc".startswith("a", 0, 1, 2)', "-> TypeError")
+
+try:
+    "abc".endswith()
+    print('"abc".endswith()', "-> no error")
+except TypeError:
+    print('"abc".endswith()', "-> TypeError")
+
+try:
+    "abc".endswith("a", 0, 1, 2)
+    print('"abc".endswith("a", 0, 1, 2)', "-> no error")
+except TypeError:
+    print('"abc".endswith("a", 0, 1, 2)', "-> TypeError")
+
+try:
+    "a b".split("b", 1, 2)
+    print('"a b".split("b", 1, 2)', "-> no error")
+except TypeError:
+    print('"a b".split("b", 1, 2)', "-> TypeError")
+
+try:
+    "a b".rsplit("b", 1, 2)
+    print('"a b".rsplit("b", 1, 2)', "-> no error")
+except TypeError:
+    print('"a b".rsplit("b", 1, 2)', "-> TypeError")
+
+try:
+    "-".join(["a"], 2)
+    print('"-".join(["a"], 2)', "-> no error")
+except TypeError:
+    print('"-".join(["a"], 2)', "-> TypeError")
+
+try:
+    "-".join()
+    print('"-".join()', "-> no error")
+except TypeError:
+    print('"-".join()', "-> TypeError")
+
+try:
+    b"abc".upper(1)
+    print('b"abc".upper(1)', "-> no error")
+except TypeError:
+    print('b"abc".upper(1)', "-> TypeError")
+
+try:
+    b"abc".lower(1)
+    print('b"abc".lower(1)', "-> no error")
+except TypeError:
+    print('b"abc".lower(1)', "-> TypeError")
+
+try:
+    b"abc".strip(b"x", b"y")
+    print('b"abc".strip(b"x", b"y")', "-> no error")
+except TypeError:
+    print('b"abc".strip(b"x", b"y")', "-> TypeError")
+
+try:
+    b"abc".zfill()
+    print('b"abc".zfill()', "-> no error")
+except TypeError:
+    print('b"abc".zfill()', "-> TypeError")
+
+try:
+    b"abc".zfill(5, 5)
+    print('b"abc".zfill(5, 5)', "-> no error")
+except TypeError:
+    print('b"abc".zfill(5, 5)', "-> TypeError")
+
+try:
+    b"abc".find()
+    print('b"abc".find()', "-> no error")
+except TypeError:
+    print('b"abc".find()', "-> TypeError")
+
+try:
+    b"abc".find(b"a", 1, 2, 3)
+    print('b"abc".find(b"a", 1, 2, 3)', "-> no error")
+except TypeError:
+    print('b"abc".find(b"a", 1, 2, 3)', "-> TypeError")
+
+try:
+    b"abc".replace(b"a")
+    print('b"abc".replace(b"a")', "-> no error")
+except TypeError:
+    print('b"abc".replace(b"a")', "-> TypeError")
+
+try:
+    b"abc".replace(b"a", b"b", 1, 2)
+    print('b"abc".replace(b"a", b"b", 1, 2)', "-> no error")
+except TypeError:
+    print('b"abc".replace(b"a", b"b", 1, 2)', "-> TypeError")
+
+try:
+    b"abc".startswith(b"a", 0, 1, 2)
+    print('b"abc".startswith(b"a", 0, 1, 2)', "-> no error")
+except TypeError:
+    print('b"abc".startswith(b"a", 0, 1, 2)', "-> TypeError")
+
+try:
+    b"abc".endswith(b"a", 0, 1, 2)
+    print('b"abc".endswith(b"a", 0, 1, 2)', "-> no error")
+except TypeError:
+    print('b"abc".endswith(b"a", 0, 1, 2)', "-> TypeError")
+
+try:
+    b"a b".split(b"b", 1, 2)
+    print('b"a b".split(b"b", 1, 2)', "-> no error")
+except TypeError:
+    print('b"a b".split(b"b", 1, 2)', "-> TypeError")
+
+try:
+    b"-".join([b"a"], 2)
+    print('b"-".join([b"a"], 2)', "-> no error")
+except TypeError:
+    print('b"-".join([b"a"], 2)', "-> TypeError")
+
+try:
+    b"abc".hex(1)
+    print('b"abc".hex(1)', "-> no error")
+except TypeError:
+    print('b"abc".hex(1)', "-> TypeError")
+
+try:
+    {"a": 1}.keys(1)
+    print('{"a": 1}.keys(1)', "-> no error")
+except TypeError:
+    print('{"a": 1}.keys(1)', "-> TypeError")
+
+try:
+    {"a": 1}.values(1)
+    print('{"a": 1}.values(1)', "-> no error")
+except TypeError:
+    print('{"a": 1}.values(1)', "-> TypeError")
+
+try:
+    {"a": 1}.items(1)
+    print('{"a": 1}.items(1)', "-> no error")
+except TypeError:
+    print('{"a": 1}.items(1)', "-> TypeError")
+
+try:
+    {"a": 1}.get()
+    print('{"a": 1}.get()', "-> no error")
+except TypeError:
+    print('{"a": 1}.get()', "-> TypeError")
+
+try:
+    {"a": 1}.get("a", 1, 2)
+    print('{"a": 1}.get("a", 1, 2)', "-> no error")
+except TypeError:
+    print('{"a": 1}.get("a", 1, 2)', "-> TypeError")
+
+try:
+    [1].append()
+    print("[1].append()", "-> no error")
+except TypeError:
+    print("[1].append()", "-> TypeError")
+
+try:
+    [1].append(1, 2)
+    print("[1].append(1, 2)", "-> no error")
+except TypeError:
+    print("[1].append(1, 2)", "-> TypeError")
+
+try:
+    [1].pop(1, 2)
+    print("[1].pop(1, 2)", "-> no error")
+except TypeError:
+    print("[1].pop(1, 2)", "-> TypeError")
+
+try:
+    [1].reverse(1)
+    print("[1].reverse(1)", "-> no error")
+except TypeError:
+    print("[1].reverse(1)", "-> TypeError")
+
+try:
+    [1].extend()
+    print("[1].extend()", "-> no error")
+except TypeError:
+    print("[1].extend()", "-> TypeError")

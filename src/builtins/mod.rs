@@ -11,7 +11,7 @@ use std::fmt::Write as _;
 use std::rc::Rc;
 
 use crate::bigint::BigInt;
-use crate::value::{Builtin, OroDict, RangeVal, VResult, Value};
+use crate::value::{Builtin, OroDict, OroStr, RangeVal, VResult, Value};
 
 /// Look up a global name. Oro's only globals are the builtins.
 pub fn lookup(name: &str) -> Option<Value> {
@@ -87,6 +87,19 @@ fn intern(name: &str) -> &'static str {
 fn exactly(args: &[Value], n: usize, who: &str) -> VResult<()> {
     if args.len() != n {
         Err(format!("{who}() takes {n} argument(s) but {} were given", args.len()))
+    } else {
+        Ok(())
+    }
+}
+
+/// Reject arguments past the `n`th. A method that accepts an argument it then
+/// ignores answers confidently and wrongly, which is worse than refusing.
+fn at_most(args: &[Value], n: usize, who: &str) -> VResult<()> {
+    if args.len() > n {
+        Err(format!(
+            "{who}() takes at most {n} argument(s) but {} were given",
+            args.len()
+        ))
     } else {
         Ok(())
     }
@@ -867,6 +880,76 @@ fn opt_int_arg(args: &[Value], i: usize, who: &str, default: i64) -> VResult<i64
     }
 }
 
+/// CPython's `ADJUST_INDICES`: fold a pair of Python slice bounds into offsets
+/// over a sequence of `len` items. A negative bound counts from the end and
+/// floors at 0, and `end` is capped at `len` — but `start` is deliberately
+/// *not* capped, so a start past the end leaves a negative-width window. That
+/// asymmetry is what makes `"abc".find("", 3)` 3 and `"abc".find("", 99)` -1.
+fn adjust_indices(start: i64, end: i64, len: i64) -> (i64, i64) {
+    let end = if end > len {
+        len
+    } else if end < 0 {
+        end.saturating_add(len).max(0)
+    } else {
+        end
+    };
+    let start = if start < 0 { start.saturating_add(len).max(0) } else { start };
+    (start, end)
+}
+
+/// The `[start, end)` window that `find`/`startswith`/`endswith` search, read
+/// from the optional arguments beginning at `i`. `None` means the window has
+/// negative width, in which case nothing matches — not even an empty needle.
+fn search_window(args: &[Value], i: usize, who: &str, len: i64) -> VResult<Option<(i64, i64)>> {
+    let start = opt_int_arg(args, i, who, 0)?;
+    let end = opt_int_arg(args, i + 1, who, i64::MAX)?;
+    let (start, end) = adjust_indices(start, end, len);
+    Ok(if end < start { None } else { Some((start, end)) })
+}
+
+/// Byte offsets of characters `start` and `end`, both already clamped to
+/// `0..=char_len`. O(1) for an ASCII string — the `is_ascii` flag on
+/// [`OroStr`] exists for exactly this — and one pass otherwise.
+fn char_window_bytes(os: &OroStr, start: usize, end: usize) -> (usize, usize) {
+    if os.is_ascii {
+        return (start, end);
+    }
+    let (mut b0, mut b1) = (os.s.len(), os.s.len());
+    for (n, (b, _)) in os.s.char_indices().enumerate() {
+        if n == start {
+            b0 = b;
+        }
+        if n == end {
+            b1 = b;
+            break;
+        }
+    }
+    (b0, b1)
+}
+
+/// `str.find` restricted to the character window `[start, end)`. The result is
+/// a *character* index, as CPython's is, or -1.
+fn str_find_in(os: &OroStr, needle: &str, start: usize, end: usize) -> i64 {
+    let (b0, b1) = char_window_bytes(os, start, end);
+    match os.s[b0..b1].find(needle) {
+        Some(off) if os.is_ascii => (b0 + off) as i64,
+        Some(off) => (start + os.s[b0..b0 + off].chars().count()) as i64,
+        None => -1,
+    }
+}
+
+/// CPython's `tailmatch`, shared by `startswith` and `endswith` for both `str`
+/// and `bytes`: the window shrinks by the affix's length first, so a window too
+/// small to hold the affix fails *before* an empty affix is considered true.
+/// `at_front` picks which end of the window the comparison happens at.
+fn tail_window(start: i64, end: i64, affix_len: i64, at_front: bool) -> Option<i64> {
+    let end = end - affix_len;
+    if end < start {
+        return None;
+    }
+    Some(if at_front { start } else { end })
+}
+
 fn str_arg(args: &[Value], i: usize, who: &str) -> VResult<String> {
     match args.get(i) {
         Some(Value::Str(s)) => Ok(s.s.clone()),
@@ -895,10 +978,24 @@ fn split_sep_n(s: &str, sep: &str, maxsplit: i64, from_right: bool) -> Vec<Strin
 
 /// `str.split(None, maxsplit)`: runs of whitespace separate, leading/trailing
 /// whitespace is discarded, and once `maxsplit` splits are made the remainder is
+/// The characters CPython calls whitespace: Unicode `White_Space`, plus the
+/// four ASCII separators U+001C..U+001F that `str.isspace()` counts and Rust's
+/// `char::is_whitespace` does not. Checked against CPython over every code
+/// point; those four are the only difference, in either direction.
+fn is_py_space(c: char) -> bool {
+    c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}')
+}
+
+/// `s.split()` with no limit, over [`is_py_space`] rather than Rust's slightly
+/// smaller whitespace set.
+fn split_whitespace_all(s: &str) -> Vec<String> {
+    s.split(is_py_space).filter(|p| !p.is_empty()).map(|p| p.to_string()).collect()
+}
+
 /// returned verbatim (interior whitespace and all).
 fn split_whitespace_n(s: &str, maxsplit: i64, from_right: bool) -> Vec<String> {
     if maxsplit < 0 {
-        return s.split_whitespace().map(|p| p.to_string()).collect();
+        return split_whitespace_all(s);
     }
     let limit = maxsplit as usize;
     let chars: Vec<char> = s.chars().collect();
@@ -907,20 +1004,20 @@ fn split_whitespace_n(s: &str, maxsplit: i64, from_right: bool) -> Vec<String> {
     if !from_right {
         let mut i = 0usize;
         while parts.len() < limit {
-            while i < chars.len() && chars[i].is_whitespace() {
+            while i < chars.len() && is_py_space(chars[i]) {
                 i += 1;
             }
             if i >= chars.len() {
                 return parts;
             }
             let start = i;
-            while i < chars.len() && !chars[i].is_whitespace() {
+            while i < chars.len() && !is_py_space(chars[i]) {
                 i += 1;
             }
             parts.push(chars[start..i].iter().collect());
         }
         // Remainder: drop only the whitespace that separated it from the last field.
-        while i < chars.len() && chars[i].is_whitespace() {
+        while i < chars.len() && is_py_space(chars[i]) {
             i += 1;
         }
         if i < chars.len() {
@@ -930,7 +1027,7 @@ fn split_whitespace_n(s: &str, maxsplit: i64, from_right: bool) -> Vec<String> {
     } else {
         let mut i = chars.len();
         while parts.len() < limit {
-            while i > 0 && chars[i - 1].is_whitespace() {
+            while i > 0 && is_py_space(chars[i - 1]) {
                 i -= 1;
             }
             if i == 0 {
@@ -938,12 +1035,12 @@ fn split_whitespace_n(s: &str, maxsplit: i64, from_right: bool) -> Vec<String> {
                 return parts;
             }
             let end = i;
-            while i > 0 && !chars[i - 1].is_whitespace() {
+            while i > 0 && !is_py_space(chars[i - 1]) {
                 i -= 1;
             }
             parts.push(chars[i..end].iter().collect());
         }
-        while i > 0 && chars[i - 1].is_whitespace() {
+        while i > 0 && is_py_space(chars[i - 1]) {
             i -= 1;
         }
         if i > 0 {
@@ -1350,42 +1447,108 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
 }
 
 fn str_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
-    let s = match recv {
-        Value::Str(s) => s.s.clone(),
+    // Borrowed, not cloned: `find` and `replace` are on hot paths, and the
+    // arms that hand the receiver straight back clone the `Rc` instead of the
+    // characters.
+    let os = match recv {
+        Value::Str(s) => s,
         _ => unreachable!(),
     };
+    let s: &str = &os.s;
     match name {
-        "upper" => Ok(Value::str(s.to_uppercase())),
-        "lower" => Ok(Value::str(s.to_lowercase())),
-        "strip" => Ok(Value::str(s.trim().to_string())),
-        "lstrip" => Ok(Value::str(s.trim_start().to_string())),
-        "rstrip" => Ok(Value::str(s.trim_end().to_string())),
-        "startswith" => Ok(Value::Bool(s.starts_with(&str_arg(&args, 0, "startswith")?))),
-        "endswith" => Ok(Value::Bool(s.ends_with(&str_arg(&args, 0, "endswith")?))),
-        "find" => {
-            let needle = str_arg(&args, 0, "find")?;
-            match s.find(&needle) {
-                Some(byte) => Ok(Value::Int(s[..byte].chars().count() as i64)),
-                None => Ok(Value::Int(-1)),
+        "upper" => {
+            exactly(&args, 0, "upper")?;
+            Ok(Value::str(s.to_uppercase()))
+        }
+        "lower" => {
+            exactly(&args, 0, "lower")?;
+            Ok(Value::str(s.to_lowercase()))
+        }
+        "strip" | "lstrip" | "rstrip" => {
+            at_most(&args, 1, name)?;
+            // `chars` is a *set* of characters to remove from the end(s), not a
+            // prefix or a suffix: `"xyx".strip("xy")` is `""`. Omitted (or
+            // None), whitespace is stripped instead.
+            let trimmed = match args.first() {
+                None | Some(Value::None) => match name {
+                    "strip" => s.trim_matches(is_py_space),
+                    "lstrip" => s.trim_start_matches(is_py_space),
+                    _ => s.trim_end_matches(is_py_space),
+                },
+                Some(Value::Str(set)) => {
+                    let hit = |c: char| set.s.contains(c);
+                    match name {
+                        "strip" => s.trim_matches(hit),
+                        "lstrip" => s.trim_start_matches(hit),
+                        _ => s.trim_end_matches(hit),
+                    }
+                }
+                Some(other) => {
+                    return Err(format!(
+                        "{name}() argument must be str, not '{}'",
+                        other.type_name()
+                    ))
+                }
+            };
+            if trimmed.len() == s.len() {
+                return Ok(Value::Str(os.clone()));
             }
+            Ok(Value::str(trimmed.to_string()))
+        }
+        "startswith" | "endswith" => {
+            at_most(&args, 3, name)?;
+            let affix = str_arg(&args, 0, name)?;
+            let len = os.char_len() as i64;
+            let Some((start, end)) = search_window(&args, 1, name, len)? else {
+                return Ok(Value::Bool(false));
+            };
+            let alen = if os.is_ascii && affix.is_ascii() {
+                affix.len() as i64
+            } else {
+                affix.chars().count() as i64
+            };
+            let Some(at) = tail_window(start, end, alen, name == "startswith") else {
+                return Ok(Value::Bool(false));
+            };
+            if alen == 0 {
+                return Ok(Value::Bool(true));
+            }
+            let (b0, b1) = char_window_bytes(os, at as usize, (at + alen) as usize);
+            Ok(Value::Bool(s[b0..b1] == *affix))
+        }
+        "find" => {
+            at_most(&args, 3, "find")?;
+            let needle = str_arg(&args, 0, "find")?;
+            let len = os.char_len() as i64;
+            let Some((start, end)) = search_window(&args, 1, "find", len)? else {
+                return Ok(Value::Int(-1));
+            };
+            Ok(Value::Int(str_find_in(os, &needle, start as usize, end as usize)))
         }
         "replace" => {
+            at_most(&args, 3, "replace")?;
             let from = str_arg(&args, 0, "replace")?;
             let to = str_arg(&args, 1, "replace")?;
-            Ok(Value::str(s.replace(&from, &to)))
+            // A negative count means "every occurrence", which is the default.
+            let count = opt_int_arg(&args, 2, "replace", -1)?;
+            if count < 0 {
+                return Ok(Value::str(s.replace(&from, &to)));
+            }
+            Ok(Value::str(s.replacen(&from, &to, count as usize)))
         }
         "split" | "rsplit" => {
+            at_most(&args, 2, name)?;
             // maxsplit < 0 (the default) means "no limit"; maxsplit == n caps the
             // number of *splits*, so at most n + 1 pieces come back.
             let maxsplit = opt_int_arg(&args, 1, name, -1)?;
             let from_right = name == "rsplit";
             let parts: Vec<String> = match args.first() {
-                None | Some(Value::None) => split_whitespace_n(&s, maxsplit, from_right),
+                None | Some(Value::None) => split_whitespace_n(s, maxsplit, from_right),
                 Some(Value::Str(sep)) => {
                     if sep.s.is_empty() {
                         return Err("empty separator".to_string());
                     }
-                    split_sep_n(&s, &sep.s, maxsplit, from_right)
+                    split_sep_n(s, &sep.s, maxsplit, from_right)
                 }
                 Some(other) => {
                     return Err(format!(
@@ -1398,10 +1561,11 @@ fn str_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
             Ok(Value::List(Rc::new(RefCell::new(parts))))
         }
         "zfill" => {
+            exactly(&args, 1, "zfill")?;
             let width = opt_int_arg(&args, 0, "zfill", 0)?;
-            let len = s.chars().count() as i64;
+            let len = os.char_len() as i64;
             if len >= width {
-                return Ok(Value::str(s));
+                return Ok(Value::Str(os.clone()));
             }
             let pad = "0".repeat((width - len) as usize);
             // A leading sign stays in front of the padding: "-7".zfill(4) -> "-007".
@@ -1414,7 +1578,8 @@ fn str_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
             }
         }
         "join" => {
-            let items = crate::vm::iterate_to_vec(args.first().ok_or("join() missing argument")?)?;
+            exactly(&args, 1, "join")?;
+            let items = crate::vm::iterate_to_vec(&args[0])?;
             let mut pieces = Vec::with_capacity(items.len());
             for it in items {
                 match it {
@@ -1427,7 +1592,7 @@ fn str_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
                     }
                 }
             }
-            Ok(Value::str(pieces.join(&s)))
+            Ok(Value::str(pieces.join(s)))
         }
         _ => Err(format!("'str' object has no method '{name}'")),
     }
@@ -1460,23 +1625,34 @@ fn bytes_find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
-/// `bytes.replace`. An empty `from` inserts `to` between every pair of octets
-/// and at both ends, which is what `str.replace` does with an empty pattern.
-fn bytes_replace(hay: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+/// `bytes.replace` with CPython's `count`: negative means every occurrence.
+/// An empty `from` inserts `to` between every pair of octets and at both ends,
+/// which is what `str.replace` does with an empty pattern — and `count` caps
+/// those insertions from the left, so `b"abc".replace(b"", b"-", 2)` is
+/// `b"-a-bc"`.
+fn bytes_replace(hay: &[u8], from: &[u8], to: &[u8], count: i64) -> Vec<u8> {
+    let limit = if count < 0 { usize::MAX } else { count as usize };
     let mut out = Vec::with_capacity(hay.len());
+    let mut done = 0usize;
     if from.is_empty() {
         for &x in hay {
-            out.extend_from_slice(to);
+            if done < limit {
+                out.extend_from_slice(to);
+                done += 1;
+            }
             out.push(x);
         }
-        out.extend_from_slice(to);
+        if done < limit {
+            out.extend_from_slice(to);
+        }
         return out;
     }
     let mut i = 0;
     while i < hay.len() {
-        if hay[i..].starts_with(from) {
+        if done < limit && hay[i..].starts_with(from) {
             out.extend_from_slice(to);
             i += from.len();
+            done += 1;
         } else {
             out.push(hay[i]);
             i += 1;
@@ -1583,40 +1759,83 @@ fn split_space_bytes(s: &[u8], maxsplit: i64, from_right: bool) -> Vec<Vec<u8>> 
 /// case a non-ASCII one under.
 fn bytes_method(b: &Rc<Vec<u8>>, name: &str, args: Vec<Value>) -> VResult<Value> {
     match name {
-        "upper" => Ok(Value::bytes(b.to_ascii_uppercase())),
-        "lower" => Ok(Value::bytes(b.to_ascii_lowercase())),
-        "strip" => {
-            let start = b.iter().take_while(|&&x| is_bytes_space(x)).count();
-            let end = b.iter().rev().take_while(|&&x| is_bytes_space(x)).count();
-            Ok(Value::bytes(if start + end >= b.len() {
-                Vec::new()
+        "upper" => {
+            exactly(&args, 0, "upper")?;
+            Ok(Value::bytes(b.to_ascii_uppercase()))
+        }
+        "lower" => {
+            exactly(&args, 0, "lower")?;
+            Ok(Value::bytes(b.to_ascii_lowercase()))
+        }
+        "strip" | "lstrip" | "rstrip" => {
+            at_most(&args, 1, name)?;
+            // As for `str`, the argument is a *set* of octets to remove from
+            // the end(s); omitted (or None), whitespace is removed instead.
+            let cut: Box<dyn Fn(u8) -> bool> = match args.first() {
+                None | Some(Value::None) => Box::new(is_bytes_space),
+                Some(Value::Bytes(set)) => {
+                    let set = set.clone();
+                    Box::new(move |x| set.contains(&x))
+                }
+                Some(other) => {
+                    return Err(format!(
+                        "{name}() argument must be bytes, not '{}'",
+                        other.type_name()
+                    ))
+                }
+            };
+            let lead = if name == "rstrip" {
+                0
             } else {
-                b[start..b.len() - end].to_vec()
-            }))
+                b.iter().take_while(|&&x| cut(x)).count()
+            };
+            if lead == b.len() {
+                return Ok(Value::bytes(Vec::new()));
+            }
+            let trail = if name == "lstrip" {
+                0
+            } else {
+                b[lead..].iter().rev().take_while(|&&x| cut(x)).count()
+            };
+            if lead == 0 && trail == 0 {
+                return Ok(Value::Bytes(b.clone()));
+            }
+            Ok(Value::bytes(b[lead..b.len() - trail].to_vec()))
         }
-        "lstrip" => {
-            let start = b.iter().take_while(|&&x| is_bytes_space(x)).count();
-            Ok(Value::bytes(b[start..].to_vec()))
+        "startswith" | "endswith" => {
+            at_most(&args, 3, name)?;
+            let affix = bytes_arg(&args, 0, name)?;
+            let Some((start, end)) = search_window(&args, 1, name, b.len() as i64)? else {
+                return Ok(Value::Bool(false));
+            };
+            let Some(at) = tail_window(start, end, affix.len() as i64, name == "startswith")
+            else {
+                return Ok(Value::Bool(false));
+            };
+            let at = at as usize;
+            Ok(Value::Bool(b[at..at + affix.len()] == **affix))
         }
-        "rstrip" => {
-            let end = b.iter().rev().take_while(|&&x| is_bytes_space(x)).count();
-            Ok(Value::bytes(b[..b.len() - end].to_vec()))
-        }
-        "startswith" => Ok(Value::Bool(b.starts_with(&bytes_arg(&args, 0, "startswith")?))),
-        "endswith" => Ok(Value::Bool(b.ends_with(&bytes_arg(&args, 0, "endswith")?))),
         "find" => {
+            at_most(&args, 3, "find")?;
             let needle = bytes_arg(&args, 0, "find")?;
-            Ok(Value::Int(match bytes_find(b, &needle) {
-                Some(i) => i as i64,
+            let Some((start, end)) = search_window(&args, 1, "find", b.len() as i64)? else {
+                return Ok(Value::Int(-1));
+            };
+            let (start, end) = (start as usize, end as usize);
+            Ok(Value::Int(match bytes_find(&b[start..end], &needle) {
+                Some(i) => (start + i) as i64,
                 None => -1,
             }))
         }
         "replace" => {
+            at_most(&args, 3, "replace")?;
             let from = bytes_arg(&args, 0, "replace")?;
             let to = bytes_arg(&args, 1, "replace")?;
-            Ok(Value::bytes(bytes_replace(b, &from, &to)))
+            let count = opt_int_arg(&args, 2, "replace", -1)?;
+            Ok(Value::bytes(bytes_replace(b, &from, &to, count)))
         }
         "split" | "rsplit" => {
+            at_most(&args, 2, name)?;
             let maxsplit = opt_int_arg(&args, 1, name, -1)?;
             let from_right = name == "rsplit";
             let parts: Vec<Vec<u8>> = match args.first() {
@@ -1638,6 +1857,7 @@ fn bytes_method(b: &Rc<Vec<u8>>, name: &str, args: Vec<Value>) -> VResult<Value>
             Ok(Value::List(Rc::new(RefCell::new(parts))))
         }
         "zfill" => {
+            exactly(&args, 1, "zfill")?;
             let width = opt_int_arg(&args, 0, "zfill", 0)?;
             let len = b.len() as i64;
             if len >= width {
@@ -1659,7 +1879,8 @@ fn bytes_method(b: &Rc<Vec<u8>>, name: &str, args: Vec<Value>) -> VResult<Value>
             Ok(Value::bytes(out))
         }
         "join" => {
-            let items = crate::vm::iterate_to_vec(args.first().ok_or("join() missing argument")?)?;
+            exactly(&args, 1, "join")?;
+            let items = crate::vm::iterate_to_vec(&args[0])?;
             let mut out: Vec<u8> = Vec::new();
             for (i, it) in items.iter().enumerate() {
                 if i > 0 {
@@ -1752,9 +1973,16 @@ fn dict_method(d: &Rc<RefCell<OroDict>>, name: &str, args: Vec<Value>) -> VResul
             };
             Ok(d.borrow().get(key)?.unwrap_or(default))
         }
-        "keys" => Ok(Value::List(Rc::new(RefCell::new(d.borrow().keys())))),
-        "values" => Ok(Value::List(Rc::new(RefCell::new(d.borrow().values())))),
+        "keys" => {
+            exactly(&args, 0, "keys")?;
+            Ok(Value::List(Rc::new(RefCell::new(d.borrow().keys()))))
+        }
+        "values" => {
+            exactly(&args, 0, "values")?;
+            Ok(Value::List(Rc::new(RefCell::new(d.borrow().values()))))
+        }
         "items" => {
+            exactly(&args, 0, "items")?;
             let items: Vec<Value> = d
                 .borrow()
                 .items()

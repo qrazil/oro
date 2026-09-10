@@ -673,9 +673,11 @@ Stated plainly:
 - **A lambda cannot appear inside an f-string field.** `f"{xs.map(x => x)}"` is
   rejected with a message telling you to bind it to a name first. f-string
   fields are parsed at code-generation time rather than by the parser, so the
-  symbol pass never walks them and cannot give the lambda a scope. The real fix
-  is to parse f-string fields into the AST like any other expression, which is
-  also what CPython moved to in 3.12.
+  symbol pass has to parse them a second time to see the names inside — and the
+  lambda *it* sees is a different node from the one codegen emits, so the scope
+  it assigns never reaches the emitted lambda. The real fix is to parse f-string
+  fields into the AST like any other expression, which is also what CPython
+  moved to in 3.12.
 - **Lambda parameters are plain names only** — no defaults, `*args`, `**kwargs`,
   or annotations, and the body is a single expression. Anything more is a `def`.
 - **Streams take `bytes`, and `print` takes `str`.** `sys.stdout.write("hi")`

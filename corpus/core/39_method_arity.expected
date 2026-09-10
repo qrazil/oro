@@ -1,0 +1,47 @@
+"abc".upper(1) -> TypeError
+"abc".upper(1, 2, 3) -> TypeError
+"abc".lower(1) -> TypeError
+"abc".strip("x", "y") -> TypeError
+"abc".lstrip("x", "y") -> TypeError
+"abc".rstrip("x", "y") -> TypeError
+"abc".zfill() -> TypeError
+"abc".zfill(5, 5) -> TypeError
+"abc".find() -> TypeError
+"abc".find("a", 1, 2, 3) -> TypeError
+"abc".find(1) -> TypeError
+"abc".find("a", "b") -> TypeError
+"abc".replace("a") -> TypeError
+"abc".replace("a", "b", 1, 2) -> TypeError
+"abc".replace("a", "b", "c") -> TypeError
+"abc".startswith() -> TypeError
+"abc".startswith("a", 0, 1, 2) -> TypeError
+"abc".endswith() -> TypeError
+"abc".endswith("a", 0, 1, 2) -> TypeError
+"a b".split("b", 1, 2) -> TypeError
+"a b".rsplit("b", 1, 2) -> TypeError
+"-".join(["a"], 2) -> TypeError
+"-".join() -> TypeError
+b"abc".upper(1) -> TypeError
+b"abc".lower(1) -> TypeError
+b"abc".strip(b"x", b"y") -> TypeError
+b"abc".zfill() -> TypeError
+b"abc".zfill(5, 5) -> TypeError
+b"abc".find() -> TypeError
+b"abc".find(b"a", 1, 2, 3) -> TypeError
+b"abc".replace(b"a") -> TypeError
+b"abc".replace(b"a", b"b", 1, 2) -> TypeError
+b"abc".startswith(b"a", 0, 1, 2) -> TypeError
+b"abc".endswith(b"a", 0, 1, 2) -> TypeError
+b"a b".split(b"b", 1, 2) -> TypeError
+b"-".join([b"a"], 2) -> TypeError
+b"abc".hex(1) -> TypeError
+{"a": 1}.keys(1) -> TypeError
+{"a": 1}.values(1) -> TypeError
+{"a": 1}.items(1) -> TypeError
+{"a": 1}.get() -> TypeError
+{"a": 1}.get("a", 1, 2) -> TypeError
+[1].append() -> TypeError
+[1].append(1, 2) -> TypeError
+[1].pop(1, 2) -> TypeError
+[1].reverse(1) -> TypeError
+[1].extend() -> TypeError

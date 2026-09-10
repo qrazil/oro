@@ -53,15 +53,6 @@ _MAX_TRAILER_LINE = 8192
 _MAX_DRAIN = 65536
 _MAX_REQUESTS_PER_CONN = 1000
 
-# The messages that quote a limit are built here, at module scope, rather than
-# where they are raised. A module-level name used *only* inside an f-string
-# field of a function does not compile today, so a constant that appears in a
-# message and nowhere else has to be interpolated somewhere the compiler can
-# already see it. Building them once is the better shape anyway.
-_ERR_HEAD_TOO_BIG = f"header block exceeded {_MAX_HEAD} bytes"
-_ERR_TOO_MANY_HEADERS = f"more than {_MAX_HEADERS} header fields"
-_ERR_TOO_MANY_TRAILERS = f"more than {_MAX_HEADERS} trailer fields"
-
 # Bytes per read when a streamed response body is re-framed as chunks. Large
 # enough that a chunk is worth the syscall it costs; a chunked response is
 # genuinely more than one write, and that is the price of not knowing the
@@ -229,12 +220,10 @@ class Response:
         self.body = body
 
     def __str__(self):
-        reason = _reason(self.status)
-        return f"{self.status} {reason}"
+        return f"{self.status} {_reason(self.status)}"
 
     def __repr__(self):
-        reason = _reason(self.status)
-        return f"<Response {self.status} {reason}>"
+        return f"<Response {self.status} {_reason(self.status)}>"
 
 
 def text(s, status=200):
@@ -384,7 +373,7 @@ class _HeadParser:
         while self.i < self.n and len(self.lines[self.i]) > 0:
             count = count + 1
             if count > _MAX_HEADERS:
-                self.fail(_ERR_TOO_MANY_HEADERS, 431)
+                self.fail(f"more than {_MAX_HEADERS} header fields", 431)
             line = self.lines[self.i]
             self.i = self.i + 1
             # Obsolete line folding: a header continued on an indented line.
@@ -504,7 +493,7 @@ def _read_head(r):
     try:
         return r.read_until(b"\r\n\r\n", _MAX_HEAD)
     except ValueError as e:
-        raise BadRequest(_ERR_HEAD_TOO_BIG, 431)
+        raise BadRequest(f"header block exceeded {_MAX_HEAD} bytes", 431)
 
 
 # --- body framing ---------------------------------------------------------
@@ -632,7 +621,7 @@ class _ChunkedReader:
         while line != b"\r\n" and line != b"":
             count = count + 1
             if count > _MAX_HEADERS:
-                raise BadRequest(_ERR_TOO_MANY_TRAILERS, 431)
+                raise BadRequest(f"more than {_MAX_HEADERS} trailer fields", 431)
             line = self.r.read_until(b"\r\n", _MAX_TRAILER_LINE)
 
 
