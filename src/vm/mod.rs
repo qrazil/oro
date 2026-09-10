@@ -109,15 +109,21 @@ struct Block {
 
 /// A snapshot of every in-flight job stack, used to unwind them alongside the
 /// operand stack. See [`Block::jobs`].
+///
+/// `u32`, not `usize`: this is copied into every [`Block`], so every `try` and
+/// every loop in the program carries one. Seven `usize` would be 56 bytes —
+/// more than the five it replaced — and seven `u32` is 28, which is less. A
+/// job stack cannot reach 2^32 entries: each job owns heap data and the frame
+/// stack itself is capped at `MAX_FRAMES`.
 #[derive(Clone, Copy, Default)]
 struct JobDepths {
-    prints: usize,
-    str_jobs: usize,
-    sort_jobs: usize,
-    seq_jobs: usize,
-    mat_jobs: usize,
-    cmp_jobs: usize,
-    ord_jobs: usize,
+    prints: u32,
+    str_jobs: u32,
+    sort_jobs: u32,
+    seq_jobs: u32,
+    mat_jobs: u32,
+    cmp_jobs: u32,
+    ord_jobs: u32,
 }
 
 enum BlockKind {
@@ -4012,26 +4018,26 @@ impl Vm {
 
     fn job_depths(&self) -> JobDepths {
         JobDepths {
-            prints: self.task.prints.len(),
-            str_jobs: self.task.str_jobs.len(),
-            sort_jobs: self.task.sort_jobs.len(),
-            seq_jobs: self.task.seq_jobs.len(),
-            mat_jobs: self.task.mat_jobs.len(),
-            cmp_jobs: self.task.cmp_jobs.len(),
-            ord_jobs: self.task.ord_jobs.len(),
+            prints: self.task.prints.len() as u32,
+            str_jobs: self.task.str_jobs.len() as u32,
+            sort_jobs: self.task.sort_jobs.len() as u32,
+            seq_jobs: self.task.seq_jobs.len() as u32,
+            mat_jobs: self.task.mat_jobs.len() as u32,
+            cmp_jobs: self.task.cmp_jobs.len() as u32,
+            ord_jobs: self.task.ord_jobs.len() as u32,
         }
     }
 
     /// Discard jobs started inside a block that an exception is unwinding out
     /// of. Their driver frames are gone, so nothing will ever complete them.
     fn truncate_jobs(&mut self, d: JobDepths) {
-        self.task.prints.truncate(d.prints);
-        self.task.str_jobs.truncate(d.str_jobs);
-        self.task.sort_jobs.truncate(d.sort_jobs);
-        self.task.seq_jobs.truncate(d.seq_jobs);
-        self.task.mat_jobs.truncate(d.mat_jobs);
-        self.task.cmp_jobs.truncate(d.cmp_jobs);
-        self.task.ord_jobs.truncate(d.ord_jobs);
+        self.task.prints.truncate(d.prints as usize);
+        self.task.str_jobs.truncate(d.str_jobs as usize);
+        self.task.sort_jobs.truncate(d.sort_jobs as usize);
+        self.task.seq_jobs.truncate(d.seq_jobs as usize);
+        self.task.mat_jobs.truncate(d.mat_jobs as usize);
+        self.task.cmp_jobs.truncate(d.cmp_jobs as usize);
+        self.task.ord_jobs.truncate(d.ord_jobs as usize);
     }
 
     /// Unwind `exc` through the block and frame stacks. On success (a handler or
