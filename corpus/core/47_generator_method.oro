@@ -1,0 +1,107 @@
+# A method with `yield` in its body is a generator function, and calling it
+# produces a generator like any other — CPython's rule, and Oro's now.
+#
+# It used to push a frame that ran the body directly, so the `yield` had nothing
+# to suspend into: first a `yield outside a generator` panic, then a clean
+# refusal naming the module-level workaround. It was `corpus/known-failing/
+# generator_method.oro`. The fix is the plain-function path applied to the
+# method call — build the frame, park it in a generator instead of pushing it —
+# so everything a module-level generator can do, a method can.
+
+
+def collect(g):
+    out = []
+    for v in g:
+        out.append(v)
+    return out
+
+
+class Counter:
+    def __init__(self, n):
+        self.n = n
+
+    def up(self):
+        i = 0
+        while i < self.n:
+            yield i
+            i = i + 1
+
+
+c = Counter(3)
+out = []
+for x in c.up():
+    out.append(x)
+print(out)
+
+# It is a generator object, so every generator rule applies to it: it drives a
+# builtin, it is single-use, and it is lazy in a `for`.
+print(sum(c.up()), max(c.up()), sorted(c.up(), reverse=true))
+
+g = c.up()
+first = []
+for x in g:
+    first.append(x)
+    break
+rest = []
+for x in g:
+    rest.append(x)
+print(first, rest)
+
+# `self` is bound in it, and reads the instance as it is when the generator
+# *runs*, not when it was created.
+c.n = 5
+print(sum(c.up()))
+
+# `super()` resolves inside one, which is the part that needs the defining class
+# carried onto the parked frame rather than onto a frame that is running.
+
+
+class Tens(Counter):
+    def up(self):
+        for x in super().up():
+            yield x * 10
+
+
+print(sum(Tens(4).up()))
+t = Tens(3)
+seen = []
+for x in t.up():
+    seen.append(x)
+print(seen)
+
+# A generator method feeding another one, and a method that returns a generator
+# built by a third.
+
+
+class Pipeline:
+    def __init__(self, items):
+        self.items = items
+
+    def each(self):
+        for it in self.items:
+            yield it
+
+    def evens(self):
+        for it in self.each():
+            if it % 2 == 0:
+                yield it
+
+    def as_list(self):
+        return self.evens()
+
+
+p = Pipeline([1, 2, 3, 4, 5, 6])
+print(collect(p.each()))
+print(collect(p.evens()))
+print(collect(p.as_list()))
+
+# An empty generator method, and one that never yields at all.
+
+
+class Nothing:
+    def none(self):
+        if false:
+            yield 1
+
+
+print(collect(Nothing().none()), sum(Nothing().none()))

@@ -1848,8 +1848,33 @@ impl Vm {
                     self.push(r);
                     Ok(Step::Next)
                 }
-                MethodKind::User { func, defclass } => self
-                    .invoke_user(
+                MethodKind::User { func, defclass } => {
+                    // A `def` with a `yield` in it is a generator function
+                    // wherever it is written, and calling one produces a
+                    // generator rather than running the body. A method is no
+                    // exception in CPython, and is none here: the frame is
+                    // built exactly as the plain-function path builds it and
+                    // handed to a `GenBox` instead of being pushed. The one
+                    // extra step is `super_ctx`, which goes on the frame before
+                    // it is parked, so `super()` still resolves when the
+                    // generator is resumed — possibly in another task, long
+                    // after this call returned.
+                    if func.code.is_generator {
+                        if self.task.frames.len() >= MAX_FRAMES {
+                            return Err(self.err("maximum recursion depth exceeded"));
+                        }
+                        let receiver = m.receiver.clone();
+                        let mut frame =
+                            self.bind_call(func, Some(receiver.clone()), args, kwargs)?;
+                        frame.super_ctx = Some((defclass.clone(), receiver));
+                        let gen = crate::value::GenBox {
+                            done: false,
+                            frame: Some(Box::new(frame)),
+                        };
+                        self.push(Value::Generator(Rc::new(RefCell::new(gen))));
+                        return Ok(Step::Next);
+                    }
+                    self.invoke_user(
                         func.clone(),
                         m.receiver.clone(),
                         defclass.clone(),
@@ -1857,7 +1882,8 @@ impl Vm {
                         kwargs,
                         ReturnAction::Normal,
                     )
-                    .map(|()| Step::Next),
+                    .map(|()| Step::Next)
+                }
             },
             Value::Func(f) => {
                 if self.task.frames.len() >= MAX_FRAMES {
@@ -1949,19 +1975,20 @@ impl Vm {
         if self.task.frames.len() >= MAX_FRAMES {
             return Err(self.err("maximum recursion depth exceeded"));
         }
-        // A `def` with a `yield` in it is a generator function, and calling one
-        // produces a generator rather than running the body. This path pushes a
-        // frame that runs the body *directly*, so a `yield` in it would arrive
-        // with no generator to suspend into — which was a `yield outside a
-        // generator` panic, reachable from an ordinary `obj.m()` long before
-        // any of this and reachable from `in` now that `__eq__` is dispatched.
-        // A panic is the worst answer available; refusing by name is the same
-        // answer `sorted(key=…)` and the chain callbacks already give.
+        // An ordinary `obj.m()` with a `yield` in it is handled at the call
+        // site, where it produces a generator the way a plain `def` does. What
+        // is left here is the dispatched half — a dunder, or a bound method
+        // used as a chain callback — and every one of those has a continuation
+        // waiting for a *value* from a frame that runs now (`DriveStr` wants
+        // the string, `DriveSort` the key, `DriveSeq` the element). Handing one
+        // a generator instead is not a feature, it is a different bug. It was a
+        // `yield outside a generator` panic before; refusing by name is the
+        // same answer `sorted(key=…)` already gives.
         if func.code.is_generator {
             let name = func.code.name.clone();
             return Err(self.err(format!(
                 "{name}() has a `yield` in it, and Oro does not carry generators \
-                 through methods and dunders — move it to a module-level def"
+                 through dunders and callbacks — move it to a module-level def"
             )));
         }
         let mut frame = self.bind_call(&func, Some(receiver.clone()), args, kwargs)?;
