@@ -9,12 +9,20 @@
 //!
 //! That frame stack, and every piece of interpreter state that hangs off it,
 //! lives on a [`Task`] rather than on [`Vm`] — the split between *what is
-//! running right now* and *what is true of this process*. Nothing spawns a
-//! second task yet; the point of the separation is that one could.
+//! running right now* and *what is true of this process*. `spawn` makes a
+//! second one, and [`sched`] is the loop above this one that decides which of
+//! them is current; switching is a `std::mem::replace` of `Vm::task`.
+//!
+//! The interpreter loop itself does **not** know the scheduler exists. There is
+//! no safepoint check on the dispatch path: a task stops only by producing
+//! [`Step::Park`] from the instruction it is executing, which is what
+//! "cooperative, not preemptive" means concretely and what keeps the hot path
+//! exactly as fast as it was before there was a scheduler at all.
 
 pub mod arith;
 mod exceptions;
 pub mod modules;
+pub mod sched;
 mod stdlib;
 
 use std::cell::RefCell;
@@ -22,11 +30,13 @@ use std::rc::Rc;
 
 use crate::ast::CmpOp;
 use crate::compiler::{CaptureSource, ClassSpec, CodeObject, Op, ParamInfo, VarTarget};
+use crate::task::{TaskHandle, TaskId};
 use crate::value::{
     BoundMethod, Class, Function, Instance, IterState, MethodKind, OroDict, RangeVal,
     SuperProxy, Value,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::cell::Cell;
 
 /// A runtime error carrying the source position of the faulting instruction.
 #[derive(Debug, Clone, PartialEq)]
@@ -162,10 +172,25 @@ enum Why {
 enum Step {
     /// Advance to the next instruction.
     Next,
-    /// The top-level frame returned; the run is over.
+    /// The running task's outermost frame returned. For the main task that is
+    /// the end of the program; for a spawned one it is that task's outcome.
     Done(Value),
     /// Raise this exception value (unwind the block/frame stack).
     Raise(Value),
+    /// Suspend the running task until the [`Park`](sched::Park) reason is
+    /// settled. The scheduler files the task away and runs somebody else.
+    ///
+    /// The payload is boxed for one reason: `Step` is the return value of
+    /// `Vm::step`, which runs on every instruction, and a `Park` inline would
+    /// widen `Result<Step, RuntimeError>` on the hottest path in the system to
+    /// buy nothing — parking is rare, so it can afford an allocation.
+    ///
+    /// **`Park` carries owned values only, and neither it nor `Step` has a
+    /// lifetime parameter.** That is what makes `src/net.rs`'s recorded hazard
+    /// — a `RefCell` borrow held across a suspend, which is a `BorrowMutError`
+    /// *panic* rather than a catchable exception — unexpressible instead of
+    /// merely discouraged. See `sched`'s module docs.
+    Park(Box<sched::Park>),
 }
 
 /// A `print(...)` call in progress: some arguments still need `__str__`.
@@ -403,6 +428,19 @@ struct Task {
     /// For the main task that is the module namespace, which is what the VM
     /// unit tests inspect. Written exactly once per task.
     last_locals: Vec<Value>,
+    /// This task's identity, unique within the VM and never reused. The main
+    /// task is 0; `spawn` allocates upwards from 1.
+    id: TaskId,
+    /// The `Task` value `spawn` handed back, or `None` for the main task —
+    /// which nothing can `join`, which is why its outcome is the program's.
+    /// The scheduler keeps this reference for as long as the task lives, so a
+    /// discarded handle cannot fire its drop report before the task has run.
+    handle: Option<Rc<TaskHandle>>,
+    /// An exception a *different* task raised in this one (a joined failure, a
+    /// closed channel, a failed import). Unwinding walks `Vm::task`, so it
+    /// cannot happen from the waker's side; it rides here until the scheduler
+    /// makes this task current. Checked once per switch, never per instruction.
+    pending_raise: Option<Value>,
 }
 
 impl Task {
@@ -422,6 +460,9 @@ impl Task {
             finally_why: Vec::new(),
             gen_stack: Vec::new(),
             last_locals: Vec::new(),
+            id: 0,
+            handle: None,
+            pending_raise: None,
         }
     }
 }
@@ -447,10 +488,29 @@ pub struct Vm {
     import_root: std::path::PathBuf,
     /// Imported user modules by dotted path (module identity), run once.
     module_cache: HashMap<String, Value>,
-    /// Modules whose bodies are currently running, to detect circular imports.
-    importing: std::collections::HashSet<String>,
+    /// Module bodies that are currently running, and **which task** is running
+    /// each. The owning task matters: a path this task is already initialising
+    /// is a genuine cycle, but the same path in *another* task is only a
+    /// rendezvous to wait on. Keying by path alone reported the second task's
+    /// perfectly ordinary import as `circular import detected`.
+    importing: HashMap<String, TaskId>,
+    /// Tasks parked waiting for someone else's in-flight module body, by path.
+    import_waiters: HashMap<String, Vec<TaskId>>,
     /// The class of `proc.run`'s result (a `Completed`).
     proc_class: Rc<Class>,
+    /// Ids handed out by `spawn`. Monotonic, so an id in a waiter queue can
+    /// never be mistaken for a later task's.
+    next_task_id: TaskId,
+    /// Tasks that can run now, oldest first. Holds whole stack segments rather
+    /// than ids: nothing ever needs to find a *ready* task by identity, and a
+    /// side table would be one more thing to keep in step.
+    ready: VecDeque<Task>,
+    /// Tasks that cannot run until something settles, by id.
+    parked: HashMap<TaskId, sched::Parked>,
+    /// Set when an unjoined failed task's last handle is dropped (§3 rule 3),
+    /// which turns the process exit code into 1. Shared with every handle
+    /// rather than global, because a `Vm` is a value and the tests build many.
+    failure_flag: Rc<Cell<bool>>,
 }
 
 /// Add two values with the VM's numeric/sequence `+` semantics. Exposed for
@@ -480,8 +540,20 @@ pub fn run_main(code: Rc<CodeObject>, argv: Vec<String>) -> Result<i32, RuntimeE
         }
     }
     vm.push_module_frame(code);
-    match vm.run_loop() {
-        Ok(_) => Ok(vm.exit_code.unwrap_or(0)),
+    let outcome = vm.run_loop();
+    // Deterministic drop is the whole mechanism behind §3 rule 3, so the
+    // program's last locals are released *here*, before the exit code is read:
+    // a `Task` handle the program was still holding reports its unjoined
+    // failure now, not after the status has already been decided.
+    vm.task = Task::new();
+    vm.ready.clear();
+    vm.parked.clear();
+    let failed_task = vm.failure_flag.get();
+    match outcome {
+        // An explicit `sys.exit(code)` is a deliberate act and outranks the
+        // failure flag; without one, a task that died unjoined makes the run a
+        // failure even though the program itself finished.
+        Ok(_) => Ok(vm.exit_code.unwrap_or(i32::from(failed_task))),
         // A `sys.exit` surfaces as an uncaught SystemExit; honour its code
         // rather than reporting it as an error.
         Err(e) => match vm.exit_code {
@@ -501,13 +573,18 @@ impl Vm {
             exit_code: None,
             import_root: std::path::PathBuf::from("."),
             module_cache: HashMap::new(),
-            importing: std::collections::HashSet::new(),
+            importing: HashMap::new(),
+            import_waiters: HashMap::new(),
             proc_class: Rc::new(Class {
                 name: Rc::from("Completed"),
                 base: None,
                 members: RefCell::new(HashMap::new()),
                 is_exception: false,
             }),
+            next_task_id: 0,
+            ready: VecDeque::new(),
+            parked: HashMap::new(),
+            failure_flag: Rc::new(Cell::new(false)),
         }
     }
 
@@ -629,7 +706,25 @@ impl Vm {
 
     // --- The interpreter loop ------------------------------------------------
 
-    fn run_loop(&mut self) -> Result<Value, RuntimeError> {
+    /// Run the current task until it parks, returns, or dies — and no further.
+    ///
+    /// This is the old `run_loop` with two changes and no third: `Step::Park`
+    /// gets an arm, and the two terminal paths report a *task* outcome instead
+    /// of a process one. There is deliberately no scheduler check inside the
+    /// loop; cooperative scheduling means the only way out is a `Step` the
+    /// running instruction produced, which is what keeps the dispatch path
+    /// exactly as fast as M2 left it (§3, "Cooperative, not preemptive").
+    fn run_slice(&mut self) -> sched::Slice {
+        // An exception another task raised in this one (a joined failure, a
+        // channel closing, a module body that died) lands *between*
+        // instructions, never inside one — the same guarantee that lets a task
+        // suspend at all.
+        if let Some(exc) = self.task.pending_raise.take() {
+            if let Some(uncaught) = self.unwind(exc) {
+                let err = self.uncaught_error(&uncaught);
+                return sched::Slice::Failed(uncaught, err);
+            }
+        }
         loop {
             // Fetch, advance, release — in a single borrow of the frame stack.
             // `Op` is a `Copy` word, so reading the instruction out costs a
@@ -650,15 +745,17 @@ impl Vm {
             // it, the run ends with that error.
             let to_raise = match self.step(op) {
                 Ok(Step::Next) => continue,
-                Ok(Step::Done(v)) => return Ok(v),
+                Ok(Step::Done(v)) => return sched::Slice::Returned(v),
                 Ok(Step::Raise(exc)) => exc,
+                Ok(Step::Park(park)) => return sched::Slice::Parked(park),
                 Err(e) => match self.exit_request(&e) {
                     Some(exc) => exc,
                     None => self.error_to_exception(&e),
                 },
             };
             if let Some(uncaught) = self.unwind(to_raise) {
-                return Err(uncaught);
+                let err = self.uncaught_error(&uncaught);
+                return sched::Slice::Failed(uncaught, err);
             }
         }
     }
@@ -1041,22 +1138,41 @@ impl Vm {
                 Op::ForIter(target) => {
                     let target = target as usize;
                     let it = self.top().stack.last().expect("ForIter on empty stack").clone();
+                    // A channel is its own iterator, and `for msg in ch` is a
+                    // `recv` that ends the loop instead of raising when the
+                    // channel closes and drains (§3). It can block, so this is
+                    // a parking site.
+                    if let Value::Channel(ch) = &it {
+                        return self.chan_iter_next(ch.clone(), target);
+                    }
                     // A generator is advanced by resuming its frame; the value
                     // (or exhaustion) arrives via Yield/Return, not inline.
                     if let Value::Generator(gen) = &it {
-                        let frame = {
+                        // Three states, not two: finished (`None`), suspended
+                        // and ours to resume (`Some(Some(_))`), and *already
+                        // being advanced* somewhere else (`Some(None)`) — its
+                        // frame is on some task's frame stack right now. The
+                        // last one used to be indistinguishable from finished,
+                        // so the loop ended silently; two tasks driving one
+                        // generator would have corrupted it outright.
+                        let taken = {
                             let mut g = gen.borrow_mut();
                             if g.done {
                                 None
                             } else {
-                                g.frame.take().map(|b| *b.downcast::<Frame>().expect("gen frame"))
+                                Some(
+                                    g.frame
+                                        .take()
+                                        .map(|b| *b.downcast::<Frame>().expect("gen frame")),
+                                )
                             }
                         };
-                        match frame {
-                            Some(frame) => {
+                        match taken {
+                            Some(Some(frame)) => {
                                 self.task.gen_stack.push((gen.clone(), GenDriver::ForLoop(target)));
                                 self.task.frames.push(frame);
                             }
+                            Some(None) => return Ok(Step::Raise(self.generator_busy())),
                             None => {
                                 self.pop();
                                 self.top().pc = target;
@@ -1074,8 +1190,8 @@ impl Vm {
                     }
                 }
                 Op::MakeFunction(idx) => self.make_function(idx as usize)?,
-                Op::Call(n) => self.do_call(n as usize)?,
-                Op::CallEx => self.do_call_ex()?,
+                Op::Call(n) => return self.do_call(n as usize),
+                Op::CallEx => return self.do_call_ex(),
                 Op::Return => {
                     // A generator body reaching return (including the implicit
                     // one at the end) is exhausted: StopIteration for its driver.
@@ -1096,7 +1212,7 @@ impl Vm {
                         GenDriver::ForLoop(_) => self.push(value),
                         GenDriver::Materialize => {
                             self.task.mat_jobs.last_mut().expect("materialise job").items.push(value);
-                            self.drive_materialize()?;
+                            return self.drive_materialize();
                         }
                     }
                 }
@@ -1232,7 +1348,7 @@ impl Vm {
 
     // --- Calls ---------------------------------------------------------------
 
-    fn do_call(&mut self, n: usize) -> Result<(), RuntimeError> {
+    fn do_call(&mut self, n: usize) -> Result<Step, RuntimeError> {
         // Fast path: a plain Oro function whose parameters are all positional
         // and exactly covered by the arguments already sitting on the operand
         // stack. Binding straight off that stack is what keeps a call from
@@ -1272,7 +1388,7 @@ impl Vm {
 
     /// Move `n` arguments from the caller's operand stack straight into a fresh
     /// frame's slots. No argument vector, no re-copy — the values are moved once.
-    fn call_fast(&mut self, func: Rc<Function>, n: usize) -> Result<(), RuntimeError> {
+    fn call_fast(&mut self, func: Rc<Function>, n: usize) -> Result<Step, RuntimeError> {
         if self.task.frames.len() >= MAX_FRAMES {
             return Err(self.err("maximum recursion depth exceeded"));
         }
@@ -1292,10 +1408,10 @@ impl Vm {
             store_param(&mut frame, p.target, func.defaults[i - first_defaulted].clone());
         }
         self.task.frames.push(frame);
-        Ok(())
+        Ok(Step::Next)
     }
 
-    fn do_call_ex(&mut self) -> Result<(), RuntimeError> {
+    fn do_call_ex(&mut self) -> Result<Step, RuntimeError> {
         let kwdict = self.pop();
         let poslist = self.pop();
         let callee = self.pop();
@@ -1328,58 +1444,89 @@ impl Vm {
         callee: Value,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<Step, RuntimeError> {
         match callee {
             Value::Builtin(b) => {
                 // A few builtins may need to run an Oro dunder (which must go
                 // through a frame, not a Rust re-entry), so they are handled in
                 // the VM rather than as pure native functions.
                 match b.name {
-                    "print" => return self.do_print(args, kwargs),
+                    // `spawn` and `chan` are builtins because they are
+                    // control-flow constructs, the same reason `print` and
+                    // `len` are (§3) — but neither can be a plain native
+                    // function: `spawn` has to build a stack segment the VM
+                    // owns, and both must be able to answer with a `Step`.
+                    "spawn" => return self.do_spawn(args, kwargs),
+                    "chan" => return self.do_chan(args, kwargs),
+                    "print" => return self.do_print(args, kwargs).map(|()| Step::Next),
                     // sorted(key=…) has to call Oro code, so it is driven from
                     // the VM rather than run as a pure native builtin.
                     "sorted" if !kwargs.is_empty() => return self.do_sorted(args, kwargs),
                     // proc.run is finished here so it can take keyword args and
                     // build a Completed instance.
-                    "proc.run" => return self.do_proc_run(args, kwargs),
+                    "proc.run" => return self.do_proc_run(args, kwargs).map(|()| Step::Next),
                     "str" if matches!(args.first(), Some(Value::Instance(_))) && args.len() == 1 => {
-                        return self.stringify_instance(args.into_iter().next().unwrap(), false);
+                        return self
+                            .stringify_instance(args.into_iter().next().unwrap(), false)
+                            .map(|()| Step::Next);
                     }
                     "repr" if matches!(args.first(), Some(Value::Instance(_))) && args.len() == 1 => {
-                        return self.stringify_instance(args.into_iter().next().unwrap(), true);
+                        return self
+                            .stringify_instance(args.into_iter().next().unwrap(), true)
+                            .map(|()| Step::Next);
                     }
                     // str()/repr() of a container render elements' __repr__ (and
                     // are cycle-safe), which needs VM dispatch, not native repr.
                     "str" | "repr" if args.len() == 1 && is_container(&args[0]) => {
-                        return self.begin_stringify(args.into_iter().next().unwrap(), StrCont::Push);
+                        return self
+                            .begin_stringify(args.into_iter().next().unwrap(), StrCont::Push)
+                            .map(|()| Step::Next);
                     }
                     "len" if matches!(args.first(), Some(Value::Instance(_))) && args.len() == 1 => {
-                        return self.dunder_len(args.into_iter().next().unwrap());
+                        return self.dunder_len(args.into_iter().next().unwrap()).map(|()| Step::Next);
                     }
                     _ => {}
                 }
                 // A generator argument must be drained through frames first.
-                if self.materialize_generator_args(&Value::Builtin(b.clone()), &args, &kwargs)? {
-                    return Ok(());
+                if let Some(step) =
+                    self.materialize_generator_args(&Value::Builtin(b.clone()), &args, &kwargs)?
+                {
+                    return Ok(step);
                 }
                 if !kwargs.is_empty() {
                     return Err(self.err(format!("{}() takes no keyword arguments", b.name)));
                 }
                 let r = self.wrap((b.func)(args))?;
                 self.push(r);
-                Ok(())
+                Ok(Step::Next)
             }
             Value::Method(m) => match &m.kind {
                 MethodKind::Native(name) => {
+                    // Task and channel methods are dispatched ahead of
+                    // everything else in this arm for two reasons. They are the
+                    // ones that can *park*, so they must reach the VM rather
+                    // than `call_method`, which can only return a `Value`. And
+                    // a generator handed to `ch.send` has to arrive at the far
+                    // end as a generator — the materialise path below would
+                    // drain it into a list, which is precisely the "a generator
+                    // is a first-class value and can cross tasks" case §3
+                    // calls out.
+                    if let Some(step) = self.task_or_channel_method(&m.receiver, name, &args, &kwargs)? {
+                        return Ok(step);
+                    }
                     // `to_str` may need to run a user `__str__`, or render a
                     // container's elements through their `__repr__`; both go
                     // through frames, so they cannot run as native methods.
                     if &**name == "to_str" && args.is_empty() && kwargs.is_empty() {
                         if matches!(m.receiver, Value::Instance(_)) {
-                            return self.stringify_instance(m.receiver.clone(), false);
+                            return self
+                                .stringify_instance(m.receiver.clone(), false)
+                                .map(|()| Step::Next);
                         }
                         if is_container(&m.receiver) {
-                            return self.begin_stringify(m.receiver.clone(), StrCont::Push);
+                            return self
+                                .begin_stringify(m.receiver.clone(), StrCont::Push)
+                                .map(|()| Step::Next);
                         }
                     }
                     // map/filter run Oro callbacks, so they are driven from the
@@ -1394,11 +1541,13 @@ impl Vm {
                             let with_recv = std::iter::once(m.receiver.clone())
                                 .chain(args.iter().cloned())
                                 .collect::<Vec<_>>();
-                            if self.materialize_receiver(&callee, with_recv, kwargs.clone())? {
-                                return Ok(());
+                            if let Some(step) =
+                                self.materialize_receiver(&callee, with_recv, kwargs.clone())?
+                            {
+                                return Ok(step);
                             }
                         }
-                        return self.do_seq_op(op, &m.receiver, args, kwargs);
+                        return self.do_seq_op(op, &m.receiver, args, kwargs).map(|()| Step::Next);
                     }
                     // list.sort(key=…, reverse=…) shares sorted()'s frame-driven
                     // key machinery; it just writes back in place.
@@ -1409,27 +1558,33 @@ impl Vm {
                             }
                             let (keyfn, reverse) = self.sort_kwargs("sort", kwargs)?;
                             let items = l.borrow().clone();
-                            return self.begin_sort(items, keyfn, reverse, Some(l.clone()));
+                            return self
+                                .begin_sort(items, keyfn, reverse, Some(l.clone()))
+                                .map(|()| Step::Next);
                         }
                     }
-                    if self.materialize_generator_args(&Value::Method(m.clone()), &args, &kwargs)? {
-                        return Ok(());
+                    if let Some(step) =
+                        self.materialize_generator_args(&Value::Method(m.clone()), &args, &kwargs)?
+                    {
+                        return Ok(step);
                     }
                     if !kwargs.is_empty() {
                         return Err(self.err("methods take no keyword arguments in this build"));
                     }
                     let r = self.wrap(crate::builtins::call_method(&m.receiver, name, args))?;
                     self.push(r);
-                    Ok(())
+                    Ok(Step::Next)
                 }
-                MethodKind::User { func, defclass } => self.invoke_user(
-                    func.clone(),
-                    m.receiver.clone(),
-                    defclass.clone(),
-                    args,
-                    kwargs,
-                    ReturnAction::Normal,
-                ),
+                MethodKind::User { func, defclass } => self
+                    .invoke_user(
+                        func.clone(),
+                        m.receiver.clone(),
+                        defclass.clone(),
+                        args,
+                        kwargs,
+                        ReturnAction::Normal,
+                    )
+                    .map(|()| Step::Next),
             },
             Value::Func(f) => {
                 if self.task.frames.len() >= MAX_FRAMES {
@@ -1444,10 +1599,62 @@ impl Vm {
                 } else {
                     self.task.frames.push(frame);
                 }
-                Ok(())
+                Ok(Step::Next)
             }
-            Value::Class(class) => self.instantiate(class, args, kwargs),
+            Value::Class(class) => self.instantiate(class, args, kwargs).map(|()| Step::Next),
             other => Err(self.err(format!("'{}' object is not callable", other.type_label()))),
+        }
+    }
+
+    /// The six-name concurrency surface's method half: `join`, `send`, `recv`
+    /// and `close`. `Ok(None)` means "not one of mine, carry on".
+    fn task_or_channel_method(
+        &mut self,
+        receiver: &Value,
+        name: &str,
+        args: &[Value],
+        kwargs: &[(String, Value)],
+    ) -> Result<Option<Step>, RuntimeError> {
+        let (task_recv, chan_recv) = match receiver {
+            Value::Task(h) => (Some(h.clone()), None),
+            Value::Channel(c) => (None, Some(c.clone())),
+            _ => return Ok(None),
+        };
+        if !kwargs.is_empty() {
+            return Err(self.err(format!("{name}() takes no keyword arguments")));
+        }
+        let arity = |vm: &Self, want: usize| -> Result<(), RuntimeError> {
+            if args.len() == want {
+                Ok(())
+            } else {
+                Err(vm.err(format!(
+                    "{name}() takes exactly {want} argument(s) ({} given)",
+                    args.len()
+                )))
+            }
+        };
+        if let Some(handle) = task_recv {
+            if name != "join" {
+                return Ok(None);
+            }
+            arity(self, 0)?;
+            return self.task_join(handle).map(Some);
+        }
+        let ch = chan_recv.expect("one of the two");
+        match name {
+            "send" => {
+                arity(self, 1)?;
+                self.chan_send(ch, args[0].clone()).map(Some)
+            }
+            "recv" => {
+                arity(self, 0)?;
+                self.chan_recv(ch).map(Some)
+            }
+            "close" => {
+                arity(self, 0)?;
+                self.chan_close(ch).map(Some)
+            }
+            _ => Ok(None),
         }
     }
 
@@ -1943,9 +2150,9 @@ impl Vm {
         callee: &Value,
         args: &[Value],
         kwargs: &[(String, Value)],
-    ) -> Result<bool, RuntimeError> {
+    ) -> Result<Option<Step>, RuntimeError> {
         if !args.iter().any(|a| matches!(a, Value::Generator(_))) {
-            return Ok(false);
+            return Ok(None);
         }
         self.task.mat_jobs.push(MatJob {
             callee: callee.clone(),
@@ -1955,8 +2162,7 @@ impl Vm {
             items: Vec::new(),
             receiver_in_args: false,
         });
-        self.drive_materialize()?;
-        Ok(true)
+        self.drive_materialize().map(Some)
     }
 
     /// Drain a generator that is a method *receiver* (`g().map(f)`), then retry
@@ -1966,9 +2172,9 @@ impl Vm {
         callee: &Value,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
-    ) -> Result<bool, RuntimeError> {
+    ) -> Result<Option<Step>, RuntimeError> {
         if !matches!(args.first(), Some(Value::Generator(_))) {
-            return Ok(false);
+            return Ok(None);
         }
         self.task.mat_jobs.push(MatJob {
             callee: callee.clone(),
@@ -1978,14 +2184,13 @@ impl Vm {
             items: Vec::new(),
             receiver_in_args: true,
         });
-        self.drive_materialize()?;
-        Ok(true)
+        self.drive_materialize().map(Some)
     }
 
     /// Advance the active materialisation job: resume the generator being
     /// drained, move to the next generator argument, or — when none are left —
     /// pop the job and retry the original call with lists in their place.
-    fn drive_materialize(&mut self) -> Result<(), RuntimeError> {
+    fn drive_materialize(&mut self) -> Result<Step, RuntimeError> {
         loop {
             let next_gen = {
                 let job = self.task.mat_jobs.last_mut().expect("materialise job");
@@ -2017,23 +2222,27 @@ impl Vm {
             };
             // Resume the generator; each Yield lands in this job's `items` and
             // calls back here, so the drain never grows the native stack.
-            let frame = {
+            // `Some(None)` is a generator that is *running* somewhere — its
+            // frame has been taken — as opposed to `None`, one that is
+            // finished. See [`Vm::generator_busy`].
+            let taken = {
                 let mut g = gen.borrow_mut();
                 if g.done {
                     None
                 } else {
-                    g.frame.take().map(|b| *b.downcast::<Frame>().expect("gen frame"))
+                    Some(g.frame.take().map(|b| *b.downcast::<Frame>().expect("gen frame")))
                 }
             };
-            match frame {
-                Some(frame) => {
+            match taken {
+                Some(Some(frame)) => {
                     if self.task.frames.len() >= MAX_FRAMES {
                         return Err(self.err("maximum recursion depth exceeded"));
                     }
                     self.task.gen_stack.push((gen, GenDriver::Materialize));
                     self.task.frames.push(frame);
-                    return Ok(());
+                    return Ok(Step::Next);
                 }
+                Some(None) => return Ok(Step::Raise(self.generator_busy())),
                 None => {
                     // Already exhausted: it contributes whatever was collected.
                     let job = self.task.mat_jobs.last_mut().expect("materialise job");
@@ -2053,12 +2262,12 @@ impl Vm {
         &mut self,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<Step, RuntimeError> {
         // sorted() is intercepted before the generic builtin path, so the
         // generator drain has to be requested explicitly here too.
         if let Some(callee) = crate::builtins::lookup("sorted") {
-            if self.materialize_generator_args(&callee, &args, &kwargs)? {
-                return Ok(());
+            if let Some(step) = self.materialize_generator_args(&callee, &args, &kwargs)? {
+                return Ok(step);
             }
         }
         let iterable = match args.as_slice() {
@@ -2067,7 +2276,7 @@ impl Vm {
         };
         let (keyfn, reverse) = self.sort_kwargs("sorted", kwargs)?;
         let items = self.wrap(crate::vm::iterate_to_vec(&iterable))?;
-        self.begin_sort(items, keyfn, reverse, None)
+        self.begin_sort(items, keyfn, reverse, None).map(|()| Step::Next)
     }
 
     /// Shared parsing of the `key=`/`reverse=` pair for `sorted` and `list.sort`.
@@ -2580,11 +2789,14 @@ impl Vm {
             self.push(m.clone());
             return Ok(Step::Next);
         }
-        // A module still initialising means a cycle.
-        if self.importing.contains(path) {
-            let class = self.excs["ImportError"].clone();
-            let msg = Value::str(format!("circular import detected while importing '{path}'"));
-            return Ok(Step::Raise(self.make_exception_instance(class, vec![msg])));
+        // A module body that is already running is either *this* task's — a
+        // genuine cycle — or another task's, which is only something to wait
+        // for. `importing` records the owner precisely so the two can be told
+        // apart; a per-path flag reported the second task's ordinary import as
+        // a circular one, and a per-*task* flag would have missed real cycles
+        // that cross a module boundary.
+        if let Some(&owner) = self.importing.get(path) {
+            return Ok(self.await_import(path, owner));
         }
 
         // Embedded stdlib modules (written in Oro, baked into the binary)
@@ -2628,7 +2840,7 @@ impl Vm {
 
         // Run the module body as a frame; BuildModule captures its namespace on
         // return and pushes the module value to the importer.
-        self.importing.insert(path.to_string());
+        self.importing.insert(path.to_string(), self.task.id);
         let mut frame = Frame {
             locals: vec![Value::Unbound; code.nlocals],
             cells: (0..code.ncells).map(|_| Rc::new(RefCell::new(Value::Unbound))).collect(),
@@ -2672,8 +2884,10 @@ impl Vm {
             name: Rc::from(path.as_ref()),
             members: RefCell::new(members),
         }));
-        self.importing.remove(path.as_ref());
         self.module_cache.insert(path.to_string(), module.clone());
+        // Release the path and hand the finished module to every task that
+        // parked on it while this body was running.
+        self.release_import(path.as_ref(), Ok(module.clone()));
         self.push(module);
     }
 
@@ -2693,6 +2907,20 @@ impl Vm {
                 other.type_label()
             ))),
         }
+    }
+
+    /// CPython's answer to a generator being advanced from two places at once,
+    /// and now Oro's.
+    ///
+    /// It was never expressible before green threads *within* one execution —
+    /// only by a generator that iterates itself — and it becomes ordinary with
+    /// them: a generator is a first-class value, so it can travel down a
+    /// channel to a task that starts driving it while the first task is still
+    /// suspended inside it. Two tasks pushing frames into one `GenBox` would
+    /// corrupt it; this raises instead.
+    fn generator_busy(&self) -> Value {
+        let class = self.excs["ValueError"].clone();
+        self.make_exception_instance(class, vec![Value::str("generator already executing")])
     }
 
     /// Build an exception instance of `class`, storing its args tuple natively.
@@ -2908,7 +3136,7 @@ impl Vm {
                 let items = std::mem::take(&mut job.items);
                 let idx = job.idx;
                 job.args[idx] = Value::List(Rc::new(RefCell::new(items)));
-                self.drive_materialize()?;
+                return self.drive_materialize();
             }
         }
         Ok(Step::Next)
@@ -2936,8 +3164,14 @@ impl Vm {
 
     /// Unwind `exc` through the block and frame stacks. On success (a handler or
     /// finally took over) returns `None` and the loop resumes; if nothing
-    /// catches it, returns the uncaught error to end the run.
-    fn unwind(&mut self, exc: Value) -> Option<RuntimeError> {
+    /// catches it, returns the **exception value**, which is what ends this
+    /// task.
+    ///
+    /// It returns the value rather than a rendered `RuntimeError` because §3
+    /// rule 2 has to re-raise the very same exception object in whoever joins
+    /// the task; the diagnostic string is derived from it afterwards, for the
+    /// one case (rule 3) that prints instead.
+    fn unwind(&mut self, exc: Value) -> Option<Value> {
         loop {
             let block = self.task.frames.last_mut().and_then(|f| f.blocks.pop());
             match block {
@@ -2967,6 +3201,14 @@ impl Vm {
                 None => {
                     // No handler in this frame: discard it and try the caller.
                     if let Some(frame) = self.task.frames.pop() {
+                        // A module body dying has to release its import, or the
+                        // path stays in `importing` forever: a *retried* import
+                        // then reports `circular import detected` instead of the
+                        // real error, and any task parked on the rendezvous
+                        // waits for a body that will never finish.
+                        if matches!(frame.ret_action, ReturnAction::BuildModule(_)) {
+                            self.abort_module_frame(&frame, &exc);
+                        }
                         self.recycle(frame);
                     }
                     if self.task.frames.is_empty() {
@@ -2980,7 +3222,7 @@ impl Vm {
                                 self.exit_code = Some(code);
                             }
                         }
-                        return Some(self.uncaught_error(&exc));
+                        return Some(exc);
                     }
                 }
             }
@@ -3162,6 +3404,8 @@ fn get_iter(v: &Value) -> Result<Value, String> {
         Value::Dict(d) => IterState::Snapshot { items: d.borrow().keys(), idx: 0 },
         // A generator is its own iterator; ForIter resumes it directly.
         Value::Generator(_) => return Ok(v.clone()),
+        // So is a channel: `ForIter` recvs from it (and may park).
+        Value::Channel(_) => return Ok(v.clone()),
         Value::Iter(_) => return Ok(v.clone()),
         other => return Err(format!("'{}' object is not iterable", other.type_name())),
     };
@@ -3240,6 +3484,14 @@ fn iter_next(it: &Value) -> Result<Option<Value>, String> {
 /// Collect every element of an iterable into a vector (for unpacking, `*args`
 /// spreading, and `**` merging).
 pub fn iterate_to_vec(v: &Value) -> Result<Vec<Value>, String> {
+    // Draining a channel means blocking, and blocking means parking, which a
+    // native helper cannot do — the same rule that stops a builtin from
+    // draining a generator. `for msg in ch` is the way.
+    if matches!(v, Value::Channel(_)) {
+        return Err(
+            "a channel can only be iterated with `for`, because receiving may block".to_string()
+        );
+    }
     let it = get_iter(v)?;
     let mut out = Vec::new();
     while let Some(x) = iter_next(&it)? {
@@ -3447,6 +3699,13 @@ fn get_attr(obj: &Value, name: &str) -> Result<Value, String> {
         // A socket's `peer` and `local` are data attributes, not methods
         // (§4): they are strings read once when the socket was opened.
         Value::Stream(s) if s.has_addr_attr(name) => Ok(Value::str(s.addr_attr(name)?)),
+        // The concurrency surface is exactly four methods (§3). They bind here
+        // rather than through `builtins::method_exists` because the VM, not
+        // `call_method`, has to run them: each one may park.
+        Value::Task(_) if name == "join" => Ok(native_method(obj, name)),
+        Value::Channel(_) if matches!(name, "send" | "recv" | "close") => {
+            Ok(native_method(obj, name))
+        }
         _ => {
             if crate::builtins::method_exists(obj, name) {
                 Ok(Value::Method(Rc::new(BoundMethod {
@@ -3458,6 +3717,14 @@ fn get_attr(obj: &Value, name: &str) -> Result<Value, String> {
             }
         }
     }
+}
+
+/// A bound native method — one the VM or `builtins::call_method` will run.
+fn native_method(receiver: &Value, name: &str) -> Value {
+    Value::Method(Rc::new(BoundMethod {
+        receiver: receiver.clone(),
+        kind: MethodKind::Native(Rc::from(name)),
+    }))
 }
 
 /// Bind a looked-up class member to a receiver: a function becomes a bound

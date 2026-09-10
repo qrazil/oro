@@ -36,6 +36,9 @@ pub fn build_registry() -> HashMap<&'static str, Rc<Class>> {
         ("StopIteration", Some("Exception")),
         ("EOFError", Some("Exception")),
         ("CommandError", Some("Exception")),
+        // `ch.send` on a closed channel, and `ch.recv` on a closed *and drained*
+        // one (`docs/stdlib-server-design.md` §3).
+        ("ChannelClosed", Some("Exception")),
         ("OSError", Some("Exception")),
         ("FileNotFoundError", Some("OSError")),
         ("PermissionError", Some("OSError")),

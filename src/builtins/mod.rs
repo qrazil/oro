@@ -13,6 +13,13 @@ use std::rc::Rc;
 use crate::bigint::BigInt;
 use crate::value::{Builtin, OroDict, OroStr, RangeVal, VResult, Value};
 
+/// The body of a builtin the VM dispatches itself. Unreachable through the
+/// interpreter, which checks the name first; it exists so every global has the
+/// same `Value::Builtin` shape.
+fn bi_vm_dispatched(_args: Vec<Value>) -> VResult<Value> {
+    Err("internal: this builtin is dispatched by the VM".to_string())
+}
+
 /// Look up a global name. Oro's only globals are the builtins.
 pub fn lookup(name: &str) -> Option<Value> {
     let f: fn(Vec<Value>) -> VResult<Value> = match name {
@@ -43,6 +50,13 @@ pub fn lookup(name: &str) -> Option<Value> {
         "round" => bi_round,
         "chr" => bi_chr,
         "ord" => bi_ord,
+        // The two concurrency builtins. They are named here so `LoadGlobal`
+        // resolves them like any other global, but they never run as native
+        // functions: the VM intercepts both by name in `invoke`, because
+        // `spawn` builds a stack segment the VM owns and `chan` has to be
+        // dispatched alongside it. See `crate::vm::sched`.
+        "spawn" => bi_vm_dispatched,
+        "chan" => bi_vm_dispatched,
         _ => return None,
     };
     Some(Value::Builtin(Rc::new(Builtin { name: intern(name), func: f })))
@@ -78,6 +92,8 @@ fn intern(name: &str) -> &'static str {
         "round" => "round",
         "chr" => "chr",
         "ord" => "ord",
+        "spawn" => "spawn",
+        "chan" => "chan",
         _ => "builtin",
     }
 }

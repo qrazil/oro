@@ -74,6 +74,12 @@ pub enum Value {
     Regex(Rc<OroRegex>),
     /// A regex match, with group texts and their char-offset spans.
     Match(Rc<OroMatch>),
+    /// A green thread's handle, as returned by `spawn`. The stack segment it
+    /// names lives in the scheduler; this is only the outcome cell and the
+    /// joiner list. See `crate::task`.
+    Task(Rc<crate::task::TaskHandle>),
+    /// A channel, as returned by `chan`. See `crate::task`.
+    Channel(Rc<crate::task::Channel>),
     /// Internal sentinel for a local/cell slot that has not been assigned yet.
     /// Never reachable by user code: reading it raises a clean runtime error.
     Unbound,
@@ -427,6 +433,10 @@ impl Value {
             Value::Class(_) | Value::Super(_) => true,
             Value::Module(_) | Value::Stream(_) | Value::Generator(_) => true,
             Value::Regex(_) | Value::Match(_) => true,
+            // A task handle and a channel are objects, not containers: neither
+            // is ever falsy. `len(ch)` is how you ask whether a channel has
+            // anything buffered.
+            Value::Task(_) | Value::Channel(_) => true,
             // An instance is truthy unless its class defines a falsy __len__;
             // the VM overrides this when a __len__/__bool__ dunder is present.
             Value::Instance(_) => true,
@@ -459,6 +469,8 @@ impl Value {
             Value::Generator(_) => "generator",
             Value::Regex(_) => "Pattern",
             Value::Match(_) => "Match",
+            Value::Task(_) => "Task",
+            Value::Channel(_) => "Channel",
             Value::Unbound => "unbound",
         }
     }
@@ -565,6 +577,8 @@ impl Value {
             }
             Value::Module(m) => format!("<module '{}'>", m.name),
             Value::Stream(s) => s.repr(),
+            Value::Task(t) => format!("<task {}>", t.id),
+            Value::Channel(c) => c.repr(),
             Value::Unbound => "<unbound>".to_string(),
         }
     }

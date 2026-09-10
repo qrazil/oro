@@ -18,5 +18,6 @@ pub mod net;
 pub mod regexutil;
 pub mod parser;
 pub mod stream;
+pub mod task;
 pub mod value;
 pub mod vm;
