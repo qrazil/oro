@@ -36,7 +36,7 @@ except ValueError as e:
 # Last value wins, at the first key's position. Same as CPython, and the
 # same as `d[k] = v` twice.
 
-print(json.parse("{\"a\": 1, \"b\": 2, \"a\": 3}"))
+print(json.parse('{"a": 1, "b": 2, "a": 3}'))
 
 # --- 3. a lone surrogate is not a str Oro can hold -----------------------
 # `\ud83d` with no low surrogate decodes, in CPython, to a `str` holding an
@@ -44,9 +44,9 @@ print(json.parse("{\"a\": 1, \"b\": 2, \"a\": 3}"))
 # `str` is UTF-8, so there is no such value to produce and the escape is
 # rejected. A *pair* joins, as it must.
 
-print(json.parse("\"\\ud83d\\ude00\""))
+print(json.parse('"\\ud83d\\ude00"'))
 try:
-    json.parse("\"\\ud83d\"")
+    json.parse('"\\ud83d"')
 except ValueError as e:
     print("ValueError:", e)
 

@@ -221,7 +221,9 @@ Deliberately **absent**, each for a reason:
 The obvious next move is a mutable growable byte buffer. Do not make it.
 
 Oro already has a frozen idiom for building a string incrementally, and
-`std/json.oro` uses it on every code path: append to a list, `join` at the end.
+`std/http.oro` uses it on every code path: append to a list, `join` at the end.
+(`std/json.oro` used to be the example here, and was until its codec moved to
+Rust — see §5.)
 
 ```python
 out = []
@@ -607,7 +609,7 @@ parts.append(body)
 w.write(parts.join(b""))       # one call, one syscall
 ```
 
-`std/json.oro` already builds every string it produces this way. Batching in the
+`std/http.oro` builds every string it produces this way. Batching in the
 program is more explicit than batching in the runtime, it is visible at the call
 site, and it cannot be forgotten halfway — there is no state to leave dirty. The
 cost is that a program which really does want to dribble out many small writes
@@ -1587,15 +1589,22 @@ irrelevant next to the syscalls.
 | scheduler, `spawn`, channels, parking | the interpreter loop |
 | the reactor: mio readiness, and the timer list | `epoll_wait` and its timeout argument (§3) |
 | `sys.stdout`/`stderr`/`stdin` | fds |
+| `bytes.scan` | a character-class test over every byte of a field (added later; see below) |
+| the JSON codec (`_json`) | a parser *is* the per-byte loop, and a document has no policy in it (added later; see below) |
 
 **Oro (`std/`):**
 
 | Piece | Why |
 |---|---|
 | `io.copy`, and `io.read`'s general path | chunk-at-a-time loops over the protocol |
-| the entire HTTP layer | per-request, not per-byte |
+| the entire HTTP layer | per-request, not per-byte — *and* it is all policy |
 | `Request`, `Response`, headers, routing, keep-alive policy, chunked framing | policy |
 | status codes, date formatting, URL decoding | tables and small loops |
+| `json`'s surface: its two names, its defaults, its docstring | the API, which is not the loop |
+
+The last two rows of each table were not in the original split. They were added
+after the falsifiable test below fired; the subsection after next is the account
+of what that cost.
 
 ### There is no Rust `http` module, and there should never be one
 
@@ -1629,13 +1638,235 @@ hello-world request. If Oro-level head parsing is more than ~30% of per-request
 CPU, revisit — and the first thing to reach for is one more *generic* primitive
 (a multi-delimiter `bytes.scan`), not `http.parse_request`.
 
+### What the test found — and what it cost the section above
+
+The test was run. It fired twice, and both times the section above was wrong in
+a way worth writing down in full, because the corrections are more useful than
+the original.
+
+#### 1. `json` was on the wrong side of the line, and this section never noticed
+
+The rule at the top of §5 — *anything that touches every byte goes in Rust* —
+is right, and nothing below revises it. What was wrong is that **it was never
+applied to `json`**. Look at the two tables: `bytes` methods, `read_until`,
+whole-stream reads are all listed under Rust *because they are per-byte loops*.
+The Oro table lists "the entire HTTP layer" and "policy". `json` appears in
+neither. It was placed by analogy — §6 opens "in the style of `std/json.oro`" —
+and never measured against the rule that governs it.
+
+A JSON parser is a per-byte loop. It is the *definition* of one: dispatch on a
+byte, branch, advance, repeat. Written in Oro it measured:
+
+| payload | `json.parse` | CPython's C `json` | ratio |
+|---|---|---|---|
+| 976 B API-response object | 1.31 ms | 0.014 ms | **95×** |
+| 86 KB array of records | 122 ms | 1.26 ms | 97× |
+| 95 KB string-heavy | 96.7 ms | 0.354 ms | 274× |
+| 46 KB number-heavy | 68.1 ms | 0.657 ms | 108× |
+
+and `stringify` at 50× on the same small object. For a JSON API handler that is
+roughly **ten times as long in `json` as in the HTTP layer, the router and the
+interpreter combined** — it turns the language's share of a 5 ms database
+request from about 2% to about 26%.
+
+**Could a generic primitive have saved it?** This is the option the section
+above prescribes, and it was measured before anything else was chosen. Hand an
+Oro loop a token list *already materialised* — no scanning of any kind left to
+do, no cost for the primitive, the tokeniser is free — and merely dispatching on
+each token and appending it costs **0.120 ms** for the 976-byte document, or
+**8.8× what CPython's C `json` takes to do the whole job**. A real parser must
+also nest, allocate dicts and build keys, so 2–3× that is the honest floor.
+
+That is the general shape of the answer and it is worth stating as a rule of its
+own: **a generic primitive can only remove the scanning. It cannot remove the
+structure building, and for a format whose output is a tree, the structure
+building is the larger half.** `bytes.scan` moves JSON from 95× to something
+like 25×. It does not reach parity, and it never could.
+
+So the parser is Rust now: `src/json.rs`, with `std/json.oro` reduced to the
+module's surface, its documentation, its defaults and two forwarding calls into
+an underscored `_json` — the `_io` arrangement, including the rule that an
+underscored built-in resolves only from inside a stdlib module body, so user
+code cannot reach it and it is not frozen at 1.0.
+
+| payload | parse | vs CPython | stringify | vs CPython |
+|---|---|---|---|---|
+| 976 B object | 0.016 ms | 1.15× | 0.009 ms | **0.54×** |
+| 86 KB array | 1.85 ms | 1.47× | 0.84 ms | **0.56×** |
+| 1.2 KB, 200 deep | 0.052 ms | 2.22× | 0.011 ms | **0.25×** |
+| 95 KB strings | 0.305 ms | **0.86×** | 0.106 ms | **0.29×** |
+| 46 KB numbers | 0.158 ms | **0.24×** | 1.09 ms | 0.85× |
+
+#### 2. Why that does not reopen the case for a Rust `http` module
+
+The obvious reading of the above is that the next section is now due for the
+same treatment. It is not, and the reason is not the one that first suggests
+itself.
+
+**The tempting argument, which does not hold up.** *JSON is a single frozen
+universal format — RFC 8259 and ECMA-404, and there will not be a version 2 —
+whereas HTTP is a versioned protocol with extensions and evolving semantics. So
+freezing JSON into a runtime is safe in a way freezing HTTP is not.* Both halves
+of that are true and it is still not the load-bearing distinction, for three
+reasons:
+
+- **What a native module freezes is the API, not the format** — and `json`'s API
+  was frozen the moment `std/json.oro` shipped. `parse`/`stringify`, the
+  `indent=null` default, str-keys-only, ValueError-with-an-offset: all of it was
+  already promised at 1.0. Moving the implementation under that promise adds
+  nothing to freeze.
+- **JSON's grammar is frozen; JSON's semantics are not.** RFC 8259 leaves
+  duplicate keys, number precision, lone surrogates and nesting limits to the
+  implementation. Those are exactly the decisions this change baked into Rust —
+  so "it cannot change" is, strictly, false about the parts that matter most.
+  (They were equally baked into `std/json.oro`; the point is only that format
+  stability is not the reason this is safe.)
+- **It proves too much.** Suppose HTTP/1.1 were frozen forever tomorrow. Would a
+  Rust `http` module then be correct? No — for reasons that have nothing to do
+  with versioning, below.
+
+**The distinction that does hold** is the two-part test the rule already
+contains, applied honestly to each:
+
+| | is it a per-byte loop? | does it carry policy? |
+|---|---|---|
+| `json` | **yes** — dispatch per byte, all the way down | **no** — a document has exactly one reading |
+| `http` | **no** — the head decomposes into three generic `bytes` calls plus per-*line* Oro work | **yes** — keep-alive, framing, what to reject, what a 400 says |
+
+Both answers have to point the same way before a thing moves. JSON passes both:
+it is the loop the rule names, and there is no decision in it a program could
+want to make differently — a JSON document means one thing, so a native codec
+takes nothing away from anyone. HTTP fails both: the measurement below shows the
+head parse really is a handful of Rust calls with Oro in between, and, more
+importantly, **an HTTP layer is a pile of policy** — whether to accept obsolete
+line folding, whether a request with both `Content-Length` and
+`Transfer-Encoding` is a 400 or a resolution, how long a header block may be,
+when a connection is reused. Every one of those is a judgement a server author
+must be able to read, disagree with and change. Freezing them into the binary
+takes the argument away from the person who has to answer for it, and *that*, not
+the version number on the RFC, is why there is no Rust `http` module and there
+should never be one.
+
+The one place the "frozen format" argument is worth anything: it means the Rust
+codec will never need to change to track the spec, so the usual maintenance
+objection to native code does not apply here. Supporting evidence, not the
+reason.
+
+#### 3. The 30% threshold fired for `http` too — and asked for the wrong primitive
+
+Profiled on a realistic 430-byte head (eight headers, a long `User-Agent`, a
+long `Accept`, a cookie):
+
+| | per request | share |
+|---|---|---|
+| `read_request` total | 199.6 µs | |
+| ` _is_field_value` | 84.2 µs | **42%** |
+| ` _is_token` | 23.5 µs | 12% |
+| ` _is_target` | 8.5 µs | 4% |
+| ` find(b":")` per line | 2.9 µs | 1% |
+| ` lower()`/`strip()`/`to_str()` | 6.5 µs | 3% |
+| ` read_until` + `split` | 4.4 µs | 2% |
+
+**58% in three `for c in b` loops**, against a stated threshold of 30%. The
+section above was right that this would be the trigger and right that the answer
+is a generic primitive — and wrong about *which* primitive. It predicted a
+multi-delimiter scan, by analogy with `find`. But the parser was not looking for
+delimiters; it was asking the opposite question, **"is every byte of this field
+in the class the grammar allows"**, which no `find` of any arity can answer.
+
+`bytes.scan(allowed)` — the number of bytes at the front of `b` that are all in
+the set `allowed` — answers both. `b.scan(set) == len(b)` is the class check;
+`b.scan(everything_but_the_delimiters)` returns the first delimiter's index and
+is the multi-delimiter find this section asked for. One primitive, both jobs,
+and it still knows nothing about HTTP: the set is the caller's.
+
+    read_request   199.6 µs → 76.4 µs   (−62%)
+
+Two lessons, and the second is the transferable one. First, the threshold worked
+exactly as designed: it named a number, the number was measured, it fired, and
+the answer was a building block rather than a protocol module. Second, **a
+design document can be right that a primitive is needed and wrong about what it
+is.** The only way to find out which one is to profile, and the profile has to
+be of real input — a hello-world request has two short headers and would have
+put the validation loops at a fraction of what a browser's request puts them at.
+
+#### 4. A codec in the runtime parses hostile input, and needs a limit
+
+One thing genuinely does change when a loop moves from Oro to Rust, and §5 did
+not anticipate it. An Oro-level parser recursed through *Oro* frames, so runaway
+nesting hit `MAX_FRAMES` and became a clean `RuntimeError` — the VM's guard
+covered the standard library for free. A Rust parser has no such guard, and the
+input comes off a socket.
+
+The discipline is the one the VM already keeps: **the codec never recurses into
+the Rust stack.** Both directions walk an explicit stack, so a document nested a
+million deep is a heap allocation per level and never a frame.
+
+That is necessary and not sufficient, because heap is also finite and the client
+is choosing how much of it to ask for: one byte of `[` buys a container, so an
+unbounded parser turns a 200 KB request into 200 000 live `Rc` allocations, a
+32x amplification from input the read limit already permitted. So there is a cap
+— **10 000 open containers** — chosen this way:
+
+- Above anything real by three orders of magnitude. Deployed JSON does not nest
+  past about thirty.
+- The same order as CPython's own ceiling, so a document CPython reads Oro
+  reads. (CPython's C accelerator takes 5 000 and raises `RecursionError` at
+  20 000.)
+- It also bounds the one place a native codec *still* touches the Rust stack:
+  dropping the finished value. `Value`'s `Drop` is recursive, so a 10 000-deep
+  result is what has to unwind, and that fits the main stack comfortably.
+
+**This is a behaviour change and it is worth saying so plainly.** Documents
+nested between 10 001 and roughly 66 000 deep used to parse and now do not. The
+old ceiling was not a number anyone chose — it fell out of `MAX_FRAMES / 3` —
+and the new one is. Past the cap, `parse` raises `ValueError` naming the
+position, like every other malformed input, *specifically* so that a handler
+which turns `ValueError` into 400 keeps turning this into 400 rather than
+falling through to a 500. `stringify`'s cap is the other way round: a structure
+too deep to write, or one containing itself, is the program's own data and not
+input, so it keeps the `RuntimeError: maximum recursion depth exceeded` the Oro
+encoder produced, and an existing `except RuntimeError` still catches it.
+
+The transferable rule: **moving a loop into the runtime moves its failure modes
+into the runtime too.** Whatever the VM was doing for that code by accident, the
+native version has to do on purpose.
+
+#### 5. And a general finding that outlived the JSON question
+
+Two measurements came out of this that are about the *language*, not about JSON,
+and both matter more than the module did.
+
+**`s[i:j]` was O(len(s)), not O(j−i).** Every string slice collected the whole
+string into a `Vec<char>` and then materialised one index per selected element,
+so any loop that walks a large string a token at a time was quadratic.
+`std/json.oro`'s number parser paid it on every literal: 9722 four-character
+slices of a 38 KB string cost 496 ms, and JSON parsing of number-heavy input ran
+at 8.3 µs/byte at 8000 elements against 3.5 µs/byte at 1000 — superlinear, from
+what should have been an O(1) operation. The unit-step slice is now a byte-range
+copy (`496 ms → 3.47 ms`, 143×), which also makes number-heavy JSON linear
+again. This affected every text-processing program in the language and nothing
+in the suite would have caught it, because no benchmark slices a large string in
+a loop.
+
+**An instance attribute costs 2× a local.** `std/json.oro` held its cursor in
+`self.pos` and its own comment blamed Oro's lack of `nonlocal`. Measured
+directly — the same counting loop, once through `self.pos` and once through a
+local — the attribute version is **2.07×** slower. That is not a JSON fact; it
+is a fact about `LoadAttr` hashing a name into an instance's field map on every
+read and every write, and it is the standing argument for item 2 in
+`bench/RESULTS.md`'s remaining list (an inline cache for `LoadAttr`). Any Oro
+program written in the obvious object-oriented style is paying it.
+
 ---
 
 ## 6. The HTTP layer, in Oro
 
-`std/http.oro`, in the style of `std/json.oro`: a state-holding class for the
-parser (because Oro cannot rebind a captured variable from a nested function),
-plain functions for everything else, no cleverness.
+`std/http.oro`, in the style `std/json.oro` had when this was written: a
+state-holding class for the parser (because Oro cannot rebind a captured
+variable from a nested function), plain functions for everything else, no
+cleverness. `json`'s parser has since moved to Rust and `http`'s has not, and §5
+is the argument for why those are the right two answers to the same question.
 
 **Built, and closer to this sketch than not.** Three differences worth knowing.
 `_serve_conn` and `_should_keep_alive` shipped *public*, as `serve_conn` and
@@ -1967,6 +2198,17 @@ These are the load-bearing spellings. Getting one wrong is expensive forever.
   meaning.
 - **`read_until(delim, limit)`** as a method on every reader, delimiter included
   in the result, `ValueError` at the limit.
+- **`bytes.scan(allowed)`**, the count of leading bytes that are all in the
+  given octet set. It is small, generic and load-bearing (§5): it is what makes
+  a grammar's character classes affordable in Oro, and `b.scan(set) == len(b)`
+  is the spelling every caller will use. `bytes` only, not `str`.
+- **`json.parse(text)` / `json.stringify(value, indent=null)`**, and with them:
+  `str` in and out (never octets — the decode is `.to_str()`, in the open), str
+  dict keys only, `ValueError` naming the character offset, an int/float split
+  decided by whether the literal holds `.`, `e` or `E`, and integers of
+  arbitrary size. The *implementation* moved to Rust after 1.0's shape was
+  already fixed (§5), which is exactly why moving it changed nothing here: the
+  surface was frozen before the loop was.
 - **The three names in `io`**: `io.read(r, n=null)`, `io.copy(dst, src)`,
   `io.buffer(b=b"")`. A module this small is only defensible if it stays this
   small; every addition after 1.0 is permanent.
@@ -2001,6 +2243,15 @@ These are the load-bearing spellings. Getting one wrong is expensive forever.
   what makes them safe to change; it is also why exposing any of them later would
   be a new API rather than a tuning knob.
 - **Buffer sizes and timeout defaults** — tunable, not API.
+- **The underscored built-in modules** (`_io`, `_json`) — they resolve only from
+  inside a stdlib module body, so they are not language surface and nothing can
+  depend on them. That is the whole point of the underscore rule: it lets the
+  Rust/Oro line move, as it moved for `json`, without moving anything a program
+  can see.
+- **`json`'s nesting cap of 10 000 containers** — a safety limit on hostile
+  input, not a promise about the format. It can rise or fall; no real document
+  approaches it. What *is* frozen is that exceeding it is a `ValueError` like
+  any other malformed input, so a handler that answers 400 keeps answering 400.
 - **`"rw"`, `seek` and `tell`** — deferred out of M0–M6 deliberately, but unlike
   everything else on this list they are *intended*, and intended before 1.0
   rather than after it (§2). They are unfrozen because they are not designed

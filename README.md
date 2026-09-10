@@ -186,8 +186,10 @@ Implemented and working today:
 - **`global`** for mutating module-level state from a function.
 - **Modules:** `import a.b.c` / `import x as y`, built-in `sys`, `os`, `time`,
   `re`, and `proc`; `io`, `json` and `http`, which are written in Oro and
-  shipped as source inside the binary; and user modules loaded from the
-  script's directory (run once, cached).
+  shipped as source inside the binary (`json`'s codec is the one place a
+  stdlib module reaches into Rust for more than a constructor — parsing JSON is
+  a per-byte loop, and per-byte loops are Rust's half of the boundary); and user
+  modules loaded from the script's directory (run once, cached).
 - **Byte streams:** `open(path, mode)` (`r`/`w`/`a`, and every one of them
   **bytes**) returning a stream with `read(n)`/`write(b)`, plus
   `read_until(delim, limit)` and `close()`; `io.read`, `io.copy` and
@@ -489,9 +491,9 @@ language disagreed with the format its own standard library writes.
 
 **This changes output, not just source.** `repr` and `str` of a bool and of
 `null` change everywhere they appear: at the top level, inside containers, in
-f-strings, and in `json`. In exchange, `std/json.oro`'s translation layer is
-gone — `_bool_word` and a hard-coded `"null"` collapsed into `v.to_str()`,
-because the value's own text *is* the wire form now, in both directions.
+f-strings, and in `json`. In exchange, the JSON encoder's translation layer is
+gone — `_bool_word` and a hard-coded `"null"` collapsed into the value's own
+text, because that text *is* the wire form now, in both directions.
 
 `True`, `False` and `None` are rejected at the word, by the lexer, naming the
 replacement — never quietly treated as ordinary names that fail as a `NameError`
@@ -720,8 +722,12 @@ Locked design decisions, and what each one buys:
 
 A small set of modules ships in Rust, because each of them is a syscall or a
 per-byte loop. Everything else is written in Oro and shipped as source baked
-into the binary — `json` and `io` are there today, and that is the intended
-growth path for the standard library, not a temporary arrangement.
+into the binary — `io`, `json` and `http` are there today, and that is the
+intended growth path for the standard library, not a temporary arrangement. The
+line between the two is measured, not asserted: `json` shipped as pure Oro,
+measured 95x CPython's C codec, and its per-byte loop moved to Rust while the
+module stayed where it was. `docs/stdlib-server-design.md` §5 has the rule, the
+measurement, and the reason the same argument does not move `http`.
 
 - **`sys`** — `argv` (`argv[0]` is the script), `exit(code)` (raises
   `SystemExit`; sets the process exit status if uncaught), `platform`, and
@@ -983,9 +989,10 @@ Stated plainly:
   written in Oro, later. Modules resolve against the one documented search path
   (the script's directory) with no runtime path changes.
 - **The stdlib is deliberately small.** `io`, `json` and `http` ship, written
-  in Oro; data structures like a `Set` class and modules like `csv` are the
-  intended growth area — written in Oro on top of the frozen core, not baked
-  into it.
+  in Oro on top of the frozen core (with `json`'s per-byte codec in Rust
+  underneath it, and `io`'s two primitives likewise); data structures like a
+  `Set` class and modules like `csv` are the intended growth area — written in
+  Oro, not baked into the runtime.
 
 ## The corpus: CPython as an oracle
 

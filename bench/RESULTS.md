@@ -27,6 +27,7 @@ harness checks oro and CPython agree before reporting a time.
 | `listbuild` | 400k list appends, then indexed read-modify-write |
 | `builtins` | 4 global lookups + 4 native calls per iteration, 300k iterations |
 | `chain` | the collection protocol (`.filter`/`.map`/`.reduce` with `=>`) — oro-only, CPython twin in `chain.py` |
+| `json` | `json.parse` + `json.stringify` over five payload shapes — oro-only, CPython twin in `json_twin.py` |
 
 ## Where things stand
 
@@ -44,6 +45,11 @@ Best-of-5, against the pre-optimization baseline further down.
 | listbuild | 0.416s | **0.302s** | **-27%** | 2.39x → **1.72x** |
 | builtins | 0.265s¹ | **0.233s** | **-12%** | 1.10x → **0.95x** |
 | chain | 0.220s | **0.148s** | **-33%** | 3.67x → **2.47x** |
+| json | 6.52s² | **0.101s** | **-98%** | 42x → **0.65x** |
+
+² `json` was added last, for the same reason `builtins` was: nothing in the
+suite touched the standard library's own hot path, so nobody had measured it.
+Its "baseline" is the Oro-written codec it replaced. See the section below.
 
 ¹ `builtins` was added part-way through (step 10 explains why); its "baseline"
 is its first measurement, taken before the change it motivated.
@@ -361,6 +367,99 @@ make one faster.
 The real cost in `oo` is elsewhere anyway: `LoadAttr` still allocates an
 `Rc<BoundMethod>` for every method access, which the next section discusses.
 
+## `json`, and the hole that let it ship at 95x
+
+The suite had a second hole, of the same shape as the one `builtins` closed and
+much larger. Nothing exercised the standard library's own hot path, so nobody
+measured `std/json.oro` — a character-at-a-time parser written in Oro — until a
+server benchmark made it obvious. It was **95x** CPython's C `json` to parse a
+1 KB payload and about **50x** to emit one, which is more CPU than the HTTP
+layer, the router and the interpreter put together for a JSON API handler.
+
+`json` was added to close that hole permanently, and then the codec moved to
+Rust (`docs/stdlib-server-design.md` §5 is the argument, and the honest account
+of how the design document put it on the wrong side of its own rule).
+
+| | oro | CPython | oro/CPython |
+|---|---|---|---|
+| `json`, Oro codec | 6.52s | 0.155s | 42x |
+| `json`, Rust codec | **0.101s** | 0.155s | **0.65x** |
+
+Per operation, best-of-many on a warm cache:
+
+| payload | parse before | parse after | vs CPython | stringify after | vs CPython |
+|---|---|---|---|---|---|
+| 976 B object | 1.31 ms | **0.016 ms** | 1.15x | **0.009 ms** | **0.54x** |
+| 86 KB array | 122 ms | **1.85 ms** | 1.47x | **0.84 ms** | **0.56x** |
+| 1.2 KB, 200 deep | 2.18 ms | **0.052 ms** | 2.22x | **0.011 ms** | **0.25x** |
+| 95 KB strings | 96.7 ms | **0.305 ms** | **0.86x** | **0.106 ms** | **0.29x** |
+| 46 KB numbers | 68.1 ms | **0.158 ms** | **0.24x** | **1.09 ms** | 0.85x |
+
+Two things found on the way there are about the *language*, not about JSON, and
+both are worth more than the module was.
+
+### `s[i:j]` was O(len(s))
+
+Every string slice collected the whole string into a `Vec<char>` and then built
+a `Vec<usize>` holding one index per selected element — so an O(slice) operation
+cost O(string), and any loop walking a large string a token at a time was
+quadratic. Nothing in this suite slices a large string in a loop, so nothing
+caught it.
+
+| | before | after |
+|---|---|---|
+| 9722 four-character slices of a 38 KB string | 496 ms | **3.47 ms** (143x) |
+| `json.parse` of 38 KB of integers | 323 ms | **76 ms** |
+| ...and its scaling, 1000 -> 8000 elements | 3.5 -> 8.3 us/byte | **2.9 -> 1.95 us/byte** |
+
+The `step == 1` case is now a byte-range copy: O(1) index arithmetic for ASCII,
+one walk to the end offset otherwise. `bytes`, `list` and `tuple` got the same
+treatment. Verified against CPython on 1205 slice cases, byte-identical.
+
+### An instance attribute costs 2.07x a local
+
+`std/json.oro` held its parse cursor in `self.pos`, and its own comment blamed
+Oro's lack of `nonlocal`. Measured directly — the same 2M-iteration counting
+loop, once through `self.pos` and once through a local, in the same program:
+
+| | time |
+|---|---|
+| `while self.pos < n: self.pos = self.pos + 1` | 562.9 ms |
+| `while pos < n: pos = pos + 1` | 271.4 ms |
+| ratio | **2.07x** |
+
+That is a general fact about Oro, not about JSON: `LoadAttr` hashes the name
+into the instance's field map on every read *and* every write. It is the
+standing argument for item 2 below, and it is being paid by every program
+written in the obvious object-oriented style — `oo` measures the method-call
+half of it, and nothing measures this half.
+
+### What the JSON work cost the rest of the suite
+
+Nothing, and if anything the reverse. Measured interleaved A/B against the
+pre-change binary — the two alternate on every repetition, which one goes first
+alternates too, pinned to one core, best-of-13:
+
+| bench | before | after | Δ min | Δ median |
+|---|---|---|---|---|
+| `fib` | 0.2015 | 0.2036 | +1.08% | +0.02% |
+| `loop` | 0.7765 | 0.7518 | −3.19% | −1.65% |
+| `strjoin` | 0.1494 | 0.1491 | −0.21% | +0.18% |
+| `strops` | 0.3591 | 0.3542 | −1.38% | −1.20% |
+| `dictops` | 0.4424 | 0.4435 | +0.26% | −0.94% |
+| `oo` | 0.4014 | 0.3964 | −1.24% | −1.86% |
+| `genpipe` | 0.2020 | 0.2004 | −0.77% | −0.42% |
+| `exc` | 0.1645 | 0.1620 | −1.54% | −1.14% |
+| `listbuild` | 0.3722 | 0.3620 | −2.72% | −3.24% |
+| `builtins` | 0.2957 | 0.2879 | −2.64% | −1.36% |
+| `chain` | 0.1875 | 0.1863 | −0.63% | −1.62% |
+| **mean** | | | **−1.18%** | **−1.20%** |
+
+Read against this machine's A/A floor, which the mio section below records as
+mean +0.19% and worst 1.80% pinned (and up to +5% un-pinned). Every benchmark
+is inside that band or on the good side of it, so the honest reading is "no
+change, possibly a small win from the slice path" rather than a claimed 1.2%.
+
 ## What is left, ranked
 
 1. **A `LoadMethod` / `CallMethod` pair.** `obj.m(x)` allocates an
@@ -381,6 +480,14 @@ The real cost in `oo` is elsewhere anyway: `LoadAttr` still allocates an
    mutation, is the standard fix. Harder than the `LoadGlobal` cache because
    instance fields are mutable and can shadow a class member, so the fast path
    has to stay correct when a field appears later. Estimate 10% on `oo`.
+
+   **This is now measured, and it is bigger than that estimate suggests.** A
+   loop through `self.pos` is 2.07x the same loop through a local (above). `oo`
+   sees the method-call side of attribute access; nothing in the suite is a
+   tight loop over a *field*, which is what a parser, a state machine or an
+   accumulator class actually is. The estimate is for `oo`; the cost to idiomatic
+   Oro is larger, and it is the reason `std/json.oro`'s author reached for a
+   class and then paid 2x for it.
 
 3. **Superinstructions.** The `loop` benchmark runs 13 instructions per
    iteration; fusing `LoadFast`+`LoadFast`+`BinAdd` and
