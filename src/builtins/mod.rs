@@ -13,6 +13,7 @@ use std::fmt::Write as _;
 use std::rc::Rc;
 
 use crate::bigint::BigInt;
+use crate::exc::{index_error, key_error, runtime_error, type_error, value_error, VErr};
 use crate::value::{
     Builtin, OroDict, OroList, OroStr, OroTuple, RangeVal, TypeTag, VResult, Value,
 };
@@ -21,7 +22,7 @@ use crate::value::{
 /// interpreter, which checks the name first; it exists so every global has the
 /// same `Value::Builtin` shape.
 fn bi_vm_dispatched(_args: Vec<Value>) -> VResult<Value> {
-    Err("internal: this builtin is dispatched by the VM".to_string())
+    Err(runtime_error("internal: this builtin is dispatched by the VM"))
 }
 
 /// Look up a global name. Oro's only globals are the builtins.
@@ -91,7 +92,7 @@ fn intern(name: &str) -> &'static str {
 
 pub(crate) fn exactly(args: &[Value], n: usize, who: &str) -> VResult<()> {
     if args.len() != n {
-        Err(format!("{who}() takes {n} argument(s) but {} were given", args.len()))
+        Err(type_error(format!("{who}() takes {n} argument(s) but {} were given", args.len())))
     } else {
         Ok(())
     }
@@ -101,10 +102,10 @@ pub(crate) fn exactly(args: &[Value], n: usize, who: &str) -> VResult<()> {
 /// ignores answers confidently and wrongly, which is worse than refusing.
 fn at_most(args: &[Value], n: usize, who: &str) -> VResult<()> {
     if args.len() > n {
-        Err(format!(
+        Err(type_error(format!(
             "{who}() takes at most {n} argument(s) but {} were given",
             args.len()
-        ))
+        )))
     } else {
         Ok(())
     }
@@ -133,7 +134,10 @@ fn bi_len(args: Vec<Value>) -> VResult<Value> {
         Value::Tuple(t) => t.len(),
         Value::Dict(d) => d.borrow().len(),
         Value::Range(r) => r.len(),
-        other => return Err(format!("object of type '{}' has no len()", other.type_name())),
+        other => return Err(type_error(format!(
+            "object of type '{}' has no len()",
+            other.type_name()
+        ))),
     };
     Ok(Value::Int(n as i64))
 }
@@ -144,10 +148,10 @@ fn bi_repr(args: Vec<Value>) -> VResult<Value> {
 }
 
 fn bi_set(_args: Vec<Value>) -> VResult<Value> {
-    Err("set() is not supported in Oro — sets are cut. Use a dict for membership \
+    Err(runtime_error("set() is not supported in Oro — sets are cut. Use a dict for membership \
          (`{k: True}`, then `k in d`), or dedup with a loop that skips keys already in a dict; \
          a Set data structure may return in the stdlib."
-        .to_string())
+        ))
 }
 
 fn bi_open(args: Vec<Value>) -> VResult<Value> {
@@ -155,8 +159,8 @@ fn bi_open(args: Vec<Value>) -> VResult<Value> {
     let (path, mode) = match args.as_slice() {
         [Value::Str(p)] => (p.s.clone(), "r".to_string()),
         [Value::Str(p), Value::Str(m)] => (p.s.clone(), m.s.clone()),
-        [_] | [_, _] => return Err("open() arguments must be strings".to_string()),
-        _ => return Err("open() takes 1 or 2 arguments".to_string()),
+        [_] | [_, _] => return Err(type_error("open() arguments must be strings")),
+        _ => return Err(type_error("open() takes 1 or 2 arguments")),
     };
     let io_err = |e: std::io::Error| crate::vm::modules::io_err(&e, &path);
     let stream = match mode.as_str() {
@@ -168,13 +172,15 @@ fn bi_open(args: Vec<Value>) -> VResult<Value> {
         // kind. The error names the replacement rather than quietly accepting
         // it (see `docs/stdlib-server-design.md` §2).
         "rb" | "wb" | "ab" => {
-            return Err(format!(
+            return Err(value_error(format!(
                 "invalid file mode '{mode}' — open() has no 'b' suffix because there is no text \
                  mode to contrast with: every stream in Oro is bytes. Use '{}'.",
                 &mode[..1]
-            ))
+            )))
         }
-        other => return Err(format!("invalid file mode '{other}' (use 'r', 'w', or 'a')")),
+        other => return Err(value_error(format!(
+            "invalid file mode '{other}' (use 'r', 'w', or 'a')"
+        ))),
     };
     Ok(Value::Stream(Rc::new(stream)))
 }
@@ -201,7 +207,7 @@ fn bi_abs(args: Vec<Value>) -> VResult<Value> {
         }),
         Value::Big(b) => Ok(Value::from_bigint(b.abs())),
         Value::Float(f) => Ok(Value::Float(f.abs())),
-        other => Err(format!("bad operand type for abs(): '{}'", other.type_name())),
+        other => Err(type_error(format!("bad operand type for abs(): '{}'", other.type_name()))),
     }
 }
 
@@ -217,12 +223,13 @@ fn bi_max(args: Vec<Value>) -> VResult<Value> {
 /// with several it ranges over the arguments themselves.
 fn fold_extreme(args: Vec<Value>, who: &str, want: std::cmp::Ordering) -> VResult<Value> {
     let items = match args.len() {
-        0 => return Err(format!("{who}() expected at least 1 argument")),
+        0 => return Err(value_error(format!("{who}() expected at least 1 argument"))),
         1 => crate::vm::iterate_to_vec(&args[0])?,
         _ => args,
     };
     let mut it = items.into_iter();
-    let mut best = it.next().ok_or_else(|| format!("{who}() arg is an empty sequence"))?;
+    let mut best =
+        it.next().ok_or_else(|| value_error(format!("{who}() arg is an empty sequence")))?;
     for v in it {
         if ord_or_defer(&v, &best, if want == std::cmp::Ordering::Less { "<" } else { ">" })?
             == want
@@ -237,7 +244,7 @@ fn bi_sum(args: Vec<Value>) -> VResult<Value> {
     let (iterable, start) = match args.as_slice() {
         [it] => (it, Value::Int(0)),
         [it, start] => (it, start.clone()),
-        _ => return Err("sum() takes 1 or 2 arguments".to_string()),
+        _ => return Err(type_error("sum() takes 1 or 2 arguments")),
     };
     let mut acc = start;
     for v in crate::vm::iterate_to_vec(iterable)? {
@@ -249,7 +256,7 @@ fn bi_sum(args: Vec<Value>) -> VResult<Value> {
 fn bi_sorted(args: Vec<Value>) -> VResult<Value> {
     let iterable = match args.as_slice() {
         [it] => it,
-        _ => return Err("sorted() takes exactly 1 argument".to_string()),
+        _ => return Err(type_error("sorted() takes exactly 1 argument")),
     };
     let shape = sorted_shape_of(iterable);
     let mut items = crate::vm::iterate_to_vec(iterable)?;
@@ -310,7 +317,7 @@ pub const ORD_NEEDS_VM: &str = "internal: ordering needs the VM (unrouted __lt__
 /// [`Value::try_compare`] with "the VM must decide" turned into the backstop
 /// error above, for the native orderings that have no way to suspend.
 pub fn ord_or_defer(a: &Value, b: &Value, sym: &'static str) -> VResult<std::cmp::Ordering> {
-    a.try_compare(b, sym)?.ok_or_else(|| ORD_NEEDS_VM.to_string())
+    a.try_compare(b, sym)?.ok_or_else(|| runtime_error(ORD_NEEDS_VM))
 }
 
 /// Stable sort of `items` by the matching entry in `keys` (the classic
@@ -320,7 +327,7 @@ pub fn ord_or_defer(a: &Value, b: &Value, sym: &'static str) -> VResult<std::cmp
 /// sorted output instead would flip ties and break that.
 pub fn sort_by_keys(items: Vec<Value>, keys: &[Value], reverse: bool) -> VResult<Vec<Value>> {
     let mut idx: Vec<usize> = (0..items.len()).collect();
-    let mut err: Option<String> = None;
+    let mut err: Option<VErr> = None;
     idx.sort_by(|&a, &b| {
         if err.is_some() {
             return std::cmp::Ordering::Equal;
@@ -346,7 +353,7 @@ pub fn sort_by_keys(items: Vec<Value>, keys: &[Value], reverse: bool) -> VResult
 /// tripped, treat every remaining comparison as `Equal` so the sort finishes
 /// quickly before we surface the error.
 fn sort_values(items: &mut [Value]) -> VResult<()> {
-    let mut err: Option<String> = None;
+    let mut err: Option<VErr> = None;
     items.sort_by(|a, b| {
         if err.is_some() {
             return std::cmp::Ordering::Equal;
@@ -371,7 +378,7 @@ fn as_i64(v: &Value) -> VResult<i64> {
     match v {
         Value::Bool(b) => Ok(*b as i64),
         Value::Int(i) => Ok(*i),
-        other => Err(format!("expected an integer, got '{}'", other.type_name())),
+        other => Err(runtime_error(format!("expected an integer, got '{}'", other.type_name()))),
     }
 }
 
@@ -404,7 +411,7 @@ fn parse_int_str(s: &str) -> VResult<Value> {
     };
     match BigInt::parse_decimal(digits) {
         Some(b) => Ok(Value::from_bigint(if neg { b.neg() } else { b })),
-        None => Err(format!("invalid literal for int(): '{s}'")),
+        None => Err(value_error(format!("invalid literal for int(): '{s}'"))),
     }
 }
 
@@ -415,7 +422,7 @@ fn parse_int_str(s: &str) -> VResult<Value> {
 /// agrees with `base`, and underscore separators — matching CPython.
 fn parse_int_base(s: &str, base: i64) -> VResult<Value> {
     if base != 0 && !(2..=36).contains(&base) {
-        return Err("int() base must be >= 2 and <= 36, or 0".to_string());
+        return Err(runtime_error("int() base must be >= 2 and <= 36, or 0"));
     }
     let t = s.trim();
     let (neg, t) = match t.strip_prefix('-') {
@@ -432,11 +439,11 @@ fn parse_int_base(s: &str, base: i64) -> VResult<Value> {
     };
     let cleaned: String = digits.chars().filter(|c| *c != '_').collect();
     if cleaned.is_empty() {
-        return Err(format!("invalid literal for int() with base {base}: '{s}'"));
+        return Err(value_error(format!("invalid literal for int() with base {base}: '{s}'")));
     }
     match i64::from_str_radix(&cleaned, base as u32) {
         Ok(n) => Ok(Value::Int(if neg { -n } else { n })),
-        Err(_) => Err(format!("invalid literal for int() with base {base}: '{s}'")),
+        Err(_) => Err(value_error(format!("invalid literal for int() with base {base}: '{s}'"))),
     }
 }
 
@@ -452,11 +459,11 @@ fn parse_int_base(s: &str, base: i64) -> VResult<Value> {
 /// It also removes a whole error class by construction: a conversion needs
 /// something to convert, so there is no zero-argument form to confuse with
 /// building an empty collection. For that, write the literal.
-fn type_name_is_not_callable(who: &str, method: &str, literal: &str) -> String {
-    format!(
+fn type_name_is_not_callable(who: &str, method: &str, literal: &str) -> VErr {
+    type_error(format!(
         "{who}() is not callable in Oro — write `x.{method}()` to convert a value, or the \
          literal `{literal}` to build an empty one."
-    )
+    ))
 }
 
 /// Calling a type keyword: `range(3)`, and the refusals.
@@ -475,10 +482,10 @@ pub fn call_type(t: TypeTag, args: Vec<Value>) -> VResult<Value> {
                 [stop] => (0, *stop, 1),
                 [start, stop] => (*start, *stop, 1),
                 [start, stop, step] => (*start, *stop, *step),
-                _ => return Err("range() takes 1 to 3 integer arguments".to_string()),
+                _ => return Err(type_error("range() takes 1 to 3 integer arguments")),
             };
             if step == 0 {
-                return Err("range() step argument must not be zero".to_string());
+                return Err(value_error("range() step argument must not be zero"));
             }
             Ok(Value::Range(Rc::new(RangeVal { start, stop, step })))
         }
@@ -492,16 +499,17 @@ pub fn call_type(t: TypeTag, args: Vec<Value>) -> VResult<Value> {
         // No `to_tuple` to point at: a tuple is a literal, and the one
         // conversion that would want a constructor (`list` to `tuple`) has no
         // caller in the tree. The message names what does exist.
-        TypeTag::Tuple => Err("tuple() is not callable in Oro — write the literal `()` for an \
-                               empty tuple, or `(x,)` for a one-element one."
-            .to_string()),
+        TypeTag::Tuple => Err(type_error(
+            "tuple() is not callable in Oro — write the literal `()` for an \
+             empty tuple, or `(x,)` for a one-element one.",
+        )),
         // The handle types. Each is produced by exactly one thing, and naming
         // it is the whole point of the keyword; it is not a constructor.
-        other => Err(format!(
+        other => Err(type_error(format!(
             "{}() is not callable in Oro — it is a type name, which is what `type(x)` \
              answers with, not a constructor.",
             other.name()
-        )),
+        ))),
     }
 }
 
@@ -511,7 +519,7 @@ fn bi_enumerate(args: Vec<Value>) -> VResult<Value> {
     let (it, start) = match args.as_slice() {
         [it] => (it, 0),
         [it, s] => (it, as_i64(s)?),
-        _ => return Err("enumerate() takes 1 or 2 arguments".to_string()),
+        _ => return Err(type_error("enumerate() takes 1 or 2 arguments")),
     };
     let items = crate::vm::iterate_to_vec(it)?;
     let mut out = Vec::with_capacity(items.len());
@@ -573,7 +581,7 @@ fn bi_round(args: Vec<Value>) -> VResult<Value> {
     let (v, ndigits) = match args.as_slice() {
         [v] => (v, None),
         [v, n] => (v, Some(as_i64(n)?)),
-        _ => return Err("round() takes 1 or 2 arguments".to_string()),
+        _ => return Err(type_error("round() takes 1 or 2 arguments")),
     };
     let x = match v {
         Value::Int(n) => {
@@ -592,10 +600,10 @@ fn bi_round(args: Vec<Value>) -> VResult<Value> {
         Value::Bool(b) => return Ok(Value::Int(*b as i64)),
         Value::Float(f) => *f,
         other => {
-            return Err(format!(
+            return Err(runtime_error(format!(
                 "type '{}' doesn't define __round__ method",
                 other.type_name()
-            ))
+            )))
         }
     };
     match ndigits {
@@ -634,7 +642,7 @@ fn bi_chr(args: Vec<Value>) -> VResult<Value> {
     let cp = u32::try_from(n)
         .ok()
         .and_then(char::from_u32)
-        .ok_or_else(|| "chr() arg not in range(0x110000)".to_string())?;
+        .ok_or_else(|| value_error("chr() arg not in range(0x110000)"))?;
     Ok(Value::str(cp.to_string()))
 }
 
@@ -643,19 +651,19 @@ fn bi_ord(args: Vec<Value>) -> VResult<Value> {
     let s = match &args[0] {
         Value::Str(s) => s.s.clone(),
         other => {
-            return Err(format!(
+            return Err(type_error(format!(
                 "ord() expected a character, but got '{}'",
                 other.type_name()
-            ))
+            )))
         }
     };
     let mut it = s.chars();
     match (it.next(), it.next()) {
         (Some(c), None) => Ok(Value::Int(c as i64)),
-        _ => Err(format!(
+        _ => Err(type_error(format!(
             "ord() expected a character, but string of length {} found",
             s.chars().count()
-        )),
+        ))),
     }
 }
 
@@ -817,7 +825,7 @@ pub fn call_method(
     kwargs: Vec<(String, Value)>,
 ) -> VResult<Value> {
     if !kwargs.is_empty() && !takes_kwargs(recv, name) {
-        return Err(format!("{name}() takes no keyword arguments"));
+        return Err(type_error(format!("{name}() takes no keyword arguments")));
     }
     match recv {
         _ if is_cast_method(name) => cast_method(recv, name, args),
@@ -829,7 +837,11 @@ pub fn call_method(
         Value::Stream(s) => stream_method(s, name, args),
         Value::Regex(r) => regex_method(r, name, args),
         Value::Match(m) => match_method(m, name, args),
-        other => Err(format!("'{}' object has no method '{}'", other.type_name(), name)),
+        other => Err(runtime_error(format!(
+            "'{}' object has no method '{}'",
+            other.type_name(),
+            name
+        ))),
     }
 }
 
@@ -849,7 +861,7 @@ fn regex_method(
             let repl = str_arg(&args, 0, "sub")?;
             Ok(rx::sub(&r.re, &repl, &str_arg(&args, 1, "sub")?))
         }
-        _ => Err(format!("'Pattern' object has no method '{name}'")),
+        _ => Err(runtime_error(format!("'Pattern' object has no method '{name}'"))),
     }
 }
 
@@ -863,14 +875,14 @@ fn match_method(
     let n = match args.as_slice() {
         [] => 0usize,
         [Value::Int(i)] if *i >= 0 => *i as usize,
-        [Value::Int(_)] => return Err("group index must be non-negative".to_string()),
-        _ => return Err(format!("{name}() takes an optional group index")),
+        [Value::Int(_)] => return Err(runtime_error("group index must be non-negative")),
+        _ => return Err(type_error(format!("{name}() takes an optional group index"))),
     };
     match name {
         "group" => rx::group(m, n),
         "start" => rx::start(m, n),
         "end" => rx::end(m, n),
-        _ => Err(format!("'Match' object has no method '{name}'")),
+        _ => Err(runtime_error(format!("'Match' object has no method '{name}'"))),
     }
 }
 
@@ -884,9 +896,9 @@ fn stream_method(
         // instead: a native method must answer with a `Value`, and the whole
         // content of those is the `Step` they answer with. Spelled here rather
         // than left to fall through, so a routing mistake says what it is.
-        "read" | "write" | "read_until" | "accept" | "close" => Err(format!(
+        "read" | "write" | "read_until" | "accept" | "close" => Err(runtime_error(format!(
             "internal: {name}() on a stream must be dispatched by the VM (it can park)"
-        )),
+        ))),
         "bytes" => {
             exactly(&args, 0, "bytes")?;
             Ok(Value::bytes(s.bytes()?))
@@ -905,12 +917,12 @@ fn stream_method(
                 [Value::Int(n)] => Some(*n as f64),
                 [Value::Float(f)] => Some(*f),
                 [other] => {
-                    return Err(format!(
+                    return Err(type_error(format!(
                         "set_timeout() argument must be a number of seconds or None, not '{}'",
                         other.type_name()
-                    ))
+                    )))
                 }
-                _ => return Err("set_timeout() takes one argument".to_string()),
+                _ => return Err(type_error("set_timeout() takes one argument")),
             };
             s.set_timeout(secs)?;
             Ok(Value::None)
@@ -919,17 +931,17 @@ fn stream_method(
             let on = match args.as_slice() {
                 [Value::Bool(b)] => *b,
                 [other] => {
-                    return Err(format!(
+                    return Err(type_error(format!(
                         "set_nodelay() argument must be bool, not '{}'",
                         other.type_name()
-                    ))
+                    )))
                 }
-                _ => return Err("set_nodelay() takes one argument".to_string()),
+                _ => return Err(type_error("set_nodelay() takes one argument")),
             };
             s.set_nodelay(on)?;
             Ok(Value::None)
         }
-        _ => Err(format!("'{}' object has no method '{name}'", s.kind.type_name())),
+        _ => Err(runtime_error(format!("'{}' object has no method '{name}'", s.kind.type_name()))),
     }
 }
 
@@ -946,10 +958,10 @@ fn opt_int_arg(args: &[Value], i: usize, who: &str, default: i64) -> VResult<i64
         None | Some(Value::None) => Ok(default),
         Some(Value::Int(n)) => Ok(*n),
         Some(Value::Bool(b)) => Ok(*b as i64),
-        Some(other) => Err(format!(
+        Some(other) => Err(type_error(format!(
             "{who}() argument must be int, not '{}'",
             other.type_name()
-        )),
+        ))),
     }
 }
 
@@ -1051,20 +1063,20 @@ fn strip_side(kwargs: &[(String, Value)]) -> VResult<Side> {
     let mut side = Side::Both;
     for (k, v) in kwargs {
         if k != "side" {
-            return Err(format!("strip() got an unexpected keyword argument '{k}'"));
+            return Err(type_error(format!("strip() got an unexpected keyword argument '{k}'")));
         }
         let Value::Str(s) = v else {
-            return Err(format!("strip(): side must be str, not '{}'", v.type_name()));
+            return Err(type_error(format!("strip(): side must be str, not '{}'", v.type_name())));
         };
         side = match &*s.s {
             "both" => Side::Both,
             "left" => Side::Left,
             "right" => Side::Right,
             other => {
-                return Err(format!(
+                return Err(value_error(format!(
                     "strip(): side must be \"both\", \"left\" or \"right\", not {}",
                     crate::value::repr_str(other)
-                ))
+                )))
             }
         };
     }
@@ -1091,19 +1103,19 @@ fn split_side(kwargs: &[(String, Value)]) -> VResult<Side> {
     let mut side = Side::Left;
     for (k, v) in kwargs {
         if k != "side" {
-            return Err(format!("split() got an unexpected keyword argument '{k}'"));
+            return Err(type_error(format!("split() got an unexpected keyword argument '{k}'")));
         }
         let Value::Str(s) = v else {
-            return Err(format!("split(): side must be str, not '{}'", v.type_name()));
+            return Err(type_error(format!("split(): side must be str, not '{}'", v.type_name())));
         };
         side = match &*s.s {
             "left" => Side::Left,
             "right" => Side::Right,
             other => {
-                return Err(format!(
+                return Err(value_error(format!(
                     "split(): side must be \"left\" or \"right\", not {}",
                     crate::value::repr_str(other)
-                ))
+                )))
             }
         };
     }
@@ -1126,7 +1138,7 @@ fn find_reverse(kwargs: &[(String, Value)]) -> VResult<bool> {
     let mut reverse = false;
     for (k, v) in kwargs {
         if k != "reverse" {
-            return Err(format!("find() got an unexpected keyword argument '{k}'"));
+            return Err(type_error(format!("find() got an unexpected keyword argument '{k}'")));
         }
         reverse = v.truthy();
     }
@@ -1219,8 +1231,11 @@ fn tail_window(start: i64, end: i64, affix_len: i64, at_front: bool) -> Option<i
 fn str_arg(args: &[Value], i: usize, who: &str) -> VResult<String> {
     match args.get(i) {
         Some(Value::Str(s)) => Ok(s.s.clone()),
-        Some(other) => Err(format!("{who}() argument must be str, not '{}'", other.type_name())),
-        None => Err(format!("{who}() missing a required argument")),
+        Some(other) => Err(type_error(format!(
+            "{who}() argument must be str, not '{}'",
+            other.type_name()
+        ))),
+        None => Err(type_error(format!("{who}() missing a required argument"))),
     }
 }
 
@@ -1348,13 +1363,15 @@ fn ints_to_bytes(items: &[Value]) -> VResult<Value> {
             // `sum([True, True])` — so it is one here too.
             Value::Bool(b) => out.push(*b as u8),
             Value::Int(n) => {
-                return Err(format!("to_bytes(): item {i} must be in range(0, 256), got {n}"))
+                return Err(value_error(format!(
+                    "to_bytes(): item {i} must be in range(0, 256), got {n}"
+                )))
             }
             other => {
-                return Err(format!(
+                return Err(value_error(format!(
                     "to_bytes(): item {i} must be an int, not '{}'",
                     other.type_name()
-                ))
+                )))
             }
         }
     }
@@ -1382,11 +1399,11 @@ fn cast_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
                     Ok(s) => Ok(Value::str(s)),
                     Err(e) => {
                         let pos = e.utf8_error().valid_up_to();
-                        Err(format!(
+                        Err(value_error(format!(
                             "bytes could not be decoded as UTF-8: invalid byte 0x{:02x} at \
                              position {pos}",
                             b[pos]
-                        ))
+                        )))
                     }
                 };
             }
@@ -1407,10 +1424,10 @@ fn cast_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
                 // unwriteable.
                 Value::List(l) => ints_to_bytes(&l.borrow()),
                 Value::Tuple(t) => ints_to_bytes(t),
-                other => Err(format!(
+                other => Err(runtime_error(format!(
                     "'{}' object has no conversion to bytes",
                     other.type_name()
-                )),
+                ))),
             }
         }
         "to_bool" => {
@@ -1429,11 +1446,14 @@ fn cast_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
                     .trim()
                     .parse::<f64>()
                     .map(Value::Float)
-                    .map_err(|_| format!("could not convert string to float: '{}'", s.s)),
-                other => Err(format!(
+                    .map_err(|_| value_error(format!(
+                        "could not convert string to float: '{}'",
+                        s.s
+                    ))),
+                other => Err(runtime_error(format!(
                     "'{}' object has no conversion to float",
                     other.type_name()
-                )),
+                ))),
             }
         }
         "to_int" => {
@@ -1450,10 +1470,10 @@ fn cast_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
                         parse_int_base(&s.s, base)
                     }
                 }
-                other => Err(format!(
+                other => Err(runtime_error(format!(
                     "'{}' object has no conversion to int",
                     other.type_name()
-                )),
+                ))),
             }
         }
         "to_list" => {
@@ -1475,17 +1495,17 @@ fn cast_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
                     Value::Tuple(t) => t.as_slice().to_vec(),
                     Value::List(l) => l.borrow().clone(),
                     other => {
-                        return Err(format!(
+                        return Err(runtime_error(format!(
                             "to_dict() requires (key, value) pairs, found '{}'",
                             other.type_name()
-                        ))
+                        )))
                     }
                 };
                 if parts.len() != 2 {
-                    return Err(format!(
+                    return Err(runtime_error(format!(
                         "to_dict() requires 2-element pairs, found one of length {}",
                         parts.len()
-                    ));
+                    )));
                 }
                 d.insert(parts[0].clone(), parts[1].clone())?;
             }
@@ -1541,10 +1561,10 @@ fn seq_parts(recv: &Value, who: &str) -> VResult<(Shape, Vec<Value>)> {
         ),
         Value::Range(_) => (Shape::List, crate::vm::iterate_to_vec(recv)?),
         other => {
-            return Err(format!(
+            return Err(runtime_error(format!(
                 "'{}' object has no method '{who}'",
                 other.type_name()
-            ))
+            )))
         }
     })
 }
@@ -1567,17 +1587,17 @@ fn rebuild(shape: Shape, items: Vec<Value>) -> VResult<Value> {
                     Value::Tuple(t) => t.as_slice().to_vec(),
                     Value::List(l) => l.borrow().clone(),
                     other => {
-                        return Err(format!(
+                        return Err(runtime_error(format!(
                             "rebuilding a dict needs (key, value) pairs, not '{}'",
                             other.type_name()
-                        ))
+                        )))
                     }
                 };
                 if pair.len() != 2 {
-                    return Err(format!(
+                    return Err(runtime_error(format!(
                         "rebuilding a dict needs 2-element pairs, got {}",
                         pair.len()
-                    ));
+                    )));
                 }
                 d.insert(pair[0].clone(), pair[1].clone())?;
             }
@@ -1598,7 +1618,7 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
             let pick = if name == "first" { items.first() } else { items.last() };
             match pick {
                 Some(v) => Ok(v.clone()),
-                None => Err(format!("{name}() on an empty sequence")),
+                None => Err(runtime_error(format!("{name}() on an empty sequence"))),
             }
         }
         "sum" => {
@@ -1608,7 +1628,7 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
         "min" | "max" => {
             exactly(&args, 0, name)?;
             if items.is_empty() {
-                return Err(format!("{name}() arg is an empty sequence"));
+                return Err(value_error(format!("{name}() arg is an empty sequence")));
             }
             let mut best = items[0].clone();
             for v in &items[1..] {
@@ -1651,7 +1671,7 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
         "take" | "drop" => {
             let n = opt_int_arg(&args, 0, name, -1)?;
             if n < 0 {
-                return Err(format!("{name}() needs a count >= 0"));
+                return Err(runtime_error(format!("{name}() needs a count >= 0")));
             }
             let n = (n as usize).min(items.len());
             let out = if name == "take" {
@@ -1672,7 +1692,7 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
         "chunk" => {
             let n = opt_int_arg(&args, 0, "chunk", 0)?;
             if n <= 0 {
-                return Err("chunk() needs a size >= 1".to_string());
+                return Err(runtime_error("chunk() needs a size >= 1"));
             }
             let out: Vec<Value> = items
                 .chunks(n as usize)
@@ -1719,10 +1739,10 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
                     match it {
                         Value::Bytes(p) => out.extend_from_slice(p),
                         other => {
-                            return Err(format!(
+                            return Err(runtime_error(format!(
                                 "join() requires bytes elements, found '{}'",
                                 other.type_name()
-                            ))
+                            )))
                         }
                     }
                 }
@@ -1734,10 +1754,10 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
                 match it {
                     Value::Str(p) => pieces.push(p.s.clone()),
                     other => {
-                        return Err(format!(
+                        return Err(runtime_error(format!(
                             "join() requires str elements, found '{}'",
                             other.type_name()
-                        ))
+                        )))
                     }
                 }
             }
@@ -1781,10 +1801,10 @@ fn str_method(
                 None | Some(Value::None) => trim_with(s, side, is_py_space),
                 Some(Value::Str(set)) => trim_with(s, side, |c| set.s.contains(c)),
                 Some(other) => {
-                    return Err(format!(
+                    return Err(type_error(format!(
                         "{name}() argument must be str, not '{}'",
                         other.type_name()
-                    ))
+                    )))
                 }
             };
             if trimmed.len() == s.len() {
@@ -1884,15 +1904,15 @@ fn str_method(
                 None | Some(Value::None) => split_whitespace_n(s, maxsplit, side),
                 Some(Value::Str(sep)) => {
                     if sep.s.is_empty() {
-                        return Err("empty separator".to_string());
+                        return Err(value_error("empty separator"));
                     }
                     split_sep_n(s, &sep.s, maxsplit, side)
                 }
                 Some(other) => {
-                    return Err(format!(
+                    return Err(type_error(format!(
                         "{name}() separator must be str, not '{}'",
                         other.type_name()
-                    ))
+                    )))
                 }
             };
             let parts = parts.into_iter().map(Value::str).collect::<Vec<_>>();
@@ -1906,24 +1926,27 @@ fn str_method(
                 match it {
                     Value::Str(p) => pieces.push(p.s.clone()),
                     other => {
-                        return Err(format!(
+                        return Err(runtime_error(format!(
                             "join() requires str elements, found '{}'",
                             other.type_name()
-                        ))
+                        )))
                     }
                 }
             }
             Ok(Value::str(pieces.join(s)))
         }
-        _ => Err(format!("'str' object has no method '{name}'")),
+        _ => Err(runtime_error(format!("'str' object has no method '{name}'"))),
     }
 }
 
 pub(crate) fn bytes_arg(args: &[Value], i: usize, who: &str) -> VResult<Rc<Vec<u8>>> {
     match args.get(i) {
         Some(Value::Bytes(b)) => Ok(b.clone()),
-        Some(other) => Err(format!("{who}() argument must be bytes, not '{}'", other.type_name())),
-        None => Err(format!("{who}() missing a required argument")),
+        Some(other) => Err(type_error(format!(
+            "{who}() argument must be bytes, not '{}'",
+            other.type_name()
+        ))),
+        None => Err(type_error(format!("{who}() missing a required argument"))),
     }
 }
 
@@ -2128,10 +2151,10 @@ fn bytes_method(
         "scan" => {
             exactly(&args, 1, "scan")?;
             let Some(Value::Bytes(allowed)) = args.first() else {
-                return Err(format!(
+                return Err(type_error(format!(
                     "scan() argument must be bytes, not '{}'",
                     args[0].type_name()
-                ));
+                )));
             };
             // A 256-bit membership table, built per call. It costs one pass
             // over `allowed` and then every byte of `b` is one shift and one
@@ -2167,10 +2190,10 @@ fn bytes_method(
                     Box::new(move |x| set.contains(&x))
                 }
                 Some(other) => {
-                    return Err(format!(
+                    return Err(type_error(format!(
                         "{name}() argument must be bytes, not '{}'",
                         other.type_name()
-                    ))
+                    )))
                 }
             };
             let lead = if side.cuts_left() {
@@ -2262,15 +2285,15 @@ fn bytes_method(
                 None | Some(Value::None) => split_space_bytes(b, maxsplit, side),
                 Some(Value::Bytes(sep)) => {
                     if sep.is_empty() {
-                        return Err("empty separator".to_string());
+                        return Err(value_error("empty separator"));
                     }
                     split_sep_bytes(b, sep, maxsplit, side)
                 }
                 Some(other) => {
-                    return Err(format!(
+                    return Err(runtime_error(format!(
                         "{name}() separator must be bytes, not '{}'",
                         other.type_name()
-                    ))
+                    )))
                 }
             };
             let parts = parts.into_iter().map(Value::bytes).collect::<Vec<_>>();
@@ -2287,10 +2310,10 @@ fn bytes_method(
                 match it {
                     Value::Bytes(p) => out.extend_from_slice(p),
                     other => {
-                        return Err(format!(
+                        return Err(runtime_error(format!(
                             "join() requires bytes elements, found '{}'",
                             other.type_name()
-                        ))
+                        )))
                     }
                 }
             }
@@ -2304,7 +2327,7 @@ fn bytes_method(
             }
             Ok(Value::str(out))
         }
-        _ => Err(format!("'bytes' object has no method '{name}'")),
+        _ => Err(runtime_error(format!("'bytes' object has no method '{name}'"))),
     }
 }
 
@@ -2326,7 +2349,7 @@ fn list_method(l: &Rc<OroList>, name: &str, args: Vec<Value>) -> VResult<Value> 
             let idx = match args.as_slice() {
                 [] => {
                     if b.is_empty() {
-                        return Err("pop from empty list".to_string());
+                        return Err(index_error("pop from empty list"));
                     }
                     b.len() - 1
                 }
@@ -2334,11 +2357,11 @@ fn list_method(l: &Rc<OroList>, name: &str, args: Vec<Value>) -> VResult<Value> 
                     let i = as_i64(v)?;
                     let adj = if i < 0 { i + b.len() as i64 } else { i };
                     if adj < 0 || adj as usize >= b.len() {
-                        return Err("pop index out of range".to_string());
+                        return Err(index_error("pop index out of range"));
                     }
                     adj as usize
                 }
-                _ => return Err("pop() takes at most 1 argument".to_string()),
+                _ => return Err(type_error("pop() takes at most 1 argument")),
             };
             Ok(b.remove(idx))
         }
@@ -2357,7 +2380,7 @@ fn list_method(l: &Rc<OroList>, name: &str, args: Vec<Value>) -> VResult<Value> 
             l.borrow_mut().reverse();
             Ok(Value::None)
         }
-        _ => Err(format!("'list' object has no method '{name}'")),
+        _ => Err(runtime_error(format!("'list' object has no method '{name}'"))),
     }
 }
 
@@ -2367,7 +2390,7 @@ fn dict_method(d: &Rc<RefCell<OroDict>>, name: &str, args: Vec<Value>) -> VResul
             let (key, default) = match args.as_slice() {
                 [k] => (k, Value::None),
                 [k, def] => (k, def.clone()),
-                _ => return Err("get() takes 1 or 2 arguments".to_string()),
+                _ => return Err(type_error("get() takes 1 or 2 arguments")),
             };
             Ok(d.borrow().get(key)?.unwrap_or(default))
         }
@@ -2379,13 +2402,13 @@ fn dict_method(d: &Rc<RefCell<OroDict>>, name: &str, args: Vec<Value>) -> VResul
             let (key, default) = match args.as_slice() {
                 [k] => (k, None),
                 [k, def] => (k, Some(def)),
-                _ => return Err("pop() takes 1 or 2 arguments".to_string()),
+                _ => return Err(type_error("pop() takes 1 or 2 arguments")),
             };
             match d.borrow_mut().remove(key)? {
                 Some(v) => Ok(v),
                 None => match default {
                     Some(def) => Ok(def.clone()),
-                    None => Err(format!("key error: {}", key.repr())),
+                    None => Err(key_error(format!("key error: {}", key.repr()))),
                 },
             }
         }
@@ -2397,7 +2420,7 @@ fn dict_method(d: &Rc<RefCell<OroDict>>, name: &str, args: Vec<Value>) -> VResul
             exactly(&args, 0, "values")?;
             Ok(Value::List(OroList::new(d.borrow().values())))
         }
-        _ => Err(format!("'dict' object has no method '{name}'")),
+        _ => Err(runtime_error(format!("'dict' object has no method '{name}'"))),
     }
 }
 

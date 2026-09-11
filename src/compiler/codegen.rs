@@ -386,8 +386,11 @@ impl<'a> Codegen<'a> {
                     // (e.g. 1 and True, or a repeated value).
                     if self.dict_missing(&table, &key)? {
                         table
+                            // A compile-time table build: the fault is a bad
+                            // key, and a compile error carries prose, not a
+                            // class. Take the message and leave the class.
                             .insert(key, Value::Int(start as i64))
-                            .map_err(|e| self.err(e, line, col))?;
+                            .map_err(|e| self.err(e.message, line, col))?;
                     }
                 }
                 Pattern::Wildcard => default_target = Some(start),
@@ -477,7 +480,7 @@ impl<'a> Codegen<'a> {
             Expr::NoneLit { .. } => Ok(Value::None),
             Expr::Unary { op: UnaryOp::Neg, operand, line, col } => {
                 let v = self.literal_value(operand)?;
-                crate::vm::arith::neg(&v).map_err(|e| self.err(e, *line, *col))
+                crate::vm::arith::neg(&v).map_err(|e| self.err(e.message, *line, *col))
             }
             other => {
                 let (l, c) = other.pos();
@@ -491,7 +494,7 @@ impl<'a> Codegen<'a> {
         table
             .get(key)
             .map(|hit| hit.is_none())
-            .map_err(|e| self.err(e, 0, 0))
+            .map_err(|e| self.err(e.message, 0, 0))
     }
 
     /// `try` / `except` / `finally`. The try body, each handler body, and the

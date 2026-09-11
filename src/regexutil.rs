@@ -5,19 +5,20 @@
 
 use std::rc::Rc;
 
+use crate::exc::{runtime_error, value_error, VErr};
 use crate::value::{OroList, OroMatch, OroRegex, OroTuple, Value};
 
-pub type RResult<T> = Result<T, String>;
+pub type RResult<T> = Result<T, VErr>;
 
 /// Compile a pattern. Backreferences and lookaround are unsupported by the
 /// linear-time engine and surface here as a clear error.
 pub fn compile(pattern: &str) -> RResult<regex::Regex> {
     regex::Regex::new(pattern).map_err(|e| {
-        format!(
+        value_error(format!(
             "invalid or unsupported regular expression '{pattern}': {e} \
              (note: backreferences and lookaround are not supported — they force \
              backtracking, which would break the linear-time guarantee)"
-        )
+        ))
     })
 }
 
@@ -108,7 +109,7 @@ pub fn group(m: &OroMatch, n: usize) -> RResult<Value> {
     match m.groups.get(n) {
         Some(Some((_, _, text))) => Ok(Value::str(text.clone())),
         Some(None) => Ok(Value::None),
-        None => Err(format!("no such group: {n}")),
+        None => Err(runtime_error(format!("no such group: {n}"))),
     }
 }
 
@@ -125,7 +126,7 @@ fn span(m: &OroMatch, n: usize) -> RResult<Option<(usize, usize)>> {
     match m.groups.get(n) {
         Some(Some((s, e, _))) => Ok(Some((*s, *e))),
         Some(None) => Ok(None),
-        None => Err(format!("no such group: {n}")),
+        None => Err(runtime_error(format!("no such group: {n}"))),
     }
 }
 

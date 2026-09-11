@@ -57,7 +57,17 @@ use std::time::Duration;
 
 use mio::net::{TcpListener, TcpStream};
 
+use crate::exc::{attribute_error, broken_pipe_error, runtime_error, type_error, value_error, VErr};
 use crate::value::VResult;
+
+/// A file or stdio `io::Error`, as the fault it raises. The message is std's
+/// own rendering — unchanged, and the only description available for a backing
+/// that is not a socket — and the class comes from `e.kind()`. Reading a
+/// directory is an `OSError` because `read(2)` failed, not because `strerror`
+/// happened to say "Is a directory".
+fn source_error(e: &std::io::Error) -> VErr {
+    VErr::new(crate::exc::io_class(e.kind()), e.to_string())
+}
 
 /// What an I/O attempt on a non-blocking stream answers.
 ///
@@ -299,20 +309,20 @@ impl OroStream {
     pub fn connect_check(&self) -> VResult<Io<()>> {
         let inner = self.borrow_open("connect")?;
         let Backing::Socket(s) = &inner.back else {
-            return Err(format!(
+            return Err(value_error(format!(
                 "connect() on a '{}', which is not a socket",
                 self.kind.type_name()
-            ));
+            )));
         };
-        if let Some(e) = s.take_error().map_err(|e| crate::net::err_msg(&e))? {
-            return Err(crate::net::err_msg(&e));
+        if let Some(e) = s.take_error().map_err(|e| crate::net::io_error(&e))? {
+            return Err(crate::net::io_error(&e));
         }
         match s.peer_addr() {
             Ok(_) => Ok(Io::Ready(())),
             Err(e) if e.kind() == std::io::ErrorKind::NotConnected || would_block(&e) => {
                 Ok(Io::Block(mio::Interest::WRITABLE))
             }
-            Err(e) => Err(crate::net::err_msg(&e)),
+            Err(e) => Err(crate::net::io_error(&e)),
         }
     }
 
@@ -336,21 +346,21 @@ impl OroStream {
         let ln = match &inner.back {
             Backing::Listener(ln) => ln,
             _ => {
-                return Err(format!(
+                return Err(value_error(format!(
                     "accept() on a '{}', which is not a listener",
                     self.kind.type_name()
-                ))
+                )))
             }
         };
         let sock = match ln.accept() {
             Ok((sock, _)) => sock,
             Err(e) if would_block(&e) => return Ok(Io::Block(mio::Interest::READABLE)),
-            Err(e) => return Err(crate::net::err_msg(&e)),
+            Err(e) => return Err(crate::net::io_error(&e)),
         };
         // Dropped before the new stream is built, so `accept` never holds two
         // stream borrows at once.
         drop(inner);
-        OroStream::socket(sock).map(Io::Ready).map_err(|e| crate::net::err_msg(&e))
+        OroStream::socket(sock).map(Io::Ready).map_err(|e| crate::net::io_error(&e))
     }
 
     /// `conn.shutdown_write()`: send FIN, keep reading.
@@ -361,11 +371,11 @@ impl OroStream {
     pub fn shutdown_write(&self) -> VResult<()> {
         let inner = self.borrow_open("shutdown_write")?;
         match &inner.back {
-            Backing::Socket(s) => s.shutdown(Shutdown::Write).map_err(|e| crate::net::err_msg(&e)),
-            _ => Err(format!(
+            Backing::Socket(s) => s.shutdown(Shutdown::Write).map_err(|e| crate::net::io_error(&e)),
+            _ => Err(value_error(format!(
                 "shutdown_write() on a '{}', which is not a socket",
                 self.kind.type_name()
-            )),
+            ))),
         }
     }
 
@@ -387,7 +397,7 @@ impl OroStream {
             None => None,
             Some(s) if s > 0.0 && s.is_finite() => Some(Duration::from_secs_f64(s)),
             Some(s) => {
-                return Err(format!("set_timeout() seconds must be positive, not {s}"));
+                return Err(value_error(format!("set_timeout() seconds must be positive, not {s}")));
             }
         };
         let mut inner = self.borrow_open_mut("set_timeout")?;
@@ -399,10 +409,10 @@ impl OroStream {
             // A listener has no timeout on purpose: an `accept` that gives up
             // after n seconds is a loop condition dressed as an error. Shutdown
             // is a flag and a `close()` (§3).
-            _ => Err(format!(
+            _ => Err(value_error(format!(
                 "set_timeout() on a '{}', which is not a socket",
                 self.kind.type_name()
-            )),
+            ))),
         }
     }
 
@@ -410,11 +420,11 @@ impl OroStream {
     pub fn set_nodelay(&self, on: bool) -> VResult<()> {
         let inner = self.borrow_open("set_nodelay")?;
         match &inner.back {
-            Backing::Socket(s) => s.set_nodelay(on).map_err(|e| crate::net::err_msg(&e)),
-            _ => Err(format!(
+            Backing::Socket(s) => s.set_nodelay(on).map_err(|e| crate::net::io_error(&e)),
+            _ => Err(value_error(format!(
                 "set_nodelay() on a '{}', which is not a socket",
                 self.kind.type_name()
-            )),
+            ))),
         }
     }
 
@@ -441,7 +451,10 @@ impl OroStream {
             (StreamKind::TcpStream { peer, .. }, "peer") => Ok(peer.clone()),
             (StreamKind::TcpStream { local, .. }, "local") => Ok(local.clone()),
             (StreamKind::TcpListener { local }, "local") => Ok(local.clone()),
-            _ => Err(format!("'{}' object has no attribute '{name}'", self.kind.type_name())),
+            _ => Err(attribute_error(format!(
+                "'{}' object has no attribute '{name}'",
+                self.kind.type_name()
+            ))),
         }
     }
 
@@ -463,7 +476,7 @@ impl OroStream {
     fn borrow_open(&self, who: &str) -> VResult<Ref<'_, Inner>> {
         let inner = self.inner.borrow();
         if inner.closed {
-            return Err(format!("{who}() on a closed {}", self.kind.type_name()));
+            return Err(value_error(format!("{who}() on a closed {}", self.kind.type_name())));
         }
         Ok(inner)
     }
@@ -472,7 +485,7 @@ impl OroStream {
     fn borrow_open_mut(&self, who: &str) -> VResult<RefMut<'_, Inner>> {
         let inner = self.inner.borrow_mut();
         if inner.closed {
-            return Err(format!("{who}() on a closed {}", self.kind.type_name()));
+            return Err(value_error(format!("{who}() on a closed {}", self.kind.type_name())));
         }
         Ok(inner)
     }
@@ -483,9 +496,11 @@ impl OroStream {
         let inner = self.borrow_open_mut(who)?;
         if !inner.can_read() {
             if let StreamKind::TcpListener { .. } = self.kind {
-                return Err(format!("{who}() on a TcpListener, which is not a stream of bytes"));
+                return Err(value_error(format!(
+                    "{who}() on a TcpListener, which is not a stream of bytes"
+                )));
             }
-            return Err(format!("{who}() on a stream open for writing (mode 'w')"));
+            return Err(value_error(format!("{who}() on a stream open for writing (mode 'w')")));
         }
         Ok(inner)
     }
@@ -497,7 +512,7 @@ impl OroStream {
         // `read(0)` would return b"" and look like EOF, so it is a ValueError
         // rather than a second thing b"" can mean.
         if n < 1 {
-            return Err(format!("read() size must be at least 1, not {n}"));
+            return Err(value_error(format!("read() size must be at least 1, not {n}")));
         }
         let n = n as usize;
         let mut inner = self.borrow_readable("read")?;
@@ -558,14 +573,15 @@ impl OroStream {
     /// call resumes from there. It is empty on the first call.
     pub fn read_until(&self, delim: &[u8], limit: i64, out: &mut Vec<u8>) -> VResult<Io<Vec<u8>>> {
         if delim.is_empty() {
-            return Err("read_until() delimiter must not be empty".to_string());
+            return Err(value_error("read_until() delimiter must not be empty"));
         }
         if limit < 1 {
-            return Err(format!("read_until() limit must be at least 1, not {limit}"));
+            return Err(value_error(format!("read_until() limit must be at least 1, not {limit}")));
         }
         let limit = limit as usize;
         let mut inner = self.borrow_readable("read_until")?;
-        let too_long = || format!("read_until() found no delimiter in the first {limit} bytes");
+        let too_long =
+            || value_error(format!("read_until() found no delimiter in the first {limit} bytes"));
         loop {
             match inner.fill()? {
                 // EOF: the end of a stream is not a fault, so what has arrived
@@ -625,7 +641,10 @@ impl OroStream {
                 let inner = self.borrow_open("bytes")?;
                 Ok(inner.buf[inner.pos..inner.end].to_vec())
             }
-            _ => Err(format!("'{}' object has no method 'bytes'", self.kind.type_name())),
+            _ => Err(runtime_error(format!(
+                "'{}' object has no method 'bytes'",
+                self.kind.type_name()
+            ))),
         }
     }
 
@@ -706,9 +725,9 @@ impl OroStream {
         let r = match &mut inner.back {
             Backing::Socket(s) => registry.register(s, tok, interest),
             Backing::Listener(l) => registry.register(l, tok, interest),
-            _ => return Err("internal: only a socket can be registered".to_string()),
+            _ => return Err(runtime_error("internal: only a socket can be registered")),
         };
-        r.map_err(|e| crate::net::err_msg(&e))?;
+        r.map_err(|e| crate::net::io_error(&e))?;
         self.token.set(token);
         Ok(())
     }
@@ -768,13 +787,13 @@ impl Inner {
                 return match s.read(out) {
                     Ok(k) => Ok(Io::Ready(k)),
                     Err(e) if would_block(&e) => Ok(Io::Block(mio::Interest::READABLE)),
-                    Err(e) => Err(crate::net::err_msg(&e)),
+                    Err(e) => Err(crate::net::io_error(&e)),
                 }
             }
             // A Buffer's bytes are all in `buf`, and a writer never reads.
             Backing::Mem | Backing::Write(_) | Backing::Stdout | Backing::Stderr
             | Backing::Listener(_) => {
-                return Err("internal: read from a stream with no source".to_string())
+                return Err(runtime_error("internal: read from a stream with no source"))
             }
             _ => {}
         }
@@ -783,7 +802,7 @@ impl Inner {
             Backing::Stdin => std::io::stdin().read(out),
             _ => unreachable!("every other backing answered above"),
         };
-        r.map(Io::Ready).map_err(|e| e.to_string())
+        r.map(Io::Ready).map_err(|e| source_error(&e))
     }
 
     fn read_source_to_end(&mut self, out: &mut Vec<u8>) -> VResult<()> {
@@ -801,17 +820,18 @@ impl Inner {
             // Only `File` and `Buffer` reach the `stat`-and-allocate-once path,
             // which is what `std/io.oro` has always dispatched on.
             Backing::Socket(_) => {
-                return Err("internal: read_all() on a socket — io.read(r) takes the chunk \
-                            loop for a stream with no knowable size"
-                    .to_string())
+                return Err(type_error(
+                    "internal: read_all() on a socket — io.read(r) takes the chunk \
+                     loop for a stream with no knowable size",
+                ))
             }
             // A Buffer is already whole; `read_all` took its remainder above.
             Backing::Mem => Ok(()),
             Backing::Write(_) | Backing::Stdout | Backing::Stderr | Backing::Listener(_) => {
-                return Err("internal: read from a stream with no source".to_string())
+                return Err(runtime_error("internal: read from a stream with no source"))
             }
         };
-        r.map_err(|e| e.to_string())
+        r.map_err(|e| source_error(&e))
     }
 
     fn write_source(&mut self, b: &[u8]) -> VResult<Io<usize>> {
@@ -850,22 +870,22 @@ impl Inner {
             // any of it, because `write` has no return value to change.
             Backing::Socket(s) => {
                 return match s.write(b) {
-                    Ok(0) if !b.is_empty() => Err("[Errno 32] Broken pipe".to_string()),
+                    Ok(0) if !b.is_empty() => Err(broken_pipe_error("[Errno 32] Broken pipe")),
                     Ok(k) => Ok(Io::Ready(k)),
                     Err(e) if would_block(&e) => Ok(Io::Block(mio::Interest::WRITABLE)),
-                    Err(e) => Err(crate::net::err_msg(&e)),
+                    Err(e) => Err(crate::net::io_error(&e)),
                 }
             }
             Backing::Listener(_) => {
-                return Err("write() on a TcpListener, which is not a stream of bytes".to_string())
+                return Err(value_error("write() on a TcpListener, which is not a stream of bytes"))
             }
             Backing::Read(_) | Backing::Stdin => {
-                return Err("write() on a stream open for reading (mode 'r')".to_string())
+                return Err(value_error("write() on a stream open for reading (mode 'r')"))
             }
         };
         // Everything that is not a socket wrote all of `b` or failed; there is
         // no partial case for the caller's loop to go round twice on.
-        r.map(|()| Io::Ready(b.len())).map_err(|e| e.to_string())
+        r.map(|()| Io::Ready(b.len())).map_err(|e| source_error(&e))
     }
 
     /// Bytes remaining in the source, when that is knowable: a regular file's

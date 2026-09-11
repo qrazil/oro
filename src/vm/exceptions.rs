@@ -32,6 +32,11 @@ pub fn build_registry() -> HashMap<&'static str, Rc<Class>> {
         ("ArithmeticError", Some("Exception")),
         ("ZeroDivisionError", Some("ArithmeticError")),
         ("RuntimeError", Some("Exception")),
+        // CPython's position for it, so `except RuntimeError` catches a runaway
+        // recursion exactly as it did before the class existed — and a program
+        // that wants only the runaway can now say so. Four places in the tree
+        // already described this class; `docs/audit/errors.md` §5 counts them.
+        ("RecursionError", Some("RuntimeError")),
         ("NotImplementedError", Some("RuntimeError")),
         ("StopIteration", Some("Exception")),
         ("EOFError", Some("Exception")),

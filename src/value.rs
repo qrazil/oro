@@ -20,12 +20,15 @@ use std::rc::Rc;
 
 use crate::bigint::BigInt;
 use crate::compiler::CodeObject;
+use crate::exc::type_error;
 use crate::stream::OroStream;
 
 /// A short alias for the fallible results produced by value operations and
-/// builtins. The message is a bare string; the VM decorates it with the source
-/// position of the faulting instruction.
-pub type VResult<T> = Result<T, String>;
+/// builtins. The error names the exception class it raises and carries the
+/// message; the VM decorates it with the source position of the faulting
+/// instruction. See [`crate::exc`] for why the class is named here rather than
+/// guessed from the message later.
+pub type VResult<T> = Result<T, crate::exc::VErr>;
 
 /// Iterative teardown for nested containers.
 ///
@@ -1113,12 +1116,12 @@ fn hkey_cold(v: &Value) -> VResult<HKey> {
         // silently keying by address and losing lookups.
         Value::Instance(i) => {
             if Class::find(&i.class, "__eq__").is_some() {
-                return Err(format!(
+                return Err(type_error(format!(
                     "unhashable type: '{}' — it defines __eq__, so its identity is \
                      not what equality means for it; key by the value it compares by, \
                      e.g. counts[(\"a\", 1)]",
                     i.class.name
-                ));
+                )));
             }
             HKey::Id(Rc::as_ptr(i) as *const () as usize)
         }
@@ -1126,7 +1129,7 @@ fn hkey_cold(v: &Value) -> VResult<HKey> {
         // are unhashable in CPython for the reason that outlives every other
         // argument about it: a key that can change is a key that can be lost.
         Value::List(_) | Value::Dict(_) | Value::Unbound => {
-            return Err(format!("unhashable type: '{}'", v.type_name()));
+            return Err(type_error(format!("unhashable type: '{}'", v.type_name())));
         }
         other => match other.identity() {
             Some(id) => HKey::Id(id),
@@ -1134,7 +1137,7 @@ fn hkey_cold(v: &Value) -> VResult<HKey> {
             // above, or is a reference type with an identity. Spelled as an
             // error rather than `unreachable!` because a panic in the dict path
             // would be a worse answer than a diagnostic.
-            None => return Err(format!("unhashable type: '{}'", other.type_name())),
+            None => return Err(type_error(format!("unhashable type: '{}'", other.type_name()))),
         },
     })
 }
@@ -1691,7 +1694,7 @@ fn try_seq_cmp(
 /// The `TypeError` for a pair that has no ordering, naming the operator the
 /// program actually wrote. Shared by the native path and the VM's, so the
 /// message does not depend on which of them discovered the problem.
-pub fn unorderable(sym: &str, a: &Value, b: &Value) -> String {
+pub fn unorderable(sym: &str, a: &Value, b: &Value) -> crate::exc::VErr {
     // CPython names `type(v)`, which for an instance is its class and for a
     // class object is `type` — so this is `type_name` with the instance arm
     // filled in, not `type_label` (which would call `int` an `int`).
@@ -1701,7 +1704,11 @@ pub fn unorderable(sym: &str, a: &Value, b: &Value) -> String {
             other => other.type_name().to_string(),
         }
     }
-    format!("'{sym}' not supported between instances of '{}' and '{}'", ty(a), ty(b))
+    crate::exc::type_error(format!(
+        "'{sym}' not supported between instances of '{}' and '{}'",
+        ty(a),
+        ty(b)
+    ))
 }
 
 /// A number lifted out of a [`Value`] for arithmetic. The `bool`/`int` split is
@@ -1747,7 +1754,7 @@ impl Number {
         if self.is_float() || other.is_float() {
             self.to_f64()
                 .partial_cmp(&other.to_f64())
-                .ok_or_else(|| "cannot compare with nan".to_string())
+                .ok_or_else(|| type_error("cannot compare with nan"))
         } else {
             Ok(self.to_bigint().cmp(&other.to_bigint()))
         }

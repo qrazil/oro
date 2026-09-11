@@ -7,9 +7,10 @@
 
 use crate::bigint::BigInt;
 use crate::compiler::Op;
-use crate::value::{Number, Value};
+use crate::exc::{runtime_error, type_error, zero_division_error, VErr};
+use crate::value::{Number, VResult, Value};
 
-pub fn neg(v: &Value) -> Result<Value, String> {
+pub fn neg(v: &Value) -> VResult<Value> {
     match v.as_number() {
         Some(Number::Int(i)) => Ok(match i.checked_neg() {
             Some(n) => Value::Int(n),
@@ -17,20 +18,20 @@ pub fn neg(v: &Value) -> Result<Value, String> {
         }),
         Some(Number::Big(b)) => Ok(Value::from_bigint(b.neg())),
         Some(Number::Float(f)) => Ok(Value::Float(-f)),
-        None => Err(format!("bad operand type for unary -: '{}'", v.type_name())),
+        None => Err(type_error(format!("bad operand type for unary -: '{}'", v.type_name()))),
     }
 }
 
-pub fn pos(v: &Value) -> Result<Value, String> {
+pub fn pos(v: &Value) -> VResult<Value> {
     match v.as_number() {
         Some(Number::Int(i)) => Ok(Value::Int(i)),
         Some(Number::Big(b)) => Ok(Value::from_bigint(b)),
         Some(Number::Float(f)) => Ok(Value::Float(f)),
-        None => Err(format!("bad operand type for unary +: '{}'", v.type_name())),
+        None => Err(type_error(format!("bad operand type for unary +: '{}'", v.type_name()))),
     }
 }
 
-pub fn binary(op: &Op, a: &Value, b: &Value) -> Result<Value, String> {
+pub fn binary(op: &Op, a: &Value, b: &Value) -> VResult<Value> {
     match op {
         Op::BinAdd => add(a, b),
         Op::BinSub => num_only(a, b, "-", sub_num),
@@ -48,24 +49,24 @@ fn num_only(
     a: &Value,
     b: &Value,
     sym: &str,
-    f: fn(&Number, &Number) -> Result<Value, String>,
-) -> Result<Value, String> {
+    f: fn(&Number, &Number) -> VResult<Value>,
+) -> VResult<Value> {
     match (a.as_number(), b.as_number()) {
         (Some(x), Some(y)) => f(&x, &y),
         _ => Err(type_err(sym, a, b)),
     }
 }
 
-fn type_err(sym: &str, a: &Value, b: &Value) -> String {
-    format!(
+fn type_err(sym: &str, a: &Value, b: &Value) -> VErr {
+    type_error(format!(
         "unsupported operand type(s) for {}: '{}' and '{}'",
         sym,
         a.type_name(),
         b.type_name()
-    )
+    ))
 }
 
-fn add(a: &Value, b: &Value) -> Result<Value, String> {
+fn add(a: &Value, b: &Value) -> VResult<Value> {
     if let (Some(x), Some(y)) = (a.as_number(), b.as_number()) {
         return add_num(&x, &y);
     }
@@ -91,7 +92,7 @@ fn add(a: &Value, b: &Value) -> Result<Value, String> {
     }
 }
 
-fn mul(a: &Value, b: &Value) -> Result<Value, String> {
+fn mul(a: &Value, b: &Value) -> VResult<Value> {
     if let (Some(x), Some(y)) = (a.as_number(), b.as_number()) {
         return mul_num(&x, &y);
     }
@@ -138,7 +139,7 @@ fn int_count(v: &Value) -> Option<i64> {
 
 // --- Numeric core -----------------------------------------------------------
 
-fn add_num(a: &Number, b: &Number) -> Result<Value, String> {
+fn add_num(a: &Number, b: &Number) -> VResult<Value> {
     if a.is_float() || b.is_float() {
         return Ok(Value::Float(a.to_f64() + b.to_f64()));
     }
@@ -151,7 +152,7 @@ fn add_num(a: &Number, b: &Number) -> Result<Value, String> {
     Ok(Value::from_bigint(a.to_bigint().add(&b.to_bigint())))
 }
 
-fn sub_num(a: &Number, b: &Number) -> Result<Value, String> {
+fn sub_num(a: &Number, b: &Number) -> VResult<Value> {
     if a.is_float() || b.is_float() {
         return Ok(Value::Float(a.to_f64() - b.to_f64()));
     }
@@ -164,7 +165,7 @@ fn sub_num(a: &Number, b: &Number) -> Result<Value, String> {
     Ok(Value::from_bigint(a.to_bigint().sub(&b.to_bigint())))
 }
 
-fn mul_num(a: &Number, b: &Number) -> Result<Value, String> {
+fn mul_num(a: &Number, b: &Number) -> VResult<Value> {
     if a.is_float() || b.is_float() {
         return Ok(Value::Float(a.to_f64() * b.to_f64()));
     }
@@ -178,25 +179,25 @@ fn mul_num(a: &Number, b: &Number) -> Result<Value, String> {
 }
 
 /// True division: always a float, matching Python 3.
-fn div_num(a: &Number, b: &Number) -> Result<Value, String> {
+fn div_num(a: &Number, b: &Number) -> VResult<Value> {
     let d = b.to_f64();
     if d == 0.0 {
-        return Err("division by zero".to_string());
+        return Err(zero_division_error("division by zero"));
     }
     Ok(Value::Float(a.to_f64() / d))
 }
 
-fn floordiv_num(a: &Number, b: &Number) -> Result<Value, String> {
+fn floordiv_num(a: &Number, b: &Number) -> VResult<Value> {
     if a.is_float() || b.is_float() {
         let d = b.to_f64();
         if d == 0.0 {
-            return Err("float floor division by zero".to_string());
+            return Err(zero_division_error("float floor division by zero"));
         }
         return Ok(Value::Float((a.to_f64() / d).floor()));
     }
     if let (Number::Int(x), Number::Int(y)) = (a, b) {
         if *y == 0 {
-            return Err("integer division or modulo by zero".to_string());
+            return Err(zero_division_error("integer division or modulo by zero"));
         }
         // Guard the one overflow case (i64::MIN // -1) by falling through to
         // BigInt.
@@ -206,22 +207,22 @@ fn floordiv_num(a: &Number, b: &Number) -> Result<Value, String> {
     }
     match a.to_bigint().divmod_floor(&b.to_bigint()) {
         Some((q, _)) => Ok(Value::from_bigint(q)),
-        None => Err("integer division or modulo by zero".to_string()),
+        None => Err(zero_division_error("integer division or modulo by zero")),
     }
 }
 
-fn mod_num(a: &Number, b: &Number) -> Result<Value, String> {
+fn mod_num(a: &Number, b: &Number) -> VResult<Value> {
     if a.is_float() || b.is_float() {
         let d = b.to_f64();
         if d == 0.0 {
-            return Err("float modulo by zero".to_string());
+            return Err(zero_division_error("float modulo by zero"));
         }
         let r = a.to_f64() - (a.to_f64() / d).floor() * d;
         return Ok(Value::Float(r));
     }
     if let (Number::Int(x), Number::Int(y)) = (a, b) {
         if *y == 0 {
-            return Err("integer division or modulo by zero".to_string());
+            return Err(zero_division_error("integer division or modulo by zero"));
         }
         if let Some(r) = mod_i64(*x, *y) {
             return Ok(Value::Int(r));
@@ -229,11 +230,11 @@ fn mod_num(a: &Number, b: &Number) -> Result<Value, String> {
     }
     match a.to_bigint().divmod_floor(&b.to_bigint()) {
         Some((_, r)) => Ok(Value::from_bigint(r)),
-        None => Err("integer division or modulo by zero".to_string()),
+        None => Err(zero_division_error("integer division or modulo by zero")),
     }
 }
 
-fn pow_num(a: &Number, b: &Number) -> Result<Value, String> {
+fn pow_num(a: &Number, b: &Number) -> VResult<Value> {
     // A negative or float exponent gives a float, as in Python.
     if a.is_float() || b.is_float() {
         return Ok(Value::Float(a.to_f64().powf(b.to_f64())));
@@ -241,7 +242,7 @@ fn pow_num(a: &Number, b: &Number) -> Result<Value, String> {
     let exp = match b {
         Number::Int(e) => *e,
         // A bignum exponent is astronomically large; refuse rather than hang.
-        Number::Big(_) => return Err("exponent too large".to_string()),
+        Number::Big(_) => return Err(runtime_error("exponent too large")),
         Number::Float(_) => unreachable!(),
     };
     if exp < 0 {

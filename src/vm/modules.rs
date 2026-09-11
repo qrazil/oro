@@ -6,7 +6,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::value::{Builtin, Module, OroDict, OroList, OroTuple, Value};
+use crate::exc::{os_error, runtime_error, type_error, Exc, VErr};
+use crate::value::{Builtin, Module, OroDict, OroList, OroTuple, VResult, Value};
 
 /// Build the module named `name`, or `None` if it is not a built-in module.
 /// `argv` seeds `sys.argv`.
@@ -33,7 +34,7 @@ fn module(name: &str, members: Vec<(&str, Value)>) -> Value {
     Value::Module(Rc::new(Module { name: Rc::from(name), members: RefCell::new(map) }))
 }
 
-fn builtin(name: &'static str, func: fn(Vec<Value>) -> Result<Value, String>) -> Value {
+fn builtin(name: &'static str, func: fn(Vec<Value>) -> VResult<Value>) -> Value {
     Value::Builtin(Rc::new(Builtin { name, func }))
 }
 
@@ -124,13 +125,13 @@ fn build_time() -> Value {
 
 /// Wall-clock epoch seconds. Can jump or go backwards (NTP, DST, manual clock
 /// changes), so use it for *when*, never for measuring *how long*.
-fn time_time(args: Vec<Value>) -> Result<Value, String> {
+fn time_time(args: Vec<Value>) -> VResult<Value> {
     if !args.is_empty() {
-        return Err("time() takes no arguments".to_string());
+        return Err(type_error("time() takes no arguments"));
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| "system clock is before the epoch".to_string())?;
+        .map_err(|_| os_error("system clock is before the epoch"))?;
     Ok(Value::Float(now.as_secs_f64()))
 }
 
@@ -139,18 +140,18 @@ fn time_time(args: Vec<Value>) -> Result<Value, String> {
 /// task keeps running. A builtin can only answer with a `Value`, and the whole
 /// content of this one is the `Step` it answers with, so this stub is never
 /// invoked directly — the same arrangement `proc.run` has.
-fn time_sleep(_args: Vec<Value>) -> Result<Value, String> {
-    Err("internal: time.sleep must be dispatched by the VM (it parks)".to_string())
+fn time_sleep(_args: Vec<Value>) -> VResult<Value> {
+    Err(runtime_error("internal: time.sleep must be dispatched by the VM (it parks)"))
 }
 
 /// Monotonic seconds from a fixed reference — only ever increases. Use it for
 /// *how long* (elapsed time, timeouts, benchmarks).
-fn time_monotonic(args: Vec<Value>) -> Result<Value, String> {
+fn time_monotonic(args: Vec<Value>) -> VResult<Value> {
     use std::sync::OnceLock;
     use std::time::Instant;
     static BASE: OnceLock<Instant> = OnceLock::new();
     if !args.is_empty() {
-        return Err("monotonic() takes no arguments".to_string());
+        return Err(type_error("monotonic() takes no arguments"));
     }
     let base = BASE.get_or_init(Instant::now);
     Ok(Value::Float(base.elapsed().as_secs_f64()))
@@ -174,56 +175,61 @@ fn build_re() -> Value {
     )
 }
 
-fn str_at(args: &[Value], i: usize, who: &str) -> Result<String, String> {
+fn str_at(args: &[Value], i: usize, who: &str) -> VResult<String> {
     match args.get(i) {
         Some(Value::Str(s)) => Ok(s.s.clone()),
-        Some(other) => Err(format!("{who}() argument {} must be str, not '{}'", i + 1, other.type_name())),
-        None => Err(format!("{who}() missing a required argument")),
+        Some(other) => Err(type_error(format!(
+            "{who}() argument {} must be str, not '{}'",
+            i + 1,
+            other.type_name()
+        ))),
+        None => Err(type_error(format!("{who}() missing a required argument"))),
     }
 }
 
-fn re_search(args: Vec<Value>) -> Result<Value, String> {
+fn re_search(args: Vec<Value>) -> VResult<Value> {
     let re = crate::regexutil::compile(&str_at(&args, 0, "search")?)?;
     Ok(crate::regexutil::search(&re, &str_at(&args, 1, "search")?))
 }
 
-fn re_findall(args: Vec<Value>) -> Result<Value, String> {
+fn re_findall(args: Vec<Value>) -> VResult<Value> {
     let re = crate::regexutil::compile(&str_at(&args, 0, "findall")?)?;
     Ok(crate::regexutil::findall(&re, &str_at(&args, 1, "findall")?))
 }
 
-fn re_finditer(args: Vec<Value>) -> Result<Value, String> {
+fn re_finditer(args: Vec<Value>) -> VResult<Value> {
     let re = crate::regexutil::compile(&str_at(&args, 0, "finditer")?)?;
     Ok(crate::regexutil::finditer(&re, &str_at(&args, 1, "finditer")?))
 }
 
-fn re_fullmatch(args: Vec<Value>) -> Result<Value, String> {
+fn re_fullmatch(args: Vec<Value>) -> VResult<Value> {
     let re = crate::regexutil::compile(&str_at(&args, 0, "fullmatch")?)?;
     Ok(crate::regexutil::fullmatch(&re, &str_at(&args, 1, "fullmatch")?))
 }
 
-fn re_sub(args: Vec<Value>) -> Result<Value, String> {
+fn re_sub(args: Vec<Value>) -> VResult<Value> {
     let re = crate::regexutil::compile(&str_at(&args, 0, "sub")?)?;
     let repl = str_at(&args, 1, "sub")?;
     Ok(crate::regexutil::sub(&re, &repl, &str_at(&args, 2, "sub")?))
 }
 
-fn re_split(args: Vec<Value>) -> Result<Value, String> {
+fn re_split(args: Vec<Value>) -> VResult<Value> {
     let re = crate::regexutil::compile(&str_at(&args, 0, "split")?)?;
     Ok(crate::regexutil::split(&re, &str_at(&args, 1, "split")?))
 }
 
-fn re_compile(args: Vec<Value>) -> Result<Value, String> {
+fn re_compile(args: Vec<Value>) -> VResult<Value> {
     crate::regexutil::regex_value(&str_at(&args, 0, "compile")?)
 }
 
 /// `re.match` is deliberately cut — it anchors at the start, which is almost
 /// always not what people mean.
-fn re_match(_args: Vec<Value>) -> Result<Value, String> {
-    Err("re.match is not supported in Oro — it anchors at the start of the string, which is \
+fn re_match(_args: Vec<Value>) -> VResult<Value> {
+    Err(runtime_error(
+        "re.match is not supported in Oro — it anchors at the start of the string, which is \
          almost always the wrong choice and is constantly confused with re.search. Use re.search \
-         (unanchored), or anchor explicitly with a leading `^`."
-        .to_string())
+         (unanchored), or anchor explicitly with a leading `^`.",
+    ))
 }
 
 // --- net ---------------------------------------------------------------------
@@ -251,7 +257,7 @@ fn build_net() -> Value {
 /// `reuseport=` can be spelled as a keyword at all (a plain `Builtin` is
 /// `fn(Vec<Value>)` and the VM rejects keywords to one), and hands both halves
 /// to [`net_listen_kw`].
-fn net_listen(args: Vec<Value>) -> Result<Value, String> {
+fn net_listen(args: Vec<Value>) -> VResult<Value> {
     net_listen_kw(args, &[])
 }
 
@@ -268,20 +274,20 @@ fn net_listen(args: Vec<Value>) -> Result<Value, String> {
 /// keyword-only leaves §4's "two constructors and two objects" exactly as true
 /// as it was — every existing call still reads as it did, and the new argument
 /// is invisible until someone needs it.
-pub(super) fn net_listen_kw(args: Vec<Value>, kwargs: &[(String, Value)]) -> Result<Value, String> {
+pub(super) fn net_listen_kw(args: Vec<Value>, kwargs: &[(String, Value)]) -> VResult<Value> {
     let addr = one_addr(&args, "listen")?;
     let mut reuseport = false;
     for (k, v) in kwargs {
         if k != "reuseport" {
-            return Err(format!("listen() got an unexpected keyword argument '{k}'"));
+            return Err(type_error(format!("listen() got an unexpected keyword argument '{k}'")));
         }
         match v {
             Value::Bool(b) => reuseport = *b,
             other => {
-                return Err(format!(
+                return Err(type_error(format!(
                     "listen() reuseport argument must be bool, not '{}'",
                     other.type_name()
-                ))
+                )))
             }
         }
     }
@@ -292,21 +298,21 @@ pub(super) fn net_listen_kw(args: Vec<Value>, kwargs: &[(String, Value)]) -> Res
 /// system resolver and then on the handshake, and a `Builtin` can only answer
 /// with a `Value`. This entry exists so the name resolves and is callable; the
 /// dispatch in [`super::Vm::invoke`] takes it before it can ever run.
-fn net_dial(_args: Vec<Value>) -> Result<Value, String> {
-    Err("internal: net.dial must be dispatched by the VM (it parks)".to_string())
+fn net_dial(_args: Vec<Value>) -> VResult<Value> {
+    Err(runtime_error("internal: net.dial must be dispatched by the VM (it parks)"))
 }
 
 /// The one *positional* argument both constructors take: an address, as a
 /// string. No `Address` type — see §4. (`net.listen` also takes the keyword
 /// `reuseport=`; see [`net_listen_kw`].)
-pub(super) fn one_addr(args: &[Value], who: &str) -> Result<String, String> {
+pub(super) fn one_addr(args: &[Value], who: &str) -> VResult<String> {
     match args {
         [Value::Str(s)] => Ok(s.s.clone()),
-        [other] => Err(format!(
+        [other] => Err(type_error(format!(
             "{who}() address must be str, not '{}' — addresses are strings like \"127.0.0.1:8080\"",
             other.type_name()
-        )),
-        _ => Err(format!("{who}() takes exactly one address")),
+        ))),
+        _ => Err(type_error(format!("{who}() takes exactly one address"))),
     }
 }
 
@@ -333,20 +339,23 @@ fn build_native_io() -> Value {
     )
 }
 
-fn io_buffer(args: Vec<Value>) -> Result<Value, String> {
+fn io_buffer(args: Vec<Value>) -> VResult<Value> {
     match args.as_slice() {
         [Value::Bytes(b)] => Ok(Value::Stream(Rc::new(crate::stream::OroStream::buffer(
             (**b).clone(),
         )))),
-        [other] => Err(format!("buffer() argument must be bytes, not '{}'", other.type_name())),
-        _ => Err("buffer() takes 1 argument".to_string()),
+        [other] => Err(type_error(format!(
+            "buffer() argument must be bytes, not '{}'",
+            other.type_name()
+        ))),
+        _ => Err(type_error("buffer() takes 1 argument")),
     }
 }
 
-fn io_read_all(args: Vec<Value>) -> Result<Value, String> {
+fn io_read_all(args: Vec<Value>) -> VResult<Value> {
     match args.as_slice() {
         [Value::Stream(s)] => Ok(Value::bytes(s.read_all()?)),
-        _ => Err("internal: _io.read_all takes one Rust stream".to_string()),
+        _ => Err(type_error("internal: _io.read_all takes one Rust stream")),
     }
 }
 
@@ -374,21 +383,21 @@ fn build_native_json() -> Value {
     )
 }
 
-fn json_parse(args: Vec<Value>) -> Result<Value, String> {
+fn json_parse(args: Vec<Value>) -> VResult<Value> {
     match args.as_slice() {
         [Value::Str(s)] => crate::json::parse(&s.s),
         // `bytes` is not quietly decoded: §1's whole argument is that the
         // decode is a step the program takes, in the open — `b.to_str()` —
         // rather than something a codec guesses at.
-        [other] => Err(format!(
+        [other] => Err(type_error(format!(
             "parse() argument must be str, not '{}'",
             other.type_name()
-        )),
-        _ => Err("internal: _json.parse takes one string".to_string()),
+        ))),
+        _ => Err(type_error("internal: _json.parse takes one string")),
     }
 }
 
-fn json_stringify(args: Vec<Value>) -> Result<Value, String> {
+fn json_stringify(args: Vec<Value>) -> VResult<Value> {
     match args.as_slice() {
         [value, indent] => {
             let indent = match indent {
@@ -397,7 +406,7 @@ fn json_stringify(args: Vec<Value>) -> Result<Value, String> {
             };
             crate::json::stringify(value, indent).map(Value::str)
         }
-        _ => Err("internal: _json.stringify takes a value and an indent".to_string()),
+        _ => Err(type_error("internal: _json.stringify takes a value and an indent")),
     }
 }
 
@@ -409,52 +418,60 @@ fn build_proc() -> Value {
     module("proc", vec![("run", builtin("proc.run", proc_run_stub))])
 }
 
-fn proc_run_stub(_args: Vec<Value>) -> Result<Value, String> {
-    Err("internal: proc.run must be dispatched by the VM".to_string())
+fn proc_run_stub(_args: Vec<Value>) -> VResult<Value> {
+    Err(runtime_error("internal: proc.run must be dispatched by the VM"))
 }
 
 // --- sys ---------------------------------------------------------------------
 
-/// Encodes an exit request as a sentinel error the VM turns into `SystemExit`.
-fn sys_exit(args: Vec<Value>) -> Result<Value, String> {
+/// An exit request, as the `SystemExit` it becomes.
+///
+/// This used to be a NUL-prefixed sentinel *message* — `"\0exit\03"` — that
+/// `Vm::exit_request` parsed back out of the string, because the string was the
+/// only channel a builtin had and `SystemExit` is not a class the substring
+/// table could be given. It is now the class it always was, with the exit code
+/// as the message: the fourth and last rider on that channel, gone with the
+/// other three. The VM still recognises it specially, because `SystemExit`'s
+/// single argument is an `int` rather than a rendered message.
+fn sys_exit(args: Vec<Value>) -> VResult<Value> {
     let code = match args.as_slice() {
         [] | [Value::None] => 0,
         [Value::Int(n)] => *n,
         [Value::Bool(b)] => *b as i64,
-        _ => return Err("sys.exit() code must be an int or None in this build".to_string()),
+        _ => return Err(runtime_error("sys.exit() code must be an int or None in this build")),
     };
-    Err(format!("\u{0}exit\u{0}{code}"))
+    Err(VErr::new(Exc::SystemExit, code.to_string()))
 }
 
 // --- os ----------------------------------------------------------------------
 
-fn os_getcwd(args: Vec<Value>) -> Result<Value, String> {
+fn os_getcwd(args: Vec<Value>) -> VResult<Value> {
     if !args.is_empty() {
-        return Err("getcwd() takes no arguments".to_string());
+        return Err(type_error("getcwd() takes no arguments"));
     }
     std::env::current_dir()
         .map(|p| Value::str(p.to_string_lossy().into_owned()))
-        .map_err(|e| e.to_string())
+        .map_err(|e| VErr::new(crate::exc::io_class(e.kind()), e.to_string()))
 }
 
-fn os_listdir(args: Vec<Value>) -> Result<Value, String> {
+fn os_listdir(args: Vec<Value>) -> VResult<Value> {
     let path = one_path(&args, "listdir")?;
     let mut names = Vec::new();
     let entries = std::fs::read_dir(&path).map_err(|e| io_err(&e, &path))?;
     for entry in entries {
-        let entry = entry.map_err(|e| e.to_string())?;
+        let entry = entry.map_err(|e| VErr::new(crate::exc::io_class(e.kind()), e.to_string()))?;
         names.push(Value::str(entry.file_name().to_string_lossy().into_owned()));
     }
     Ok(Value::List(OroList::new(names)))
 }
 
-fn os_remove(args: Vec<Value>) -> Result<Value, String> {
+fn os_remove(args: Vec<Value>) -> VResult<Value> {
     let path = one_path(&args, "remove")?;
     std::fs::remove_file(&path).map_err(|e| io_err(&e, &path))?;
     Ok(Value::None)
 }
 
-fn os_mkdir(args: Vec<Value>) -> Result<Value, String> {
+fn os_mkdir(args: Vec<Value>) -> VResult<Value> {
     let path = one_path(&args, "mkdir")?;
     std::fs::create_dir(&path).map_err(|e| io_err(&e, &path))?;
     Ok(Value::None)
@@ -462,22 +479,22 @@ fn os_mkdir(args: Vec<Value>) -> Result<Value, String> {
 
 // --- os.path -----------------------------------------------------------------
 
-fn path_exists(args: Vec<Value>) -> Result<Value, String> {
+fn path_exists(args: Vec<Value>) -> VResult<Value> {
     let path = one_path(&args, "exists")?;
     Ok(Value::Bool(std::path::Path::new(&path).exists()))
 }
 
-fn path_isfile(args: Vec<Value>) -> Result<Value, String> {
+fn path_isfile(args: Vec<Value>) -> VResult<Value> {
     let path = one_path(&args, "isfile")?;
     Ok(Value::Bool(std::path::Path::new(&path).is_file()))
 }
 
-fn path_isdir(args: Vec<Value>) -> Result<Value, String> {
+fn path_isdir(args: Vec<Value>) -> VResult<Value> {
     let path = one_path(&args, "isdir")?;
     Ok(Value::Bool(std::path::Path::new(&path).is_dir()))
 }
 
-fn path_join(args: Vec<Value>) -> Result<Value, String> {
+fn path_join(args: Vec<Value>) -> VResult<Value> {
     // Follows POSIX join: an absolute later component resets the path.
     let mut out = String::new();
     for a in &args {
@@ -494,13 +511,13 @@ fn path_join(args: Vec<Value>) -> Result<Value, String> {
     Ok(Value::str(out))
 }
 
-fn path_basename(args: Vec<Value>) -> Result<Value, String> {
+fn path_basename(args: Vec<Value>) -> VResult<Value> {
     let path = one_path(&args, "basename")?;
     let base = path.rsplit('/').next().unwrap_or("").to_string();
     Ok(Value::str(base))
 }
 
-fn path_dirname(args: Vec<Value>) -> Result<Value, String> {
+fn path_dirname(args: Vec<Value>) -> VResult<Value> {
     let path = one_path(&args, "dirname")?;
     match path.rfind('/') {
         Some(i) => Ok(Value::str(path[..i].to_string())),
@@ -508,7 +525,7 @@ fn path_dirname(args: Vec<Value>) -> Result<Value, String> {
     }
 }
 
-fn path_splitext(args: Vec<Value>) -> Result<Value, String> {
+fn path_splitext(args: Vec<Value>) -> VResult<Value> {
     let path = one_path(&args, "splitext")?;
     let base_start = path.rfind('/').map(|i| i + 1).unwrap_or(0);
     // A leading dot in the basename is not an extension (".bashrc").
@@ -525,29 +542,37 @@ fn path_splitext(args: Vec<Value>) -> Result<Value, String> {
 
 // --- helpers -----------------------------------------------------------------
 
-fn as_str<'a>(v: &'a Value, who: &str) -> Result<&'a str, String> {
+fn as_str<'a>(v: &'a Value, who: &str) -> Result<&'a str, VErr> {
     match v {
         Value::Str(s) => Ok(&s.s),
-        other => Err(format!("{who}() argument must be str, not '{}'", other.type_name())),
+        other => Err(type_error(format!(
+            "{who}() argument must be str, not '{}'",
+            other.type_name()
+        ))),
     }
 }
 
-fn one_path(args: &[Value], who: &str) -> Result<String, String> {
+fn one_path(args: &[Value], who: &str) -> VResult<String> {
     match args {
         [v] => Ok(as_str(v, who)?.to_string()),
-        _ => Err(format!("{who}() takes exactly one argument")),
+        _ => Err(type_error(format!("{who}() takes exactly one argument"))),
     }
 }
 
-/// Format a filesystem error like CPython so the VM classifies it into the
-/// right exception type (`FileNotFoundError`, `PermissionError`, `OSError`).
-pub fn io_err(e: &std::io::Error, path: &str) -> String {
+/// A filesystem error, as the fault it raises: the class from `e.kind()`, the
+/// message rendered the way CPython renders an `OSError`.
+///
+/// The class comes from the kind rather than from the text, so a path a program
+/// chose can no longer pick the exception — `open("No such file or directory")`
+/// is a `FileNotFoundError` because the file is missing, not because of what it
+/// is called.
+pub fn io_err(e: &std::io::Error, path: &str) -> VErr {
     use std::io::ErrorKind::*;
-    let (errno, msg) = match e.kind() {
-        NotFound => (2, "No such file or directory"),
-        PermissionDenied => (13, "Permission denied"),
-        AlreadyExists => (17, "File exists"),
-        _ => (0, "OS error"),
+    let (errno, msg, class) = match e.kind() {
+        NotFound => (2, "No such file or directory", Exc::FileNotFoundError),
+        PermissionDenied => (13, "Permission denied", Exc::PermissionError),
+        AlreadyExists => (17, "File exists", Exc::OSError),
+        _ => (0, "OS error", Exc::OSError),
     };
-    format!("[Errno {errno}] {msg}: '{path}'")
+    VErr::new(class, format!("[Errno {errno}] {msg}: '{path}'"))
 }

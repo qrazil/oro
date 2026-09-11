@@ -29,11 +29,15 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::ast::CmpOp;
+use crate::exc::{
+    attribute_error, command_error, index_error, key_error, name_error, runtime_error,
+    timeout_error, type_error, value_error, Exc, VErr,
+};
 use crate::compiler::{CaptureSource, ClassSpec, CodeObject, Op, ParamInfo, VarTarget};
 use crate::task::{TaskHandle, TaskId};
 use crate::value::{
     BoundMethod, Class, Fields, Function, Instance, IterState, MethodKind, OroDict, OroList,
-    OroTuple, RangeVal, SuperProxy, Value,
+    OroTuple, RangeVal, SuperProxy, VResult, Value,
 };
 use std::collections::{HashMap, VecDeque};
 use std::cell::Cell;
@@ -68,6 +72,12 @@ use std::cell::Cell;
 /// while the other is still wrong.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeError {
+    /// The exception class this fault raises, named by the code that detected
+    /// it. One byte, and it is what replaced `classify_error` — a substring
+    /// table that guessed the class back out of `message`, and so let a value
+    /// the program (or, through `std/http.oro`, a client) chose decide which
+    /// exception a fault became. See [`crate::exc`].
+    pub class: Exc,
     pub message: Box<str>,
     /// The file the faulting frame was compiled from. See [`CodeObject::source`].
     pub source: Rc<str>,
@@ -912,7 +922,7 @@ pub struct Vm {
 
 /// Add two values with the VM's numeric/sequence `+` semantics. Exposed for
 /// the `sum` builtin so it need not reimplement the numeric tower.
-pub fn add_values(a: &Value, b: &Value) -> Result<Value, String> {
+pub fn add_values(a: &Value, b: &Value) -> VResult<Value> {
     arith::binary(&Op::BinAdd, a, b)
 }
 
@@ -1124,17 +1134,18 @@ impl Vm {
     /// for why this is `#[cold]` and out of line.
     #[cold]
     #[inline(never)]
-    fn err(&self, message: impl Into<String>) -> VmError {
+    fn err(&self, e: VErr) -> VmError {
         Box::new(RuntimeError {
-            message: message.into().into_boxed_str(),
+            class: e.class,
+            message: e.message.into_boxed_str(),
             source: self.err_source(),
             line: self.task.line,
             col: self.task.col,
         })
     }
 
-    fn wrap<T>(&self, r: Result<T, String>) -> Result<T, VmError> {
-        r.map_err(|m| self.err(m))
+    fn wrap<T>(&self, r: VResult<T>) -> Result<T, VmError> {
+        r.map_err(|e| self.err(e))
     }
 
     /// The list at the top of the stack (left in place), for the incremental
@@ -1142,14 +1153,14 @@ impl Vm {
     fn expect_list_tos(&mut self, who: &str) -> Result<Rc<OroList>, VmError> {
         match self.top().stack.last() {
             Some(Value::List(l)) => Ok(l.clone()),
-            _ => Err(self.err(format!("internal: {who} on non-list"))),
+            _ => Err(self.err(runtime_error(format!("internal: {who} on non-list")))),
         }
     }
 
     fn expect_dict_tos(&mut self, who: &str) -> Result<Rc<RefCell<OroDict>>, VmError> {
         match self.top().stack.last() {
             Some(Value::Dict(d)) => Ok(d.clone()),
-            _ => Err(self.err(format!("internal: {who} on non-dict"))),
+            _ => Err(self.err(runtime_error(format!("internal: {who} on non-dict")))),
         }
     }
 
@@ -1545,7 +1556,7 @@ impl Vm {
                 Op::LoadFast(s) => {
                     let v = self.top().locals[s as usize].clone();
                     if matches!(v, Value::Unbound) {
-                        return Err(self.err(self.unbound_local_msg(s)));
+                        return Err(self.err(self.unbound_local_err(s)));
                     }
                     self.push(v);
                 }
@@ -1556,7 +1567,9 @@ impl Vm {
                 Op::LoadCell(s) => {
                     let v = self.top().cells[s as usize].borrow().clone();
                     if matches!(v, Value::Unbound) {
-                        return Err(self.err("local variable referenced before assignment"));
+                        return Err(self.err(runtime_error(
+                            "local variable referenced before assignment",
+                        )));
                     }
                     self.push(v);
                 }
@@ -1567,7 +1580,9 @@ impl Vm {
                 Op::LoadFree(s) => {
                     let v = self.top().free[s as usize].borrow().clone();
                     if matches!(v, Value::Unbound) {
-                        return Err(self.err("free variable referenced before assignment"));
+                        return Err(self.err(runtime_error(
+                            "free variable referenced before assignment",
+                        )));
                     }
                     self.push(v);
                 }
@@ -1599,7 +1614,9 @@ impl Vm {
                                 }
                                 None => {
                                     return Err(
-                                        self.err(format!("name '{name}' is not defined"))
+                                        self.err(name_error(format!(
+                                            "name '{name}' is not defined"
+                                        )))
                                     )
                                 }
                             }
@@ -1660,12 +1677,12 @@ impl Vm {
                             self.invoke_user(f, a, defclass, vec![b], Vec::new(), ReturnAction::Normal)?;
                         }
                         None if matches!(a, Value::Instance(_)) => {
-                            return Err(self.err(format!(
+                            return Err(self.err(type_error(format!(
                                 "unsupported operand type(s) for {}: '{}' and '{}'",
                                 arith_symbol(&op),
                                 a.type_label(),
                                 b.type_label()
-                            )));
+                            ))));
                         }
                         None => {
                             let r = self.wrap(arith::binary(&op, &a, &b))?;
@@ -1797,7 +1814,7 @@ impl Vm {
                                 name,
                                 other.type_label()
                             );
-                            return Err(self.err(msg));
+                            return Err(self.err(runtime_error(msg)));
                         }
                     }
                 }
@@ -1816,9 +1833,9 @@ impl Vm {
                             instance,
                         })),
                         None => {
-                            return Err(self.err(
-                                "super() is only valid inside a method".to_string(),
-                            ))
+                            return Err(
+                                self.err(runtime_error("super() is only valid inside a method"))
+                            )
                         }
                     };
                     self.push(sup);
@@ -1829,11 +1846,14 @@ impl Vm {
                     let items = self.wrap(iterate_to_vec(&seq))?;
                     if items.len() != n {
                         let msg = if items.len() < n {
-                            format!("not enough values to unpack (expected {n}, got {})", items.len())
+                            format!(
+                                "not enough values to unpack (expected {n}, got {})",
+                                items.len()
+                            )
                         } else {
                             format!("too many values to unpack (expected {n})")
                         };
-                        return Err(self.err(msg));
+                        return Err(self.err(value_error(msg)));
                     }
                     for v in items.into_iter().rev() {
                         self.push(v);
@@ -1849,7 +1869,7 @@ impl Vm {
                                 "format spec must be a string, not '{}'",
                                 other.type_name()
                             );
-                            return Err(self.err(msg));
+                            return Err(self.err(type_error(msg)));
                         }
                     };
                     // An instance renders via __str__/__repr__ (which run on a
@@ -2056,7 +2076,7 @@ impl Vm {
                     match self.task.handling.pop() {
                         Some(exc) => return Ok(Step::Raise(exc)),
                         None => {
-                            return Err(self.err("No active exception to re-raise".to_string()))
+                            return Err(self.err(runtime_error("No active exception to re-raise")))
                         }
                     }
                 }
@@ -2097,19 +2117,19 @@ impl Vm {
         Ok(Step::Next)
     }
 
-    fn unbound_local_msg(&self, slot: u16) -> String {
+    fn unbound_local_err(&self, slot: u16) -> VErr {
         let code = &self.task.frames.last().unwrap().code;
         // A name that also exists at module scope but was made local by an
         // assignment (no `global`) is the classic footgun — teach the fix.
         for (s, name) in &code.shadow_hints {
             if *s == slot {
-                return format!(
+                return runtime_error(format!(
                     "local variable '{name}' referenced before assignment: '{name}' is assigned \
                      inside this function, which makes it local and shadows the module-level \
                      '{name}'. To read and update the module value, declare `global {name}` at \
                      the top of the function; otherwise keep the state on an object, or rename \
                      the local."
-                );
+                ));
             }
         }
         // Recover the variable's name from its parameter descriptor when we can,
@@ -2117,11 +2137,14 @@ impl Vm {
         for p in &code.params {
             if let VarTarget::Local(s) = p.target {
                 if s == slot {
-                    return format!("local variable '{}' referenced before assignment", p.name);
+                    return runtime_error(format!(
+                        "local variable '{}' referenced before assignment",
+                        p.name
+                    ));
                 }
             }
         }
-        "local variable referenced before assignment".to_string()
+        runtime_error("local variable referenced before assignment")
     }
 
     // --- Closures ------------------------------------------------------------
@@ -2187,7 +2210,7 @@ impl Vm {
     /// frame's slots. No argument vector, no re-copy — the values are moved once.
     fn call_fast(&mut self, func: Rc<Function>, n: usize) -> Result<Step, VmError> {
         if self.task.frames.len() >= MAX_FRAMES {
-            return Err(self.err("maximum recursion depth exceeded"));
+            return Err(self.err(runtime_error("maximum recursion depth exceeded")));
         }
         self.call_fast_unchecked(func, n);
         Ok(Step::Next)
@@ -2353,7 +2376,7 @@ impl Vm {
         let callee = self.pop();
         let args = match poslist {
             Value::List(l) => l.borrow().clone(),
-            _ => return Err(self.err("internal: CallEx positional list malformed")),
+            _ => return Err(self.err(runtime_error("internal: CallEx positional list malformed"))),
         };
         let kwargs = match kwdict {
             Value::Dict(d) => {
@@ -2362,12 +2385,12 @@ impl Vm {
                 for (k, v) in d.items() {
                     match k {
                         Value::Str(s) => out.push((s.s.clone(), v.clone())),
-                        _ => return Err(self.err("keywords must be strings")),
+                        _ => return Err(self.err(type_error("keywords must be strings"))),
                     }
                 }
                 out
             }
-            _ => return Err(self.err("internal: CallEx keyword dict malformed")),
+            _ => return Err(self.err(runtime_error("internal: CallEx keyword dict malformed"))),
         };
         self.invoke(callee, args, kwargs)
     }
@@ -2480,7 +2503,7 @@ impl Vm {
         if &**name == "sort" {
             if let Value::List(l) = &receiver {
                 if !args.is_empty() {
-                    return Err(self.err("sort() takes no positional arguments"));
+                    return Err(self.err(type_error("sort() takes no positional arguments")));
                 }
                 let (keyfn, reverse) = self.sort_kwargs("sort", kwargs)?;
                 let items = l.borrow().clone();
@@ -2661,7 +2684,10 @@ impl Vm {
                     }
                 }
                 if !kwargs.is_empty() {
-                    return Err(self.err(format!("{}() takes no keyword arguments", b.name)));
+                    return Err(self.err(type_error(format!(
+                        "{}() takes no keyword arguments",
+                        b.name
+                    ))));
                 }
                 let r = self.wrap((b.func)(args))?;
                 self.push(r);
@@ -2694,7 +2720,7 @@ impl Vm {
             },
             Value::Func(f) => {
                 if self.task.frames.len() >= MAX_FRAMES {
-                    return Err(self.err("maximum recursion depth exceeded"));
+                    return Err(self.err(runtime_error("maximum recursion depth exceeded")));
                 }
                 let frame = self.bind_call(&f, None, args, kwargs)?;
                 if f.code.is_generator {
@@ -2714,13 +2740,19 @@ impl Vm {
             // these names were builtins.
             Value::Type(t) => {
                 if !kwargs.is_empty() {
-                    return Err(self.err(format!("{}() takes no keyword arguments", t.name())));
+                    return Err(self.err(type_error(format!(
+                        "{}() takes no keyword arguments",
+                        t.name()
+                    ))));
                 }
                 let r = self.wrap(crate::builtins::call_type(t, args))?;
                 self.push(r);
                 Ok(Step::Next)
             }
-            other => Err(self.err(format!("'{}' object is not callable", other.type_label()))),
+            other => Err(self.err(type_error(format!(
+                "'{}' object is not callable",
+                other.type_label()
+            )))),
         }
     }
 
@@ -2740,7 +2772,7 @@ impl Vm {
         };
         if !kwargs.is_empty() {
             return Ok(Some(
-                self.raise("TypeError", format!("{name}() takes no keyword arguments")),
+                self.raise(Exc::TypeError, format!("{name}() takes no keyword arguments")),
             ));
         }
         let arity = |vm: &Self, want: usize| -> Result<(), Step> {
@@ -2752,7 +2784,10 @@ impl Vm {
                 1 => "exactly 1 argument".to_string(),
                 n => format!("exactly {n} arguments"),
             };
-            Err(vm.raise("TypeError", format!("{name}() takes {expected} ({} given)", args.len())))
+            Err(vm.raise(Exc::TypeError, format!(
+                "{name}() takes {expected} ({} given)",
+                args.len()
+            )))
         };
         if let Some(handle) = task_recv {
             if name != "join" {
@@ -2802,7 +2837,7 @@ impl Vm {
         kwargs: Vec<(String, Value)>,
     ) -> Result<Step, VmError> {
         if self.task.frames.len() >= MAX_FRAMES {
-            return Err(self.err("maximum recursion depth exceeded"));
+            return Err(self.err(runtime_error("maximum recursion depth exceeded")));
         }
         let mut frame = self.bind_call(func, Some(receiver.clone()), args, kwargs)?;
         frame.super_ctx = Some((defclass, receiver));
@@ -2825,7 +2860,7 @@ impl Vm {
         action: ReturnAction,
     ) -> Result<(), VmError> {
         if self.task.frames.len() >= MAX_FRAMES {
-            return Err(self.err("maximum recursion depth exceeded"));
+            return Err(self.err(runtime_error("maximum recursion depth exceeded")));
         }
         // An ordinary `obj.m()` with a `yield` in it is handled at the call
         // site, where it produces a generator the way a plain `def` does. What
@@ -2838,10 +2873,10 @@ impl Vm {
         // same answer `sorted(key=…)` already gives.
         if func.code.is_generator {
             let name = func.code.name.clone();
-            return Err(self.err(format!(
+            return Err(self.err(runtime_error(format!(
                 "{name}() has a `yield` in it, and Oro does not carry generators \
                  through dunders and callbacks — move it to a module-level def"
-            )));
+            ))));
         }
         let mut frame = self.bind_call(&func, Some(receiver.clone()), args, kwargs)?;
         frame.ret_action = action;
@@ -2869,12 +2904,18 @@ impl Vm {
                 self.push(inst.clone());
                 self.invoke_user(init, inst, defclass, args, kwargs, ReturnAction::DropForInit)
             }
-            Some(_) => Err(self.err(format!("{}.__init__ is not a function", class.name))),
+            Some(_) => Err(self.err(runtime_error(format!(
+                "{}.__init__ is not a function",
+                class.name
+            )))),
             // An exception class with no custom __init__ stores its args tuple
             // natively (BaseException-style), so `ValueError("x")` just works.
             None if class.is_exception => {
                 if !kwargs.is_empty() {
-                    return Err(self.err(format!("{}() takes no keyword arguments", class.name)));
+                    return Err(self.err(type_error(format!(
+                        "{}() takes no keyword arguments",
+                        class.name
+                    ))));
                 }
                 let exc = self.make_exception_instance(class, args);
                 self.push(exc);
@@ -2882,7 +2923,10 @@ impl Vm {
             }
             None => {
                 if !args.is_empty() || !kwargs.is_empty() {
-                    return Err(self.err(format!("{}() takes no arguments", class.name)));
+                    return Err(self.err(type_error(format!(
+                        "{}() takes no arguments",
+                        class.name
+                    ))));
                 }
                 self.push(inst);
                 Ok(())
@@ -2923,7 +2967,10 @@ impl Vm {
             Some((Value::Func(f), defclass)) => {
                 self.invoke_user(f, value, defclass, Vec::new(), Vec::new(), ReturnAction::Normal)
             }
-            _ => Err(self.err(format!("object of type '{}' has no len()", inst.class.name))),
+            _ => Err(self.err(type_error(format!(
+                "object of type '{}' has no len()",
+                inst.class.name
+            )))),
         }
     }
 
@@ -2950,7 +2997,7 @@ impl Vm {
     ) -> Result<(), VmError> {
         let who = op.name();
         if !kwargs.is_empty() {
-            return Err(self.err(format!("{who}() takes no keyword arguments")));
+            return Err(self.err(type_error(format!("{who}() takes no keyword arguments"))));
         }
         let callable = |v: &Value| {
             matches!(v, Value::Func(_) | Value::Builtin(_) | Value::Method(_))
@@ -2961,15 +3008,15 @@ impl Vm {
             SeqOp::Reduce => match args.as_slice() {
                 [init, f] if callable(f) => (Some(f.clone()), Some(init.clone())),
                 [_, other] => {
-                    return Err(self.err(format!(
+                    return Err(self.err(runtime_error(format!(
                         "reduce() needs a function as its second argument, not '{}'",
                         other.type_name()
-                    )))
+                    ))))
                 }
                 _ => {
                     return Err(self.err(
-                        "reduce() takes an initial value and a function, e.g. \
-                         xs.reduce(0, (acc, x) => acc + x)",
+                        type_error("reduce() takes an initial value and a function, e.g. \
+                         xs.reduce(0, (acc, x) => acc + x)",)
                     ))
                 }
             },
@@ -2977,22 +3024,22 @@ impl Vm {
                 [] => (None, None),
                 [f] if callable(f) => (Some(f.clone()), None),
                 [other] => {
-                    return Err(self.err(format!(
+                    return Err(self.err(runtime_error(format!(
                         "{who}() needs a function, not '{}'",
                         other.type_name()
-                    )))
+                    ))))
                 }
-                _ => return Err(self.err(format!("{who}() takes at most 1 argument"))),
+                _ => return Err(self.err(type_error(format!("{who}() takes at most 1 argument")))),
             },
             _ => match args.as_slice() {
                 [f] if callable(f) => (Some(f.clone()), None),
                 [other] => {
-                    return Err(self.err(format!(
+                    return Err(self.err(runtime_error(format!(
                         "{who}() needs a function, not '{}'",
                         other.type_name()
-                    )))
+                    ))))
                 }
-                _ => return Err(self.err(format!("{who}() takes exactly 1 argument"))),
+                _ => return Err(self.err(type_error(format!("{who}() takes exactly 1 argument")))),
             },
         };
 
@@ -3202,10 +3249,10 @@ impl Vm {
             Value::Dict(_) => SeqShape::Dict,
             Value::Range(_) => SeqShape::List,
             other => {
-                return Err(self.err(format!(
+                return Err(self.err(runtime_error(format!(
                     "'{}' object has no method '{who}'",
                     other.type_name()
-                )))
+                ))))
             }
         })
     }
@@ -3315,7 +3362,7 @@ impl Vm {
             match func {
                 Value::Func(f) => {
                     if self.task.frames.len() >= MAX_FRAMES {
-                        return Err(self.err("maximum recursion depth exceeded"));
+                        return Err(self.err(runtime_error("maximum recursion depth exceeded")));
                     }
                     if f.code.is_generator {
                         // This says something about the *call*, not about the
@@ -3324,9 +3371,9 @@ impl Vm {
                         // where the VM's position has got to once a fused chain
                         // has run a callback or two.
                         (self.task.line, self.task.col) = at;
-                        return Err(self.err(format!(
+                        return Err(self.err(runtime_error(format!(
                             "{who}() callback must not be a generator function"
-                        )));
+                        ))));
                     }
                     let mut frame = self.bind_call(&f, None, call_args, Vec::new())?;
                     frame.ret_action = ReturnAction::DriveSeq;
@@ -3348,7 +3395,9 @@ impl Vm {
                         }
                         MethodKind::User { func, defclass } => {
                             if self.task.frames.len() >= MAX_FRAMES {
-                                return Err(self.err("maximum recursion depth exceeded"));
+                                return Err(
+                                    self.err(runtime_error("maximum recursion depth exceeded"))
+                                );
                             }
                             return self.invoke_user(
                                 func.clone(),
@@ -3364,7 +3413,7 @@ impl Vm {
                 }
                 _ => {
                     (self.task.line, self.task.col) = at;
-                    return Err(self.err(format!("{who}() callback is not callable")));
+                    return Err(self.err(type_error(format!("{who}() callback is not callable"))));
                 }
             }
         }
@@ -3420,7 +3469,7 @@ impl Vm {
                     // belongs to the `first()` that ended the chain.
                     self.task.line = job.line;
                     self.task.col = job.col;
-                    Err(self.err("first() on an empty sequence"))
+                    Err(self.err(runtime_error("first() on an empty sequence")))
                 }
             };
         }
@@ -3575,7 +3624,7 @@ impl Vm {
 
     /// Turn a vector of elements back into the collection type `shape`. For a
     /// dict the elements are `(key, value)` pairs.
-    fn rebuild_shape(shape: SeqShape, items: Vec<Value>) -> Result<Value, String> {
+    fn rebuild_shape(shape: SeqShape, items: Vec<Value>) -> VResult<Value> {
         Ok(match shape {
             SeqShape::List => Value::List(OroList::new(items)),
             SeqShape::Tuple => Value::Tuple(OroTuple::new(items)),
@@ -3586,17 +3635,17 @@ impl Vm {
                         Value::Tuple(t) => t.as_slice().to_vec(),
                         Value::List(l) => l.borrow().clone(),
                         other => {
-                            return Err(format!(
+                            return Err(runtime_error(format!(
                                 "rebuilding a dict needs (key, value) pairs, not '{}'",
                                 other.type_name()
-                            ))
+                            )))
                         }
                     };
                     if pair.len() != 2 {
-                        return Err(format!(
+                        return Err(runtime_error(format!(
                             "rebuilding a dict needs 2-element pairs, got {} elements",
                             pair.len()
-                        ));
+                        )));
                     }
                     d.insert(pair[0].clone(), pair[1].clone())?;
                 }
@@ -3699,7 +3748,7 @@ impl Vm {
             match taken {
                 Some(Some(frame)) => {
                     if self.task.frames.len() >= MAX_FRAMES {
-                        return Err(self.err("maximum recursion depth exceeded"));
+                        return Err(self.err(runtime_error("maximum recursion depth exceeded")));
                     }
                     self.task.gen_stack.push((gen, GenDriver::Materialize));
                     self.task.frames.push(frame);
@@ -3735,7 +3784,7 @@ impl Vm {
         }
         let iterable = match args.as_slice() {
             [it] => it.clone(),
-            _ => return Err(self.err("sorted() takes exactly 1 positional argument")),
+            _ => return Err(self.err(type_error("sorted() takes exactly 1 positional argument"))),
         };
         let (keyfn, reverse) = self.sort_kwargs("sorted", kwargs)?;
         let shape = sorted_shape(&iterable);
@@ -3758,10 +3807,10 @@ impl Vm {
             }
         }
         if !kwargs.is_empty() {
-            return Err(self.err(format!("{who}() takes no keyword arguments")));
+            return Err(self.err(type_error(format!("{who}() takes no keyword arguments"))));
         }
         let items = match args.len() {
-            0 => return Err(self.err(format!("{who}() expected at least 1 argument"))),
+            0 => return Err(self.err(value_error(format!("{who}() expected at least 1 argument")))),
             1 => self.wrap(iterate_to_vec(&args[0]))?,
             _ => args,
         };
@@ -3784,16 +3833,18 @@ impl Vm {
                     Value::None => {}
                     f @ (Value::Func(_) | Value::Builtin(_) | Value::Method(_)) => keyfn = Some(f),
                     other => {
-                        return Err(self.err(format!(
+                        return Err(self.err(runtime_error(format!(
                             "{who}() key must be callable or None, not '{}'",
                             other.type_name()
-                        )))
+                        ))))
                     }
                 },
                 "reverse" => reverse = v.truthy(),
                 other => {
                     return Err(
-                        self.err(format!("{who}() got an unexpected keyword argument '{other}'"))
+                        self.err(type_error(format!(
+                            "{who}() got an unexpected keyword argument '{other}'"
+                        )))
                     )
                 }
             }
@@ -3856,10 +3907,12 @@ impl Vm {
                     // A plain (non-method) key function: bind it the same way an
                     // ordinary call does, but route its return into the sort job.
                     if self.task.frames.len() >= MAX_FRAMES {
-                        return Err(self.err("maximum recursion depth exceeded"));
+                        return Err(self.err(runtime_error("maximum recursion depth exceeded")));
                     }
                     if f.code.is_generator {
-                        return Err(self.err("sort key must not be a generator function"));
+                        return Err(self.err(runtime_error(
+                            "sort key must not be a generator function",
+                        )));
                     }
                     let mut frame = self.bind_call(&f, None, vec![item], Vec::new())?;
                     frame.ret_action = ReturnAction::DriveSort;
@@ -3879,11 +3932,13 @@ impl Vm {
                     let key = match &m.kind {
                         MethodKind::Native(name) => self
                             .wrap(crate::builtins::call_method(&m.receiver, name, vec![item], Vec::new()))?,
-                        _ => return Err(self.err("sort key must be a plain function")),
+                        _ => {
+                            return Err(self.err(runtime_error("sort key must be a plain function")))
+                        }
                     };
                     self.task.sort_jobs.last_mut().unwrap().keys.push(key);
                 }
-                _ => return Err(self.err("sort key is not callable")),
+                _ => return Err(self.err(type_error("sort key is not callable"))),
             }
         }
     }
@@ -3907,7 +3962,9 @@ impl Vm {
                 "end" => &mut end,
                 other => {
                     return Err(
-                        self.err(format!("print() got an unexpected keyword argument '{other}'"))
+                        self.err(type_error(format!(
+                            "print() got an unexpected keyword argument '{other}'"
+                        )))
                     )
                 }
             };
@@ -3915,10 +3972,10 @@ impl Vm {
                 Value::Str(s) => *slot = s.s.clone(),
                 Value::None => {}
                 other => {
-                    return Err(self.err(format!(
+                    return Err(self.err(type_error(format!(
                         "print() argument '{k}' must be str or None, not '{}'",
                         other.type_name()
-                    )))
+                    ))))
                 }
             }
         }
@@ -4187,7 +4244,7 @@ impl Vm {
         // does. Descending is what grows the level stack, so it is where the
         // cycle guard sits.
         if self.task.cmp_jobs.last().expect("cmp job").levels.len() >= CMP_DEPTH_LIMIT {
-            return Err(self.err("maximum recursion depth exceeded in comparison"));
+            return Err(self.err(runtime_error("maximum recursion depth exceeded in comparison")));
         }
         let level = match (&a, &b) {
             (Value::List(x), Value::List(y)) => {
@@ -4409,7 +4466,7 @@ impl Vm {
                 let sym = if want_min { "<" } else { ">" };
                 let mut best = 0;
                 if items.is_empty() {
-                    return Err(self.err(format!("{who}() arg is an empty sequence")));
+                    return Err(self.err(value_error(format!("{who}() arg is an empty sequence"))));
                 }
                 for i in 1..items.len() {
                     let ord =
@@ -4651,11 +4708,11 @@ impl Vm {
             match self.pop() {
                 Value::Class(c) => Some(c),
                 other => {
-                    return Err(self.err(format!(
+                    return Err(self.err(runtime_error(format!(
                         "base of class '{}' must be a class, not '{}'",
                         spec.name,
                         other.type_label()
-                    )))
+                    ))))
                 }
             }
         } else {
@@ -4698,34 +4755,34 @@ impl Vm {
             Some(Value::List(l)) => l.borrow().clone(),
             Some(Value::Str(_)) => {
                 return Err(self.err(
-                    "proc.run() needs a list of separate string arguments, e.g. \
+                    runtime_error("proc.run() needs a list of separate string arguments, e.g. \
                      [\"git\", \"status\"], not a single string — Oro will not split it (that \
-                     would mean reimplementing shell quoting) and there is no shell=True.",
+                     would mean reimplementing shell quoting) and there is no shell=True.",)
                 ))
             }
-            _ => return Err(self.err("proc.run() takes a list of strings")),
+            _ => return Err(self.err(type_error("proc.run() takes a list of strings"))),
         };
         if list.is_empty() {
-            return Err(self.err("proc.run() got an empty argument list"));
+            return Err(self.err(runtime_error("proc.run() got an empty argument list")));
         }
         let mut parts: Vec<String> = Vec::with_capacity(list.len());
         for v in &list {
             match v {
                 Value::Str(s) => parts.push(s.s.clone()),
                 other => {
-                    return Err(self.err(format!(
+                    return Err(self.err(runtime_error(format!(
                         "proc.run() arguments must all be strings, got '{}'",
                         other.type_label()
-                    )))
+                    ))))
                 }
             }
         }
         if parts[0].is_empty() || parts[0].contains(char::is_whitespace) {
-            return Err(self.err(format!(
+            return Err(self.err(runtime_error(format!(
                 "proc.run() program '{}' contains whitespace — pass separate arguments \
                  like [\"git\", \"status\"], not one combined string",
                 parts[0]
-            )));
+            ))));
         }
 
         // Keyword args: cwd, env, timeout.
@@ -4738,7 +4795,7 @@ impl Vm {
             match k.as_str() {
                 "cwd" => match v {
                     Value::Str(s) => cwd = Some(s.s.clone()),
-                    _ => return Err(self.err("proc.run() cwd must be a string")),
+                    _ => return Err(self.err(runtime_error("proc.run() cwd must be a string"))),
                 },
                 "env" => match v {
                     Value::Dict(d) => {
@@ -4748,28 +4805,28 @@ impl Vm {
                         }
                         env = Some(pairs);
                     }
-                    _ => return Err(self.err("proc.run() env must be a dict")),
+                    _ => return Err(self.err(runtime_error("proc.run() env must be a dict"))),
                 },
                 "timeout" => match v {
                     Value::Int(i) => timeout = Some(*i as f64),
                     Value::Float(f) => timeout = Some(*f),
-                    _ => return Err(self.err("proc.run() timeout must be a number")),
+                    _ => return Err(self.err(runtime_error("proc.run() timeout must be a number"))),
                 },
                 "check" => check = v.truthy(),
                 "quiet" => quiet = v.truthy(),
                 // CPython's knobs for what Oro now does by default. Name them
                 // explicitly rather than let them silently do nothing.
                 "capture_output" | "text" => {
-                    return Err(self.err(format!(
+                    return Err(self.err(runtime_error(format!(
                         "proc.run() does not take '{k}' — it always captures stdout/stderr as \
                          bytes, and streams them live unless quiet=True. Call `.to_str()` on \
                          one to decode it."
-                    )))
+                    ))))
                 }
                 other => {
-                    return Err(self.err(format!(
+                    return Err(self.err(type_error(format!(
                         "proc.run() got an unexpected keyword argument '{other}'"
-                    )))
+                    ))))
                 }
             }
         }
@@ -4797,10 +4854,10 @@ impl Vm {
             // "timed out" is classified into TimeoutError; a missing/inexecutable
             // program's io error into FileNotFoundError/PermissionError.
             Err(RunError::Timeout) => {
-                return Err(self.err(format!(
+                return Err(self.err(timeout_error(format!(
                     "command timed out after {} seconds",
                     timeout.unwrap_or(0.0)
-                )))
+                ))))
             }
             Err(RunError::Io(e)) => return Err(self.err(modules::io_err(&e, &parts[0]))),
         };
@@ -4821,10 +4878,10 @@ impl Vm {
                 detail.push_str("\n  ");
                 detail.push_str(line);
             }
-            return Err(self.err(format!(
+            return Err(self.err(command_error(format!(
                 "command failed: {} exited with code {returncode}{detail}",
                 parts.join(" "),
-            )));
+            ))));
         }
 
         let truncated =
@@ -4988,10 +5045,10 @@ impl Vm {
                 Ok(self.make_exception_instance(c, Vec::new()))
             }
             Value::Instance(ref i) if i.class.is_exception => Ok(v),
-            other => Err(self.err(format!(
+            other => Err(self.err(runtime_error(format!(
                 "exceptions must derive from BaseException, not '{}'",
                 other.type_label()
-            ))),
+            )))),
         }
     }
 
@@ -5022,11 +5079,11 @@ impl Vm {
         let cls = match class {
             Value::Class(c) if c.is_exception => c,
             other => {
-                return Err(self.err(format!(
+                return Err(self.err(runtime_error(format!(
                     "catching classes that do not inherit from BaseException is not allowed \
                      (got '{}')",
                     other.type_label()
-                )))
+                ))))
             }
         };
         Ok(match exc {
@@ -5038,23 +5095,30 @@ impl Vm {
     /// Convert an internal operation error into a typed exception instance, so
     /// runtime failures (index out of range, division by zero, …) are catchable
     /// with the same type CPython uses.
-    /// Recognise the `sys.exit` sentinel error and turn it into a `SystemExit`
-    /// exception. It unwinds like any exception, so a user `except SystemExit`
-    /// can still cancel the exit; only if uncaught does it set the exit code.
+    /// Turn a `sys.exit` request into a `SystemExit` exception. It unwinds like
+    /// any exception, so a user `except SystemExit` can still cancel the exit;
+    /// only if uncaught does it set the exit code.
+    ///
+    /// The one class that cannot go through [`Vm::error_to_exception`], because
+    /// its single argument is the exit code as an `int` and not a rendered
+    /// message. `sys.exit` is the only thing in the crate that names it.
     fn exit_request(&mut self, e: &RuntimeError) -> Option<Value> {
-        let rest = e.message.strip_prefix("\u{0}exit\u{0}")?;
-        let code: i32 = rest.parse().unwrap_or(0);
-        let class = self.excs["SystemExit"].clone();
+        if e.class != Exc::SystemExit {
+            return None;
+        }
+        let code: i32 = e.message.parse().unwrap_or(0);
+        let class = self.excs[Exc::SystemExit.name()].clone();
         Some(self.make_exception_instance(class, vec![Value::Int(code as i64)]))
     }
 
     fn error_to_exception(&self, e: &RuntimeError) -> Value {
-        let kind = classify_error(&e.message);
-        let class = self.excs[kind].clone();
+        let class = self.excs[e.class.name()].clone();
         // A KeyError's message is the missing key's repr, not a sentence, so
         // str(KeyError) matches CPython ("'z'").
-        let msg = match kind {
-            "KeyError" => e.message.strip_prefix("key error: ").unwrap_or(&e.message).to_string(),
+        let msg = match e.class {
+            Exc::KeyError => {
+                e.message.strip_prefix("key error: ").unwrap_or(&e.message).to_string()
+            }
             _ => e.message.to_string(),
         };
         let exc = self.make_exception_instance(class, vec![Value::str(msg)]);
@@ -5106,7 +5170,7 @@ impl Vm {
                 // __init__ must return None; the instance is already on the
                 // caller's stack as the constructor result.
                 if !matches!(value, Value::None) {
-                    return Err(self.err("__init__() should return None".to_string()));
+                    return Err(self.err(runtime_error("__init__() should return None")));
                 }
             }
             ReturnAction::DrivePrint => {
@@ -5371,6 +5435,9 @@ impl Vm {
         };
         let message = if msg.is_empty() { name } else { format!("{name}: {msg}") };
         Box::new(RuntimeError {
+            // The rendering is `Class: message` already; nothing re-raises a
+            // diagnostic built here, so the class field only has to be honest.
+            class: Exc::RuntimeError,
             message: message.into_boxed_str(),
             source,
             line: self.task.line,
@@ -5446,13 +5513,13 @@ impl Vm {
 
         // 1. Positional arguments fill normal params left to right.
         if args.len() > normal.len() && var_param.is_none() {
-            return Err(self.err(format!(
+            return Err(self.err(type_error(format!(
                 "{}() takes {} positional argument{} but {} were given",
                 code.name,
                 normal.len(),
                 if normal.len() == 1 { "" } else { "s" },
                 args.len()
-            )));
+            ))));
         }
         let mut extra_positional = Vec::new();
         for (i, a) in args.into_iter().enumerate() {
@@ -5468,19 +5535,19 @@ impl Vm {
         for (name, value) in kwargs {
             if let Some(pos) = normal.iter().position(|p| *p.name == name) {
                 if filled[pos].is_some() {
-                    return Err(self.err(format!(
+                    return Err(self.err(runtime_error(format!(
                         "{}() got multiple values for argument '{name}'",
                         code.name
-                    )));
+                    ))));
                 }
                 filled[pos] = Some(value);
             } else if kw_param.is_some() {
                 self.wrap(extra_kw.insert(Value::str(name), value))?;
             } else {
-                return Err(self.err(format!(
+                return Err(self.err(type_error(format!(
                     "{}() got an unexpected keyword argument '{name}'",
                     code.name
-                )));
+                ))));
             }
         }
 
@@ -5493,10 +5560,10 @@ impl Vm {
                 if i >= first_defaulted {
                     *slot = Some(func.defaults[i - first_defaulted].clone());
                 } else {
-                    return Err(self.err(format!(
+                    return Err(self.err(runtime_error(format!(
                         "{}() missing required argument: '{}'",
                         code.name, normal[i].name
-                    )));
+                    ))));
                 }
             }
         }
@@ -5547,7 +5614,7 @@ fn store_param(frame: &mut Frame, target: VarTarget, value: Value) {
 
 // --- Iteration --------------------------------------------------------------
 
-fn get_iter(v: &Value) -> Result<Value, String> {
+fn get_iter(v: &Value) -> VResult<Value> {
     let state = match v {
         Value::Range(r) => IterState::Range { cur: r.start, stop: r.stop, step: r.step },
         Value::List(l) => {
@@ -5568,15 +5635,15 @@ fn get_iter(v: &Value) -> Result<Value, String> {
         // So is a channel: `ForIter` recvs from it (and may park).
         Value::Channel(_) => return Ok(v.clone()),
         Value::Iter(_) => return Ok(v.clone()),
-        other => return Err(format!("'{}' object is not iterable", other.type_name())),
+        other => return Err(type_error(format!("'{}' object is not iterable", other.type_name()))),
     };
     Ok(Value::Iter(Rc::new(RefCell::new(state))))
 }
 
-fn iter_next(it: &Value) -> Result<Option<Value>, String> {
+fn iter_next(it: &Value) -> VResult<Option<Value>> {
     let it = match it {
         Value::Iter(i) => i,
-        _ => return Err("internal: ForIter target is not an iterator".to_string()),
+        _ => return Err(runtime_error("internal: ForIter target is not an iterator")),
     };
     let mut st = it.borrow_mut();
     match &mut *st {
@@ -5593,7 +5660,7 @@ fn iter_next(it: &Value) -> Result<Option<Value>, String> {
         IterState::List { list, idx, orig_len } => {
             let cur_len = list.borrow().len();
             if cur_len != *orig_len {
-                return Err("list changed size during iteration".to_string());
+                return Err(runtime_error("list changed size during iteration"));
             }
             if *idx < cur_len {
                 let v = list.borrow()[*idx].clone();
@@ -5644,14 +5711,15 @@ fn iter_next(it: &Value) -> Result<Option<Value>, String> {
 
 /// Collect every element of an iterable into a vector (for unpacking, `*args`
 /// spreading, and `**` merging).
-pub fn iterate_to_vec(v: &Value) -> Result<Vec<Value>, String> {
+pub fn iterate_to_vec(v: &Value) -> VResult<Vec<Value>> {
     // Draining a channel means blocking, and blocking means parking, which a
     // native helper cannot do — the same rule that stops a builtin from
     // draining a generator. `for msg in ch` is the way.
     if matches!(v, Value::Channel(_)) {
-        return Err("'Channel' object is not iterable here: receiving may block, so `for msg in \
-                    ch` is the only way to drain one"
-            .to_string());
+        return Err(type_error(
+            "'Channel' object is not iterable here: receiving may block, so `for msg in \
+             ch` is the only way to drain one",
+        ));
     }
     let it = get_iter(v)?;
     let mut out = Vec::new();
@@ -5661,35 +5729,41 @@ pub fn iterate_to_vec(v: &Value) -> Result<Vec<Value>, String> {
     Ok(out)
 }
 
-fn dict_pairs(v: &Value) -> Result<Vec<(Value, Value)>, String> {
+fn dict_pairs(v: &Value) -> VResult<Vec<(Value, Value)>> {
     match v {
         Value::Dict(d) => Ok(d.borrow().items().to_vec()),
-        other => Err(format!("argument after ** must be a mapping, not '{}'", other.type_name())),
+        other => Err(type_error(format!(
+            "argument after ** must be a mapping, not '{}'",
+            other.type_name()
+        ))),
     }
 }
 
 // --- Indexing and slicing ---------------------------------------------------
 
-fn as_index(v: &Value) -> Result<i64, String> {
+fn as_index(v: &Value) -> VResult<i64> {
     match v {
         Value::Bool(b) => Ok(*b as i64),
         Value::Int(i) => Ok(*i),
-        other => Err(format!("indices must be integers, not '{}'", other.type_name())),
+        other => Err(runtime_error(format!(
+            "indices must be integers, not '{}'",
+            other.type_name()
+        ))),
     }
 }
 
 /// Resolve a possibly-negative index against `len`, returning the non-negative
 /// position or an out-of-range error.
-fn resolve_index(idx: i64, len: usize, kind: &str) -> Result<usize, String> {
+fn resolve_index(idx: i64, len: usize, kind: &str) -> VResult<usize> {
     let adj = if idx < 0 { idx + len as i64 } else { idx };
     if adj < 0 || adj as usize >= len {
-        Err(format!("{kind} index out of range"))
+        Err(index_error(format!("{kind} index out of range")))
     } else {
         Ok(adj as usize)
     }
 }
 
-fn subscript_get(obj: &Value, index: &Value) -> Result<Value, String> {
+fn subscript_get(obj: &Value, index: &Value) -> VResult<Value> {
     match obj {
         Value::List(l) => {
             let l = l.borrow();
@@ -5715,13 +5789,13 @@ fn subscript_get(obj: &Value, index: &Value) -> Result<Value, String> {
         }
         Value::Dict(d) => match d.borrow().get(index)? {
             Some(v) => Ok(v),
-            None => Err(format!("key error: {}", index.repr())),
+            None => Err(key_error(format!("key error: {}", index.repr()))),
         },
-        other => Err(format!("'{}' object is not subscriptable", other.type_name())),
+        other => Err(type_error(format!("'{}' object is not subscriptable", other.type_name()))),
     }
 }
 
-fn subscript_set(obj: &Value, index: &Value, value: Value) -> Result<(), String> {
+fn subscript_set(obj: &Value, index: &Value, value: Value) -> VResult<()> {
     match obj {
         Value::List(l) => {
             let mut l = l.borrow_mut();
@@ -5732,7 +5806,10 @@ fn subscript_set(obj: &Value, index: &Value, value: Value) -> Result<(), String>
         }
         Value::Dict(d) => d.borrow_mut().insert(index.clone(), value),
         other => {
-            Err(format!("'{}' object does not support item assignment", other.type_name()))
+            Err(runtime_error(format!(
+                "'{}' object does not support item assignment",
+                other.type_name()
+            )))
         }
     }
 }
@@ -5742,8 +5819,8 @@ fn slice_get(
     lower: &Value,
     upper: &Value,
     step: &Value,
-) -> Result<Value, String> {
-    let opt = |v: &Value| -> Result<Option<i64>, String> {
+) -> VResult<Value> {
+    let opt = |v: &Value| -> VResult<Option<i64>> {
         match v {
             Value::None => Ok(None),
             other => Ok(Some(as_index(other)?)),
@@ -5752,7 +5829,7 @@ fn slice_get(
     let (lo, hi, st) = (opt(lower)?, opt(upper)?, opt(step)?);
     let step = st.unwrap_or(1);
     if step == 0 {
-        return Err("slice step cannot be zero".to_string());
+        return Err(value_error("slice step cannot be zero"));
     }
     match obj {
         Value::Str(s) => {
@@ -5798,7 +5875,7 @@ fn slice_get(
             let idxs = slice_indices(t.len(), lo, hi, step);
             Ok(Value::Tuple(OroTuple::new(idxs.into_iter().map(|i| t[i].clone()).collect())))
         }
-        other => Err(format!("'{}' object is not sliceable", other.type_name())),
+        other => Err(type_error(format!("'{}' object is not sliceable", other.type_name()))),
     }
 }
 
@@ -5876,7 +5953,7 @@ enum MethodRef {
 /// the shape of the source, not by anything the program can observe. The two
 /// arms that are not methods (`Value::Class`, `Value::Module`) simply defer to
 /// `get_attr` rather than restate it.
-fn resolve_method(obj: &Value, name: &Rc<str>) -> Result<MethodRef, String> {
+fn resolve_method(obj: &Value, name: &Rc<str>) -> VResult<MethodRef> {
     let key: &str = name;
     match obj {
         Value::Instance(inst) => {
@@ -5889,7 +5966,11 @@ fn resolve_method(obj: &Value, name: &Rc<str>) -> Result<MethodRef, String> {
                 }
                 Some((member, _)) => Ok(MethodRef::Plain(member)),
                 None if crate::builtins::is_cast_method(key) => Ok(MethodRef::Native(obj.clone())),
-                None => Err(format!("'{}' object has no attribute '{}'", inst.class.name, key)),
+                None => Err(attribute_error(format!(
+                    "'{}' object has no attribute '{}'",
+                    inst.class.name,
+                    key
+                ))),
             }
         }
         Value::Class(_) | Value::Module(_) => get_attr(obj, name).map(MethodRef::Plain),
@@ -5907,7 +5988,7 @@ fn resolve_method(obj: &Value, name: &Rc<str>) -> Result<MethodRef, String> {
                 }
                 cur = c.base.clone();
             }
-            Err(format!("'super' object has no attribute '{key}'"))
+            Err(attribute_error(format!("'super' object has no attribute '{key}'")))
         }
         Value::Stream(s) if s.has_addr_attr(key) => {
             Ok(MethodRef::Plain(Value::str(s.addr_attr(key)?)))
@@ -5919,15 +6000,21 @@ fn resolve_method(obj: &Value, name: &Rc<str>) -> Result<MethodRef, String> {
         // A builtin type has no members, and says so the way a user class
         // does — `str.upper()` and `Square.nope` are the same mistake.
         Value::Type(t) => {
-            Err(format!("type object '{}' has no attribute '{}'", t.name(), key))
+            Err(attribute_error(format!("type object '{}' has no attribute '{}'", t.name(), key)))
         }
         _ => {
             if crate::builtins::method_exists(obj, key) {
                 Ok(MethodRef::Native(obj.clone()))
             } else if let Some(msg) = crate::builtins::cut_method_message(obj, key) {
-                Err(msg.to_string())
+                // A removed method: the message names the replacement, but it
+                // is still an attribute that is not there.
+                Err(attribute_error(msg))
             } else {
-                Err(format!("'{}' object has no attribute '{}'", obj.type_name(), key))
+                Err(attribute_error(format!(
+                    "'{}' object has no attribute '{}'",
+                    obj.type_name(),
+                    key
+                )))
             }
         }
     }
@@ -5936,7 +6023,7 @@ fn resolve_method(obj: &Value, name: &Rc<str>) -> Result<MethodRef, String> {
 /// Attribute read for any value. Instances, classes, and `super` proxies are
 /// handled here (no `__getattr__` hook exists, so this never runs Oro code);
 /// everything else falls back to builtin-method binding.
-fn get_attr(obj: &Value, name: &Rc<str>) -> Result<Value, String> {
+fn get_attr(obj: &Value, name: &Rc<str>) -> VResult<Value> {
     // `name` arrives as the code object's *interned* `Rc<str>` rather than as
     // a `&str` for one reason: every native method access — `xs.append`,
     // `s.split`, `ys.map` — used to rebuild that string with `Rc::from`, a
@@ -5956,23 +6043,31 @@ fn get_attr(obj: &Value, name: &Rc<str>) -> Result<Value, String> {
                 None if crate::builtins::is_cast_method(key) => Ok(Value::Method(Rc::new(
                     BoundMethod { receiver: obj.clone(), kind: MethodKind::Native(name.clone()) },
                 ))),
-                None => Err(format!("'{}' object has no attribute '{}'", inst.class.name, key)),
+                None => Err(attribute_error(format!(
+                    "'{}' object has no attribute '{}'",
+                    inst.class.name,
+                    key
+                ))),
             }
         }
         Value::Class(class) => match Class::find(class, key) {
             // A method accessed on the class itself stays an unbound function.
             Some((member, _)) => Ok(member),
-            None => Err(format!("type object '{}' has no attribute '{}'", class.name, key)),
+            None => Err(attribute_error(format!(
+                "type object '{}' has no attribute '{}'",
+                class.name,
+                key
+            ))),
         },
         // A builtin type has no members at all, so every attribute on one is
         // this — and it is the class message, not the generic one, because a
         // builtin type is the same kind of thing a user class is.
         Value::Type(t) => {
-            Err(format!("type object '{}' has no attribute '{}'", t.name(), key))
+            Err(attribute_error(format!("type object '{}' has no attribute '{}'", t.name(), key)))
         }
         Value::Module(m) => match m.members.borrow().get(key) {
             Some(v) => Ok(v.clone()),
-            None => Err(format!("module '{}' has no attribute '{}'", m.name, key)),
+            None => Err(attribute_error(format!("module '{}' has no attribute '{}'", m.name, key))),
         },
         Value::Super(sp) => {
             let mut cur = sp.start.clone();
@@ -5982,7 +6077,7 @@ fn get_attr(obj: &Value, name: &Rc<str>) -> Result<Value, String> {
                 }
                 cur = c.base.clone();
             }
-            Err(format!("'super' object has no attribute '{key}'"))
+            Err(attribute_error(format!("'super' object has no attribute '{key}'")))
         }
         // A socket's `peer` and `local` are data attributes, not methods
         // (§4): they are strings read once when the socket was opened.
@@ -6001,9 +6096,15 @@ fn get_attr(obj: &Value, name: &Rc<str>) -> Result<Value, String> {
                     kind: MethodKind::Native(name.clone()),
                 })))
             } else if let Some(msg) = crate::builtins::cut_method_message(obj, key) {
-                Err(msg.to_string())
+                // A removed method: the message names the replacement, but it
+                // is still an attribute that is not there.
+                Err(attribute_error(msg))
             } else {
-                Err(format!("'{}' object has no attribute '{}'", obj.type_name(), key))
+                Err(attribute_error(format!(
+                    "'{}' object has no attribute '{}'",
+                    obj.type_name(),
+                    key
+                )))
             }
         }
     }
@@ -6129,100 +6230,6 @@ fn compile_source(source: &str, origin: Rc<str>) -> Result<Rc<CodeObject>, Strin
     let tokens = crate::lexer::Lexer::new(source).tokenize().map_err(|e| e.to_string())?;
     let program = crate::parser::Parser::new(tokens).parse().map_err(|e| e.message.clone())?;
     crate::compiler::compile(&program, origin).map_err(|e| e.message.clone())
-}
-
-/// Map an internal error message to the CPython exception type it should raise.
-/// Every message here is produced by this crate, so the matching is reliable.
-fn classify_error(msg: &str) -> &'static str {
-    let m = msg;
-    // Socket errors carry an errno and map to CPython's `ConnectionError`
-    // subclasses; `crate::net` owns that table because it owns the messages.
-    if let Some(kind) = crate::net::classify(m) {
-        return kind;
-    }
-    // Likewise the JSON codec: a format's diagnostics belong to the format, not
-    // to this table.
-    if let Some(kind) = crate::json::classify(m) {
-        return kind;
-    }
-    // Order matters: check the more specific substrings first.
-    if m.starts_with("command failed:") {
-        "CommandError"
-    } else if m.contains("No such file or directory") {
-        "FileNotFoundError"
-    } else if m.contains("Permission denied") {
-        "PermissionError"
-    } else if m.contains("timed out") {
-        "TimeoutError"
-    } else if m.contains("File exists") || m.starts_with("[Errno") {
-        "OSError"
-    } else if m.contains("division by zero")
-        || m.contains("modulo by zero")
-        || m.contains("division or modulo by zero")
-    {
-        "ZeroDivisionError"
-    } else if m.contains("index out of range") || m.contains("pop from empty list") {
-        "IndexError"
-    } else if m.starts_with("key error:") || m.contains("KeyError") {
-        "KeyError"
-    } else if m.contains("is not defined") {
-        "NameError"
-    } else if m.contains("has no attribute")
-        // A removed method: the message names the replacement, but it is still
-        // an attribute that is not there, and still catchable as one.
-        || m.contains("is not in Oro —")
-        || m.contains("is spelled")
-    {
-        "AttributeError"
-    } else if m.contains("arg not in range")
-        || m.contains("values to unpack")
-        || m.contains("could not convert string to float")
-        || m.contains("could not be decoded as UTF-8")
-        || m.starts_with("invalid literal for int")
-        || m.contains("empty separator")
-        || m.contains("step")
-        || m.contains("arg is an empty sequence")
-        || m.contains("expected at least")
-        // Stream faults. CPython answers ValueError for a bad mode, for an
-        // operation on a closed file, and (via io.UnsupportedOperation, a
-        // ValueError subclass) for reading a writer.
-        || m.contains("invalid file mode")
-        || m.contains("must be in range(0, 256)")
-        || m.contains("must be an int, not")
-        || m.contains("must be at least")
-        || m.contains("must not be empty")
-        || m.contains("found no delimiter")
-        || m.contains("on a closed ")
-        || m.contains("on a stream open for")
-        // `strip(side="middle")`. The quote is what separates it from
-        // `side must be str`, which is a TypeError like every other bad type.
-        || m.contains("side must be \"")
-    {
-        "ValueError"
-    } else if m.contains("expected a character")
-        || m.contains("unsupported operand")
-        || m.contains("not callable")
-        || m.contains("not iterable")
-        || m.contains("not a mapping")
-        || m.contains("must be a mapping")
-        || m.contains("has no len()")
-        || m.contains("unhashable type")
-        || m.contains("bad operand type")
-        || m.contains("argument must be")
-        || m.contains("must be str")
-        || m.contains("requires string")
-        || m.contains("as left operand")
-        || m.contains("not supported between")
-        || m.contains("takes")
-        || m.contains("missing a required argument")
-        || m.contains("object is not")
-        || m.contains("unexpected keyword argument")
-    {
-        "TypeError"
-    } else {
-        // A genuine internal/uncategorised failure.
-        "RuntimeError"
-    }
 }
 
 /// Whether `name` is a callback-taking collection operation (driven by the VM).
@@ -6386,7 +6393,7 @@ fn instance_method(v: &Value, name: &str) -> Option<(Rc<Function>, Rc<Class>)> {
 /// Every comparison operator, as far as native code can decide it. `None` is
 /// the signal that a user dunder is involved and the VM has to take over —
 /// see [`Value::try_equals`] and `Vm::begin_compare`.
-fn try_compare_op(op: CmpOp, a: &Value, b: &Value) -> Result<Option<bool>, String> {
+fn try_compare_op(op: CmpOp, a: &Value, b: &Value) -> VResult<Option<bool>> {
     use std::cmp::Ordering;
     Ok(match op {
         CmpOp::Eq => a.try_equals(b),
@@ -6551,30 +6558,30 @@ fn same_object(a: &Value, b: &Value) -> bool {
 /// membership is a linear run of `==`. Everything else — a string, a `bytes`,
 /// a `range`, a `dict` — answers without ever comparing two values with `==`,
 /// so it never reaches here.
-fn membership_items(container: &Value, item: &Value) -> Result<Vec<Value>, String> {
+fn membership_items(container: &Value, item: &Value) -> VResult<Vec<Value>> {
     match container {
         Value::List(l) => Ok(l.borrow().clone()),
         Value::Tuple(t) => Ok((**t).clone()),
-        other => Err(format!(
+        other => Err(runtime_error(format!(
             "internal: {} membership does not dispatch (item {})",
             other.type_name(),
             item.type_name()
-        )),
+        ))),
     }
 }
 
-fn try_contains(container: &Value, item: &Value) -> Result<Option<bool>, String> {
+fn try_contains(container: &Value, item: &Value) -> VResult<Option<bool>> {
     match container {
         Value::Str(hay) => match item {
             Value::Str(needle) => Ok(Some(hay.s.contains(&needle.s))),
-            _ => Err("'in <string>' requires string as left operand".to_string()),
+            _ => Err(type_error("'in <string>' requires string as left operand")),
         },
         // Subsequence, like `str`. CPython also lets an `int` on the left ask
         // whether one octet is present; that is a second meaning for one
         // spelling, so Oro says what it wants instead of guessing.
         Value::Bytes(hay) => match item {
             Value::Bytes(needle) => Ok(Some(subsequence(hay, needle))),
-            _ => Err("'in <bytes>' requires bytes as left operand".to_string()),
+            _ => Err(type_error("'in <bytes>' requires bytes as left operand")),
         },
         Value::List(l) => Ok(seq_contains(&l.borrow(), item)),
         Value::Tuple(t) => Ok(seq_contains(t, item)),
@@ -6584,7 +6591,10 @@ fn try_contains(container: &Value, item: &Value) -> Result<Option<bool>, String>
         // dict never has one to dispatch.
         Value::Dict(d) => d.borrow().contains(item).map(Some),
         Value::Range(r) => Ok(Some(range_contains(r, item))),
-        other => Err(format!("argument of type '{}' is not iterable", other.type_name())),
+        other => Err(type_error(format!(
+            "argument of type '{}' is not iterable",
+            other.type_name()
+        ))),
     }
 }
 

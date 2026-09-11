@@ -1,0 +1,37 @@
+to_int <class 'ValueError'> invalid literal for int(): 'abc'
+to_int <class 'ValueError'> invalid literal for int(): 'timed out'
+to_int <class 'ValueError'> invalid literal for int(): 'No such file or directory'
+to_int <class 'ValueError'> invalid literal for int(): 'Permission denied'
+to_int <class 'ValueError'> invalid literal for int(): 'division by zero'
+to_int <class 'ValueError'> invalid literal for int(): 'index out of range'
+to_int <class 'ValueError'> invalid literal for int(): 'is not defined'
+to_int <class 'ValueError'> invalid literal for int(): 'key error: 'x''
+to_int <class 'ValueError'> invalid literal for int(): 'command failed: rm -rf /'
+to_int <class 'ValueError'> invalid literal for int(): '[Errno 111] Connection refused'
+to_int <class 'ValueError'> invalid literal for int(): 'unexpected '}' at position 14'
+to_int <class 'ValueError'> invalid literal for int(): 'nan is not JSON serializable'
+to_float <class 'ValueError'> could not convert string to float: 'abc'
+to_float <class 'ValueError'> could not convert string to float: 'timed out'
+to_float <class 'ValueError'> could not convert string to float: 'No such file or directory'
+to_float <class 'ValueError'> could not convert string to float: 'Permission denied'
+to_float <class 'ValueError'> could not convert string to float: 'division by zero'
+to_float <class 'ValueError'> could not convert string to float: 'index out of range'
+to_float <class 'ValueError'> could not convert string to float: 'is not defined'
+to_float <class 'ValueError'> could not convert string to float: 'key error: 'x''
+to_float <class 'ValueError'> could not convert string to float: 'command failed: rm -rf /'
+to_float <class 'ValueError'> could not convert string to float: '[Errno 111] Connection refused'
+to_float <class 'ValueError'> could not convert string to float: 'unexpected '}' at position 14'
+to_float <class 'ValueError'> could not convert string to float: 'nan is not JSON serializable'
+handler -1
+handler -1
+handler -1
+handler -1
+handler -1
+handler -1
+handler -1
+handler -1
+handler -1
+handler -1
+handler -1
+handler -1
+handler 12

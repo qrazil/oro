@@ -1490,12 +1490,20 @@ fn step_stayed_small() {
 
     // And the unboxed error stays small enough that boxing it is the only
     // thing standing between the hot path and a 64-byte return: a message that
-    // is never appended to is a `Box<str>`, a line and a column are `u32`.
+    // is never appended to is a `Box<str>`, a line and a column are `u32`, and
+    // the exception class is a one-byte `Exc` rather than the sixteen a
+    // `&'static str` would cost. 40 bytes became 48 when the class moved onto
+    // the error — the change that deleted `classify_error` — and that is paid
+    // in the cold allocation only, because the `Result` the dispatch loop
+    // returns holds a `Box` and is asserted above to be unmoved at 24.
     assert!(
-        std::mem::size_of::<RuntimeError>() <= 40,
+        std::mem::size_of::<RuntimeError>() <= 48,
         "RuntimeError grew to {} bytes",
         std::mem::size_of::<RuntimeError>()
     );
+    // One byte, and it must stay one byte: it rides in `RuntimeError`, in
+    // `VErr`, and so in the error half of every builtin's return value.
+    assert_eq!(std::mem::size_of::<crate::exc::Exc>(), 1);
 }
 
 /// Two tasks alternate, and the alternation is decided by the channel rather
@@ -1827,9 +1835,9 @@ fn chan_capacity_is_checked() {
     assert!(run_err("r = chan(\"x\")\n").message.contains("must be an int"));
 }
 
-/// The new surface's misuse diagnostics are ordinary typed exceptions, so a
-/// program can catch them. They name their class outright rather than hoping
-/// `classify_error`'s substring table recognises a brand-new message.
+/// The concurrency surface's misuse diagnostics are ordinary typed exceptions,
+/// so a program can catch them. They name their class outright — which was once
+/// this file's own rule and is now the whole crate's.
 #[test]
 fn the_concurrency_diagnostics_are_catchable_by_class() {
     let v = eval_var(
@@ -2019,4 +2027,19 @@ fn the_file_and_the_line_always_come_from_the_same_frame() {
     );
     assert_eq!(&*err.source, "test.oro", "got: {}", err.source);
     assert_eq!(err.line, 2, "the try statement's EndFinally, in the script's own frame");
+}
+
+/// Every [`Exc`] names a class the registry actually has.
+///
+/// `error_to_exception` indexes the registry by `Exc::name()`, so a variant
+/// with no class behind it is a panic on a cold path — which is precisely the
+/// failure mode the old `raise("TypeError", …)` spelling had, moved from a
+/// string literal to an enum where the compiler can at least see it. This is
+/// the check the compiler cannot do.
+#[test]
+fn every_exception_class_exists() {
+    let registry = super::exceptions::build_registry();
+    for e in crate::exc::Exc::ALL {
+        assert!(registry.contains_key(e.name()), "{} is not in the registry", e.name());
+    }
 }

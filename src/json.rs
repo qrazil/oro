@@ -13,15 +13,17 @@
 //! * **No Rust recursion.** Both directions walk an explicit stack, because a
 //!   document arriving off a socket chooses the nesting depth and the VM never
 //!   lets Oro-level nesting reach the Rust stack.
-//! * **Errors are the module's own.** [`classify`] owns the mapping from these
-//!   messages to exception classes, the way `crate::net` owns its errno table,
-//!   so no format-specific string lands in the VM's general table.
+//! * **Errors are the module's own.** Every diagnostic here names the exception
+//!   class it raises at the site that detected the fault — a parse fault is a
+//!   `ValueError` whatever the document happens to say — so nothing downstream
+//!   ever reads this module's prose to work out what it meant.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::bigint::BigInt;
-use crate::value::{OroDict, OroList, Value};
+use crate::exc::{runtime_error, type_error, value_error, VErr};
+use crate::value::{OroDict, OroList, VResult, Value};
 
 /// The deepest nesting `parse` accepts, and the deepest `stringify` will walk.
 ///
@@ -36,28 +38,6 @@ use crate::value::{OroDict, OroList, Value};
 /// and raises `RecursionError` at 20 000), so a document CPython reads Oro
 /// reads. See §5 for what it changes.
 pub const MAX_DEPTH: usize = 10_000;
-
-/// Map a message this module produced to its exception class.
-///
-/// The VM's `classify_error` is a table of substrings owned by the messages
-/// that exist; a codec's messages should not be in it, so — exactly as
-/// `crate::net::classify` does for socket errnos — this owns them here.
-pub fn classify(msg: &str) -> Option<&'static str> {
-    // Every parse diagnostic ends in the character offset, and every one of
-    // them is a `ValueError`: `json.parse` is documented to raise one naming
-    // the offset, and a server that wraps a body parse in `except ValueError`
-    // to answer 400 must keep catching all of them.
-    if msg.ends_with(char::is_numeric) && msg.contains(" at position ") {
-        return Some("ValueError");
-    }
-    if msg.ends_with("is not JSON serializable") {
-        // `nan`/`Infinity` are a ValueError (the value cannot be written);
-        // an unsupported *type* is a TypeError. `_stringify_value` has always
-        // drawn it there and CPython draws it there too.
-        return Some(if msg.starts_with("object of type ") { "TypeError" } else { "ValueError" });
-    }
-    None
-}
 
 // --- decoding ----------------------------------------------------------------
 
@@ -76,7 +56,7 @@ struct Parser<'a> {
 }
 
 /// `parse(text)`: a JSON document to an Oro value.
-pub fn parse(text: &str) -> Result<Value, String> {
+pub fn parse(text: &str) -> VResult<Value> {
     let mut p = Parser { text, b: text.as_bytes(), i: 0 };
     p.skip_ws();
     let value = p.value()?;
@@ -102,11 +82,11 @@ impl<'a> Parser<'a> {
         self.text[..at].chars().count()
     }
 
-    fn fail_at<T>(&self, msg: impl std::fmt::Display, at: usize) -> Result<T, String> {
-        Err(format!("{msg} at position {}", self.char_pos(at)))
+    fn fail_at<T>(&self, msg: impl std::fmt::Display, at: usize) -> VResult<T> {
+        Err(value_error(format!("{msg} at position {}", self.char_pos(at))))
     }
 
-    fn fail<T>(&self, msg: impl std::fmt::Display) -> Result<T, String> {
+    fn fail<T>(&self, msg: impl std::fmt::Display) -> VResult<T> {
         self.fail_at(msg, self.i)
     }
 
@@ -116,13 +96,17 @@ impl<'a> Parser<'a> {
         self.text[self.i..].chars().next().unwrap_or('\u{0}')
     }
 
-    fn unexpected_here(&self) -> String {
-        format!("unexpected '{}' at position {}", self.char_here(), self.char_pos(self.i))
+    fn unexpected_here(&self) -> VErr {
+        value_error(format!(
+            "unexpected '{}' at position {}",
+            self.char_here(),
+            self.char_pos(self.i)
+        ))
     }
 
     /// Read one complete value, iteratively. The only entry point: nested
     /// containers are pushed onto `stack`, never onto the Rust stack.
-    fn value(&mut self) -> Result<Value, String> {
+    fn value(&mut self) -> VResult<Value> {
         let mut stack: Vec<Partial> = Vec::new();
         // Whether the next thing to read is an object key rather than a value.
         let mut want_key = false;
@@ -249,7 +233,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn push(&self, stack: &mut Vec<Partial>, p: Partial) -> Result<(), String> {
+    fn push(&self, stack: &mut Vec<Partial>, p: Partial) -> VResult<()> {
         if stack.len() >= MAX_DEPTH {
             // The opening bracket is one byte back, and it is the one to name.
             return self.fail_at(
@@ -262,7 +246,7 @@ impl<'a> Parser<'a> {
     }
 
     /// A string literal, with `self.i` on its opening quote.
-    fn string(&mut self) -> Result<String, String> {
+    fn string(&mut self) -> VResult<String> {
         self.i += 1;
         let mut out = String::new();
         loop {
@@ -294,7 +278,7 @@ impl<'a> Parser<'a> {
     }
 
     /// One escape sequence, with `self.i` on its backslash.
-    fn escape(&mut self, out: &mut String) -> Result<(), String> {
+    fn escape(&mut self, out: &mut String) -> VResult<()> {
         self.i += 1;
         if self.i >= self.b.len() {
             return self.fail("unterminated escape");
@@ -317,7 +301,7 @@ impl<'a> Parser<'a> {
     }
 
     /// The four hex digits of a `\uXXXX`, with `self.i` on the `u`.
-    fn hex4(&mut self) -> Result<u32, String> {
+    fn hex4(&mut self) -> VResult<u32> {
         self.i += 1;
         // The count is in *characters*: the parser this replaces sliced four of
         // them, and its "incomplete" test was `pos + 4 > len` over the same
@@ -342,7 +326,7 @@ impl<'a> Parser<'a> {
         Ok(cp)
     }
 
-    fn unicode_escape(&mut self, out: &mut String) -> Result<(), String> {
+    fn unicode_escape(&mut self, out: &mut String) -> VResult<()> {
         const HIGH: std::ops::RangeInclusive<u32> = 0xD800..=0xDBFF;
         const LOW: std::ops::RangeInclusive<u32> = 0xDC00..=0xDFFF;
 
@@ -373,7 +357,7 @@ impl<'a> Parser<'a> {
 
     /// A number literal. Anything holding `.`, `e` or `E` is a float; everything
     /// else is an int, promoted past `i64` the way every other Oro integer is.
-    fn number(&mut self) -> Result<Value, String> {
+    fn number(&mut self) -> VResult<Value> {
         let digit = |c: u8| c.is_ascii_digit();
         let start = self.i;
         if self.b[self.i] == b'-' {
@@ -453,7 +437,7 @@ enum Job {
 
 /// `stringify(value, indent)`: an Oro value to JSON text. `indent` is the
 /// module's optional argument, already unwrapped from `null`.
-pub fn stringify(value: &Value, indent: Option<&Value>) -> Result<String, String> {
+pub fn stringify(value: &Value, indent: Option<&Value>) -> VResult<String> {
     let mut out = String::new();
     let mut jobs = vec![Job::Value(value.clone(), 0)];
     while let Some(job) = jobs.pop() {
@@ -461,7 +445,7 @@ pub fn stringify(value: &Value, indent: Option<&Value>) -> Result<String, String
             // A cycle, or a structure deeper than anything JSON should hold.
             // The message is the one the Oro encoder's own runaway recursion
             // produced, so `except RuntimeError` still catches it.
-            return Err("maximum recursion depth exceeded".to_string());
+            return Err(runtime_error("maximum recursion depth exceeded"));
         }
         match job {
             Job::Value(v, level) => write_value(&mut out, &mut jobs, v, level, indent)?,
@@ -493,7 +477,10 @@ pub fn stringify(value: &Value, indent: Option<&Value>) -> Result<String, String
                     // an int or a bool key — which `json.dumps` does — is
                     // exactly the second spelling the language avoids.
                     let Value::Str(k) = &key else {
-                        return Err(format!("keys must be str, not {}", class_label(&key)));
+                        return Err(type_error(format!(
+                            "keys must be str, not {}",
+                            class_label(&key)
+                        )));
                     };
                     escape_into(&mut out, &k.s);
                     out.push(':');
@@ -515,17 +502,17 @@ fn write_value(
     v: Value,
     level: usize,
     indent: Option<&Value>,
-) -> Result<(), String> {
+) -> VResult<()> {
     match &v {
         // `null`, `true` and `false` are Oro's literals *and* JSON's words, so
         // the value's own str() is already the wire form.
         Value::None | Value::Bool(_) | Value::Int(_) | Value::Big(_) => out.push_str(&v.repr()),
         Value::Float(f) => {
             if f.is_nan() {
-                return Err("nan is not JSON serializable".to_string());
+                return Err(value_error("nan is not JSON serializable"));
             }
             if f.is_infinite() {
-                return Err("Infinity is not JSON serializable".to_string());
+                return Err(value_error("Infinity is not JSON serializable"));
             }
             out.push_str(&v.repr());
         }
@@ -553,13 +540,16 @@ fn write_value(
             }
         }
         other => {
-            return Err(format!("object of type {} is not JSON serializable", class_label(other)))
+            return Err(type_error(format!(
+                "object of type {} is not JSON serializable",
+                class_label(other)
+            )))
         }
     }
     Ok(())
 }
 
-fn close(out: &mut String, bracket: char, level: usize, indent: Option<&Value>) -> Result<(), String> {
+fn close(out: &mut String, bracket: char, level: usize, indent: Option<&Value>) -> VResult<()> {
     if indent.is_some() {
         newline_pad(out, level, indent)?;
     }
@@ -574,15 +564,15 @@ fn close(out: &mut String, bracket: char, level: usize, indent: Option<&Value>) 
 /// and `stringify([], indent=…)` never look at it. That is where the Oro
 /// encoder's `" " * (indent * (level + 1))` put it, so the error it raises for a
 /// str or a float indent is the same one, from the same multiply.
-fn newline_pad(out: &mut String, level: usize, indent: Option<&Value>) -> Result<(), String> {
+fn newline_pad(out: &mut String, level: usize, indent: Option<&Value>) -> VResult<()> {
     let n = match indent {
         Some(Value::Int(n)) => *n,
         Some(Value::Bool(b)) => *b as i64,
         Some(other) => {
-            return Err(format!(
+            return Err(type_error(format!(
                 "unsupported operand type(s) for *: 'str' and '{}'",
                 other.type_name()
-            ))
+            )))
         }
         None => 0,
     };

@@ -21,6 +21,7 @@ pub mod ast;
 pub mod bigint;
 pub mod builtins;
 pub mod compiler;
+pub mod exc;
 pub mod fmt;
 pub mod format;
 pub mod json;

@@ -93,6 +93,7 @@ use std::net::ToSocketAddrs;
 
 use mio::net::TcpListener;
 
+use crate::exc::{os_error, value_error, VErr};
 use crate::stream::OroStream;
 use crate::value::VResult;
 
@@ -151,10 +152,10 @@ pub fn listen(addr: &str, reuseport: bool) -> VResult<OroStream> {
         // guarantee this function's whole doc comment is about; taking mio's
         // would be trusting a second crate to keep making the same choice.
         // `from_std` costs nothing — it is a wrapper around the same fd.
-        std::net::TcpListener::bind(&addrs[..]).map_err(|e| err_msg(&e))?
+        std::net::TcpListener::bind(&addrs[..]).map_err(|e| io_error(&e))?
     };
-    ln.set_nonblocking(true).map_err(|e| err_msg(&e))?;
-    OroStream::listener(TcpListener::from_std(ln)).map_err(|e| err_msg(&e))
+    ln.set_nonblocking(true).map_err(|e| io_error(&e))?;
+    OroStream::listener(TcpListener::from_std(ln)).map_err(|e| io_error(&e))
 }
 
 /// The platform gate, kept apart from [`listen`] so that the supported and
@@ -162,19 +163,21 @@ pub fn listen(addr: &str, reuseport: bool) -> VResult<OroStream> {
 /// function.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn bind_reuseport(addrs: &[std::net::SocketAddr]) -> VResult<std::net::TcpListener> {
-    reuseport::bind(addrs).map_err(|e| err_msg(&e))
+    reuseport::bind(addrs).map_err(|e| io_error(&e))
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 fn bind_reuseport(_addrs: &[std::net::SocketAddr]) -> VResult<std::net::TcpListener> {
-    Err(REUSEPORT_UNSUPPORTED.to_string())
+    Err(os_error(REUSEPORT_UNSUPPORTED))
 }
 
 /// The message for `reuseport=true` on a platform that cannot honour it.
 ///
-/// A `const` rather than a `format!` at the raise site because [`classify`]
-/// matches on it: the text is the key, so it is written once and matched
-/// against itself. See [`listen`] for why this is an error and not a shrug.
+/// `OSError`, because the argument was well-formed and the *platform* is what
+/// refused it — the same class CPython gives a socket option the OS will not
+/// take. Not an errno: no syscall failed, one was declined, and inventing an
+/// errno for it is exactly what [`err_msg`] refuses to do elsewhere. See
+/// [`listen`] for why this is an error and not a shrug.
 #[allow(dead_code)]
 pub(crate) const REUSEPORT_UNSUPPORTED: &str = concat!(
     "listen() reuseport=true is not supported on this platform — SO_REUSEPORT ",
@@ -279,10 +282,11 @@ fn check_host_port(addr: &str, who: &str) -> VResult<()> {
     };
     match port_sep {
         Some(i) if i + 1 < addr.len() => Ok(()),
-        _ => Err(format!(
+        // A malformed address is a bad argument, not a failed syscall.
+        _ => Err(value_error(format!(
             "{who}() address must be 'host:port', not '{addr}' — a port is required \
              (use ':0' for any free port, and brackets for IPv6, as in '[::1]:8080')"
-        )),
+        ))),
     }
 }
 
@@ -294,12 +298,11 @@ fn check_host_port(addr: &str, who: &str) -> VResult<()> {
 /// on the resolver threads in `crate::vm::sched`, where waiting is the job.
 /// Nothing else may call it, and nothing else does.
 ///
-/// The error strings are load-bearing and are why this is one function rather
+/// The error values are load-bearing and are why this is one function rather
 /// than two. A failed lookup raises the same exception whichever side of the
-/// channel it happened on, because it is the same `String` either way:
+/// channel it happened on, because it is the same [`VErr`] either way:
 /// `ValueError` for an address that cannot be parsed, `OSError` for a name that
-/// does not resolve (`[Errno -2]`, through the general `[Errno …]` rule in
-/// `classify_error`). See [`classify`].
+/// does not resolve.
 pub(crate) fn resolve(addr: &str, who: &str) -> VResult<Vec<std::net::SocketAddr>> {
     check_host_port(addr, who)?;
     let addrs: Vec<_> = addr
@@ -308,13 +311,13 @@ pub(crate) fn resolve(addr: &str, who: &str) -> VResult<Vec<std::net::SocketAddr
             // A name that does not resolve is not a socket error with an
             // errno; say what failed instead of inventing one.
             std::io::ErrorKind::InvalidInput => {
-                format!("{who}() could not parse the address '{addr}'")
+                value_error(format!("{who}() could not parse the address '{addr}'"))
             }
-            _ => format!("[Errno -2] Name or service not known: '{addr}'"),
+            _ => os_error(format!("[Errno -2] Name or service not known: '{addr}'")),
         })?
         .collect();
     if addrs.is_empty() {
-        return Err(format!("[Errno -2] Name or service not known: '{addr}'"));
+        return Err(os_error(format!("[Errno -2] Name or service not known: '{addr}'")));
     }
     Ok(addrs)
 }
@@ -323,11 +326,11 @@ pub(crate) fn resolve(addr: &str, who: &str) -> VResult<Vec<std::net::SocketAddr
 /// `[Errno 111] Connection refused`.
 ///
 /// The text is Oro's own, not `strerror`'s. `io::Error`'s own `Display` is
-/// `strerror_r`'s, which is locale-dependent, and [`classify`] has to recognise
-/// these messages by content — a message that reads differently under
-/// `LC_ALL=fr_FR` would silently downgrade `ConnectionRefusedError` to
-/// `OSError` on a French server. Fixing the strings here makes the exception
-/// type a property of the code rather than of the environment.
+/// `strerror_r`'s, which is locale-dependent, so a diagnostic would otherwise
+/// read differently under `LC_ALL=fr_FR`. Fixing the strings here makes the
+/// *message* a property of the code rather than of the environment; the
+/// exception class is a property of `e.kind()`, which was never text at all
+/// (see [`io_error`]).
 pub fn err_msg(e: &std::io::Error) -> String {
     use std::io::ErrorKind::*;
     let text = match e.kind() {
@@ -359,65 +362,24 @@ pub fn err_msg(e: &std::io::Error) -> String {
             };
         }
     };
-    // Always with the `[Errno n]` prefix, because that prefix is what
-    // [`classify`] uses to know the message is one of this module's and not,
-    // say, the tail of a child process's stderr that happens to mention a
-    // refused connection.
+    // Always with the `[Errno n]` prefix: it is the errno CPython puts there,
+    // and it is what tells a reader the message came from a syscall.
     format!("[Errno {}] {text}", e.raw_os_error().unwrap_or(0))
 }
 
-/// The exception class for a message [`err_msg`] produced, or `None` to let the
-/// general classifier answer.
+/// An `io::Error` from a socket, as the fault it raises.
 ///
-/// `None` is the right answer for most of them: `[Errno 98] Address already in
-/// use` is an `OSError`, which is what the general rule for an `[Errno …]`
-/// message already says, and "timed out" is already a `TimeoutError`. Only the
-/// four `ConnectionError` subclasses need naming, because nothing else in the
-/// language produces them.
+/// The class comes from `e.kind()` — the datum the operating system actually
+/// reported — and never from the text of the message. That is the whole point:
+/// the message is prose, it interpolates addresses and hostnames a client can
+/// choose, and a table that matched on it was a table a client could steer.
 ///
-/// Matching on text rather than on `errno` is deliberate: `ECONNREFUSED` is 111
-/// on Linux and 61 on macOS, so the numbers are not a portable key, while the
-/// strings above are written by [`err_msg`] and are the same everywhere.
-pub fn classify(msg: &str) -> Option<&'static str> {
-    // A malformed address is a bad argument, not a failed syscall.
-    if msg.contains("() address must be 'host:port'") || msg.contains("() could not parse the address")
-    {
-        return Some("ValueError");
-    }
-    // `reuseport=true` where the kernel has no such thing. `OSError`, because
-    // the argument was well-formed and the *platform* is what refused it —
-    // the same class CPython gives a socket option the OS will not take. It is
-    // named here rather than left to the general `[Errno …]` rule because there
-    // is no errno: no syscall failed, one was declined. Inventing an errno for
-    // it would be exactly what `err_msg` refuses to do elsewhere.
-    if msg.contains("reuseport=true is not supported on this platform") {
-        return Some("OSError");
-    }
-    // Asking a socket to accept, or a listener to read: the same class of
-    // mistake as reading a file opened for writing, and the same answer
-    // CPython gives it — a `ValueError`, not a `TypeError`, because the object
-    // is the right type and the operation is wrong for its state.
-    if msg.contains("which is not a stream of bytes")
-        || msg.contains("which is not a socket")
-        || msg.contains("which is not a listener")
-        || msg.contains("set_timeout() seconds must be positive")
-    {
-        return Some("ValueError");
-    }
-    if !msg.starts_with("[Errno ") {
-        return None;
-    }
-    if msg.contains("Connection refused") {
-        Some("ConnectionRefusedError")
-    } else if msg.contains("Connection reset") {
-        Some("ConnectionResetError")
-    } else if msg.contains("Software caused connection abort") {
-        Some("ConnectionAbortedError")
-    } else if msg.contains("Broken pipe") {
-        Some("BrokenPipeError")
-    } else {
-        None
-    }
+/// `None` for most kinds means `OSError`, which is what CPython gives them and
+/// what the `[Errno n]` prefix already says. Only the four `ConnectionError`
+/// subclasses and the timeout need naming, because nothing else in the language
+/// produces them.
+pub fn io_error(e: &std::io::Error) -> VErr {
+    VErr::new(crate::exc::io_class(e.kind()), err_msg(e))
 }
 
 /// The `SO_REUSEPORT` bind, and the crate's only `unsafe`. Linux-only by

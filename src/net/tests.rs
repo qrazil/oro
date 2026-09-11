@@ -20,6 +20,7 @@
 //! hierarchy are both in scope.
 
 use super::*;
+use crate::exc::{Exc, VErr};
 use crate::stream::{Io, OroStream};
 
 /// The hang guard, in seconds. Nothing here takes milliseconds; this only ever
@@ -57,7 +58,9 @@ fn spin<T>(mut f: impl FnMut() -> VResult<Io<T>>) -> VResult<T> {
     loop {
         match f()? {
             Io::Ready(v) => return Ok(v),
-            Io::Block(_) if std::time::Instant::now() >= until => return Err("timed out".into()),
+            Io::Block(_) if std::time::Instant::now() >= until => {
+                return Err(crate::exc::timeout_error("timed out"))
+            }
             Io::Block(_) => std::thread::sleep(std::time::Duration::from_millis(1)),
         }
     }
@@ -112,12 +115,12 @@ fn dial(addr: &str) -> VResult<OroStream> {
         // park, and there is no scheduler at this layer to park on.
         DialPlan::Lookup(a) => resolve(&a, "dial")?,
     };
-    let mut last = String::new();
+    let mut last = crate::exc::os_error("no address tried");
     for target in addrs {
         let sock = match mio::net::TcpStream::connect(target) {
             Ok(s) => s,
             Err(e) => {
-                last = err_msg(&e);
+                last = io_error(&e);
                 continue;
             }
         };
@@ -150,7 +153,7 @@ fn pair() -> (OroStream, OroStream, OroStream) {
 
 /// The error from a constructor that must fail. `unwrap_err` is not available:
 /// `OroStream` holds live file descriptors and deliberately has no `Debug`.
-fn failure(r: VResult<OroStream>) -> String {
+fn failure(r: VResult<OroStream>) -> VErr {
     match r {
         Ok(s) => panic!("expected a failure, got {}", s.repr()),
         Err(e) => e,
@@ -236,9 +239,10 @@ fn read_until_raises_past_the_limit() {
     let (_ln, server, client) = pair();
     wr(&client, b"a header line far longer than the limit\r\n").unwrap();
     let e = ru(&server, b"\r\n", 8).unwrap_err();
-    // The limit is what stops a client sending an unbounded header block. The
-    // classifier answers `ValueError` to this message; 42_net.oro checks that.
-    assert!(e.contains("found no delimiter"), "{e}");
+    // The limit is what stops a client sending an unbounded header block.
+    // The fault names `ValueError` at the raise site; 42_net.oro checks that.
+    assert!(e.message.contains("found no delimiter"), "{e}");
+    assert_eq!(e.class, Exc::ValueError);
 }
 
 #[test]
@@ -251,7 +255,7 @@ fn read_all_refuses_a_socket_and_the_chunk_loop_covers_it() {
     wr(&client, b"whole message").unwrap();
     client.shutdown_write().unwrap();
     let e = server.read_all().unwrap_err();
-    assert!(e.contains("io.read(r) takes the chunk loop"), "{e}");
+    assert!(e.message.contains("io.read(r) takes the chunk loop"), "{e}");
 
     // ...and nothing loses a capability, because `std/io.oro` has always
     // dispatched `io.read(r)` on the type: `File` and `Buffer` take the fast
@@ -328,8 +332,8 @@ fn ipv6_uses_gos_bracket_form() {
 fn an_address_without_a_port_is_named_not_guessed() {
     for bad in ["127.0.0.1", "localhost", "", "127.0.0.1:"] {
         let e = failure(dial(bad));
-        assert!(e.contains("must be 'host:port'"), "{bad}: {e}");
-        assert_eq!(classify(&e), Some("ValueError"));
+        assert!(e.message.contains("must be 'host:port'"), "{bad}: {e}");
+        assert_eq!(e.class, Exc::ValueError);
     }
 }
 
@@ -338,8 +342,8 @@ fn an_address_without_a_port_is_named_not_guessed() {
 #[test]
 fn connect_to_a_closed_port_is_connection_refused() {
     let e = failure(dial(&dead_addr()));
-    assert!(e.contains("Connection refused"), "{e}");
-    assert_eq!(classify(&e), Some("ConnectionRefusedError"));
+    assert!(e.message.contains("Connection refused"), "{e}");
+    assert_eq!(e.class, Exc::ConnectionRefusedError);
 }
 
 #[test]
@@ -349,12 +353,12 @@ fn binding_a_used_port_is_an_os_error() {
     let e = failure(listen(&addr));
     // `SO_REUSEADDR` does not make two listeners share a port — that is
     // `SO_REUSEPORT`, which is M6 and deliberately absent. So this must fail.
-    assert!(e.contains("Address already in use"), "{e}");
+    assert!(e.message.contains("Address already in use"), "{e}");
     // Not a `ConnectionError`: those four classes are for connections, and
-    // everything else in §4's table is a plain `OSError`, which is what the
-    // general `[Errno …]` rule in the classifier already answers.
-    assert_eq!(classify(&e), None);
-    assert!(e.starts_with("[Errno "), "{e}");
+    // everything else in §4's table is a plain `OSError`, which is the class
+    // `io_class` gives every other `ErrorKind`.
+    assert_eq!(e.class, Exc::OSError);
+    assert!(e.message.starts_with("[Errno "), "{e}");
 }
 
 #[test]
@@ -376,10 +380,10 @@ fn writing_to_a_vanished_peer_raises_a_connection_error() {
         }
     }
     let e = err.expect("writing to a closed peer never failed");
-    let kind = classify(&e).unwrap_or("");
     assert!(
-        kind == "BrokenPipeError" || kind == "ConnectionResetError",
-        "unexpected class {kind:?} for {e}"
+        matches!(e.class, Exc::BrokenPipeError | Exc::ConnectionResetError),
+        "unexpected class {:?} for {e}",
+        e.class
     );
 }
 
@@ -425,8 +429,8 @@ fn a_timeout_must_be_a_positive_number() {
 fn a_listener_is_not_a_stream_of_bytes() {
     let ln = listen("127.0.0.1:0").unwrap();
     let e = rd(&ln, 16).unwrap_err();
-    assert!(e.contains("not a stream of bytes"), "{e}");
-    assert!(wr(&ln, b"x").unwrap_err().contains("not a stream of bytes"));
+    assert!(e.message.contains("not a stream of bytes"), "{e}");
+    assert!(wr(&ln, b"x").unwrap_err().message.contains("not a stream of bytes"));
     assert!(ru(&ln, b"\n", 16).is_err());
     // ...and the socket operations are the other way round.
     assert!(ln.shutdown_write().is_err());
@@ -438,7 +442,7 @@ fn a_listener_is_not_a_stream_of_bytes() {
 #[test]
 fn accept_on_a_socket_is_a_mistake_not_a_hang() {
     let (_ln, server, _client) = pair();
-    assert!(failure(ac(&server)).contains("not a listener"));
+    assert!(failure(ac(&server)).message.contains("not a listener"));
 }
 
 #[test]
@@ -448,11 +452,11 @@ fn close_frees_the_port_and_the_stream() {
     ln.close().unwrap();
     // Every operation on a closed stream says so, rather than answering with a
     // plausible EOF.
-    assert!(failure(ac(&ln)).contains("on a closed TcpListener"));
-    assert!(rd(&ln, 1).unwrap_err().contains("on a closed TcpListener"));
+    assert!(failure(ac(&ln)).message.contains("on a closed TcpListener"));
+    assert!(rd(&ln, 1).unwrap_err().message.contains("on a closed TcpListener"));
     // The fd really went: the port is refused and bindable again, which is also
     // what makes `dead_addr()` above trustworthy.
-    assert!(failure(dial(&addr)).contains("Connection refused"));
+    assert!(failure(dial(&addr)).message.contains("Connection refused"));
     let again = listen(&addr).expect("the port did not come back");
     assert_eq!(again.addr_attr("local").unwrap(), addr);
 }
@@ -461,9 +465,9 @@ fn close_frees_the_port_and_the_stream() {
 fn a_closed_socket_refuses_reads_and_writes() {
     let (_ln, server, client) = pair();
     client.close().unwrap();
-    assert!(rd(&client, 1).unwrap_err().contains("on a closed TcpStream"));
-    assert!(wr(&client, b"x").unwrap_err().contains("on a closed TcpStream"));
-    assert!(client.shutdown_write().unwrap_err().contains("on a closed TcpStream"));
+    assert!(rd(&client, 1).unwrap_err().message.contains("on a closed TcpStream"));
+    assert!(wr(&client, b"x").unwrap_err().message.contains("on a closed TcpStream"));
+    assert!(client.shutdown_write().unwrap_err().message.contains("on a closed TcpStream"));
     let _ = server;
 }
 
@@ -533,8 +537,8 @@ fn a_malformed_address_never_reaches_the_resolver() {
             Err(e) => e,
             Ok(_) => panic!("{bad} was accepted"),
         };
-        assert!(e.contains("must be 'host:port'"), "{bad}: {e}");
-        assert_eq!(classify(&e), Some("ValueError"));
+        assert!(e.message.contains("must be 'host:port'"), "{bad}: {e}");
+        assert_eq!(e.class, Exc::ValueError);
     }
 }
 
@@ -625,12 +629,11 @@ fn without_reuseport_the_second_bind_is_refused() {
     let addr = a.addr_attr("local").unwrap();
 
     let e = failure(listen(&addr));
-    assert!(e.contains("Address already in use"), "{e}");
-    // `None` on purpose: `EADDRINUSE` is not one of the four `ConnectionError`
-    // subclasses this module names, so it falls through to the general
-    // `[Errno …]` rule and becomes an `OSError` — which is the answer CPython
-    // gives it. See `classify`.
-    assert_eq!(classify(&e), None);
+    assert!(e.message.contains("Address already in use"), "{e}");
+    // `EADDRINUSE` is not one of the four `ConnectionError` subclasses, so
+    // `io_class` gives it the plain `OSError` every other failed syscall gets
+    // — which is the answer CPython gives it.
+    assert_eq!(e.class, Exc::OSError);
 
     // And the asymmetry is real in the other direction too: a *reuseport*
     // listener cannot join a port that was bound without it. Both sockets must
@@ -638,7 +641,7 @@ fn without_reuseport_the_second_bind_is_refused() {
     // and it is the rule that makes the post-`bind` shortcut in
     // `super::reuseport`'s docs unusable here.
     let e = failure(reuse_listen(&addr));
-    assert!(e.contains("Address already in use"), "{e}");
+    assert!(e.message.contains("Address already in use"), "{e}");
 }
 
 /// Both socket options are on the socket, and `SO_REUSEADDR` did not get lost
@@ -719,20 +722,18 @@ fn a_malformed_address_is_refused_on_the_reuseport_path_too() {
         let plain = failure(listen(bad));
         let reuse = failure(reuse_listen(bad));
         assert_eq!(plain, reuse, "{bad}: the two paths disagree");
-        assert_eq!(classify(&reuse), Some("ValueError"));
+        assert_eq!(reuse.class, Exc::ValueError);
     }
 }
 
 /// The platform refusal is an `OSError` and says what to do instead.
 ///
 /// The message is checked here rather than only on the platforms that raise it,
-/// because those are precisely the platforms this suite does not run on. What
-/// can be checked everywhere is that the text and the classifier agree, so the
-/// exception a macOS user catches is the one the docs promise.
+/// because those are precisely the platforms this suite does not run on.
 #[test]
 fn the_unsupported_platform_message_classifies_as_an_oserror() {
     let msg = super::REUSEPORT_UNSUPPORTED;
-    assert_eq!(classify(msg), Some("OSError"));
+    assert_eq!(crate::exc::os_error(msg).class, Exc::OSError);
     // Actionable, not just correct: it names the platform that has the
     // feature, the option FreeBSD would need, and the way to keep working.
     assert!(msg.contains("Linux 3.9+"), "{msg}");

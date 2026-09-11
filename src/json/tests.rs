@@ -6,16 +6,21 @@
 //! two stack disciplines (a document deeper than the Rust stack could carry,
 //! and a value deeper than an Oro frame stack could carry), the character-vs-
 //! byte offset agreement that only shows up on non-ASCII input, and the
-//! classification table.
+//! exception class each diagnostic names.
 
 use super::*;
+use crate::exc::Exc;
 
 fn ok(text: &str) -> Value {
     parse(text).unwrap_or_else(|e| panic!("{text:?} should parse: {e}"))
 }
 
 fn err(text: &str) -> String {
-    parse(text).expect_err(&format!("{text:?} should not parse"))
+    parse(text).expect_err(&format!("{text:?} should not parse")).message
+}
+
+fn err_class(text: &str) -> Exc {
+    parse(text).expect_err(&format!("{text:?} should not parse")).class
 }
 
 #[test]
@@ -99,10 +104,10 @@ fn nesting_is_bounded_and_never_reaches_the_rust_stack() {
             let deeper = "[".repeat(MAX_DEPTH + 2) + &"]".repeat(MAX_DEPTH + 2);
             let e = parse(&deeper).expect_err("past the limit");
             assert!(
-                e.starts_with("maximum nesting depth (10000) exceeded at position "),
+                e.message.starts_with("maximum nesting depth (10000) exceeded at position "),
                 "got: {e}"
             );
-            assert_eq!(classify(&e), Some("ValueError"));
+            assert_eq!(e.class, Exc::ValueError);
 
             // A million opening brackets is the shape that overflows a
             // recursive parser. It must simply be an error — and the partial
@@ -140,14 +145,15 @@ fn stringify_matches_the_module_it_replaced() {
     assert_eq!(stringify(&ok("[]"), Some(&Value::str("x"))).unwrap(), "[]");
     assert_eq!(stringify(&ok("{}"), Some(&Value::str("x"))).unwrap(), "{}");
     assert_eq!(
-        stringify(&ok("[1]"), Some(&Value::str("x"))).unwrap_err(),
+        stringify(&ok("[1]"), Some(&Value::str("x"))).unwrap_err().message,
         "unsupported operand type(s) for *: 'str' and 'str'"
     );
 }
 
 /// A structure too deep to write — or one that contains itself — reports the
-/// same runaway recursion the Oro encoder reported, so `except RuntimeError`
-/// still catches it. It must not be a Rust stack overflow.
+/// same runaway recursion the Oro encoder reported. `RecursionError` is a
+/// subclass of `RuntimeError`, so `except RuntimeError` still catches it. It
+/// must not be a Rust stack overflow.
 #[test]
 fn stringify_is_bounded_too() {
     let mut v = Value::List(OroList::new(Vec::new()));
@@ -155,31 +161,48 @@ fn stringify_is_bounded_too() {
         v = Value::List(OroList::new(vec![v]));
     }
     let e = stringify(&v, None).expect_err("past the limit");
-    assert_eq!(e, "maximum recursion depth exceeded");
-    assert_eq!(classify(&e), None, "the VM's own table answers this one");
+    assert_eq!(e.message, "maximum recursion depth exceeded");
+    assert_eq!(e.class, Exc::RuntimeError);
 
     let cycle = OroList::new(Vec::new());
     cycle.borrow_mut().push(Value::List(cycle.clone()));
     assert_eq!(
-        stringify(&Value::List(cycle.clone()), None).unwrap_err(),
+        stringify(&Value::List(cycle.clone()), None).unwrap_err().message,
         "maximum recursion depth exceeded"
     );
     // Break the cycle so the test does not leak it into the next one.
     cycle.borrow_mut().clear();
 }
 
+/// Every diagnostic this module produces names its own class, at the site that
+/// detected the fault. Nothing downstream reads the prose.
+///
+/// A parse fault is always a `ValueError`, whatever the document says: the
+/// module is documented to raise one naming the offset, and a server that wraps
+/// a body parse in `except ValueError` to answer 400 must keep catching all of
+/// them — including a document whose *contents* spell another exception's
+/// message, which is exactly what the old substring table could not promise.
 #[test]
-fn classification_is_owned_here() {
-    assert_eq!(classify("unexpected '}' at position 14"), Some("ValueError"));
-    assert_eq!(classify("nan is not JSON serializable"), Some("ValueError"));
-    assert_eq!(classify("Infinity is not JSON serializable"), Some("ValueError"));
-    assert_eq!(
-        classify("object of type <class 'set'> is not JSON serializable"),
-        Some("TypeError")
-    );
-    // `keys must be str, not …` is left to the VM's table, which already sends
-    // "must be str" to TypeError; claiming it here would be a second answer to
-    // a question that has one.
-    assert_eq!(classify("keys must be str, not <class 'int'>"), None);
-    assert_eq!(classify("something else entirely"), None);
+fn every_diagnostic_names_its_class() {
+    assert_eq!(err_class("}"), Exc::ValueError);
+    assert_eq!(err_class(r#"{"a" 1}"#), Exc::ValueError);
+    assert_eq!(err_class(r#""timed out"x"#), Exc::ValueError);
+    assert_eq!(err_class(r#"{"No such file or directory": }"#), Exc::ValueError);
+
+    let nan = stringify(&Value::Float(f64::NAN), None).unwrap_err();
+    assert_eq!(nan.class, Exc::ValueError);
+    assert_eq!(nan.message, "nan is not JSON serializable");
+    let inf = stringify(&Value::Float(f64::INFINITY), None).unwrap_err();
+    assert_eq!(inf.class, Exc::ValueError);
+
+    // An unsupported *type* is a TypeError; the value being unwritable is a
+    // ValueError. `_stringify_value` has always drawn it there, and so does
+    // CPython.
+    let bad_type = stringify(&Value::Bool(true), None);
+    assert!(bad_type.is_ok(), "bools are writable");
+    let d = OroDict::new();
+    let mut d = d;
+    d.insert(Value::Int(1), Value::Int(2)).expect("int keys hash");
+    let keys = stringify(&Value::Dict(Rc::new(RefCell::new(d))), None).unwrap_err();
+    assert_eq!(keys.class, Exc::TypeError, "a non-str key is a TypeError");
 }

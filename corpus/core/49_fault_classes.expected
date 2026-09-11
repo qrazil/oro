@@ -1,0 +1,19 @@
+key <class 'KeyError'> 'timed out'
+key <class 'KeyError'> 'No such file or directory'
+key <class 'KeyError'> 'Permission denied'
+key <class 'KeyError'> 'division by zero'
+key <class 'KeyError'> 'index out of range'
+key <class 'KeyError'> 'is not defined'
+key <class 'KeyError'> 'has no attribute'
+key <class 'KeyError'> 'unhashable type'
+key <class 'KeyError'> 'command failed: rm -rf /'
+key <class 'KeyError'> '[Errno 111] Connection refused'
+key <class 'KeyError'> 'invalid literal for int()'
+key <class 'KeyError'> 'maximum recursion depth exceeded'
+attr <class 'AttributeError'> 'Box' object has no attribute 'timed_out'
+attr <class 'AttributeError'> 'Box' object has no attribute 'Permission_denied'
+index <class 'IndexError'> list index out of range
+divzero <class 'ZeroDivisionError'> integer division or modulo by zero
+len <class 'TypeError'> object of type 'int' has no len()
+name <class 'NameError'> name 'undefined_name' is not defined
+width <class 'KeyError'>

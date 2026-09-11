@@ -1,0 +1,51 @@
+# The same rule as `corpus/core/49_fault_classes.oro`, for the faults CPython
+# cannot be the oracle for because Oro spells them differently: the `to_` casts.
+#
+# This is the audit's headline reproduction (`docs/audit/errors.md` §1). Before
+# the class travelled with the fault, `"timed out".to_int()` raised a
+# `TimeoutError` — an `OSError`, which `except ValueError` does not catch —
+# because the class was recovered by substring-matching a message the failing
+# *string itself* had been interpolated into. CPython raises a `ValueError` for
+# every one of these; it has no table to be confused.
+
+PROSE = [
+    "abc",
+    "timed out",
+    "No such file or directory",
+    "Permission denied",
+    "division by zero",
+    "index out of range",
+    "is not defined",
+    "key error: 'x'",
+    "command failed: rm -rf /",
+    "[Errno 111] Connection refused",
+    "unexpected '}' at position 14",
+    "nan is not JSON serializable",
+]
+
+for s in PROSE:
+    try:
+        s.to_int()
+        print("no raise:", s)
+    except ValueError as e:
+        print("to_int", type(e), f"{e}")
+
+for s in PROSE:
+    try:
+        s.to_float()
+        print("no raise:", s)
+    except ValueError as e:
+        print("to_float", type(e), f"{e}")
+
+# And the handler shape the audit walked to the wire: a helper that means to
+# answer 400 on a bad number must catch every bad number, including one whose
+# text spells an OSError's message. One escape here is a 500 on the wire.
+def parse_id(raw):
+    try:
+        return raw.to_int()
+    except ValueError:
+        return -1
+
+for s in PROSE:
+    print("handler", parse_id(s))
+print("handler", parse_id("12"))

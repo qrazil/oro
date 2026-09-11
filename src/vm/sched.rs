@@ -105,6 +105,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::exc::{os_error, runtime_error, timeout_error, type_error, value_error, Exc, VErr};
 use crate::stream::{Io, OroStream};
 use crate::task::{Channel, TaskHandle, TaskId, TaskState};
 use crate::value::{MethodKind, VResult, Value};
@@ -548,7 +549,7 @@ impl Reactor {
 
     fn os(&mut self) -> VResult<&mut Os> {
         if self.os.is_none() {
-            let poll = mio::Poll::new().map_err(|e| crate::net::err_msg(&e))?;
+            let poll = mio::Poll::new().map_err(|e| crate::net::io_error(&e))?;
             // 256 is a compromise nobody has to tune: large enough that a busy
             // accept loop drains a batch per syscall, small enough that the
             // allocation is invisible next to the epoll fd it accompanies.
@@ -585,11 +586,11 @@ impl Reactor {
                 // Deliberately an exception rather than a queue. Two tasks
                 // reading one socket is not a workload, it is a race over whose
                 // bytes are whose, and the runtime knowing which is impossible.
-                return Err(format!(
+                return Err(runtime_error(format!(
                     "two tasks cannot {side} the same {} at once (task {other} is already \
                      waiting on it)",
                     stream.kind.type_name()
-                ));
+                )));
             }
             _ => *slot = Some(task),
         }
@@ -643,14 +644,14 @@ impl Reactor {
                 // the *second* thread could not start would turn a resource
                 // shortage into an exception at an unrelated call site.
                 Err(_) if r.threads > 0 => break,
-                Err(e) => return Err(crate::net::err_msg(&e)),
+                Err(e) => return Err(crate::net::io_error(&e)),
             }
         }
         // Cannot fail: `jobs` holds the receiver for as long as the `Resolver`
         // lives, so the channel outlives every send made through it.
         r.queue
             .send(Lookup { id, addr })
-            .map_err(|_| "internal: the DNS resolver pool has stopped".to_string())?;
+            .map_err(|_| runtime_error("internal: the DNS resolver pool has stopped"))?;
         r.waiters.insert(id, task);
         Ok(id)
     }
@@ -664,7 +665,7 @@ impl Reactor {
         // The `Waker` registers itself, which is why this is the one place
         // outside `arm` that forces the epoll instance into existence.
         let waker = mio::Waker::new(self.os()?.poll.registry(), mio::Token(DNS_TOKEN))
-            .map_err(|e| crate::net::err_msg(&e))?;
+            .map_err(|e| crate::net::io_error(&e))?;
         let (queue, jobs) = channel::<Lookup>();
         let (answers_tx, answers) = channel::<Resolved>();
         self.dns = Some(Box::new(Resolver {
@@ -710,7 +711,7 @@ impl Reactor {
             // A signal, not a fault. Nothing became ready; the scheduler will
             // come straight back here.
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => return Ok(Vec::new()),
-            Err(e) => return Err(crate::net::err_msg(&e)),
+            Err(e) => return Err(crate::net::io_error(&e)),
         }
         Ok(os
             .events
@@ -809,7 +810,7 @@ enum Connecting {
 /// walking is spread across parks instead of happening inside one blocking
 /// `TcpStream::connect(&addrs[..])`.
 fn start_connect(addrs: Vec<SocketAddr>, from: usize) -> VResult<Connecting> {
-    let mut last: Option<String> = None;
+    let mut last: Option<VErr> = None;
     for i in from..addrs.len() {
         let target = addrs[i];
         // `mio::TcpStream::connect` is `socket` + `set_nonblocking` +
@@ -821,7 +822,7 @@ fn start_connect(addrs: Vec<SocketAddr>, from: usize) -> VResult<Connecting> {
             // IPv6 address on a host with no IPv6 route is the one that
             // matters here. Next address.
             Err(e) => {
-                last = Some(crate::net::err_msg(&e));
+                last = Some(crate::net::io_error(&e));
                 continue;
             }
         };
@@ -847,7 +848,7 @@ fn start_connect(addrs: Vec<SocketAddr>, from: usize) -> VResult<Connecting> {
     // `last` is `None` only for an empty list, which `crate::net::resolve`
     // already refuses — it is spelled rather than `unreachable!` because a
     // panic is a worse answer than a slightly generic exception.
-    Err(last.unwrap_or_else(|| "[Errno -2] Name or service not known".to_string()))
+    Err(last.unwrap_or_else(|| os_error("[Errno -2] Name or service not known")))
 }
 
 impl Vm {
@@ -937,14 +938,14 @@ impl Vm {
         }
     }
 
-    /// Raise `class` with `msg`.
+    /// Raise `class` with `msg`, as a `Step` rather than an `Err`.
     ///
-    /// The concurrency surface names its exception classes rather than
-    /// spelling a message that `classify_error` will recognise. Everything
-    /// here is new, so there is no reason to route a brand-new diagnostic
-    /// through a substring table built for the old ones.
-    pub(super) fn raise(&self, class: &str, msg: impl Into<String>) -> Step {
-        let class = self.excs[class].clone();
+    /// The difference from [`Vm::err`] is not the class — every fault names its
+    /// own class now — but *where the exception is built*: this one produces the
+    /// instance here, for the sites that are already returning a `Step` and have
+    /// no error position to attach. Both converge in `run_slice`.
+    pub(super) fn raise(&self, class: Exc, msg: impl Into<String>) -> Step {
+        let class = self.excs[class.name()].clone();
         Step::Raise(self.make_exception_instance(class, vec![Value::str(msg.into())]))
     }
 
@@ -1298,7 +1299,11 @@ impl Vm {
                 // `dial` call has one value to be handed, and that value is the
                 // connected stream, so the addresses can never be pushed onto
                 // its stack for it to do something with.
-                Ok(addrs) => self.connect_woken(task, addrs, 0, String::new()),
+                // `from == 0`, so `last` is never read: there is always an
+                // address left to try.
+                Ok(addrs) => {
+                    self.connect_woken(task, addrs, 0, os_error("[Errno -2] no address tried"))
+                }
                 Err(msg) => {
                     let exc = self.error_to_exception(&self.err(msg));
                     self.wake_with_raise(task, exc);
@@ -1316,7 +1321,7 @@ impl Vm {
     /// because "connection refused" from the address that actually refused is a
     /// better exception than anything this function could synthesise once the
     /// socket is gone.
-    fn connect_woken(&mut self, task: TaskId, addrs: Vec<SocketAddr>, from: usize, last: String) {
+    fn connect_woken(&mut self, task: TaskId, addrs: Vec<SocketAddr>, from: usize, last: VErr) {
         let started =
             if from < addrs.len() { start_connect(addrs, from) } else { Err(last) };
         match started {
@@ -1350,9 +1355,9 @@ impl Vm {
 
     /// A parked task's operation failed while it was not current: hand it the
     /// exception to raise the moment it is.
-    fn resume_failed(&mut self, mut p: Parked, id: TaskId, token: usize, msg: &str) {
+    fn resume_failed(&mut self, mut p: Parked, id: TaskId, token: usize, e: &VErr) {
         self.reactor.disarm(token, id);
-        p.task.pending_raise = Some(self.error_to_exception(&self.err(msg.to_string())));
+        p.task.pending_raise = Some(self.error_to_exception(&self.err(e.clone())));
         self.ready.push_back(p.task);
     }
 
@@ -1362,7 +1367,7 @@ impl Vm {
     /// dead `epoll` strands a task parked on a name exactly as surely as one
     /// parked on a socket, and leaving it out would turn the one failure the
     /// program cannot handle into the one thing it cannot even see.
-    fn fail_all_io(&mut self, msg: &str) {
+    fn fail_all_io(&mut self, e: &VErr) {
         let ids: Vec<TaskId> = self
             .parked
             .iter()
@@ -1370,7 +1375,7 @@ impl Vm {
             .map(|(id, _)| *id)
             .collect();
         for id in ids {
-            let exc = self.error_to_exception(&self.err(msg.to_string()));
+            let exc = self.error_to_exception(&self.err(e.clone()));
             self.wake_with_raise(id, exc);
         }
         self.reactor.waiters.clear();
@@ -1398,7 +1403,7 @@ impl Vm {
                     // The same exception `set_timeout` has always raised, with
                     // the same message: CPython's bare "timed out", which the
                     // classifier already keys `TimeoutError` on.
-                    let exc = self.error_to_exception(&self.err("timed out"));
+                    let exc = self.error_to_exception(&self.err(timeout_error("timed out")));
                     self.wake_with_raise(t.task, exc);
                 }
                 _ => {}
@@ -1411,6 +1416,7 @@ impl Vm {
         waits.push(park.what());
         waits.sort();
         Box::new(RuntimeError {
+            class: Exc::RuntimeError,
             message: format!(
                 "deadlock: every task is blocked and nothing can wake them ({})",
                 waits.join(", ")
@@ -1429,6 +1435,7 @@ impl Vm {
         let mut waits: Vec<String> = self.parked.values().map(|p| p.park.what()).collect();
         waits.sort();
         Box::new(RuntimeError {
+            class: Exc::RuntimeError,
             message: format!(
                 "deadlock: nothing is runnable and {} task(s) are blocked forever ({})",
                 self.parked.len(),
@@ -1454,10 +1461,10 @@ impl Vm {
         kwargs: Vec<(String, Value)>,
     ) -> Result<Step, VmError> {
         if !kwargs.is_empty() {
-            return Ok(self.raise("TypeError", "spawn() takes no keyword arguments"));
+            return Ok(self.raise(Exc::TypeError, "spawn() takes no keyword arguments"));
         }
         if args.is_empty() {
-            return Ok(self.raise("TypeError", "spawn() takes at least 1 argument (0 given)"));
+            return Ok(self.raise(Exc::TypeError, "spawn() takes at least 1 argument (0 given)"));
         }
         let callee = args.remove(0);
 
@@ -1467,8 +1474,7 @@ impl Vm {
         let frame = match &callee {
             Value::Func(f) if !f.code.is_generator => self.bind_call(f, None, args, Vec::new())?,
             Value::Func(_) => {
-                return Ok(self.raise(
-                    "TypeError",
+                return Ok(self.raise(Exc::TypeError,
                     "spawn() cannot start a generator function as a task",
                 ))
             }
@@ -1481,12 +1487,11 @@ impl Vm {
                 }
                 _ => {
                     return Ok(self
-                        .raise("TypeError", "spawn() needs a function defined in Oro"))
+                        .raise(Exc::TypeError, "spawn() needs a function defined in Oro"))
                 }
             },
             other => {
-                return Ok(self.raise(
-                    "TypeError",
+                return Ok(self.raise(Exc::TypeError,
                     format!(
                         "spawn() needs a function defined in Oro, not '{}'",
                         other.type_label()
@@ -1526,11 +1531,10 @@ impl Vm {
         kwargs: Vec<(String, Value)>,
     ) -> Result<Step, VmError> {
         if !kwargs.is_empty() {
-            return Ok(self.raise("TypeError", "yield_now() takes no keyword arguments"));
+            return Ok(self.raise(Exc::TypeError, "yield_now() takes no keyword arguments"));
         }
         if !args.is_empty() {
-            return Ok(self.raise(
-                "TypeError",
+            return Ok(self.raise(Exc::TypeError,
                 format!("yield_now() takes 0 argument(s) but {} were given", args.len()),
             ));
         }
@@ -1543,7 +1547,7 @@ impl Vm {
     /// `t.join()` — §3's rules 1 and 2.
     pub(super) fn task_join(&mut self, handle: Rc<TaskHandle>) -> Result<Step, VmError> {
         if handle.id == self.task.id {
-            return Ok(self.raise("RuntimeError", "a task cannot join itself"));
+            return Ok(self.raise(Exc::RuntimeError, "a task cannot join itself"));
         }
         // Taking the outcome and re-publishing it are two borrows, never one
         // held across the `raise` — a joined failure mutates the handle.
@@ -1581,22 +1585,21 @@ impl Vm {
         kwargs: Vec<(String, Value)>,
     ) -> Result<Step, VmError> {
         if !kwargs.is_empty() {
-            return Ok(self.raise("TypeError", "chan() takes no keyword arguments"));
+            return Ok(self.raise(Exc::TypeError, "chan() takes no keyword arguments"));
         }
         let cap = match args.as_slice() {
             [] => 0,
             [Value::Int(n)] if *n >= 0 => *n as usize,
             [Value::Int(n)] => {
                 return Ok(self
-                    .raise("ValueError", format!("chan() capacity must not be negative ({n})")))
+                    .raise(Exc::ValueError, format!("chan() capacity must not be negative ({n})")))
             }
             [other] => {
-                return Ok(self.raise(
-                    "TypeError",
+                return Ok(self.raise(Exc::TypeError,
                     format!("chan() capacity must be an int, not '{}'", other.type_label()),
                 ))
             }
-            _ => return Ok(self.raise("TypeError", "chan() takes at most 1 argument")),
+            _ => return Ok(self.raise(Exc::TypeError, "chan() takes at most 1 argument")),
         };
         self.push(Value::Channel(Rc::new(Channel::new(cap))));
         Ok(Step::Next)
@@ -1782,7 +1785,9 @@ impl Vm {
             return Ok(None);
         }
         if !kwargs.is_empty() {
-            return Ok(Some(self.raise("TypeError", format!("{name}() takes no keyword arguments"))));
+            return Ok(Some(self.raise(Exc::TypeError, format!(
+                "{name}() takes no keyword arguments"
+            ))));
         }
         let s = Rc::clone(s);
         let op = match name {
@@ -1792,14 +1797,15 @@ impl Vm {
                 // one name, and an unbounded read is a memory footgun on a
                 // server. Reading a whole stream is `io.read(r)`.
                 [] => {
-                    return Err(self
-                        .err("read() takes a size — use io.read(r) to read a whole stream"))
+                    return Err(self.err(type_error(
+                        "read() takes a size — use io.read(r) to read a whole stream",
+                    )))
                 }
                 _ => {
-                    return Err(self.err(format!(
+                    return Err(self.err(type_error(format!(
                         "read() size argument must be int, not '{}'",
                         crate::builtins::type_of(args, 0)
-                    )))
+                    ))))
                 }
             },
             // Bytes only, in both directions, everywhere in the language. The
@@ -1815,12 +1821,16 @@ impl Vm {
                     // The limit is required, not defaulted: it is what stops a
                     // client sending an unbounded header block, and a default
                     // would be a number nobody chose.
-                    None => return Err(self.err("read_until() takes a delimiter and a limit")),
+                    None => {
+                        return Err(self.err(type_error(
+                            "read_until() takes a delimiter and a limit",
+                        )))
+                    }
                     Some(_) => {
-                        return Err(self.err(format!(
+                        return Err(self.err(type_error(format!(
                             "read_until() limit argument must be int, not '{}'",
                             crate::builtins::type_of(args, 1)
-                        )))
+                        ))))
                     }
                 };
                 self.wrap(crate::builtins::exactly(args, 2, "read_until"))?;
@@ -1858,7 +1868,7 @@ impl Vm {
                 // have produced one instruction later, so the same close is
                 // the same exception however the timing falls.
                 let msg = format!("{what} on a closed {}", s.kind.type_name());
-                let exc = self.error_to_exception(&self.err(msg));
+                let exc = self.error_to_exception(&self.err(value_error(msg)));
                 self.wake_with_raise(id, exc);
             }
         }
@@ -1964,7 +1974,7 @@ impl Vm {
         // Character for character what the generic builtin path said when
         // `net.dial` was one, so moving the dispatch changed no diagnostic.
         if !kwargs.is_empty() {
-            return Err(self.err("net.dial() takes no keyword arguments"));
+            return Err(self.err(type_error("net.dial() takes no keyword arguments")));
         }
         let addr = self.wrap(super::modules::one_addr(&args, "dial"))?;
         match self.wrap(crate::net::plan_dial(&addr))? {
@@ -1999,18 +2009,18 @@ impl Vm {
         kwargs: Vec<(String, Value)>,
     ) -> Result<Step, VmError> {
         if !kwargs.is_empty() {
-            return Ok(self.raise("TypeError", "sleep() takes no keyword arguments"));
+            return Ok(self.raise(Exc::TypeError, "sleep() takes no keyword arguments"));
         }
         let secs = match args.as_slice() {
             [Value::Float(f)] => *f,
             [Value::Int(i)] => *i as f64,
             [Value::Bool(b)] => *b as i64 as f64,
-            _ => return Err(self.err("sleep() takes one number of seconds")),
+            _ => return Err(self.err(type_error("sleep() takes one number of seconds"))),
         };
         // `>= 0.0` rather than `!(< 0.0)`: NaN is not a length, and the
         // negative message is the right one for it.
         if !(secs.is_finite() && secs >= 0.0) {
-            return Err(self.err("sleep length must be non-negative"));
+            return Err(self.err(runtime_error("sleep length must be non-negative")));
         }
         self.park_seq += 1;
         let seq = self.park_seq;

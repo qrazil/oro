@@ -1,0 +1,87 @@
+# A fault's exception class is a property of the operation, never of the data.
+#
+# Oro used to decide the class of every internal fault by substring-matching the
+# English of its message, five thousand lines from where the fault happened —
+# and those messages interpolate values the program chose. So the *contents of
+# the data* picked the exception: a missing key spelled "timed out" arrived as a
+# `TimeoutError`, which is an `OSError`, which `except ValueError` does not
+# catch. Through `std/http.oro` that reached the wire, where a client could pick
+# a 400 or a 500 by choosing the text of a path segment.
+#
+# Every line below is a fault whose data spells another class's diagnostic. The
+# class must not move. CPython is the oracle for all of it, because CPython has
+# never had a table to be confused.
+
+PROSE = [
+    "timed out",
+    "No such file or directory",
+    "Permission denied",
+    "division by zero",
+    "index out of range",
+    "is not defined",
+    "has no attribute",
+    "unhashable type",
+    "command failed: rm -rf /",
+    "[Errno 111] Connection refused",
+    "invalid literal for int()",
+    "maximum recursion depth exceeded",
+]
+
+# A missing key is a KeyError whatever the key says.
+d = {"a": 1}
+for k in PROSE:
+    try:
+        d[k]
+        print("no raise for", k)
+    except KeyError as e:
+        print("key", type(e), f"{e}")
+
+# A missing attribute is an AttributeError whatever the attribute says. (The
+# name has to be an identifier, so this is the same point made with the two
+# spellings that fit one.)
+class Box:
+    def __init__(self):
+        self.a = 1
+
+b = Box()
+try:
+    print(b.timed_out)
+except AttributeError as e:
+    print("attr", type(e), f"{e}")
+
+try:
+    print(b.Permission_denied)
+except AttributeError as e:
+    print("attr", type(e), f"{e}")
+
+# The uninterpolated faults, for the same reason from the other side: these
+# classes are what the substring table was *right* about, and they must keep
+# being right now that nothing is guessing.
+try:
+    [1, 2, 3][9]
+except IndexError as e:
+    print("index", type(e), f"{e}")
+
+try:
+    print(1 // 0)
+except ZeroDivisionError as e:
+    print("divzero", type(e), f"{e}")
+
+try:
+    len(5)
+except TypeError as e:
+    print("len", type(e), f"{e}")
+
+try:
+    print(undefined_name)
+except NameError as e:
+    print("name", type(e), f"{e}")
+
+# And the hierarchy still holds: a `KeyError` is an `Exception`, and catching
+# the width catches the member.
+try:
+    d["timed out"]
+except OSError as e:
+    print("WRONG: an OSError")
+except Exception as e:
+    print("width", type(e))

@@ -38,6 +38,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::exc::type_error;
 use crate::value::{Builtin, Module, VResult, Value};
 
 /// Build the `_pct` module. Called by `crate::vm::modules::build`.
@@ -83,8 +84,8 @@ fn has(t: &[u64; 4], c: u8) -> bool {
 fn encode(args: Vec<Value>) -> VResult<Value> {
     let (b, safe) = match args.as_slice() {
         [Value::Bytes(b), Value::Bytes(safe)] => (b, safe),
-        [_, _] => return Err("internal: _pct.encode takes two bytes".to_string()),
-        _ => return Err("internal: _pct.encode takes two arguments".to_string()),
+        [_, _] => return Err(type_error("internal: _pct.encode takes two bytes")),
+        _ => return Err(type_error("internal: _pct.encode takes two arguments")),
     };
     let table = membership(safe);
     // The common case is a component that needs no escaping at all, and the
@@ -143,8 +144,8 @@ fn hex_value(c: u8) -> Option<u8> {
 fn decode(args: Vec<Value>) -> VResult<Value> {
     let (b, plus) = match args.as_slice() {
         [Value::Bytes(b), Value::Bool(plus)] => (b, *plus),
-        [_, _] => return Err("internal: _pct.decode takes bytes and a bool".to_string()),
-        _ => return Err("internal: _pct.decode takes two arguments".to_string()),
+        [_, _] => return Err(type_error("internal: _pct.decode takes bytes and a bool")),
+        _ => return Err(type_error("internal: _pct.decode takes two arguments")),
     };
     // Nothing to do is the overwhelmingly common case for a path, and it is
     // also the case the Oro version got wrong: its fast path was `no '%' and

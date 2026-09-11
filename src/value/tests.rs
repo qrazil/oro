@@ -85,7 +85,7 @@ fn mutable_containers_stay_unhashable() {
     let dict = Value::Dict(Rc::new(RefCell::new(OroDict::new())));
     for v in [list, dict] {
         let e = d.insert(v.clone(), Value::Int(0)).expect_err("must not be a key");
-        assert!(e.contains("unhashable type"), "got: {e}");
+        assert!(e.message.contains("unhashable type"), "got: {e}");
     }
 }
 
