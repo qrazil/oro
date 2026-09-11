@@ -30,6 +30,22 @@ harness checks oro and CPython agree before reporting a time.
 | `chain` | the collection protocol (`.filter`/`.map`/`.reduce` with `=>`) — oro-only, CPython twin in `chain.py` |
 | `json` | `json.parse` + `json.stringify` over five payload shapes — oro-only, CPython twin in `json_twin.py` |
 
+## One program's barrier changed spelling
+
+`fuse.oro`'s fourth shape is a chain with a barrier in the middle, and that
+barrier was the native `sorted()` until keyed sorting became one spelling and
+`xs.sorted()` was cut. It is now `sort_by(x => x)`, which is the same sort
+reached through a callback: the keys are an Oro call per element, where
+`sorted()` compared the elements natively and called nothing.
+
+So **the `fuse` row above is not comparable with runs taken after this change**,
+and the same is true of the "four steps with a `sorted` barrier in the middle"
+line in the fusion table below. Nothing else in the suite moved — no other
+benchmark used a cut spelling — and only `fuse.oro`'s `d` shape was touched.
+The rest of that file, and every other program here, is byte for byte what it
+was. When the suite is next rebaselined, `fuse` needs a fresh pair of numbers
+rather than a comparison against these.
+
 ## Why the benchmarks still count by hand
 
 Every program here spells a bounded count the long way:
@@ -1450,7 +1466,7 @@ output one element at a time, in order, with no view of the whole input.
 chain methods, plus the two native short-circuiting ones, `first()` and
 `take(n)`, which fuse as a *limit* on the pass.
 
-**Barriers**: `sorted`, `sort_by`, `reversed`, `unique`, `unique_by`, `chunk`,
+**Barriers**: `sort_by`, `reversed`, `unique`, `unique_by`, `chunk`,
 `flatten`, `zip`, `enumerate`, `group_by`, `partition`, `min_by`, `max_by`.
 Each needs the finished intermediate. A chain fuses the runs between barriers
 and materialises at each one.

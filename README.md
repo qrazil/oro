@@ -260,7 +260,7 @@ Implemented and working today:
   same `side`, in two values rather than three, because that is where
   `maxsplit` counts its splits from — which is why there is no `rsplit`.
   `find(sub, start, end, reverse=false)` takes `reverse=true` for the last
-  occurrence, spelled the way `sorted(reverse=…)` already is, which is why
+  occurrence, spelled the way `sort_by(reverse=…)` already is, which is why
   there is no `rfind`. `count(sub, start, end)` searches the same window `find`
   does, by the same rules — "how many" and "where" are asked over the same
   region of the same string, or they are two surfaces pretending to be one. `rm_prefix`/`rm_suffix` remove
@@ -272,23 +272,33 @@ Implemented and working today:
   Chains replaced comprehensions; this is what lets them replace *loops* too.
 
   *Without a callback:* `sum(start=0)` `min` `max` `len` `first` `last`
-  `sorted(key=null, reverse=false)` `reversed` `unique` `take(n)` `drop(n)`
-  `chunk(n)` `flatten` `zip(other, ...)` `enumerate(start=0)` `join(sep)`.
+  `reversed` `unique` `take(n)` `drop(n)` `chunk(n)` `flatten`
+  `zip(other, ...)` `enumerate(start=0)` `join(sep)`.
   `zip` takes any number of further sequences and truncates to the shortest, so
   `a.zip(b, c)` is a three-way zip and not a two-way one with `c` thrown away.
-  `sorted` carries the two keywords the cut builtin had, and `reverse=true` is
-  not `.sorted().reversed()`: reversing a sorted sequence flips the *ties* too,
-  where `reverse=` leaves them in the order they arrived.
+  The counts are required: `take()` with none is an error rather than a
+  guess, and `take(n, 99)` is one rather than an ignored argument.
 
-  *With one:* `map` `filter` `flat_map` `sort_by` `group_by` `partition` `find`
-  `any` `all` `count` `min_by` `max_by` `unique_by` `take_while` `drop_while`
-  `reduce(init, f)`. `any`, `all` and `count` also work with no callback, using
-  each element's own truthiness. `find`, `any` and `all` short-circuit.
+  *With one:* `map` `filter` `flat_map` `sort_by(f, reverse=false)` `group_by`
+  `partition` `find` `any` `all` `count` `min_by` `max_by` `unique_by`
+  `take_while` `drop_while` `reduce(init, f)`. Each callback is required —
+  truthiness is `xs.any(x => x)`, and `[0, 1, 2, ""].count()` read as a length
+  and was not one. `find`, `any` and `all` short-circuit.
+
+  **Sorting is `sort_by`.** `xs.sort_by(f)` answers a new collection ordered by
+  the keys `f` gives, and the elements' own order is `xs.sort_by(x => x)`: the
+  function is the operand, so it is the positional argument, as it is for
+  `min_by` and `group_by`. `reverse=true` is *stable* descending and is not
+  `xs.sort_by(f).reversed()`: reversing a sorted sequence flips the *ties* too,
+  where `reverse=` leaves them in the order they arrived. A list — and only a
+  list, because nothing else can be changed where it is — also has
+  `xs.sort_in_place(f, reverse=false)`, which reorders the list's own storage
+  and answers `null`, as `append` and `extend` do.
 
   Two rules govern the whole set. **Operations that select or reorder preserve
   the receiver's type** (a tuple stays a tuple, a dict stays a dict); operations
-  that reshape the data return a list. `sorted` reorders, so `t.sorted()` is a
-  tuple and `d.sorted()` is a dict. It is only a list where there is no other
+  that reshape the data return a list. `sort_by` reorders, so `t.sort_by(f)` is
+  a tuple and `d.sort_by(f)` is a dict. It is only a list where there is no other
   shape to keep — a range or a generator. And **a callback with two or more
   parameters destructures its element exactly as `for` does**, while a callback
   with one takes it whole. A dict's element is its `(key, value)` pair, so
@@ -326,11 +336,11 @@ Implemented and working today:
   and no second reader, which is a property of the expression) and the VM runs
   it as one job. Two things follow that are worth knowing about.
 
-  *Some steps are barriers.* `sorted` `sort_by` `reversed` `unique`
+  *Some steps are barriers.* `sort_by` `reversed` `unique`
   `unique_by` `chunk` `flatten` `zip` `enumerate` `group_by` `partition`
   `min_by` `max_by` and `take_while` each need the finished intermediate before
   they can answer, so a chain fuses the runs of `map`/`filter` between them and
-  materialises at each barrier. `xs.map(f).filter(p).sorted().map(g)` is two
+  materialises at each barrier. `xs.map(f).filter(p).sort_by(k).map(g)` is two
   passes and one sort, not four passes. `take_while` is on that list for a
   reason worth knowing on its own: it calls its predicate on **every** element,
   not just the ones up to the first false, and fusing it would have quietly
@@ -354,7 +364,7 @@ Implemented and working today:
   instead of sending the reader back to the front of the line.
 - **Lambdas:** `x => x * 2`, `(a, b) => a + b`, `() => 0`.
 - **Generators work everywhere.** A generator can be passed to any builtin that
-  consumes an iterable (`sum`, `sorted`, `min`, …) and can start a chain
+  consumes an iterable (`sum`, `sort_by`, `min`, …) and can start a chain
   (`g().map(f)`), not just drive a `for` loop. Builtins run in Rust and can
   never re-enter the interpreter, so the generator is drained a frame at a time
   and the call is retried — the native stack never grows with it.
@@ -514,7 +524,7 @@ Each of these is omitted on purpose. The reason matters more than the list.
   operation, distinguished by a letter, is exactly the accretion the thesis
   rejects — and the letter is the least readable part of the call. `rfind` is
   `find(sub, reverse=true)`, for the same reason and with the keyword Oro
-  already uses for direction in `sorted`. `index` is `find` that raises instead
+  already uses for direction in `sort_by`. `index` is `find` that raises instead
   of answering `-1`; two spellings of one search, and the one that raises makes
   every caller choose between a `try` and a method they did not need.
 
@@ -546,8 +556,8 @@ Each of these is omitted on purpose. The reason matters more than the list.
   sorted any all enumerate zip` — and usage across the tree was split roughly
   down the middle, which settles nothing: a reader has no way to know which
   half the codebase prefers, because it used both. The rule settles it, and
-  every cut names its replacement: `xs.sum()`, `xs.sorted()`, `xs.any(p)`,
-  `xs.all(p)`, `xs.enumerate()`, `a.zip(b, c)`.
+  every cut names its replacement: `xs.sum()`, `xs.sort_by(x => x)`,
+  `xs.any(p)`, `xs.all(p)`, `xs.enumerate()`, `a.zip(b, c)`.
 
   The duplication was not merely noise. Three of the nine pairs had already
   *drifted* into disagreeing — `a.zip(b, c)` silently discarded `c`,
@@ -578,7 +588,7 @@ Each of these is omitted on purpose. The reason matters more than the list.
   because a builtin read its argument through the *iteration* protocol and that
   reaches `str` and `bytes`. The collection protocol does not — `"abc".map(f)`
   has always been an `AttributeError` — so those capabilities now cost a call:
-  `"ba".to_list().sorted()`. Giving `str` one collection method out of twenty
+  `"ba".to_list().sort_by(x => x)`. Giving `str` one collection method out of twenty
   would have been a worse inconsistency than the loss, and `to_list()` is
   already the documented bridge. The error says so at the call site.
 
@@ -918,7 +928,7 @@ prints it and differ on all three — a costume, and worse than either having
 views or not having them, because it would look like the thing it is not.
 
 So Oro answers a list, prints a list, and the whole collection protocol works on
-it with no second type to learn: `d.keys().sorted()`, `d.values().sum()`,
+it with no second type to learn: `d.keys().sort_by(k => k)`, `d.values().sum()`,
 `d.keys().join("-")`. Recorded, with all three behavioural differences shown,
 in `corpus/divergence/59_dict_views.oro`. (There is no `.items()` to ask the
 question about — see above — and `d.to_list()` is the list of pairs.) The related case is already settled the
@@ -1307,17 +1317,18 @@ different.
 | `x is y` / `x is not y` | `x == y` / `x != y` | `==` already compares reference types by identity; `is` differed from CPython on interned strings and could not be fixed |
 | `True` / `False` / `None` | `true` / `false` / `null` | Capitalisation was Python's class-naming convention leaking into syntax |
 | `s.lstrip(…)` / `s.rstrip(…)` | `s.strip(…, side="left")` / `side="right"` | One strip with a named end, not three methods |
-| `s.rfind(sub)` | `s.find(sub, reverse=true)` | One find with a named direction; `reverse=` as in `sorted` |
+| `s.rfind(sub)` | `s.find(sub, reverse=true)` | One find with a named direction; `reverse=` as in `sort_by` |
 | `s.index(sub)` | `s.find(sub)` | Two spellings of one search, one of which raises; `-1` is the answer |
 | `s.rsplit(sep, n)` | `s.split(sep, n, side="right")` | Same answer, on the `side=` keyword `strip` already uses; no second name |
 | `s.zfill(n)` | `f"{n:05d}"`, `f"{s:0>5}"`, `f"{s:0>{w}}"` | Fully covered by the format spec, which also pads with anything else |
 | `s.removeprefix(p)` / `s.removesuffix(p)` | `s.rm_prefix(p)` / `s.rm_suffix(p)` | Same method, shorter name |
 | `s.isdigit()` / `isalpha()` / `isalnum()` / `isspace()` | `s.is_digit()` / `is_alpha()` / `is_alnum()` / `is_space()` | Same predicates, in the language's own naming |
 | `sep.join(xs)` | `xs.join(sep)` | One join, on the collection; the sequence is the subject and the call ends a chain |
-| `sum(xs)` / `sorted(xs)` / `any(xs)` / `all(xs)` / `enumerate(xs)` / `zip(a, b)` | `xs.sum()` / `xs.sorted()` / `xs.any()` / `xs.all()` / `xs.enumerate()` / `a.zip(b)` | A builtin takes scalars, a collection method takes a collection |
-| `sorted(xs, key=f, reverse=true)` | `xs.sorted(key=f, reverse=true)` | The keywords moved with it; `reverse=` is a stable descending sort, `.reversed()` is not |
+| `sum(xs)` / `sorted(xs)` / `any(xs)` / `all(xs)` / `enumerate(xs)` / `zip(a, b)` | `xs.sum()` / `xs.sort_by(x => x)` / `xs.any(x => x)` / `xs.all(x => x)` / `xs.enumerate()` / `a.zip(b)` | A builtin takes scalars, a collection method takes a collection |
+| `sorted(xs, key=f, reverse=true)` | `xs.sort_by(f, reverse=true)` | The key is the operand, so it is positional; `reverse=` is a stable descending sort, `.reversed()` is not |
+| `xs.sort(key=f, reverse=true)` | `xs.sort_in_place(f, reverse=true)` | The in-place half of `sort_by`, with the same shape; lists only, and it answers `null` |
 | `min(xs)` / `max(xs)` | `xs.min()` / `xs.max()` | `min(a, b)` over two or more *values* is unchanged |
-| `sorted("ba")` / `min(b"ba")` | `"ba".to_list().sorted()` | A `str` and a `bytes` are not collections; `to_list()` is the bridge |
+| `sorted("ba")` / `min(b"ba")` | `"ba".to_list().sort_by(x => x)` | A `str` and a `bytes` are not collections; `to_list()` is the bridge |
 
 `f"{x}"` is unchanged and is usually the better replacement for `str(x)` in
 string building — it also still runs under CPython, which keeps those programs
@@ -1338,7 +1349,7 @@ Stated plainly:
   module scope makes it *local* (exactly as in Python) — Oro turns the resulting
   unbound-variable error into a message that explains the fix.
 - **Consuming an infinite generator hangs.** A generator passed to a builtin
-  (`sum`, `sorted`, `min`, …) or used to start a chain is drained eagerly, so
+  (`sum`, `sort_by`, `min`, …) or used to start a chain is drained eagerly, so
   `sum(forever())` never returns rather than failing. Inside a `for` loop it
   stays lazy, as it always was.
 - **`proc.run` retains at most 64 MiB per stream.** Capture is no longer
@@ -1354,7 +1365,7 @@ Stated plainly:
   are fused, so a chain walks its receiver once and builds one collection
   rather than one per step, and a `first()`/`take(n)`/`find`/`any`/`all` at the
   end stops that pass early. But the pass still happens: the receiver is
-  materialised up front, a barrier step (`sorted`, `unique`, `chunk`,
+  materialised up front, a barrier step (`sort_by`, `unique`, `chunk`,
   `flatten`, …) materialises again, and nothing is computed on demand. So
   `g().map(f).first()` still drains `g` in full before the chain starts —
   starting a chain on a generator materialises it, and an infinite one hangs.
@@ -1438,7 +1449,7 @@ checks it — when a test only needs a cast, split the file rather than moving t
 whole thing — and read every divergence baseline as if reviewing a diff, because
 that review is the only thing standing behind it. Where a program diverges only
 in *spelling* — `strip(side="left")` for `lstrip`, `find(sub, reverse=true)` for
-`rfind`, `xs.sorted()` for `sorted(xs)` — it carries a `.twin.py`: the same
+`rfind`, `xs.sort_by(x => x)` for `sorted(xs)` — it carries a `.twin.py`: the same
 program in CPython's names, whose output *is* the `.expected`. That puts the
 oracle back behind a file CPython cannot run, and the twin is the review. It is
 what the builtin/collection-method cut was paid for with: four programs left
