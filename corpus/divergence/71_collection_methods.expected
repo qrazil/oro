@@ -1,0 +1,10 @@
+6
+1 99
+['a', 'b', 'c']
+[1, 2, 3]
+['x', 'y', 'z']
+['austin', 'dallas', 'houston']
+[b'', b'Apple', b'apple', b'pear', b'\xff']
+[b'alpha', b'beta', b'gamma']
+[0, 200, 255]
+3 2 [2, 1, 0]

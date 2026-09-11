@@ -223,16 +223,12 @@ Implemented and working today:
   `{x:,}`, alignment (`<^>`), sign/`#`/`0` flags, the `!r`/`!s` conversions, and
   nested specs like `{x:.{p}f}`.
 - **Builtins:** `print` (with `sep=`/`end=`), `len`, `repr`, `type`, `abs`,
-  `min`, `max`, `sum`, `round`, `sorted` (with `key=`/`reverse=`, as has
-  `list.sort`), `any`, `all`, `enumerate`, `zip`, `open`.
-  `enumerate` and `zip` return lists rather than lazy iterators — the same eager
-  choice `dict.keys()` already makes. Nine of them have a collection-method twin
-  (`len sum min max sorted any all enumerate zip`), and where both spellings
-  exist they answer the same thing: `zip(a, b, c)` is `a.zip(b, c)`,
-  `sorted(x)` keeps `x`'s shape exactly as `x.sorted()` does (so
-  `sorted((3, 1, 2))` is `(1, 2, 3)` and `sorted(d)` is a dict), and both halves
-  walk a dict as its `(key, value)` pairs, which is what `for k, v in d` yields.
-  See `corpus/divergence/65_builtin_method_agreement.oro`.
+  `min`, `max`, `round`, `chr`, `ord`, `open`, and the three concurrency names.
+  **A builtin takes scalars; a collection method takes a collection** — that is
+  the line, and it is why the list is short. `min(a, b)` and `max(a, b)` take
+  two or more *values*; the whole-sequence form is `xs.min()`. `len` is the one
+  name on both sides of the line, and the reason is stated where the cut is
+  (below). See `corpus/divergence/65_builtin_method_line.oro`.
 - **Type keywords:** `bool`, `int`, `float`, `str`, `bytes`, `list`, `tuple`,
   `dict`, `range`, and the runtime handles `File`, `Buffer`, `TcpStream`,
   `TcpListener`, `Pattern`, `Match`, `Task`, `Channel`. Each *is* the type, and
@@ -275,11 +271,14 @@ Implemented and working today:
 - **The collection protocol**, on lists, tuples, dicts, ranges and generators.
   Chains replaced comprehensions; this is what lets them replace *loops* too.
 
-  *Without a callback:* `sum` `min` `max` `len` `first` `last` `sorted`
-  `reversed` `unique` `take(n)` `drop(n)` `chunk(n)` `flatten`
-  `zip(other, ...)` `enumerate(start=0)` `join(sep)`. `zip` takes any number of
-  further sequences and truncates to the shortest, so `a.zip(b, c)` is the
-  builtin `zip(a, b, c)` and not a two-way zip with `c` thrown away.
+  *Without a callback:* `sum(start=0)` `min` `max` `len` `first` `last`
+  `sorted(key=null, reverse=false)` `reversed` `unique` `take(n)` `drop(n)`
+  `chunk(n)` `flatten` `zip(other, ...)` `enumerate(start=0)` `join(sep)`.
+  `zip` takes any number of further sequences and truncates to the shortest, so
+  `a.zip(b, c)` is a three-way zip and not a two-way one with `c` thrown away.
+  `sorted` carries the two keywords the cut builtin had, and `reverse=true` is
+  not `.sorted().reversed()`: reversing a sorted sequence flips the *ties* too,
+  where `reverse=` leaves them in the order they arrived.
 
   *With one:* `map` `filter` `flat_map` `sort_by` `group_by` `partition` `find`
   `any` `all` `count` `min_by` `max_by` `unique_by` `take_while` `drop_while`
@@ -288,10 +287,9 @@ Implemented and working today:
 
   Two rules govern the whole set. **Operations that select or reorder preserve
   the receiver's type** (a tuple stays a tuple, a dict stays a dict); operations
-  that reshape the data return a list. `sorted` reorders, so the rule reaches
-  the builtin too: `sorted(t)` is a tuple and `sorted(d)` is a dict. It is only
-  a list where there is no other shape to keep — a range, a generator, or a
-  `str`. And **a dict's element is its `(key, value)` pair**, everywhere: the
+  that reshape the data return a list. `sorted` reorders, so `t.sorted()` is a
+  tuple and `d.sorted()` is a dict. It is only a list where there is no other
+  shape to keep — a range or a generator. And **a dict's element is its `(key, value)` pair**, everywhere: the
   callback takes two arguments, so `d.filter((k, v) => v > 1)` reads directly,
   and `for k, v in d` yields the same pair the callback is handed.
   Type preservation has a consequence worth stating on its own: because
@@ -521,6 +519,51 @@ Each of these is omitted on purpose. The reason matters more than the list.
   All five raise, naming the replacement. So do CPython's `removeprefix`,
   `removesuffix`, `isdigit`, `isalpha`, `isalnum` and `isspace`, which exist
   here under Oro's own names (`rm_prefix`, `rm_suffix`, `is_digit`, …).
+
+- **No `sum`, `sorted`, `any`, `all`, `enumerate` or `zip` as builtins**, and
+  `min`/`max` narrowed to two or more values. The rule is one sentence:
+
+  > **A builtin takes scalars. A collection method takes a collection.**
+
+  Nine builtins used to duplicate nine collection methods — `len sum min max
+  sorted any all enumerate zip` — and usage across the tree was split roughly
+  down the middle, which settles nothing: a reader has no way to know which
+  half the codebase prefers, because it used both. The rule settles it, and
+  every cut names its replacement: `xs.sum()`, `xs.sorted()`, `xs.any(p)`,
+  `xs.all(p)`, `xs.enumerate()`, `a.zip(b, c)`.
+
+  The duplication was not merely noise. Three of the nine pairs had already
+  *drifted* into disagreeing — `a.zip(b, c)` silently discarded `c`,
+  `sorted((3, 1, 2))` answered a list where `(3, 1, 2).sorted()` answered a
+  tuple, and `enumerate(xs, 1, 9)` accepted the 9 and ignored it. All three
+  were found and fixed by making each pair share one body, which is the right
+  repair; one spelling is what keeps it repaired.
+
+  **`min` and `max` are narrowed rather than cut**, because the variadic form
+  is a different operation and has no chain spelling. `std/http.oro` clamps a
+  backoff with `min(backoff * 2, _ACCEPT_BACKOFF_MAX)`, and
+  `[backoff * 2, _ACCEPT_BACKOFF_MAX].min()` allocates a list to compare two
+  floats and reads worse — the same ergonomics test `rsplit` failed. So
+  `min(a, b)` stays and `min(xs)` becomes `xs.min()`, which leaves `min` with
+  one meaning where it had two.
+
+  **`len` is the one exception, and it is named rather than quietly kept.** It
+  is the only one of the nine that reaches `str` and `bytes`, which are
+  deliberately outside the collection protocol, and the only one that
+  dispatches a dunder — `__len__` — on a user class. Cutting `len(x)` would
+  reserve `.len()` on every user object, which the io protocol's own freeze
+  note warns against doing lightly; cutting `.len()` would break
+  `xs.filter(p).len()` back to `len(xs.filter(p))` and send the reader to the
+  front of the line. One exception with a stated reason is not the same thing
+  as nine unexplained pairs.
+
+  **What the cut costs, named.** `sorted("ba")` and `min(b"ba")` worked,
+  because a builtin read its argument through the *iteration* protocol and that
+  reaches `str` and `bytes`. The collection protocol does not — `"abc".map(f)`
+  has always been an `AttributeError` — so those capabilities now cost a call:
+  `"ba".to_list().sorted()`. Giving `str` one collection method out of twenty
+  would have been a worse inconsistency than the loss, and `to_list()` is
+  already the documented bridge. The error says so at the call site.
 
 - **No `str.join`/`bytes.join`.** `", ".join(xs)` and `xs.join(", ")` were
   byte-for-byte the same operation, with the same type rules and the same
@@ -792,10 +835,9 @@ loop starts, as it always has — inserting neither raises nor is seen).
 CPython oracle, so `corpus/divergence/67_dict_pairs.oro` has a hand-reviewed
 baseline — checked against `67_dict_pairs.twin.py`, the same program with
 `.items()` written back in, so the expectation is still CPython's output for
-every line except the divergence itself. `sum(d)` is the one thing that got
+every line except the divergence itself. `d.sum()` is the one thing that got
 worse rather than different: it summed the keys and is now an attempt to add a
-tuple to an int, on both the builtin and the method side. `d.values().sum()` is
-what it was reaching for.
+tuple to an int. `d.values().sum()` is what it was reaching for.
 
 ### `dict.keys()` / `.values()` answer lists
 
@@ -1214,6 +1256,10 @@ different.
 | `s.removeprefix(p)` / `s.removesuffix(p)` | `s.rm_prefix(p)` / `s.rm_suffix(p)` | Same method, shorter name |
 | `s.isdigit()` / `isalpha()` / `isalnum()` / `isspace()` | `s.is_digit()` / `is_alpha()` / `is_alnum()` / `is_space()` | Same predicates, in the language's own naming |
 | `sep.join(xs)` | `xs.join(sep)` | One join, on the collection; the sequence is the subject and the call ends a chain |
+| `sum(xs)` / `sorted(xs)` / `any(xs)` / `all(xs)` / `enumerate(xs)` / `zip(a, b)` | `xs.sum()` / `xs.sorted()` / `xs.any()` / `xs.all()` / `xs.enumerate()` / `a.zip(b)` | A builtin takes scalars, a collection method takes a collection |
+| `sorted(xs, key=f, reverse=true)` | `xs.sorted(key=f, reverse=true)` | The keywords moved with it; `reverse=` is a stable descending sort, `.reversed()` is not |
+| `min(xs)` / `max(xs)` | `xs.min()` / `xs.max()` | `min(a, b)` over two or more *values* is unchanged |
+| `sorted("ba")` / `min(b"ba")` | `"ba".to_list().sorted()` | A `str` and a `bytes` are not collections; `to_list()` is the bridge |
 
 `f"{x}"` is unchanged and is usually the better replacement for `str(x)` in
 string building — it also still runs under CPython, which keeps those programs
@@ -1334,9 +1380,12 @@ checks it — when a test only needs a cast, split the file rather than moving t
 whole thing — and read every divergence baseline as if reviewing a diff, because
 that review is the only thing standing behind it. Where a program diverges only
 in *spelling* — `strip(side="left")` for `lstrip`, `find(sub, reverse=true)` for
-`rfind` — it carries a `.twin.py`: the same program in CPython's names, whose
-output *is* the `.expected`. That puts the oracle back behind a file CPython
-cannot run, and the twin is the review. `corpus/known-failing/` is the opposite — it
+`rfind`, `xs.sorted()` for `sorted(xs)` — it carries a `.twin.py`: the same
+program in CPython's names, whose output *is* the `.expected`. That puts the
+oracle back behind a file CPython cannot run, and the twin is the review. It is
+what the builtin/collection-method cut was paid for with: four programs left
+`core/` for `divergence/` and every one took a twin along, so their baselines
+are still CPython's own output rather than Oro's. `corpus/known-failing/` is the opposite — it
 holds programs that are *correct Python which Oro currently gets wrong* and that
 we intend to fix. `run.sh` reports its count separately and never fails the build
 on it, so those bugs stay **visible** instead of being quietly omitted; when a

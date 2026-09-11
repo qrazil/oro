@@ -33,15 +33,9 @@ pub fn lookup(name: &str) -> Option<Value> {
         "abs" => bi_abs,
         "min" => bi_min,
         "max" => bi_max,
-        "sum" => bi_sum,
-        "sorted" => bi_sorted,
         "repr" => bi_repr,
         "open" => bi_open,
         "set" => bi_set,
-        "enumerate" => bi_enumerate,
-        "zip" => bi_zip,
-        "any" => bi_any,
-        "all" => bi_all,
         "round" => bi_round,
         "chr" => bi_chr,
         "ord" => bi_ord,
@@ -68,15 +62,9 @@ fn intern(name: &str) -> &'static str {
         "abs" => "abs",
         "min" => "min",
         "max" => "max",
-        "sum" => "sum",
-        "sorted" => "sorted",
         "repr" => "repr",
         "open" => "open",
         "set" => "set",
-        "enumerate" => "enumerate",
-        "zip" => "zip",
-        "any" => "any",
-        "all" => "all",
         "round" => "round",
         "chr" => "chr",
         "ord" => "ord",
@@ -205,6 +193,18 @@ fn bi_abs(args: Vec<Value>) -> VResult<Value> {
     }
 }
 
+/// What `min(xs)` / `max(xs)` answer with now that only the scalar form is
+/// left. Named rather than inlined because the VM's frame-driven path
+/// (`do_extreme`, for elements with a user `__lt__`) has to give the same
+/// answer as the native one.
+pub fn extreme_arity_message(who: &str) -> String {
+    format!(
+        "{who}() takes two or more values in Oro — a builtin takes scalars and a \
+         collection method takes a collection, so the whole-sequence form is \
+         `xs.{who}()`. `{who}(a, b)` is unchanged."
+    )
+}
+
 fn bi_min(args: Vec<Value>) -> VResult<Value> {
     fold_extreme(args, "min", std::cmp::Ordering::Less)
 }
@@ -213,12 +213,18 @@ fn bi_max(args: Vec<Value>) -> VResult<Value> {
     fold_extreme(args, "max", std::cmp::Ordering::Greater)
 }
 
-/// Shared core of `min`/`max`. With one argument it ranges over an iterable;
-/// with several it ranges over the arguments themselves.
+/// Shared core of `min`/`max`: the extreme of two or more *scalars*.
+///
+/// The single-iterable form is cut. `min(xs)` and `xs.min()` were the same
+/// operation spelled twice, and the method is the half the rule keeps — but
+/// `min(a, b)` is not that operation at all: `[backoff * 2, _MAX].min()`
+/// allocates a list to clamp a float and reads worse, which is the ergonomics
+/// test failing, so the variadic scalar form stays and `min` becomes a
+/// two-or-more-argument builtin with one meaning instead of two.
 fn fold_extreme(args: Vec<Value>, who: &str, want: std::cmp::Ordering) -> VResult<Value> {
     let items = match args.len() {
         0 => return Err(format!("{who}() expected at least 1 argument")),
-        1 => crate::vm::iterate_to_vec(&args[0])?,
+        1 => return Err(extreme_arity_message(who)),
         _ => args,
     };
     let mut it = items.into_iter();
@@ -231,37 +237,6 @@ fn fold_extreme(args: Vec<Value>, who: &str, want: std::cmp::Ordering) -> VResul
         }
     }
     Ok(best)
-}
-
-fn bi_sum(args: Vec<Value>) -> VResult<Value> {
-    let (iterable, start) = match args.as_slice() {
-        [it] => (it, Value::Int(0)),
-        [it, start] => (it, start.clone()),
-        _ => return Err("sum() takes 1 or 2 arguments".to_string()),
-    };
-    let mut acc = start;
-    for v in crate::vm::iterate_to_vec(iterable)? {
-        acc = crate::vm::add_values(&acc, &v)?;
-    }
-    Ok(acc)
-}
-
-fn bi_sorted(args: Vec<Value>) -> VResult<Value> {
-    let iterable = match args.as_slice() {
-        [it] => it,
-        _ => return Err("sorted() takes exactly 1 argument".to_string()),
-    };
-    let shape = sorted_shape_of(iterable);
-    let mut items = crate::vm::iterate_to_vec(iterable)?;
-    sort_values(&mut items)?;
-    rebuild(
-        match shape {
-            SortedShape::List => Shape::List,
-            SortedShape::Tuple => Shape::Tuple,
-            SortedShape::Dict => Shape::Dict,
-        },
-        items,
-    )
 }
 
 /// The shape `sorted(x)` rebuilds — for the native path and, through
@@ -505,31 +480,6 @@ pub fn call_type(t: TypeTag, args: Vec<Value>) -> VResult<Value> {
     }
 }
 
-/// `enumerate(it, start=0)`. Eager: returns a list of `(index, value)` tuples
-/// rather than a lazy iterator, the same choice `dict.keys()` already makes.
-fn bi_enumerate(args: Vec<Value>) -> VResult<Value> {
-    let (it, start) = match args.as_slice() {
-        [it] => (it, 0),
-        [it, s] => (it, as_i64(s)?),
-        _ => return Err("enumerate() takes 1 or 2 arguments".to_string()),
-    };
-    let items = crate::vm::iterate_to_vec(it)?;
-    let mut out = Vec::with_capacity(items.len());
-    for (i, v) in items.into_iter().enumerate() {
-        out.push(Value::Tuple(OroTuple::new(vec![Value::Int(start + i as i64), v])));
-    }
-    Ok(Value::List(OroList::new(out)))
-}
-
-/// `zip(a, b, ...)`, truncating to the shortest input. Eager, like `enumerate`.
-fn bi_zip(args: Vec<Value>) -> VResult<Value> {
-    let mut cols = Vec::with_capacity(args.len());
-    for a in &args {
-        cols.push(crate::vm::iterate_to_vec(a)?);
-    }
-    Ok(zip_cols(cols))
-}
-
 /// The one implementation of zip, shared by the builtin and `xs.zip(...)`.
 ///
 /// It lives here, and both spellings route through it, because the two used to
@@ -545,26 +495,6 @@ fn zip_cols(cols: Vec<Vec<Value>>) -> Value {
         out.push(Value::Tuple(OroTuple::new(row)));
     }
     Value::List(OroList::new(out))
-}
-
-fn bi_any(args: Vec<Value>) -> VResult<Value> {
-    exactly(&args, 1, "any")?;
-    for v in crate::vm::iterate_to_vec(&args[0])? {
-        if v.truthy() {
-            return Ok(Value::Bool(true));
-        }
-    }
-    Ok(Value::Bool(false))
-}
-
-fn bi_all(args: Vec<Value>) -> VResult<Value> {
-    exactly(&args, 1, "all")?;
-    for v in crate::vm::iterate_to_vec(&args[0])? {
-        if !v.truthy() {
-            return Ok(Value::Bool(false));
-        }
-    }
-    Ok(Value::Bool(true))
 }
 
 /// `round(x)` -> int, `round(x, n)` -> float. Uses banker's rounding (ties to
@@ -700,6 +630,56 @@ pub fn is_str_method(name: &str) -> bool {
     )
 }
 
+/// A global that used to exist and no longer does.
+///
+/// **A builtin takes scalars; a collection method takes a collection.** That
+/// one sentence is why these six are gone: each was the prefix spelling of a
+/// method that does the same job on the same argument, usage across the tree
+/// was split roughly down the middle, and the split had already let the two
+/// halves *disagree* three times — `zip` silently dropping a sequence,
+/// `sorted` answering the wrong type, `enumerate` ignoring an argument. Two
+/// bodies for one operation is how that happens; one body is how it stops, and
+/// one spelling is how it stays stopped.
+///
+/// `len` is the single exception and the README says why: it reaches `str` and
+/// `bytes`, which are deliberately outside the collection protocol, and it is
+/// the dispatch point for `__len__` on a user class. `min` and `max` are
+/// narrowed rather than cut — the variadic *scalar* form `min(a, b)` has no
+/// chain spelling — and their single-iterable form answers with the message
+/// below.
+pub fn cut_global_message(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "sum" => {
+            "`sum` is not defined in Oro — a builtin takes scalars and a collection method \
+             takes a collection: use `xs.sum()`"
+        }
+        "sorted" => {
+            "`sorted` is not defined in Oro — a builtin takes scalars and a collection \
+             method takes a collection: use `xs.sorted()`, with the same \
+             `key=`/`reverse=` keywords the builtin took"
+        }
+        "any" => {
+            "`any` is not defined in Oro — a builtin takes scalars and a collection method \
+             takes a collection: use `xs.any()`, or `xs.any(p)` with a predicate"
+        }
+        "all" => {
+            "`all` is not defined in Oro — a builtin takes scalars and a collection method \
+             takes a collection: use `xs.all()`, or `xs.all(p)` with a predicate"
+        }
+        "enumerate" => {
+            "`enumerate` is not defined in Oro — a builtin takes scalars and a collection \
+             method takes a collection: use `xs.enumerate()`, or `xs.enumerate(1)` \
+             to start elsewhere"
+        }
+        "zip" => {
+            "`zip` is not defined in Oro — a builtin takes scalars and a collection method \
+             takes a collection: use `a.zip(b)`, which takes any number of further \
+             sequences"
+        }
+        _ => return None,
+    })
+}
+
 /// A `str`/`bytes` method that used to exist and no longer does. Removals name
 /// their replacement — silently answering "no such attribute" would leave the
 /// reader to guess what happened to it.
@@ -718,6 +698,36 @@ pub fn cut_method_message(recv: &Value, name: &str) -> Option<&'static str> {
     if !matches!(recv, Value::Str(_) | Value::Bytes(_)) {
         return None;
     }
+    if let Some(msg) = cut_str_method_message(recv, name) {
+        return Some(msg);
+    }
+    // A collection-protocol name on a `str` or `bytes`. Neither type is in the
+    // protocol — `"abc".map(f)` has always been an AttributeError — but the
+    // `sorted`/`min`/`max`/`sum`/`any`/`all`/`enumerate`/`zip` builtins used to
+    // reach both types through the *iteration* protocol, so the habit is real
+    // and a bare "no such attribute" would leave the reader to invent the
+    // bridge. `len` is the one of the nine that stayed a builtin, so it gets
+    // its own line rather than being pointed at `to_list()`.
+    if name == "len" {
+        return Some(
+            "`len` is a builtin in Oro and not a method on `str`/`bytes` — write `len(s)`",
+        );
+    }
+    if is_seq_native(name) || crate::vm::is_seq_op(name) {
+        return Some(if matches!(recv, Value::Str(_)) {
+            "a `str` is not a collection in Oro — `s.to_list()` is the bridge into the \
+             collection protocol, so write `s.to_list().sorted()`"
+        } else {
+            "a `bytes` is not a collection in Oro — `b.to_list()` is the bridge into the \
+             collection protocol, so write `b.to_list().sorted()`"
+        });
+    }
+    None
+}
+
+/// The `str`/`bytes` names that were removed by name, each pointing at the one
+/// that replaced it.
+fn cut_str_method_message(recv: &Value, name: &str) -> Option<&'static str> {
     Some(match name {
         "lstrip" => "`lstrip` is not in Oro — use `strip(side=\"left\")`",
         "rstrip" => "`rstrip` is not in Oro — use `strip(side=\"right\")`",
@@ -1614,8 +1624,16 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
             }
         }
         "sum" => {
-            exactly(&args, 0, "sum")?;
-            bi_sum(vec![rebuild(Shape::List, items)?])
+            // The whole of what the `sum` builtin used to be, now that the
+            // builtin is cut: a fold with `+`, starting at 0, so an empty
+            // sequence sums to 0 and a list of strings is a TypeError rather
+            // than a concatenation.
+            at_most(&args, 1, "sum")?;
+            let mut acc = args.first().cloned().unwrap_or(Value::Int(0));
+            for v in items {
+                acc = crate::vm::add_values(&acc, &v)?;
+            }
+            Ok(acc)
         }
         "min" | "max" => {
             exactly(&args, 0, name)?;

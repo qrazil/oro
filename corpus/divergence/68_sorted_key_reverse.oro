@@ -1,0 +1,53 @@
+# `xs.sorted(key=…, reverse=…)` and `list.sort(key=…, reverse=…)`. `reverse`
+# must stay stable: equal keys keep their original relative order.
+#
+# DIVERGENCE IN SPELLING, NOT IN BEHAVIOUR. This was core/33_sorted_key_reverse
+# until the `sorted` builtin was cut — a builtin takes scalars and a collection
+# method takes a collection — and `xs.sorted(...)` is not Python, so CPython can
+# no longer run the file. The two keywords moved onto the method with it rather
+# than being replaced by a second chain step, because `xs.sorted().reversed()`
+# is *not* `xs.sorted(reverse=true)`: reversing a sorted sequence flips the ties
+# too, and the third and fourth lines below are the case that shows it.
+#
+# So the file carries a twin (68_sorted_key_reverse.twin.py) — this program in
+# CPython's spelling — and the .expected below is that twin's output:
+#
+#   python3 corpus/divergence/68_sorted_key_reverse.twin.py \
+#     | sed -E 's/\bTrue\b/true/g; s/\bFalse\b/false/g; s/\bNone\b/null/g' \
+#     | diff - corpus/divergence/68_sorted_key_reverse.expected
+#
+# An empty diff is the review, so the baseline is still CPython's own answer.
+#
+#   sorted(xs, key=f, reverse=true)  ->  xs.sorted(key=f, reverse=true)
+#
+# `list.sort` is unchanged and is still Python; it is here because the two share
+# one body, and a file that pins only half of a shared body pins nothing.
+def neg(x):
+    return -x
+
+def second(p):
+    return p[1]
+
+print([1, 3, 2].sorted(key=neg))
+print([1, 3, 2].sorted(reverse=true))
+print([1, 3, 2].sorted(key=neg, reverse=true))
+print(["bbb", "a", "cc"].sorted(key=len))
+rows = [("carol", 3), ("alice", 1), ("bob", 2)]
+print(rows.sorted(key=second))
+print(rows.sorted())
+print([].sorted(), [].sorted(key=neg))
+ties = [("a", 1), ("b", 1), ("c", 0)]
+print(ties.sorted(key=second))
+print(ties.sorted(key=second, reverse=true))
+a = [3, 1, 2]
+a.sort()
+print(a)
+b = [3, 1, 2]
+b.sort(reverse=true)
+print(b)
+c = ["bbb", "a", "cc"]
+c.sort(key=len)
+print(c)
+d = [("y", 2), ("x", 1)]
+d.sort(key=second, reverse=true)
+print(d)

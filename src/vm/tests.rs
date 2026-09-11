@@ -232,7 +232,7 @@ r = fib(12)
 fn varargs_and_kwargs_binding() {
     let src = "\
 def f(a, *rest, **opts):
-    return a + sum(rest) + opts.get(\"bonus\", 0)
+    return a + rest.sum() + opts.get(\"bonus\", 0)
 r = f(1, 2, 3, bonus=100)
 ";
     assert_eq!(int(&eval_last(src)), 106);
@@ -891,6 +891,90 @@ d = [1, 2, 3].find(x => x > 1)
 out = f"{a} {c} {d}"
 "#;
     assert_eq!(fstr(src), "1 a-b 2");
+}
+
+/// The builtin/collection-method line: six builtins are cut, `min`/`max` are
+/// narrowed to their variadic scalar form, and `len` is the one exception.
+#[test]
+fn the_six_duplicate_builtins_are_cut_naming_their_methods() {
+    for (name, call, want) in [
+        ("sum", "r = sum([1, 2])\n", "`sum` is not defined in Oro"),
+        ("sorted", "r = sorted([2, 1])\n", "`sorted` is not defined in Oro"),
+        ("any", "r = any([true])\n", "`any` is not defined in Oro"),
+        ("all", "r = all([true])\n", "`all` is not defined in Oro"),
+        ("enumerate", "r = enumerate([1])\n", "`enumerate` is not defined in Oro"),
+        ("zip", "r = zip([1], [2])\n", "`zip` is not defined in Oro"),
+    ] {
+        let e = run_err(call);
+        assert!(e.message.contains(want), "{name}: got {}", e.message);
+        // The replacement is named, which is the whole convention.
+        assert!(e.message.contains("collection method"), "{name}: got {}", e.message);
+    }
+}
+
+/// `min(a, b)` is the half that has no chain spelling, so it stays; `min(xs)`
+/// is the half that duplicates `xs.min()`, so it goes.
+#[test]
+fn min_and_max_keep_only_the_variadic_scalar_form() {
+    assert_eq!(int(&eval("r = min(3, 1)\n")), 1);
+    assert_eq!(int(&eval("r = max(3, 1)\n")), 3);
+    assert_eq!(int(&eval("r = min(5, 2, 9)\n")), 2);
+    for call in ["r = min([3, 1])\n", "r = max([3, 1])\n"] {
+        let e = run_err(call);
+        assert!(e.message.contains("two or more values"), "got: {}", e.message);
+        assert!(e.message.contains(".min()") || e.message.contains(".max()"),
+            "the replacement must be named: {}", e.message);
+    }
+    // A receiver of instances takes the VM's frame-driven path, which has to
+    // narrow the same way or the two arities disagree about what they accept.
+    let src = "class V:\n    def __init__(self, n):\n        self.n = n\n\n    def __lt__(self, o):\n        return self.n < o.n\n\nr = min([V(2), V(1)])\n";
+    let e = run_err(src);
+    assert!(e.message.contains("two or more values"), "got: {}", e.message);
+}
+
+/// `len` is the single exception, and both spellings still work.
+#[test]
+fn len_survives_on_both_sides_of_the_line() {
+    assert_eq!(int(&eval("r = len(\"abc\")\n")), 3);
+    assert_eq!(int(&eval("r = len(b\"abc\")\n")), 3);
+    assert_eq!(int(&eval("r = [1, 2].len()\n")), 2);
+    assert_eq!(int(&eval("r = len([1, 2])\n")), 2);
+    // On a `str` the method form is not the answer, and says which is.
+    let e = run_err("r = \"abc\".len()\n");
+    assert!(e.message.contains("write `len(s)`"), "got: {}", e.message);
+}
+
+/// The keywords moved with `sorted`, and they had to: `xs.sorted(reverse=true)`
+/// is a *stable* descending sort and `xs.sorted().reversed()` is not.
+#[test]
+fn sorted_keeps_key_and_reverse_on_the_method() {
+    assert_eq!(eval("r = [3, 1, 2].sorted(reverse=true)\n").repr(), "[3, 2, 1]");
+    assert_eq!(eval("r = (3, 1, 2).sorted(reverse=true)\n").repr(), "(3, 2, 1)");
+    let src = "def snd(p):\n    return p[1]\n\nties = [(\"a\", 2), (\"b\", 1), (\"c\", 2), (\"d\", 1)]\nr = ties.sorted(key=snd, reverse=true)\n";
+    assert_eq!(
+        eval_var(src, "r").repr(),
+        "[('a', 2), ('c', 2), ('b', 1), ('d', 1)]",
+        "reverse= must not disturb ties"
+    );
+    let flipped = "def snd(p):\n    return p[1]\n\nties = [(\"a\", 2), (\"b\", 1), (\"c\", 2), (\"d\", 1)]\nr = ties.sort_by(snd).reversed()\n";
+    assert_eq!(
+        eval_var(flipped, "r").repr(),
+        "[('c', 2), ('a', 2), ('d', 1), ('b', 1)]",
+        "and `.reversed()` does disturb them, which is why the keyword moved"
+    );
+}
+
+/// `str` and `bytes` are outside the collection protocol, and the cut makes
+/// that reachable from a call that used to work as a builtin.
+#[test]
+fn a_str_is_not_a_collection_and_the_message_names_the_bridge() {
+    let e = run_err("r = \"ba\".sorted()\n");
+    assert!(e.message.contains("not a collection in Oro"), "got: {}", e.message);
+    assert!(e.message.contains("to_list()"), "got: {}", e.message);
+    let e = run_err("r = b\"ba\".min()\n");
+    assert!(e.message.contains("not a collection in Oro"), "got: {}", e.message);
+    // And the bridge works.
+    assert_eq!(eval("r = \"ba\".to_list().sorted()\n").repr(), "['a', 'b']");
 }
 
 /// `str.join`/`bytes.join` are cut, and say so. Both halves were byte-for-byte

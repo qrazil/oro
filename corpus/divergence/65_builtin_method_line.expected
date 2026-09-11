@@ -1,0 +1,46 @@
+`sum` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `xs.sum()`
+`sorted` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `xs.sorted()`, with the same `key=`/`reverse=` keywords the builtin took
+`any` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `xs.any()`, or `xs.any(p)` with a predicate
+`all` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `xs.all()`, or `xs.all(p)` with a predicate
+`enumerate` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `xs.enumerate()`, or `xs.enumerate(1)` to start elsewhere
+`zip` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `a.zip(b)`, which takes any number of further sequences
+---
+1 3 0.5 b
+min() takes two or more values in Oro — a builtin takes scalars and a collection method takes a collection, so the whole-sequence form is `xs.min()`. `min(a, b)` is unchanged.
+max() takes two or more values in Oro — a builtin takes scalars and a collection method takes a collection, so the whole-sequence form is `xs.max()`. `max(a, b)` is unchanged.
+---
+3 3 2 1 2
+2
+7
+---
+[(1, 3, 5), (2, 4, 6)]
+[(1, 3), (2, 4)]
+[(1,), (2,)]
+[(1, 4, 6), (2, 5, 7)]
+[]
+[(1, 3, 5), (2, 4, 6)]
+[(0, 0, 0), (1, 1, 1)]
+1 3 5
+2 4 6
+[(0, 7), (1, 8)] [(1, 7), (2, 8)]
+enumerate() takes at most 1 argument(s) but 2 were given
+3 13 0
+[1, 2, 3] (1, 2, 3) ()
+[1, 2, 3]
+<class 'tuple'>
+[('a', 2), ('c', 2), ('b', 1), ('d', 1)]
+[('c', 2), ('a', 2), ('d', 1), ('b', 1)]
+sorted() takes 0 argument(s) but 1 were given
+---
+('a', 2) ('b', 1)
+[(0, ('b', 1)), (1, ('a', 2))]
+[(('b', 1), 10), (('a', 2), 20)]
+true true 2
+{'a': 2, 'b': 1} {} <class 'dict'>
+d.sum() -> unsupported operand type(s) for +: 'int' and 'tuple'
+3
+---
+a `str` is not a collection in Oro — `s.to_list()` is the bridge into the collection protocol, so write `s.to_list().sorted()`
+a `bytes` is not a collection in Oro — `b.to_list()` is the bridge into the collection protocol, so write `b.to_list().sorted()`
+`len` is a builtin in Oro and not a method on `str`/`bytes` — write `len(s)`
+['a', 'b'] 97 [(0, 'a'), (1, 'b')]

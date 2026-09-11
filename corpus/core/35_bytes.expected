@@ -19,7 +19,6 @@ b'abcd' b'ababab' b'ababab' b''
 true false true true
 true false true
 true false true true
-[b'', b'Apple', b'apple', b'pear', b'\xff']
 empty bytes are falsy
 a zero octet is still one octet
 <class 'bytes'> true false false
@@ -42,7 +41,7 @@ b'/a?b=1' 6
 b'HTTP/1.1' 8
 {b'alpha': 1, b'beta': 2, b'gamma': 3}
 1 true false
-3 [b'alpha', b'beta', b'gamma']
+3
 2 bytes key str key
 {b'a': 3, b'b': 2, b'c': 1}
 name=b'oro' len=3
@@ -50,4 +49,4 @@ b'x'
 b'\xc8' 1 200
 b'\x00\xc8\xff' 3 200
 1 2 false
-[0, 200, 255] 255
+255

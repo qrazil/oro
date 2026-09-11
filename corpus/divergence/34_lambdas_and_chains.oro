@@ -40,7 +40,7 @@ def nums(n):
         i = i + 1
 
 print(nums(10).filter(x => x % 3 == 0))
-print(sum(nums(100)))
+print(nums(100).sum())
 
 # a named function works as a callback too
 def triple(n):

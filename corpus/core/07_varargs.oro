@@ -8,7 +8,7 @@ def describe(name, *tags, **opts):
     out = name
     for t in tags:
         out = out + " " + t
-    keys = sorted(opts.keys())
+    keys = opts.keys()
     for k in keys:
         out = out + " " + k + "=" + f"{opts[k]}"
     return out

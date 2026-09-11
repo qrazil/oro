@@ -1,0 +1,58 @@
+# The lines that left corpus/core/ when the six builtins were cut.
+#
+# `sum`, `sorted`, `any`, `all`, `enumerate` and `zip` are collection methods
+# and not builtins any more — a builtin takes scalars, a collection method takes
+# a collection — and `min`/`max` keep only their variadic *scalar* form. None of
+# those spellings is Python, so a program using one cannot be run by `oracle.sh`
+# and cannot stay in core/.
+#
+# Each line here was one line of a core program that is otherwise untouched, so
+# the file is a collection of one-line relocations rather than a subject of its
+# own. It carries a twin (71_collection_methods.twin.py) written in CPython's
+# builtins, and the .expected below is that twin's output:
+#
+#   python3 corpus/divergence/71_collection_methods.twin.py \
+#     | diff - corpus/divergence/71_collection_methods.expected
+#
+# An empty diff is the review, so every answer is still CPython's.
+
+# --- from core/08_lists.oro -------------------------------------------------
+print([1, 2, 3].sum())
+xs = [99, 9, 6, 5, 4, 3, 2, 1, 1]
+print(xs.min(), xs.max())
+
+# --- from core/09_dicts.oro -------------------------------------------------
+d = {"a": 1, "b": 2, "c": 3}
+print(d.keys().sorted())
+print(d.values().sorted())
+counts = {"x": 3, "y": 1, "z": 1}
+print(counts.keys().sorted())
+
+# --- from core/15_textproc.oro ----------------------------------------------
+cities = ["dallas", "austin", "houston"]
+print(cities.sorted())
+
+# --- from core/35_bytes.oro -------------------------------------------------
+# The last line is the str/bytes case the cut costs a call: a `bytes` is not a
+# collection, so it has no `.sorted()`, and `.to_list()` is the bridge.
+print([b"pear", b"Apple", b"apple", b"\xff", b""].sorted())
+bd = {b"alpha": 1, b"beta": 2, b"gamma": 3}
+print(bd.keys().sorted())
+print(b"\x00\xc8\xff".to_list().sorted())
+
+# --- from core/47_generator_method.oro --------------------------------------
+# A generator drives the eager half of the protocol. The wider coverage is in
+# 58_generator_receiver.oro; this is the method-generator case specifically.
+class Counter:
+    def __init__(self, n):
+        self.n = n
+
+    def up(self):
+        i = 0
+        while i < self.n:
+            yield i
+            i = i + 1
+
+
+c = Counter(3)
+print(c.up().sum(), c.up().max(), c.up().sorted(reverse=true))

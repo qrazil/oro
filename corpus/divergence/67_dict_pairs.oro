@@ -65,10 +65,15 @@ except AttributeError as e:
     print(e)
 
 # --- everything that walks an iterable sees the same element ----------------
+# These were the `sorted`/`enumerate`/`min`/`max` *builtins* when this file was
+# written, and each is now the collection method of the same name: a builtin
+# takes scalars and a collection method takes a collection. The answers are
+# unchanged — the six builtins read the iterator, which is what made them
+# follow the pair shape in the first place.
 print(d.to_list())
-print(sorted(d))
-print(enumerate(d))
-print(min(d), max(d))
+print(d.sorted())
+print(d.enumerate())
+print(d.min(), d.max())
 print(d.map((k, v) => (k, v * 10)))
 print(d.filter((k, v) => v > 1))
 
