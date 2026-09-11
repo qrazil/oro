@@ -1871,7 +1871,7 @@ r = out
 fn a_buffered_channel_blocks_only_when_full() {
     let v = eval_var(
         "\
-ch = chan(2)
+ch = chan(cap=2)
 log = []
 def fill():
     for i in [1, 2, 3]:
@@ -2023,7 +2023,7 @@ fn a_generator_survives_a_channel() {
 def nums():
     yield 1
     yield 2
-ch = chan(1)
+ch = chan(cap=1)
 def consume():
     g = ch.recv()
     out = []
@@ -2181,15 +2181,20 @@ for x in g():
     assert!(run_err("yield_now(x=1)\n").message.contains("no keyword arguments"));
 }
 
-/// `chan(0)` is the default spelled out, not an error; a negative or
-/// non-integer capacity is.
+/// `chan(cap=0)` is the default spelled out, not an error; a negative or
+/// non-integer capacity is. The capacity is passed by name, so a positional
+/// one is refused with the spelling that works, and `cap=null` is not a
+/// second spelling of `chan()`.
 #[test]
 fn chan_capacity_is_checked() {
-    assert_eq!(eval("r = chan(0)\n").repr(), "<channel cap=0>");
+    assert_eq!(eval("r = chan(cap=0)\n").repr(), "<channel cap=0>");
     assert_eq!(eval("r = chan()\n").repr(), "<channel cap=0>");
-    assert_eq!(eval("r = chan(4)\n").repr(), "<channel cap=4>");
-    assert!(run_err("r = chan(-1)\n").message.contains("must not be negative"));
-    assert!(run_err("r = chan(\"x\")\n").message.contains("must be an int"));
+    assert_eq!(eval("r = chan(cap=4)\n").repr(), "<channel cap=4>");
+    assert!(run_err("r = chan(cap=-1)\n").message.contains("must not be negative"));
+    assert!(run_err("r = chan(cap=\"x\")\n").message.contains("must be an int"));
+    assert!(run_err("r = chan(4)\n").message.contains("chan(cap=4)"));
+    assert!(run_err("r = chan(cap=null)\n").message.contains("not null"));
+    assert!(run_err("r = chan(size=4)\n").message.contains("unexpected keyword argument 'size'"));
 }
 
 /// The concurrency surface's misuse diagnostics are ordinary typed exceptions,
@@ -2202,7 +2207,7 @@ fn the_concurrency_diagnostics_are_catchable_by_class() {
 out = []
 def f():
     return 0
-for thunk in [() => chan(-1), () => chan(\"x\"), () => spawn(len, []), () => chan().send()]:
+for thunk in [() => chan(cap=-1), () => chan(cap=\"x\"), () => spawn(len, []), () => chan().send()]:
     try:
         thunk()
         out.append(\"no raise\")

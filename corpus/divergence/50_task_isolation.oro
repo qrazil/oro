@@ -32,7 +32,7 @@ def numbers():
     yield 20
     yield 30
 
-pipe = chan(1)
+pipe = chan(cap=1)
 
 def consume():
     g = pipe.recv()

@@ -23,7 +23,7 @@ print("a task equals itself:", a == a, a == b)
 ch1 = chan()
 ch2 = chan()
 print("a channel equals itself:", ch1 == ch1, ch1 == ch2)
-print("chan(0) and chan(0) are two channels:", chan(0) == chan(0))
+print("chan(cap=0) and chan(cap=0) are two channels:", chan(cap=0) == chan(cap=0))
 
 # --- A stream is an identity, not a path -------------------------------------
 # CPython agrees (file objects hash by identity); it is here rather than in

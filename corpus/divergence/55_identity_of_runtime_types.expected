@@ -1,6 +1,6 @@
 a task equals itself: true false
 a channel equals itself: true false
-chan(0) and chan(0) are two channels: false
+chan(cap=0) and chan(cap=0) are two channels: false
 a stream equals itself: true false
 two readers of one path are two streams: false
 registry size: 5

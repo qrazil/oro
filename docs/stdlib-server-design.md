@@ -818,7 +818,7 @@ t = spawn(handle, conn)        # start a task, returns a Task handle
 t.join()                       # wait; returns the function's value
 
 ch = chan()                    # unbuffered: send blocks until a receiver takes it
-ch = chan(64)                  # buffered: send blocks only when full
+ch = chan(cap=64)              # buffered: send blocks only when full
 ch.send(v)
 v = ch.recv()
 ch.close()
@@ -855,7 +855,7 @@ builtin runs to completion without ever reaching a park point, so spawning one
 would be a slower way of calling it.
 
 **Both buffered and unbuffered channels, from one constructor.** `chan()` is a
-rendezvous, `chan(n)` has capacity `n`. This is one spelling with a parameter,
+rendezvous, `chan(cap=n)` has capacity `n`. This is one spelling with a parameter,
 not two functions, exactly as `json.stringify(value, indent=null)` covers both
 compact and pretty output with one name.
 
@@ -3020,7 +3020,7 @@ scheduler:
 
 Everything this document proposes to add to the frozen language:
 
-**Builtins:** `spawn(f, *args, **kwargs)`, `chan(n=0)`. `open(path, mode)` keeps its
+**Builtins:** `spawn(f, *args, **kwargs)`, `chan(cap=0)`. `open(path, mode)` keeps its
 three mode letters and returns a byte stream from all of them.
 
 **Types:** `bytes`. And, not user-constructible: `File`, `TcpStream`,

@@ -6,19 +6,19 @@
 # `docs/stdlib-server-design.md` §3, "The surface" and "A closed channel".
 
 # --- a buffered channel is a queue with a bound -------------------------------
-ch = chan(2)
+ch = chan(cap=2)
 ch.send(1)
 ch.send(2)
 print("two sends into a buffer of two did not block:", true)
 print("values come out in order:", [ch.recv(), ch.recv()] == [1, 2])
 
-# --- chan() and chan(0) are the same thing ------------------------------------
-# One spelling with a parameter, so `chan(0)` is an explicit synonym for the
-# default rather than an error (§3).
+# --- chan() and chan(cap=0) are the same thing --------------------------------
+# One spelling with a parameter, so `chan(cap=0)` is an explicit synonym for
+# the default rather than an error (§3).
 a = chan()
-b = chan(0)
-print("chan()  is", repr(a))
-print("chan(0) is", repr(b))
+b = chan(cap=0)
+print("chan()      is", repr(a))
+print("chan(cap=0) is", repr(b))
 
 # --- a round trip -------------------------------------------------------------
 req = chan()
@@ -68,7 +68,7 @@ print("the handshake:", log)
 # scheduler next reaches it, not the instant it is unblocked.
 
 # --- iterating a channel stops at close, it does not raise --------------------
-work = chan(3)
+work = chan(cap=3)
 work.send("x")
 work.send("y")
 work.close()
@@ -120,3 +120,19 @@ try:
     work.recv()
 except Exception as e:
     print("except Exception catches it:", type(e))
+
+# --- the capacity is passed by name --------------------------------------------
+# It has a default, so it is keyword-only: `chan(8)` would not say what the 8
+# is. A positional capacity is refused with the spelling that works, and
+# `cap=null` is not a third spelling of `chan()`.
+for thunk in [() => chan(8), () => chan(cap=null), () => chan(size=8)]:
+    try:
+        thunk()
+        print("UNREACHABLE")
+    except TypeError as e:
+        print("TypeError:", e)
+try:
+    chan(cap=-1)
+    print("UNREACHABLE")
+except ValueError as e:
+    print("ValueError:", e)

@@ -361,7 +361,7 @@ Implemented and working today:
 - **Green threads: `spawn`, `chan` and `yield_now`, seven names in total.**
   `spawn(f, *args, **kwargs)` starts `f(*args, **kwargs)` as a task and returns a handle;
   `t.join()` waits and returns the function's value. `chan()` is a rendezvous
-  and `chan(n)` a buffer of `n`, with `send`, `recv`, `close`, and
+  and `chan(cap=n)` a buffer of `n`, with `send`, `recv`, `close`, and
   `for msg in ch` iterating until the channel is closed and drained.
   `yield_now()` hands the CPU to the next ready task and answers `null` — the
   one way to yield without touching a channel, and a no-op rather than a
