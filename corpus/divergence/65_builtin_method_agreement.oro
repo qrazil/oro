@@ -1,0 +1,66 @@
+# DIVERGENCE: nine builtins duplicate nine collection methods, and the method
+# half (`.zip`, `.sorted`, `.enumerate`) is Oro's collection protocol, which
+# CPython cannot run at all. `zip` and `enumerate` are eager here besides, so
+# even the builtin half prints something CPython does not. Reviewed by hand.
+#
+# What this file pins is not either spelling's behaviour but the property that
+# the two *agree*. Two of the nine pairs used to answer different things for the
+# same word, which is the worst failure a duplicate surface can have:
+#
+#   [1, 2].zip([3, 4], [5, 6])   answered a two-way zip, discarding [5, 6]
+#   sorted((3, 1, 2))            answered a list where (3, 1, 2).sorted() answered a tuple
+#
+# Every line below prints the builtin form and then the method form. They must
+# match. Where they cannot — a dict, whose elements are its keys to a builtin
+# and its (key, value) pairs to the collection protocol — the pair is left out;
+# that divergence is one language-level decision, not a bug in these two names.
+
+# --- zip: the method takes N sequences, exactly as the builtin does ----------
+print(zip([1, 2], [3, 4], [5, 6]))
+print([1, 2].zip([3, 4], [5, 6]))
+print(zip([1, 2], [3, 4]))
+print([1, 2].zip([3, 4]))
+print(zip([1, 2]))
+print([1, 2].zip())
+print(zip([1, 2, 3], [4, 5], [6, 7, 8, 9]))
+print([1, 2, 3].zip([4, 5], [6, 7, 8, 9]))
+print(zip([], [1], [2]))
+print([].zip([1], [2]))
+print(zip((1, 2), (3, 4), (5, 6)))
+print((1, 2).zip((3, 4), (5, 6)))
+print(zip(range(3), range(2), range(9)))
+print(range(3).zip(range(2), range(9)))
+for a, b, c in [1, 2].zip([3, 4], [5, 6]):
+    print(a, b, c)
+
+# --- sorted: both spellings preserve the shape they were handed -------------
+print(sorted([3, 1, 2]))
+print([3, 1, 2].sorted())
+print(sorted((3, 1, 2)))
+print((3, 1, 2).sorted())
+print(sorted(()))
+print(().sorted())
+print(sorted(range(3, 0, -1)))
+print(range(3, 0, -1).sorted())
+print(type(sorted((3, 1, 2))), type((3, 1, 2).sorted()))
+
+# The frame-driven spellings — `key=`, `reverse=`, and `sorted` handed over as a
+# value — go through the VM rather than native code, and answer the same shape.
+print(sorted((3, 1, 2), reverse=true))
+print(sorted((3, 1, 2), key=x => -x))
+print(sorted((3, 1, 2), key=x => -x, reverse=true))
+print([(3, 1, 2), [3, 1, 2]].map(sorted))
+
+# --- enumerate: the start is the only argument, and an extra one is refused --
+print(enumerate([7, 8]))
+print([7, 8].enumerate())
+print(enumerate([7, 8], 1))
+print([7, 8].enumerate(1))
+try:
+    print([7, 8].enumerate(1, 9))
+except TypeError as e:
+    print(e)
+try:
+    print(enumerate([7, 8], 1, 9))
+except TypeError as e:
+    print(e)

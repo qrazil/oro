@@ -414,8 +414,12 @@ struct SortJob {
     keyfn: Value,
     reverse: bool,
     /// `Some(list)` for `list.sort()`, which sorts in place and yields None;
-    /// `None` for `sorted()`, which pushes a new list.
+    /// `None` for `sorted()`, which pushes a new collection of `shape`.
     in_place: Option<Rc<OroList>>,
+    /// The collection `sorted()` rebuilds. Sorting reorders, and reordering
+    /// preserves the receiver's type, so `sorted(t, key=f)` is a tuple for the
+    /// same reason `t.sorted()` is. Ignored when `in_place` is `Some`.
+    shape: SeqShape,
 }
 
 /// Rendering a container to a string, where some elements are instances whose
@@ -2311,7 +2315,7 @@ impl Vm {
                 let (keyfn, reverse) = self.sort_kwargs("sort", kwargs)?;
                 let items = l.borrow().clone();
                 return self
-                    .begin_sort(items, keyfn, reverse, Some(l.clone()))
+                    .begin_sort(items, keyfn, reverse, Some(l.clone()), SeqShape::List)
                     .map(|()| Step::Next);
             }
         }
@@ -3247,8 +3251,9 @@ impl Vm {
             _ => return Err(self.err("sorted() takes exactly 1 positional argument")),
         };
         let (keyfn, reverse) = self.sort_kwargs("sorted", kwargs)?;
+        let shape = sorted_shape(&iterable);
         let items = self.wrap(crate::vm::iterate_to_vec(&iterable))?;
-        self.begin_sort(items, keyfn, reverse, None).map(|()| Step::Next)
+        self.begin_sort(items, keyfn, reverse, None, shape).map(|()| Step::Next)
     }
 
     /// `min(...)` / `max(...)`. With one argument it ranges over an iterable,
@@ -3317,13 +3322,14 @@ impl Vm {
         keyfn: Option<Value>,
         reverse: bool,
         in_place: Option<Rc<OroList>>,
+        shape: SeqShape,
     ) -> Result<(), VmError> {
         let keyfn = match keyfn {
             Some(f) => f,
             None => {
                 // No key: the elements are their own keys.
                 let keys = items.clone();
-                return self.begin_order(sort_kind(in_place), items, keys, reverse);
+                return self.begin_order(sort_kind(in_place, shape), items, keys, reverse);
             }
         };
         let n = items.len();
@@ -3334,6 +3340,7 @@ impl Vm {
             keyfn,
             reverse,
             in_place,
+            shape,
         });
         self.drive_sort()
     }
@@ -3347,7 +3354,7 @@ impl Vm {
                     // The keys are user values and may be instances, so the
                     // sort itself can need frames too — `begin_order` decides.
                     return self.begin_order(
-                        sort_kind(job.in_place),
+                        sort_kind(job.in_place, job.shape),
                         job.items,
                         job.keys,
                         job.reverse,
@@ -3986,13 +3993,17 @@ impl Vm {
         if !matches!(name, "sorted" | "min" | "max") || !ord_needs_vm(&args) {
             return Ok(Some(args));
         }
+        let shape = match args.as_slice() {
+            [it] => sorted_shape(it),
+            _ => SeqShape::List,
+        };
         let items = match args.as_slice() {
             [it] => self.wrap(iterate_to_vec(it))?,
             _ => args,
         };
         let keys = items.clone();
         let kind = match name {
-            "sorted" => OrdKind::Sort(SeqShape::List),
+            "sorted" => OrdKind::Sort(shape),
             "min" => OrdKind::Extreme { want_min: true, who: "min" },
             _ => OrdKind::Extreme { want_min: false, who: "max" },
         };
@@ -5933,11 +5944,24 @@ fn ord_defers(v: &Value) -> bool {
     go(v, 0)
 }
 
-/// `sorted()` builds a new list; `list.sort()` writes back where it was.
-fn sort_kind(in_place: Option<Rc<OroList>>) -> OrdKind {
+/// `sorted()` builds a new collection of the argument's shape; `list.sort()`
+/// writes back where it was.
+fn sort_kind(in_place: Option<Rc<OroList>>, shape: SeqShape) -> OrdKind {
     match in_place {
         Some(l) => OrdKind::SortInPlace(l),
-        None => OrdKind::Sort(SeqShape::List),
+        None => OrdKind::Sort(shape),
+    }
+}
+
+/// The shape `sorted(x)` rebuilds, for the VM-driven spellings (`key=`,
+/// `reverse=`, a user `__lt__`). One rule, stated once, in
+/// [`crate::builtins::sorted_keeps_tuple`], so the native and frame-driven
+/// paths cannot answer different types for the same call.
+fn sorted_shape(v: &Value) -> SeqShape {
+    if crate::builtins::sorted_keeps_tuple(v) {
+        SeqShape::Tuple
+    } else {
+        SeqShape::List
     }
 }
 

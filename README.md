@@ -226,7 +226,12 @@ Implemented and working today:
   `abs`, `min`, `max`, `sum`, `round`, `sorted` (with `key=`/`reverse=`, as has
   `list.sort`), `any`, `all`, `enumerate`, `zip`, `isinstance`, `open`.
   `enumerate` and `zip` return lists rather than lazy iterators — the same eager
-  choice `dict.keys()` already makes. Type names (`str`, `int`, `list`, …) are
+  choice `dict.keys()` already makes. Nine of them have a collection-method twin
+  (`len sum min max sorted any all enumerate zip`), and where both spellings
+  exist they answer the same thing: `zip(a, b, c)` is `a.zip(b, c)` and
+  `sorted(x)` keeps `x`'s shape exactly as `x.sorted()` does, so
+  `sorted((3, 1, 2))` is `(1, 2, 3)` and not a list. See
+  `corpus/divergence/65_builtin_method_agreement.oro`. Type names (`str`, `int`, `list`, …) are
   deliberately *not* callable; see the `to_` casts below.
 - **Methods:** the `str`/`bytes` surface — sixteen names, the same sixteen on
   both types (`bytes` adds `hex` and `scan`) — plus the `list`/`dict` methods,
@@ -261,8 +266,10 @@ Implemented and working today:
   Chains replaced comprehensions; this is what lets them replace *loops* too.
 
   *Without a callback:* `sum` `min` `max` `len` `first` `last` `sorted`
-  `reversed` `unique` `take(n)` `drop(n)` `chunk(n)` `flatten` `zip(other)`
-  `enumerate` `join(sep)`.
+  `reversed` `unique` `take(n)` `drop(n)` `chunk(n)` `flatten`
+  `zip(other, ...)` `enumerate(start=0)` `join(sep)`. `zip` takes any number of
+  further sequences and truncates to the shortest, so `a.zip(b, c)` is the
+  builtin `zip(a, b, c)` and not a two-way zip with `c` thrown away.
 
   *With one:* `map` `filter` `flat_map` `sort_by` `group_by` `partition` `find`
   `any` `all` `count` `min_by` `max_by` `unique_by` `take_while` `drop_while`
@@ -271,7 +278,10 @@ Implemented and working today:
 
   Two rules govern the whole set. **Operations that select or reorder preserve
   the receiver's type** (a tuple stays a tuple, a dict stays a dict); operations
-  that reshape the data return a list. And **a dict's callback takes two
+  that reshape the data return a list. `sorted` reorders, so the rule reaches
+  the builtin too: `sorted(t)` is a tuple. It is only a list where there is no
+  other shape to keep — a range, a generator, a `str`, or a dict, which a
+  builtin walks as its keys. And **a dict's callback takes two
   arguments**, key and value, so `d.filter((k, v) => v > 1)` reads directly.
 
   ```python

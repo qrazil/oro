@@ -331,9 +331,28 @@ fn bi_sorted(args: Vec<Value>) -> VResult<Value> {
         [it] => it,
         _ => return Err("sorted() takes exactly 1 argument".to_string()),
     };
+    let tuple = sorted_keeps_tuple(iterable);
     let mut items = crate::vm::iterate_to_vec(iterable)?;
     sort_values(&mut items)?;
-    Ok(Value::List(OroList::new(items)))
+    rebuild(if tuple { Shape::Tuple } else { Shape::List }, items)
+}
+
+/// Whether `sorted(x)` — and `sorted(x, key=…)`, which the VM drives — answers
+/// a tuple.
+///
+/// Sorting *reorders*, and the collection protocol's stated rule is that an
+/// operation which selects or reorders preserves the receiver's type. `.sorted()`
+/// has always obeyed it; the builtin hardcoded a list, so `sorted((3, 1, 2))`
+/// and `(3, 1, 2).sorted()` answered different types for the same word. The
+/// method is the spelling that survives the builtin/method line (a builtin takes
+/// scalars, a collection method takes a collection), so the builtin moves.
+///
+/// Only a tuple has another shape to keep. A list is already a list; a range,
+/// a generator, a str and a bytes have no literal to rebuild; and a dict is
+/// walked by `iterate_to_vec` as its *keys*, so what is being sorted here is a
+/// sequence of keys and a list is what it is.
+pub fn sorted_keeps_tuple(v: &Value) -> bool {
+    matches!(v, Value::Tuple(_))
 }
 
 /// The error a native ordering answers with when it meets an operand whose
@@ -525,20 +544,28 @@ fn bi_enumerate(args: Vec<Value>) -> VResult<Value> {
 
 /// `zip(a, b, ...)`, truncating to the shortest input. Eager, like `enumerate`.
 fn bi_zip(args: Vec<Value>) -> VResult<Value> {
-    if args.is_empty() {
-        return Ok(Value::List(OroList::new(Vec::new())));
-    }
     let mut cols = Vec::with_capacity(args.len());
     for a in &args {
         cols.push(crate::vm::iterate_to_vec(a)?);
     }
+    Ok(zip_cols(cols))
+}
+
+/// The one implementation of zip, shared by the builtin and `xs.zip(...)`.
+///
+/// It lives here, and both spellings route through it, because the two used to
+/// have a body each: the method's read `args.first()` and dropped every
+/// sequence after it, so `[1, 2].zip([3, 4], [5, 6])` answered a two-way zip
+/// with no error while `zip([1, 2], [3, 4], [5, 6])` answered the three-way one.
+/// One operation with two bodies is how that happens; one body is how it stops.
+fn zip_cols(cols: Vec<Vec<Value>>) -> Value {
     let n = cols.iter().map(|c| c.len()).min().unwrap_or(0);
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         let row: Vec<Value> = cols.iter().map(|c| c[i].clone()).collect();
         out.push(Value::Tuple(OroTuple::new(row)));
     }
-    Ok(Value::List(OroList::new(out)))
+    Value::List(OroList::new(out))
 }
 
 fn bi_any(args: Vec<Value>) -> VResult<Value> {
@@ -1664,17 +1691,20 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
             Ok(Value::List(OroList::new(out)))
         }
         "zip" => {
-            let other = crate::vm::iterate_to_vec(
-                args.first().ok_or("zip() missing its second sequence")?,
-            )?;
-            let out: Vec<Value> = items
-                .iter()
-                .zip(other.iter())
-                .map(|(a, b)| Value::Tuple(OroTuple::new(vec![a.clone(), b.clone()])))
-                .collect();
-            Ok(Value::List(OroList::new(out)))
+            // `a.zip(b, c)` is `zip(a, b, c)` — every sequence, truncated to
+            // the shortest — and not `zip(a, b)` with `c` thrown away.
+            let mut cols = Vec::with_capacity(args.len() + 1);
+            cols.push(items);
+            for a in &args {
+                cols.push(crate::vm::iterate_to_vec(a)?);
+            }
+            Ok(zip_cols(cols))
         }
         "enumerate" => {
+            // `enumerate` takes a start and nothing else. Without this an
+            // `xs.enumerate(1, 9)` answered confidently, having read neither
+            // the 9 nor the reader's mind.
+            at_most(&args, 1, "enumerate")?;
             let start = opt_int_arg(&args, 0, "enumerate", 0)?;
             let out: Vec<Value> = items
                 .into_iter()

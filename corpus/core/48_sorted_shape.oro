@@ -1,0 +1,33 @@
+# `sorted()` answers a list for every argument that has no other shape to keep:
+# a list is already one, a str, a range and a generator have no literal to
+# rebuild, and a dict is walked as its keys, which is a sequence. All of that is
+# CPython's answer too, so the oracle pins it.
+#
+# The one argument Oro treats differently is a tuple — `sorted((3, 1, 2))` is
+# `(1, 2, 3)` here, because sorting reorders and reordering preserves the
+# receiver's type. That case cannot live in this file; it is in
+# corpus/divergence/65_builtin_method_agreement.oro, together with the method
+# spelling it now agrees with.
+
+print(sorted([3, 1, 2]))
+print(sorted([]))
+print(sorted("cab"))
+print(sorted(range(3, 0, -1)))
+print(sorted({"b": 1, "a": 2}))
+print(sorted({}))
+print(sorted([3, 1, 2], reverse=true))
+
+
+def neg(x):
+    return -x
+
+
+print(sorted([3, 1, 2], key=neg))
+
+
+def gen():
+    yield 3
+    yield 1
+
+
+print(sorted(gen()))

@@ -31,7 +31,7 @@ Everything below was checked by running it, not by reading the parser.
 | # | Candidate | Verdict | Confidence |
 |---|---|---|---|
 | 1 | `sep.join(xs)` alongside `xs.join(sep)` | **cut `str.join`/`bytes.join`** | high |
-| 2 | Nine builtins that duplicate collection methods | **cut six, narrow two, keep `len`** | high |
+| 2 | Nine builtins that duplicate collection methods | **cut six, narrow two, keep `len`** — the two that *disagreed* are fixed | high |
 | 3 | Six spellings of "sort this" | **cut `sorted()`, `list.sort`, `list.reverse`** | high |
 | 4 | `type(x) == "<class 'bytes'>"` alongside `isinstance` | **cut the string form; close the gap that forces it** | high |
 | 5 | Five exception classes nothing raises or catches | **cut `LookupError`, `ArithmeticError`, `NotImplementedError`, `StopIteration`** | high |
@@ -157,28 +157,57 @@ Usage across the tree is split down the middle and settles nothing:
 | `enumerate` | 3 | 2 |
 | `zip` | 2 | 2 |
 
-Two of the pairs do not merely duplicate — they **disagree**, which is worse:
+Two of the pairs did not merely duplicate — they **disagreed**, which is worse.
+Both are now **fixed**; this section records what they were and which way each
+went, because the *direction* is the part that binds the rest of the cut.
 
 ```python
 zip([1, 2], [3, 4], [5, 6])     # [(1, 3, 5), (2, 4, 6)]
-[1, 2].zip([3, 4], [5, 6])      # [(1, 3), (2, 4)]   — third argument silently dropped
+[1, 2].zip([3, 4], [5, 6])      # was [(1, 3), (2, 4)] — third argument silently dropped
 ```
 
-`seq_native_method`'s `zip` arm reads `args.first()` and ignores the rest
-(`src/builtins/mod.rs:1666`). That is a bug on its own, and it is the kind of bug
-that only exists because there are two implementations of one operation.
+`seq_native_method`'s `zip` arm read `args.first()` and ignored the rest. **The
+method is now variadic**, and both spellings run one body (`zip_cols`), so
+`a.zip(b, c)` is `zip(a, b, c)` at every arity including `a.zip()`. The method
+was the side that moved because the method is the side that survives the rule
+below: freezing a one-sequence `.zip` would have made the builtin uncuttable.
 
 ```python
-sorted((3, 1, 2))       # [1, 2, 3]  — always a list
+sorted((3, 1, 2))       # was [1, 2, 3] — always a list; now (1, 2, 3)
 (3, 1, 2).sorted()      # (1, 2, 3)  — type-preserving
-sorted({"b": 1})        # ['b']      — the keys
-{"b": 1}.sorted()       # {'b': 1}   — the dict, sorted
 ```
 
-Here the divergence is deliberate on the chain's side (type preservation is a
-stated rule of the protocol) and accidental on the builtin's. But a reader
-looking at `sorted(d)` and `d.sorted()` has no way to predict that one answers a
-list of keys and the other a dict.
+Here the divergence was deliberate on the chain's side — type preservation is a
+stated rule of the protocol, and `sorted` sits in the same arm as `reversed`,
+`unique`, `take` and `drop`, all of which rebuild the receiver's shape — and
+accidental on the builtin's, which simply hardcoded `Value::List`. **The builtin
+now preserves the shape too**, on all four of its paths (native, `key=`,
+`reverse=`, and `sorted` passed as a value). The CPython-oracle argument for
+always answering a list is real but loses: the README already promises
+type preservation for reordering, `sorted` is a reordering, and picking the list
+would have meant changing `.sorted()` now and changing it back when the builtin
+goes. Nothing in the tree passed a tuple to `sorted()`, so the change cost no
+churn; `corpus/core/48_sorted_shape.oro` pins the cases that stay CPython's.
+
+**What is left, and it is not these two.** A builtin walks a dict as its *keys*
+(the iteration protocol) and a collection method walks it as its `(key, value)`
+*pairs* (the collection protocol):
+
+```python
+sorted({"b": 1})        # ['b']      — the keys
+{"b": 1}.sorted()       # {'b': 1}   — the dict, sorted
+min({"b": 1, "a": 2})   # 'a'        vs  ('a', 2)
+enumerate({"b": 1})     # [(0, 'b')] vs  [(0, ('b', 1))]
+```
+
+That is **one** divergence, not six: it hits `sorted`, `min`, `max`, `sum`,
+`enumerate` and `zip` identically, and it is the only case in which any of the
+nine pairs still answer different things. It is also not a bug in those six
+names — it is a language-level question ("what is a dict's element?") already
+answered twice, deliberately, in two protocols, and changing the builtin half
+would put `enumerate(d)` at odds with `for x in d`. The cut below dissolves it
+for free: when the collection-taking builtins go, only the method answer
+remains. So neither answer should be entrenched first.
 
 ### The rule to draw
 
@@ -191,11 +220,11 @@ Applied:
 
 - **`any`, `all` — cut the builtins.** Usage is 1 and 0 against 8 and 3. There
   is no capability on the builtin side. This is free.
-- **`enumerate`, `zip` — cut the builtins**, after closing two gaps. The chain's
-  `enumerate` already takes a start (`opt_int_arg(&args, 0, "enumerate", 0)`), so
-  `xs.enumerate(1)` covers `enumerate(xs, 1)` today. `zip` needs to become
-  variadic — `a.zip(b, c)` — which it must anyway, because silently dropping an
-  argument is not a shape to freeze.
+- **`enumerate`, `zip` — cut the builtins.** Both gaps are closed. The chain's
+  `enumerate` already took a start (`opt_int_arg(&args, 0, "enumerate", 0)`), so
+  `xs.enumerate(1)` covers `enumerate(xs, 1)`; it now also *refuses* a second
+  argument instead of ignoring it, which `enumerate(xs, 1, 9)` always did.
+  `zip` is variadic, so `a.zip(b, c)` covers `zip(a, b, c)`.
 - **`sum` — cut the builtin.** The only builtin-only case is `sum(xs, start)`,
   used nowhere in the tree; give `.sum(start)` the argument, or let
   `.reduce(start, (a, b) => a + b)` have it.
@@ -212,7 +241,8 @@ Applied:
   What goes is the *single-iterable* form: `min(xs)` becomes `xs.min()`, and
   `min` becomes a two-or-more-argument builtin with one meaning instead of two.
 - **`sorted` — cut the builtin**, and see §3, which is a bigger mess than this
-  one.
+  one. Until then the builtin means what the method means: it preserves the
+  argument's shape.
 - **`len` — keep both, as the one named exception.** It is the only one of the
   nine that (a) works on `str` and `bytes`, which are deliberately outside the
   collection protocol, and (b) is the dispatch point for the `__len__` dunder. A
@@ -234,7 +264,7 @@ the nine builtins except `min` (which stays), `len`, and `sorted` (§3).
 ## 3. Sorting is spelled six ways
 
 ```python
-sorted(xs)                        # a new list, always a list
+sorted(xs)                        # a new collection of xs's type
 sorted(xs, key=f)                 # ditto, keyed
 sorted(xs, key=f, reverse=true)   # ditto, keyed and reversed
 xs.sorted()                       # a new collection of the receiver's type
@@ -978,8 +1008,10 @@ shape. Consistent.
 1. **Cut `str.join`/`bytes.join`** (§1). One name, one file of corpus churn, and
    it makes a sentence the README already prints become true.
 2. **Draw the builtin/method line and cut the six builtins it removes** (§2, §3).
-   This is the largest ambiguity surface in the language, it is currently split
-   50/50 in usage, and two of the pairs silently disagree.
+   This is the largest ambiguity surface in the language and it is currently
+   split 50/50 in usage. Two of the pairs silently disagreed; those two are
+   fixed (§2), which removes the urgency but not the case — nine names still
+   mean the same nine things.
 3. **Rewrite the 67 manual-counter loops as `for … in range(…)` and write the
    loop rule down** (§7b). Nothing is cut, the code gets shorter and 35% faster,
    and the language stops having a dominant idiom that nobody chose.
