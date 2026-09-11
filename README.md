@@ -212,7 +212,7 @@ Implemented and working today:
   stdlib module reaches into Rust for more than a constructor — parsing JSON is
   a per-byte loop, and per-byte loops are Rust's half of the boundary); and user
   modules loaded from the script's directory (run once, cached).
-- **Byte streams:** `open(path, mode)` (`r`/`w`/`a`, and every one of them
+- **Byte streams:** `open(path, mode="r")` (`r`/`w`/`a`, and every one of them
   **bytes**) returning a stream with `read(n)`/`write(b)`, plus
   `read_until(delim, limit)` and `close()`; `io.read`, `io.copy` and
   `io.buffer` in `std/io.oro`; `sys.stdout`/`stderr`/`stdin` as real streams on
@@ -259,13 +259,13 @@ Implemented and working today:
   semantics unchanged. `split(sep=null, maxsplit=-1, side="left")` takes the
   same `side`, in two values rather than three, because that is where
   `maxsplit` counts its splits from — which is why there is no `rsplit`.
-  `find(sub, start, end, reverse=false)` takes `reverse=true` for the last
+  `find(sub, start=, end=, reverse=false)` takes `reverse=true` for the last
   occurrence, spelled the way `sorted(reverse=…)` already is, which is why
-  there is no `rfind`. `count(sub, start, end)` searches the same window `find`
+  there is no `rfind`. `count(sub, start=, end=)` searches the same window `find`
   does, by the same rules — "how many" and "where" are asked over the same
   region of the same string, or they are two surfaces pretending to be one. `rm_prefix`/`rm_suffix` remove
   a *literal* affix and exist precisely because `strip(chars)` gets mistaken
-  for one: `"ping.png".strip(".png", side="right")` is `"pi"`, and
+  for one: `"ping.png".strip(chars=".png", side="right")` is `"pi"`, and
   `"ping.png".rm_suffix(".png")` is what was meant. The four `is_*` predicates
   are whole-sequence and answer `false` for an empty sequence, as CPython's do.
 - **The collection protocol**, on lists, tuples, dicts, ranges and generators.
@@ -521,7 +521,7 @@ Each of these is omitted on purpose. The reason matters more than the list.
   `rsplit` is a different *answer* from `split`, not a different need
   (`"a=b=c"` split once from the right is `["a=b", "c"]`, from the left
   `["a", "b=c"]`) — so the name went and the answer stayed, as
-  `split(sep, maxsplit, side="right")`. That was not the first attempt. The
+  `split(sep=…, maxsplit=…, side="right")`. That was not the first attempt. The
   first was to point at `find(sep, reverse=true)`, on the theory that the case
   wanting a right split is really "split off the last field"; it is, and the
   replacement was still wrong, because `find` hands back an *index* and leaves
@@ -615,7 +615,7 @@ Each of these is omitted on purpose. The reason matters more than the list.
 
 - **Type names are not callable.** A type name *is* the type — it is what
   `type(x)` answers with — so there is nothing behind it to call. Conversion is
-  a method on the value: `xs.to_list()`, `"42".to_int()`, `"ff".to_int(16)`,
+  a method on the value: `xs.to_list()`, `"42".to_int()`, `"ff".to_int(base=16)`,
   `x.to_str()`, `s.to_float()`, `v.to_bool()`, `pairs.to_dict()`,
   `s.to_bytes()`. Construction is a literal: `[]`, `{}`, `""`, `b""`, `0`. This
   is one spelling per thing, it chains in reading order, and it removes a whole
@@ -804,7 +804,7 @@ differently — is the zoo every scripting language ends up with.
 Four consequences, each of which will eventually surprise someone, so they are
 stated rather than discovered:
 
-- **`open(path, mode)` returns bytes, in all three modes, and there is no
+- **`open(path, mode="r")` returns bytes, in all three modes, and there is no
   `"rb"`.** There is no text mode, no `encoding=`, no text wrapper and no line
   iterator. With text mode gone the `b` contrasts with nothing — a letter
   meaning "not the other kind" in a language that has no other kind — so it is
@@ -812,9 +812,9 @@ stated rather than discovered:
   of two things that already exist:
 
   ```python
-  f = open(path, "r")
+  f = open(path)
   s = io.read(f).to_str()                              # a whole file, as text
-  lines = io.read(f).to_str().strip("\n", side="right").split("\n")  # …its lines
+  lines = io.read(f).to_str().strip(chars="\n", side="right").split(sep="\n")  # …its lines
   ```
 
 - **`read(n)` may return fewer than `n` bytes without being at EOF**, because
@@ -1023,7 +1023,7 @@ measurement, and the reason the same argument does not move `http`.
   `path`.
 - **`os.path`** — `exists`, `isfile`, `isdir`, `join`, `basename`, `dirname`,
   `splitext`.
-- **`open(path, mode)`** — `r`/`w`/`a`, all three of them **bytes**; there is
+- **`open(path, mode="r")`** — `r`/`w`/`a`, all three of them **bytes**; there is
   no `"rb"` and no text mode (see [The io protocol](#the-io-protocol)). The
   stream has `read(n)`, `write(b)`, `read_until(delim, limit)` and `close()`,
   and no `flush()`. It closes when its last reference drops (see the
@@ -1287,9 +1287,9 @@ different.
 
 | 0.1 | 0.2 | Why |
 |---|---|---|
-| `open(p, "r").read()` | `io.read(open(p, "r"))` | `open` returns bytes in every mode; a whole-stream read is a free function |
-| `open(p, "rb")` | `open(p, "r")` | With text mode gone, the `b` contrasts with nothing |
-| `f.readline()` / `f.readlines()` / `for line in f` | `io.read(f).to_str().strip("\n", side="right").split("\n")` | There is no text stream type and no line iterator |
+| `open(p, "r").read()` | `io.read(open(p))` | `open` returns bytes in every mode; a whole-stream read is a free function |
+| `open(p, "rb")` | `open(p)` | With text mode gone, the `b` contrasts with nothing |
+| `f.readline()` / `f.readlines()` / `for line in f` | `io.read(f).to_str().strip(chars="\n", side="right").split(sep="\n")` | There is no text stream type and no line iterator |
 | `f.write("text")` | `f.write("text".to_bytes())` | Streams take bytes, in both directions, everywhere |
 | `f.flush()` | *(nothing)* | Writers are unbuffered, so there is nothing pending |
 | `sys.stdout` as a name | `sys.stdout.write(b"…")` | It is a real stream on fd 1 now |
@@ -1297,7 +1297,7 @@ different.
 | `subprocess.run(a, capture_output=True, text=True)` | `proc.run(a)` | Capture is always on, and the output streams live as well |
 | `r.stdout` after a failed command | `proc.run(a, check=false)` first | A nonzero exit now raises `CommandError` |
 | `str(x)`, `int(s)`, `float(s)`, `bool(x)` | `x.to_str()`, `s.to_int()`, `s.to_float()`, `x.to_bool()` | Conversion is a method; it chains, and has no confusable empty form |
-| `int(s, 16)` | `s.to_int(16)` | as above |
+| `int(s, 16)` | `s.to_int(base=16)` | as above |
 | `list(xs)`, `dict(pairs)` | `xs.to_list()`, `pairs.to_dict()` | as above |
 | `list()`, `dict()`, `str()`, `int()` | `[]`, `{}`, `""`, `0` | Literals build; type names are not callable |
 | `isinstance(x, str)` | `type(x) == str` | A type name *is* the type, so the comparison is the test; there is no second spelling |
@@ -1306,10 +1306,10 @@ different.
 | `lambda x: x * 2` | `x => x * 2` | Shorter, and the point of a lambda is brevity |
 | `x is y` / `x is not y` | `x == y` / `x != y` | `==` already compares reference types by identity; `is` differed from CPython on interned strings and could not be fixed |
 | `True` / `False` / `None` | `true` / `false` / `null` | Capitalisation was Python's class-naming convention leaking into syntax |
-| `s.lstrip(…)` / `s.rstrip(…)` | `s.strip(…, side="left")` / `side="right"` | One strip with a named end, not three methods |
+| `s.lstrip(…)` / `s.rstrip(…)` | `s.strip(chars=…, side="left")` / `side="right"` | One strip with a named end, not three methods |
 | `s.rfind(sub)` | `s.find(sub, reverse=true)` | One find with a named direction; `reverse=` as in `sorted` |
 | `s.index(sub)` | `s.find(sub)` | Two spellings of one search, one of which raises; `-1` is the answer |
-| `s.rsplit(sep, n)` | `s.split(sep, n, side="right")` | Same answer, on the `side=` keyword `strip` already uses; no second name |
+| `s.rsplit(sep, n)` | `s.split(sep=…, maxsplit=n, side="right")` | Same answer, on the `side=` keyword `strip` already uses; no second name |
 | `s.zfill(n)` | `f"{n:05d}"`, `f"{s:0>5}"`, `f"{s:0>{w}}"` | Fully covered by the format spec, which also pads with anything else |
 | `s.removeprefix(p)` / `s.removesuffix(p)` | `s.rm_prefix(p)` / `s.rm_suffix(p)` | Same method, shorter name |
 | `s.isdigit()` / `isalpha()` / `isalnum()` / `isspace()` | `s.is_digit()` / `is_alpha()` / `is_alnum()` / `is_space()` | Same predicates, in the language's own naming |
