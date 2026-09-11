@@ -1,0 +1,82 @@
+# What a real command-line program looks like: arguments, a usage message, a
+# diagnostic on stderr, and an exit code that means something.
+#
+#     oro examples/cli.oro README.md examples/cli.oro   # lines words bytes
+#     oro examples/cli.oro --lines README.md            # just the line count
+#     oro examples/cli.oro                              # usage, exit 2
+#     oro examples/cli.oro nope.txt                     # error, exit 1
+#
+# `sys.argv[0]` is the script, so the arguments start at 1. `sys.exit(code)`
+# raises `SystemExit`, which unwinds to the top and sets the process status —
+# so it works from inside a function, and a `finally` still runs on the way
+# out. And `sys.stderr` is a byte stream like every other writer in Oro, which
+# is why diagnostics end in `.to_bytes()`.
+import io
+import sys
+
+_USAGE = "usage: oro examples/cli.oro [--lines] <file>..."
+
+
+def warn(message):
+    sys.stderr.write(f"cli: {message}\n".to_bytes())
+
+
+def die(message, code):
+    warn(message)
+    sys.exit(code)
+
+
+# Flags first, then paths — and an unknown flag is an error, not a filename.
+def parse_args(argv):
+    flags, paths = [], []
+    for arg in argv.drop(1):
+        if arg.startswith("--"):
+            if arg != "--lines":
+                die(f"unknown option {arg}\n{_USAGE}", 2)
+            flags.append(arg)
+        else:
+            paths.append(arg)
+    return flags, paths
+
+
+def measure(path):
+    f = open(path, "r")
+    data = io.read(f)
+    text = data.to_str()
+    return text.count("\n"), len(text.split(null)), len(data)
+
+
+flags, paths = parse_args(sys.argv)
+if len(paths) == 0:
+    die(_USAGE, 2)
+
+# Anything a block binds dies with the block, so the totals and the exit status
+# are bound out here, before the loop that adds to them.
+totals = [0, 0, 0]
+failed = 0
+for path in paths:
+    try:
+        counts = measure(path)
+        for i in range(3):
+            totals[i] = totals[i] + counts[i]
+        if len(flags) > 0:
+            print(f"{counts[0]:>8}  {path}")
+        else:
+            print(f"{counts[0]:>8}{counts[1]:>8}{counts[2]:>9}  {path}")
+    except FileNotFoundError:
+        warn(f"{path}: no such file")
+        failed = failed + 1
+    except PermissionError:
+        warn(f"{path}: permission denied")
+        failed = failed + 1
+
+if len(paths) - failed > 1:
+    if len(flags) > 0:
+        print(f"{totals[0]:>8}  total")
+    else:
+        print(f"{totals[0]:>8}{totals[1]:>8}{totals[2]:>9}  total")
+
+# One unreadable file is a partial failure, and a program that says so with its
+# exit status is one a shell script can use.
+if failed > 0:
+    sys.exit(1)

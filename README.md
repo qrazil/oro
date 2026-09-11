@@ -1516,6 +1516,19 @@ Run the CPython differential corpus:
 
 ## Examples
 
+`examples/` holds eight runnable programs. Each is one screen, and each opens
+with a header saying what it demonstrates and how to run it. The first six are
+the language; the last two are the HTTP stack.
+
+```sh
+./target/release/oro examples/files.oro          # a file, read line by line, counted, written back out
+./target/release/oro examples/json_api.oro       # JSON parsed, reshaped by the collection protocol, emitted
+./target/release/oro examples/concurrency.oro    # a worker pool: `spawn`, two channels, `join`
+./target/release/oro examples/text.oro           # the string surface, and where its names diverge from Python's
+./target/release/oro examples/cli.oro README.md  # `sys.argv`, a diagnostic on stderr, an exit code that means something
+./target/release/oro examples/classes.oro        # a value type: `__str__`, `__repr__`, `__eq__`, `__lt__`, one subclass
+```
+
 `examples/server.oro` is a working HTTP server in one screen: five routes, a
 logging middleware written as a function, and no framework holding any of it.
 `examples/client.oro` is the other half — with no argument it starts a server
@@ -1688,8 +1701,9 @@ checks that the first was answered and the second was not waited for.
 - `src/value.rs` — the runtime `Value` type and its containers.
 - `std/` — the Oro-written half of the standard library (`io`, `json`, `http`),
   baked into the binary by `src/vm/stdlib.rs`.
-- `examples/` — runnable programs; `examples/server.oro` is the HTTP server and
-  `examples/client.oro` is the client dialling one it started itself.
+- `examples/` — eight runnable programs, one screen each: `files`, `json_api`,
+  `concurrency`, `text`, `cli` and `classes` for the language, and
+  `server`/`client` for the HTTP stack.
 - `corpus/` — the CPython-generated differential test suite.
 
 ## License

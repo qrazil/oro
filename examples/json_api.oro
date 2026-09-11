@@ -1,0 +1,74 @@
+# A JSON payload, parsed, transformed and emitted again.
+#
+#     oro examples/json_api.oro              # the sample payload below
+#     oro examples/json_api.oro orders.json  # a file of the same shape
+#
+# `json.parse` hands back ordinary Oro values — dict, list, str, int, float,
+# `true`/`false`/`null` — so nothing between the two ends of this file is
+# JSON-aware code. It is a dict being reshaped by the collection protocol, and
+# that is the point: there is no document object, no schema and no visitor.
+#
+# `json.stringify(v)` is the compact wire form and `json.stringify(v, indent=2)`
+# is the same call formatted, because pretty-printing is a detail of one
+# operation rather than a second operation with a second name.
+import io
+import json
+import sys
+
+# With no file to read, the program makes its own wire text so that everything
+# below the `parse` is the real path rather than a shortcut around it.
+_ORDERS = [
+    {"id": 1, "region": "eu", "total": 41.5, "paid": true},
+    {"id": 2, "region": "us", "total": 120.0, "paid": true},
+    {"id": 3, "region": "eu", "total": 12.25, "paid": false},
+    {"id": 4, "region": "us", "total": 8.75, "paid": true},
+    {"id": 5, "region": "apac", "total": 64.0, "paid": true},
+    {"id": 6, "region": "eu", "total": 99.99, "paid": true},
+]
+
+
+def payload(argv):
+    if len(argv) > 1:
+        f = open(argv[1], "r")
+        return io.read(f).to_str()
+    return json.stringify(_ORDERS)
+
+
+# A dict's element is its `(key, value)` pair, so `group_by` gives back a dict
+# of region -> rows and `map` over it takes two arguments and answers with a
+# new pair. `sort_by` reorders, and reordering preserves the receiver's type,
+# so the result is still a dict — with the biggest region first.
+def summarise(orders):
+    paid = orders.filter(o => o["paid"])
+    regions = paid.group_by(o => o["region"]).map((name, rows) => (name, {
+        "orders": len(rows),
+        "revenue": round(rows.map(o => o["total"]).sum(), 2),
+        "largest": rows.max_by(o => o["total"])["id"],
+    }))
+    return {
+        "orders": len(orders),
+        "unpaid": len(orders) - len(paid),
+        "revenue": round(paid.map(o => o["total"]).sum(), 2),
+        "regions": regions.sort_by((name, stats) => -stats["revenue"]),
+    }
+
+
+text = payload(sys.argv)
+print(f"{len(text)} bytes in")
+
+orders = json.parse(text)
+if type(orders) != list:
+    sys.stderr.write(b"expected a JSON array of orders\n")
+    sys.exit(2)
+
+summary = summarise(orders)
+print(json.stringify(summary, indent=2))
+
+# The same value, compact — no incidental whitespace at all, not even after the
+# commas. That is the form you put on a socket.
+print(json.stringify(summary))
+
+# And the transform is just Oro, so the interesting rows can be pulled out of
+# it without going anywhere near JSON again.
+for name, stats in summary["regions"]:
+    print(f"{name:>5}  {stats['orders']} orders, {stats['revenue']:>7.2f}")
