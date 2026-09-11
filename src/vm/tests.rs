@@ -874,6 +874,199 @@ out = f"{t.sorted()} {t.take(2)} {sorted_d} {flat}"
     assert_eq!(fstr(src), "(1, 2, 3) (3, 1) {'b': 1, 'a': 2} [3, 1, 2]");
 }
 
+// --- A callback destructures its element the way `for` does -------------------
+
+/// The protocol's own pair-makers — `enumerate`, `zip`, a dict's `to_list()`,
+/// `group_by`, a generator of tuples — feed its callbacks. Every chain here has
+/// two or three steps, so the destructuring happens in fused stages as well as
+/// in the terminal.
+#[test]
+fn multi_parameter_callbacks_destructure_in_fused_chains() {
+    let src = r#"
+def gen():
+    yield (1, 2)
+    yield (3, 4)
+
+xs = ["a", "b", "c"]
+ns = [1, 2, 3]
+d = {"x": 1, "y": 2, "z": 3}
+orders = [{"r": "eu", "t": 3}, {"r": "us", "t": 5}, {"r": "eu", "t": 2}]
+a = xs.enumerate().map((i, s) => s * (i + 1)).filter(s => s != "bb")
+b = xs.zip(ns).filter((s, n) => n > 1).map((s, n) => s * n)
+c = d.to_list().filter((k, v) => v != 2).map((k, v) => (v, k)).filter((v, k) => v < 3)
+g = orders.group_by(o => o["r"]).to_list().map((r, rows) => (r, rows.len())).filter((r, n) => n > 1)
+h = gen().map((p, q) => p * q)
+out = f"{a} {b} {c} {g} {h}"
+"#;
+    assert_eq!(fstr(src), "['a', 'ccc'] ['bb', 'ccc'] [(1, 'x')] [('eu', 2)] [2, 12]");
+}
+
+/// Every step that takes a callback, as the terminal of a fused chain over
+/// `enumerate` output — `reduce` counting its parameters after the accumulator.
+#[test]
+fn every_callback_terminal_destructures() {
+    let src = r#"
+e = [5, 3, 8].enumerate()
+a = e.filter((i, x) => x > 3).any((i, x) => i == 2)
+b = e.map((i, x) => (x, i)).all((x, i) => x > i)
+c = e.filter((i, x) => i > 0).count((i, x) => x > 4)
+f = e.filter((i, x) => x > 3).flat_map((i, x) => [i, x])
+g = e.map((i, x) => (i, x * 2)).reduce(0, (acc, i, x) => acc + i * x)
+h = e.filter((i, x) => x != 3).sort_by((i, x) => -x)
+j = e.map((i, x) => (x, i)).find((x, i) => i == 1)
+k = e.filter((i, x) => true).min_by((i, x) => x)
+m = e.filter((i, x) => true).max_by((i, x) => x)
+n = e.filter((i, x) => true).partition((i, x) => x > 4)
+p = e.filter((i, x) => true).group_by((i, x) => x % 2)
+q = e.filter((i, x) => true).unique_by((i, x) => x % 2)
+r = e.take_while((i, x) => x > 4)
+s = e.drop_while((i, x) => x > 4)
+out = f"{a} {b} {c} {f} {g} {h} {j} {k} {m} {n} {p} {q} {r} {s}"
+"#;
+    assert_eq!(
+        fstr(src),
+        "true true 1 [0, 5, 2, 8] 38 [(2, 8), (0, 5)] (3, 1) (1, 3) (2, 8) \
+         ([(0, 5), (2, 8)], [(1, 3)]) {1: [(0, 5), (1, 3)], 0: [(2, 8)]} \
+         [(0, 5), (2, 8)] [(0, 5)] [(1, 3), (2, 8)]"
+    );
+}
+
+/// One parameter takes the element whole, on every shape — a dict included,
+/// where it used to be an arity error because the pair was always spread.
+#[test]
+fn a_one_parameter_callback_takes_the_element_whole_on_every_shape() {
+    let src = r#"
+d = {"a": 1, "b": 2}
+a = [(1, 2), (3, 4)].map(p => p[0] + p[1])
+b = ((1, 2), (3, 4)).filter(p => p[0] > 1)
+c = d.map(p => (p[0], p[1] * 10))
+e = d.filter(p => p[1] > 1)
+f = d.reduce(0, (acc, p) => acc + p[1])
+g = d.filter(p => true).map(p => p).count(p => p[1] > 0)
+h = range(3).map(x => x * 2).filter(x => x > 0)
+out = f"{a} {b} {c} {e} {f} {g} {h}"
+"#;
+    assert_eq!(fstr(src), "[3, 7] ((3, 4),) {'a': 10, 'b': 20} {'b': 2} 3 2 [2, 4]");
+}
+
+/// A dict receiver is an instance of the rule, not a special case: every
+/// spelling it already had reads the same, fused or not.
+#[test]
+fn dict_callbacks_are_an_instance_of_the_rule() {
+    let src = r#"
+d = {"a": 1, "b": 2, "c": 3}
+a = d.filter((k, v) => v > 1)
+b = d.map((k, v) => (k, v * 10))
+c = d.flat_map((k, v) => [k])
+e = d.reduce([], (acc, k, v) => acc + [v])
+f = d.filter((k, v) => v != 2).map((k, v) => (k + k, v))
+g = d.sort_by((k, v) => -v).find((k, v) => v < 3)
+out = f"{a} {b} {c} {e} {f} {g}"
+"#;
+    assert_eq!(
+        fstr(src),
+        "{'b': 2, 'c': 3} {'a': 10, 'b': 20, 'c': 30} ['a', 'b', 'c'] [1, 2, 3] \
+         {'aa': 1, 'cc': 3} ('b', 2)"
+    );
+}
+
+/// What counts is the positional parameters without a default. Defaults,
+/// `*args` and `**kwargs` do not count, a bound method's `self` does not, and
+/// `reduce` counts only the ones after its accumulator. A native callable
+/// declares nothing to count, so it is handed a dict's pair as two arguments
+/// and any other element whole.
+#[test]
+fn which_parameters_count_toward_destructuring() {
+    let src = r#"
+def scaled(x, by=10):
+    return x * by
+
+def label(k, v, sep="="):
+    return k + sep + v.to_str()
+
+def arity(*args):
+    return len(args)
+
+def collect(acc, *rest):
+    return acc + [len(rest)]
+
+def kw(p, **opts):
+    return p
+
+def fold(acc, k, v, extra=0):
+    return acc + v + extra
+
+class Shelf:
+    def __init__(self):
+        self.n = 0
+
+    def pair(self, k, v):
+        return k
+
+    def whole(self, p):
+        return p
+
+s = Shelf()
+d = {"a": 1, "b": 2}
+a = [1, 2].map(scaled)
+b = d.to_list().map(label)
+c = d.to_list().map(arity)
+e = d.reduce([], collect)
+f = [(1, 2)].map(kw)
+g = d.reduce(0, fold)
+h = d.to_list().map(s.pair)
+i = d.map(s.whole)
+j = {3: 1, 0: 0}.count(max)
+k = [(1, 2), (3, 4, 5)].map(len)
+out = f"{a} {b} {c} {e} {f} {g} {h} {i} {j} {k}"
+"#;
+    assert_eq!(
+        fstr(src),
+        "[10, 20] ['a=1', 'b=2'] [1, 1] [1, 1] [(1, 2)] 3 ['a', 'b'] {'a': 1, 'b': 2} 1 [2, 3]"
+    );
+}
+
+/// A length mismatch is `for`'s `ValueError`, word for word — not the
+/// "missing required argument" of a callback bound to the wrong number of
+/// values. An element `for` cannot unpack at all fails the same way too.
+#[test]
+fn a_destructuring_mismatch_is_fors_error() {
+    let cases = [
+        ("x = [(1, 2)].map((a, b, c) => a)\n", "for a, b, c in [(1, 2)]:\n    pass\n"),
+        ("x = [(1, 2, 3)].map((a, b) => a)\n", "for a, b in [(1, 2, 3)]:\n    pass\n"),
+        (
+            "x = [(1, 2)].filter(p => true).map((a, b, c) => a).first()\n",
+            "for a, b, c in [(1, 2)]:\n    pass\n",
+        ),
+        ("x = [1].map((a, b) => a)\n", "for a, b in [1]:\n    pass\n"),
+        ("x = {1: 2}.reduce(0, (acc, a, b, c) => acc)\n", "for a, b, c in {1: 2}:\n    pass\n"),
+    ];
+    for (chain, stmt) in cases {
+        let got = run_err(chain);
+        let want = run_err(stmt);
+        assert_eq!((got.class, &*got.message), (want.class, &*want.message), "{chain}");
+    }
+    // Uncaught, it reaches the top level named by its class.
+    let e = run_err("x = [(1, 2)].map((a, b, c) => a)\n");
+    assert_eq!(&*e.message, "ValueError: not enough values to unpack (expected 3, got 2)");
+}
+
+/// Reported where the step is written. By the second element the VM's own
+/// position is the `return` of the callback that ran for the first, which is
+/// on another line — in a fused stage as much as in a terminal.
+#[test]
+fn a_destructuring_mismatch_names_the_step() {
+    let head = "def first(a, b):\n    return a\n\nxs = [(1, 2), (3,)]\n";
+    for step in ["y = xs.map(first)\n", "y = xs.map(first).filter(x => true)\n"] {
+        let e = run_err(&format!("{head}{step}"));
+        assert_eq!(
+            (e.line, &*e.message),
+            (5, "ValueError: not enough values to unpack (expected 2, got 1)"),
+            "{step}"
+        );
+    }
+}
+
 #[test]
 fn find_and_any_short_circuit() {
     // The predicate must stop being called once the answer is settled.

@@ -426,11 +426,10 @@ struct Stage {
     /// is holding belongs to whatever callback returned last.
     line: u32,
     col: u32,
-    /// The shape the element carries *entering* this stage. It decides whether
-    /// the callback is spread over two parameters (a dict's key and value) or
-    /// handed the element whole, exactly as [`SeqJob::shape`] does for the
-    /// terminal step.
-    shape: SeqShape,
+    /// How this stage's callback takes its element, exactly as
+    /// [`SeqJob::spread`] does for the terminal step. Settled once, when the
+    /// stage is made.
+    spread: Spread,
 }
 
 /// What a fused stage does with its callback's answer. Only the steps that
@@ -483,6 +482,27 @@ enum SeqShape {
     Dict,
 }
 
+/// How a collection callback is handed each element.
+///
+/// The rule is the `for` statement's: a callback with two or more parameters
+/// destructures its element exactly as `for a, b in xs` does — any element
+/// `for` can unpack, and a length mismatch is `for`'s own `ValueError` — and a
+/// callback with one takes the element whole. So the protocol's own
+/// pair-makers (`enumerate`, `zip`, a dict's `to_list()`, `group_by`) feed its
+/// callbacks, and a dict receiver is one instance of the rule rather than an
+/// exception to it. [`declared_spread`] says which parameters count.
+///
+/// Settled once per step, never per element: it is read on every element of
+/// every stage, and reading it must not mean walking a parameter list.
+#[derive(Clone, Copy)]
+enum Spread {
+    /// One argument: the element itself.
+    Whole,
+    /// Exactly this many arguments, always two or more, unpacked from the
+    /// element by [`unpack_exact`].
+    Unpack(u32),
+}
+
 /// An in-flight `.map(f)` / `.filter(p)`. Like [`SortJob`], the callback is Oro
 /// code and must run in a frame, so elements are processed one at a time and the
 /// collection is rebuilt once the last result lands.
@@ -503,6 +523,9 @@ struct SeqJob {
     /// for [`SeqOp::Collect`], where each element stands in for its own
     /// callback result.
     func: Option<Value>,
+    /// How `func` takes each element (see [`Spread`]), settled when the job is
+    /// made.
+    spread: Spread,
     /// Fused upstream steps, in order. Empty for an unfused single step.
     stages: Vec<Stage>,
     /// The receiver's snapshot when `stages` is non-empty (see `items`).
@@ -539,6 +562,74 @@ fn same_collection(a: &Value, b: &Value) -> bool {
         (Value::Range(x), Value::Range(y)) => Rc::ptr_eq(x, y),
         _ => false,
     }
+}
+
+/// `for a, b in xs`'s unpacking of one element into exactly `n` values: any
+/// element `for` can iterate, and a length mismatch is its `ValueError`, word
+/// for word. [`Op::UnpackSequence`] and a destructuring collection callback
+/// both call this, so the two cannot drift apart.
+///
+/// Out of line, like [`declared_spread`], for the reason [`Vm::chain_tail`]
+/// is: inlined, the two grew the callback driver enough to slow code they do
+/// not touch — the receiver snapshot every chain step takes — by 8% on
+/// `fusesc`, measured A/B.
+#[inline(never)]
+fn unpack_exact(seq: &Value, n: usize) -> VResult<Vec<Value>> {
+    let items = match seq {
+        // The common case — a dict's pair, an `enumerate` or `zip` row — read
+        // straight off the tuple rather than through an iterator.
+        Value::Tuple(t) => t.as_slice().to_vec(),
+        other => iterate_to_vec(other)?,
+    };
+    if items.len() == n {
+        return Ok(items);
+    }
+    Err(value_error(if items.len() < n {
+        format!("not enough values to unpack (expected {n}, got {})", items.len())
+    } else {
+        format!("too many values to unpack (expected {n})")
+    }))
+}
+
+/// How many arguments an Oro callback asks for its element to be spread over,
+/// or `None` for a native callable, which declares no parameters to count.
+///
+/// What counts is the positional parameters **without a default**, after the
+/// `leading` ones the caller fills itself: the accumulator `reduce` threads,
+/// and a bound method's own `self`. A defaulted parameter, `*args` and
+/// `**kwargs` never count — a callback may accept them but does not ask for
+/// them — so `def f(x, scale=2)` still takes its element whole, and a callback
+/// with only `*args` is handed one argument. Oro has no keyword-only
+/// parameters (`*args` comes after every ordinary one), so nothing else is
+/// left to count.
+#[inline(never)]
+fn declared_spread(func: &Value, leading: usize) -> Option<Spread> {
+    let (f, leading) = match func {
+        Value::Func(f) => (f, leading),
+        Value::Method(m) => match &m.kind {
+            MethodKind::User { func, .. } => (func, leading + 1),
+            MethodKind::Native(_) => return None,
+        },
+        _ => return None,
+    };
+    let asked = f
+        .code
+        .params
+        .iter()
+        .filter(|p| p.kind == crate::ast::ParamKind::Normal && !p.has_default)
+        .count()
+        .saturating_sub(leading);
+    Some(if asked >= 2 { Spread::Unpack(asked as u32) } else { Spread::Whole })
+}
+
+/// [`declared_spread`] for a collection step over elements of `shape`. A
+/// native callable has nothing to count, so it is handed a dict's pair as two
+/// arguments and any other element whole.
+fn seq_spread(func: &Value, shape: SeqShape, leading: usize) -> Spread {
+    declared_spread(func, leading).unwrap_or(match shape {
+        SeqShape::Dict => Spread::Unpack(2),
+        SeqShape::List | SeqShape::Tuple => Spread::Whole,
+    })
 }
 
 /// An in-flight `sorted(key=…)` / `list.sort(key=…)`. The key function is Oro
@@ -1847,20 +1938,10 @@ impl Vm {
                     self.push(sup);
                 }
                 Op::UnpackSequence(n) => {
-                    let n = n as usize;
                     let seq = self.pop();
-                    let items = self.wrap(iterate_to_vec(&seq))?;
-                    if items.len() != n {
-                        let msg = if items.len() < n {
-                            format!(
-                                "not enough values to unpack (expected {n}, got {})",
-                                items.len()
-                            )
-                        } else {
-                            format!("too many values to unpack (expected {n})")
-                        };
-                        return Err(self.err(value_error(msg)));
-                    }
+                    // Shared with a destructuring collection callback, which is
+                    // defined to unpack exactly as this does.
+                    let items = self.wrap(unpack_exact(&seq, n as usize))?;
                     for v in items.into_iter().rev() {
                         self.push(v);
                     }
@@ -3006,9 +3087,10 @@ impl Vm {
     /// time rather than executed as native methods.
     ///
     /// Which collection comes back is governed by [`SeqOp::preserves_shape`].
-    /// A dict's callback is called with two arguments (key and value), so
-    /// `d.filter((k, v) => v > 1)` reads naturally instead of forcing the caller
-    /// to index a pair.
+    /// A callback with several parameters destructures its element as `for`
+    /// does ([`Spread`]), so `d.filter((k, v) => v > 1)` and
+    /// `xs.enumerate().map((i, x) => …)` read naturally instead of forcing the
+    /// caller to index a pair.
     ///
     /// `hint` is permission to defer this step into a [`PendingChain`] for the
     /// next step to run in the same pass; `flush` says an earlier step took
@@ -3079,6 +3161,13 @@ impl Vm {
             Some(p) => p.shape,
             None => self.seq_shape(who, receiver)?,
         };
+        // How the callback takes each element, settled here once for the whole
+        // step: whichever of a stage or the terminal ends up running it, it
+        // reads this on every element.
+        let spread = match &func {
+            Some(f) => seq_spread(f, shape, usize::from(op == SeqOp::Reduce)),
+            None => Spread::Whole,
+        };
 
         // Defer in turn, when this step streams and the next one can flush.
         //
@@ -3107,7 +3196,7 @@ impl Vm {
                 // element carries out of the pipeline is the one it carried in.
                 p.stages.push(Stage {
                     kind,
-                    shape,
+                    spread,
                     line: self.task.line,
                     col: self.task.col,
                 });
@@ -3133,7 +3222,7 @@ impl Vm {
             let f = func.take().expect("filter has a callback");
             stages.push(Stage {
                 kind: StageKind::Filter(f),
-                shape,
+                spread,
                 line: self.task.line,
                 col: self.task.col,
             });
@@ -3148,6 +3237,7 @@ impl Vm {
             results: seed.into_iter().collect(),
             next: 0,
             func,
+            spread,
             stages,
             src: source,
             work: Vec::new(),
@@ -3229,6 +3319,7 @@ impl Vm {
             results: Vec::new(),
             next: 0,
             func: None,
+            spread: Spread::Whole,
             stages: p.stages,
             src: source,
             work: Vec::new(),
@@ -3266,9 +3357,10 @@ impl Vm {
 
     /// The collection a chain step rebuilds, without taking the snapshot that
     /// running it would need. A step that defers itself still has to know its
-    /// shape — that is what decides whether the *next* stage's callback is
-    /// spread over a key and a value — but it must not copy the receiver, or
-    /// fusing would put back the allocation it exists to remove.
+    /// shape — the rebuild needs it, and so does a native callback in the
+    /// *next* stage, which is handed a dict's pair as two arguments — but it
+    /// must not copy the receiver, or fusing would put back the allocation it
+    /// exists to remove.
     fn seq_shape(&self, who: &str, receiver: &Value) -> Result<SeqShape, VmError> {
         Ok(match receiver {
             Value::List(_) => SeqShape::List,
@@ -3335,7 +3427,7 @@ impl Vm {
                 if stage < job.stages.len() {
                     let st = &job.stages[stage];
                     let at = (st.line, st.col);
-                    let shape = st.shape;
+                    let spread = st.spread;
                     let (f, who, hold) = match &st.kind {
                         StageKind::Map(f) => (f.clone(), "map", false),
                         StageKind::Filter(f) => (f.clone(), "filter", true),
@@ -3346,7 +3438,7 @@ impl Vm {
                     // and keeps nothing, which is why only one of the two pays
                     // for a clone.
                     job.held = if hold { item.clone() } else { Value::None };
-                    (who, at, Some(f), Self::seq_args(shape, item))
+                    (who, at, Some(f), Self::seq_args(spread, item, None))
                 } else {
                     // Out the bottom of the pipeline: this one is the
                     // terminal's.
@@ -3372,13 +3464,10 @@ impl Vm {
                     if !job.stages.is_empty() && job.op.keeps_items() {
                         job.items.push(item.clone());
                     }
-                    let shape = job.shape;
-                    let mut args = Self::seq_args(shape, item);
-                    // Reduce prepends the accumulator it is threading.
-                    if job.op == SeqOp::Reduce {
-                        let acc = job.results.last().cloned().unwrap_or(Value::None);
-                        args.insert(0, acc);
-                    }
+                    // Reduce hands over the accumulator it is threading first.
+                    let acc = (job.op == SeqOp::Reduce)
+                        .then(|| job.results.last().cloned().unwrap_or(Value::None));
+                    let args = Self::seq_args(job.spread, item, acc);
                     (job.op.name(), (job.line, job.col), Some(f), args)
                 }
             };
@@ -3402,12 +3491,14 @@ impl Vm {
                             "{who}() callback must not be a generator function"
                         ))));
                     }
+                    let call_args = self.seq_unpacked(call_args, at)?;
                     let mut frame = self.bind_call(&f, None, call_args, Vec::new())?;
                     frame.ret_action = ReturnAction::DriveSeq;
                     self.task.frames.push(frame);
                     return Ok(());
                 }
                 Value::Builtin(b) => {
+                    let call_args = self.seq_unpacked(call_args, at)?;
                     let Some(call_args) = self.ord_callback(b.name, call_args, OrdCont::Seq)?
                     else {
                         return Ok(());
@@ -3416,6 +3507,7 @@ impl Vm {
                     self.record_seq_result(r);
                 }
                 Value::Method(m) => {
+                    let call_args = self.seq_unpacked(call_args, at)?;
                     let r = match &m.kind {
                         MethodKind::Native(name) => {
                             self.wrap(crate::builtins::call_method(&m.receiver, name, call_args, Vec::new()))?
@@ -3633,20 +3725,49 @@ impl Vm {
         Ok(())
     }
 
-    /// The argument vector one callback is called with. A dict's callback takes
-    /// the key and the value as two parameters, so `d.filter((k, v) => v > 1)`
-    /// reads directly instead of indexing a pair; everything else is handed the
-    /// element whole.
-    /// It takes the element **by value**: every callback but a dict's is handed
-    /// the element itself, and a fused chain touches one element once per stage,
-    /// so a clone here is a clone per element per step of the chain.
-    fn seq_args(shape: SeqShape, item: Value) -> Vec<Value> {
-        if matches!(shape, SeqShape::Dict) {
-            if let Value::Tuple(t) = &item {
-                return vec![t[0].clone(), t[1].clone()];
+    /// The argument vector one callback is called with: the accumulator first
+    /// when `reduce` is threading one, then the element — whole, or unpacked
+    /// into the callback's parameters exactly as `for` would (see [`Spread`]).
+    ///
+    /// It takes the element **by value**: a whole element moves straight into
+    /// the vector, and a fused chain touches one element once per stage, so a
+    /// clone here would be a clone per element per step of the chain.
+    fn seq_args(spread: Spread, item: Value, acc: Option<Value>) -> VResult<Vec<Value>> {
+        match (spread, acc) {
+            (Spread::Whole, None) => Ok(vec![item]),
+            (Spread::Whole, Some(acc)) => Ok(vec![acc, item]),
+            (Spread::Unpack(n), None) => unpack_exact(&item, n as usize),
+            (Spread::Unpack(n), Some(acc)) => {
+                let mut args = Vec::with_capacity(1 + n as usize);
+                args.push(acc);
+                args.extend(unpack_exact(&item, n as usize)?);
+                Ok(args)
             }
         }
-        vec![item]
+    }
+
+    /// The arguments [`Self::seq_args`] built, or its `ValueError` for an
+    /// element that does not unpack — reported where the step is written, as
+    /// `for`'s is reported at the loop. By then the VM's own position is
+    /// wherever the previous callback returned.
+    fn seq_unpacked(
+        &mut self,
+        args: VResult<Vec<Value>>,
+        at: (u32, u32),
+    ) -> Result<Vec<Value>, VmError> {
+        match args {
+            Ok(args) => Ok(args),
+            Err(e) => Err(self.seq_unpack_error(e, at)),
+        }
+    }
+
+    /// The cold half of [`Self::seq_unpacked`], out of line so the callback
+    /// path it sits on stays the size it was.
+    #[cold]
+    #[inline(never)]
+    fn seq_unpack_error(&mut self, e: VErr, at: (u32, u32)) -> VmError {
+        (self.task.line, self.task.col) = at;
+        self.err(e)
     }
 
     /// Turn a vector of elements back into the collection type `shape`. For a
