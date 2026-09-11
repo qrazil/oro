@@ -832,12 +832,12 @@ class _LimitReader:
         self.remaining = remaining
 
     # The stream ended with `self.remaining` bytes of the declared length
-    # still owed. On the way *in* that is not this reader's to call: a
-    # handler reading with `io.read(body, fixed_size=n)` already gets an EOFError naming
-    # the shortfall, one reading with `io.read(body)` asked for "whatever is
-    # there", and the connection loop's drain treats a short body as a
-    # connection to close either way. On the way *out* it is a lie the peer
-    # told, and `_ResponseLimitReader` says so — see the note there.
+    # still owed. On the way *in* that is not this reader's to call: a handler
+    # reading with `io.read(body, fixed_size=n)` already gets an EOFError
+    # naming the shortfall, one reading with `io.read(body)` asked for
+    # "whatever is there", and the connection loop's drain treats a short body
+    # as a connection to close either way. On the way *out* it is a lie the
+    # peer told, and `_ResponseLimitReader` says so — see the note there.
     def truncated(self):
         return b""
 

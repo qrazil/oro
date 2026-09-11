@@ -6,10 +6,11 @@
 #     write(b)  -> null      # writes all of b, or raises
 #
 # There is no `class Reader`, nothing to inherit from and no registration. Any
-# object with a `read` method of that shape is a Reader, whether it is a `File`
-# from `open()`, a `Buffer` from `io.buffer(b"")`, `sys.stdin`, or a class someone
-# wrote this afternoon — which is why every function here is written against
-# `read(n)` and `write(b)` alone, and learned about none of them.
+# object with a `read` method of that shape is a Reader, whether it is a
+# `File` from `open()`, a `Buffer` from `io.buffer(b"")`, `sys.stdin`, or a
+# class someone wrote this afternoon — which is why every function here is
+# written against `read(n)` and `write(b)` alone, and learned about none of
+# them.
 #
 # API
 # ---
@@ -54,12 +55,13 @@ _CHUNK = 65536
 # limit would fire on the 200 MB log file you meant to read and never on the
 # dangerous case.
 #
-# With `fixed_size`, returns exactly that many bytes or raises EOFError if it ends
-# first. That is the form an HTTP body on a keep-alive connection needs: reading
-# to EOF is not available (the connection does not close, that is the point of
-# keep-alive) and `r.read(n)` may legally return fewer. Without it every body
-# read hand-rolls a loop, and a hand-rolled read loop is the bug that works
-# against localhost and fails under load when a request spans two packets.
+# With `fixed_size`, returns exactly that many bytes or raises EOFError if
+# the stream ends first. That is the form an HTTP body on a keep-alive
+# connection needs: reading to EOF is not available (the connection does not
+# close, that is the point of keep-alive) and `r.read(n)` may legally return
+# fewer. Without it every body read hand-rolls a loop, and a hand-rolled read
+# loop is the bug that works against localhost and fails under load when a
+# request spans two packets.
 def read(r, fixed_size=null):
     if fixed_size == null:
         # `stat` and allocate once, in Rust, for the streams whose size is
