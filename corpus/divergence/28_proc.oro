@@ -44,3 +44,11 @@ try:
     proc.run(["echo", "hi"], capture_output=true, quiet=true)
 except Exception as e:
     print("cpython-era kwarg rejected")
+
+# The command is the only positional argument; every option is passed by name.
+# A second positional used to be accepted and dropped unread.
+try:
+    proc.run(["echo", "hi"], "/tmp")
+    print("UNREACHABLE")
+except TypeError as e:
+    print("second positional rejected:", e)

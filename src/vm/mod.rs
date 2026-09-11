@@ -4872,6 +4872,15 @@ impl Vm {
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
     ) -> Result<(), VmError> {
+        // The command is the only positional argument; every option below is
+        // passed by name. A second positional used to be dropped unread.
+        if args.len() > 1 {
+            return Err(self.err(type_error(format!(
+                "proc.run() takes 1 positional argument, the command, but {} were given — \
+                 cwd=, env=, timeout=, check= and quiet= are passed by name",
+                args.len()
+            ))));
+        }
         // The command must be a list of separate strings.
         let list = match args.first() {
             Some(Value::List(l)) => l.borrow().clone(),
