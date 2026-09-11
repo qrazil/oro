@@ -13,36 +13,36 @@ b = io.buffer(b"hello world")
 print(b)
 print(b.read(5), b.read(1), b.read(100), b.read(1))
 # `bytes()` is what has been written and not yet read — a Buffer is a queue.
-q = io.buffer()
+q = io.buffer(b"")
 q.write(b"one ")
 q.write(b"two")
 print(q.bytes(), q.read(4), q.bytes())
-print(io.buffer().bytes(), io.buffer().read(1))
+print(io.buffer(b"").bytes(), io.buffer(b"").read(1))
 
 # --- io.read: everything, or exactly n --------------------------------------
 print(io.read(io.buffer(b"whole stream")))
-print(io.read(io.buffer()))
+print(io.read(io.buffer(b"")))
 r = io.buffer(b"0123456789")
-print(io.read(r, 4), io.read(r, 6))
+print(io.read(r, fixed_size=4), io.read(r, fixed_size=6))
 print(io.read(r) == b"")
 # Exactly n, or EOFError. A stream that ends short is the case a hand-rolled
 # read loop gets wrong when a request spans two packets.
 try:
-    io.read(io.buffer(b"ab"), 5)
+    io.read(io.buffer(b"ab"), fixed_size=5)
     print("no error")
 except EOFError as e:
     print("short stream:", e)
 # EOFError sits directly under Exception, where CPython puts it.
 try:
-    io.read(io.buffer(b""), 1)
+    io.read(io.buffer(b""), fixed_size=1)
 except Exception as e:
     print("caught as Exception:", type(e))
-print(io.read(io.buffer(b"abc"), 0))
+print(io.read(io.buffer(b"abc"), fixed_size=0))
 try:
-    io.read(io.buffer(b"abc"), -1)
+    io.read(io.buffer(b"abc"), fixed_size=-1)
     print("no error")
 except ValueError as e:
-    print("negative count:", e)
+    print("negative fixed_size:", e)
 
 # --- Short reads, and why io.read exists ------------------------------------
 # A Reader may return fewer bytes than asked for without being at EOF. This one
@@ -62,10 +62,10 @@ d = Dribble(b"drip")
 print(d.read(4), d.read(4))
 # io.read does the whole job, and always returns what was asked for. It is
 # written against read(n) alone, so it never learned what a Dribble is.
-print(io.read(Dribble(b"drip"), 3))
+print(io.read(Dribble(b"drip"), fixed_size=3))
 print(io.read(Dribble(b"drip")))
 try:
-    io.read(Dribble(b"drip"), 99)
+    io.read(Dribble(b"drip"), fixed_size=99)
     print("no error")
 except EOFError as e:
     print("dribbled dry:", e)
@@ -73,10 +73,10 @@ except EOFError as e:
 # --- io.copy ----------------------------------------------------------------
 # The payoff of the naming convention: a file, a Buffer and a class someone
 # wrote this afternoon are the same thing to it.
-dst = io.buffer()
+dst = io.buffer(b"")
 print(io.copy(dst, io.buffer(b"payload")), dst.bytes())
 print(io.copy(dst, Dribble(b"-more")), dst.bytes())
-print(io.copy(io.buffer(), io.buffer()))
+print(io.copy(io.buffer(b""), io.buffer(b"")))
 
 # --- read_until on a Buffer -------------------------------------------------
 # A method rather than a free function, because it has to see inside the
@@ -94,14 +94,14 @@ except ValueError as e:
 # No io.write: w.write(b) already writes all of b or raises, so a free function
 # would be a second spelling for it. The asymmetry with io.read is deliberate.
 try:
-    io.write(io.buffer(), b"x")
+    io.write(io.buffer(b""), b"x")
     print("no error")
 except AttributeError as e:
     print("no io.write:", e)
 # No flush(), anywhere in the language: a flush you can forget is a truncated
 # response with nothing raised.
 try:
-    io.buffer().flush()
+    io.buffer(b"").flush()
     print("no error")
 except AttributeError as e:
     print("no flush:", e)

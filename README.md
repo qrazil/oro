@@ -831,7 +831,7 @@ stated rather than discovered:
   that is what a stream is: `n` is a maximum, and the answer is "what has
   arrived". EOF is an empty return, not an exception — every stream ends, and
   the normal termination of the most common loop in systems programming is not
-  a fault. Code that needs *exactly* `n` bytes calls `io.read(r, n)`, which
+  a fault. Code that needs *exactly* `n` bytes calls `io.read(r, fixed_size=n)`, which
   loops and raises `EOFError` if the stream ends short. `r.read(n)` is the raw
   primitive; `io.read(...)` does the whole job.
 
@@ -1043,9 +1043,9 @@ measurement, and the reason the same argument does not move `http`.
   an unbounded header block. Missing files and permission errors raise
   `FileNotFoundError` / `PermissionError`.
 - **`io`** — written in Oro, and exactly three functions:
-  `io.read(r, n=null)` (everything until EOF, or exactly `n` with `EOFError` if
-  the stream ends short), `io.copy(dst, src)` (returns the count), and
-  `io.buffer(b=b"")` (an in-memory Reader and Writer, and the only way to get a
+  `io.read(r)` (everything until EOF), `io.read(r, fixed_size=n)` (exactly `n`,
+  with `EOFError` if the stream ends short), `io.copy(dst, src)` (returns the
+  count), and `io.buffer(b)` (an in-memory Reader and Writer, and the only way to get a
   Reader you can feed literal bytes to). There is deliberately no `io.write`:
   `w.write(b)` already writes everything or raises, so a free function would be
   a second spelling for it. The asymmetry is real, and it is the two directions

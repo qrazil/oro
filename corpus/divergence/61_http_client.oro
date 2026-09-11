@@ -1,7 +1,7 @@
 # INTENTIONAL DIVERGENCE FROM PYTHON. Reviewed by hand; see 43_http_request.oro.
 #
 # The client's seam — `parse_url`, `write_request`, `read_response` — driven
-# over `io.buffer()` with no socket anywhere, which is the whole point of the
+# over `io.buffer(b"")` with no socket anywhere, which is the whole point of the
 # seam taking a Reader and a Writer rather than a connection. There is nothing
 # to diff this against: CPython's nearest equivalents are `urllib.parse` (which
 # accepts relative URLs, resolves `https` happily, and returns a 6-tuple) and
@@ -96,15 +96,15 @@ check("a bad escape", url_error("http://h/a%zz"), "invalid percent-escape in the
 # The mirror of `write_response`: head and a sized body in one `write`, the
 # framing chosen by the *type* of the body and by nothing else.
 print("--- a request goes out in one write, framed by the body's type")
-w = io.buffer()
+w = io.buffer(b"")
 http.write_request(w, "GET", "/health", {"host": "h"})
 show("GET, no body, so no Content-Length at all", w.bytes())
 
-w = io.buffer()
+w = io.buffer(b"")
 http.write_request(w, "POST", "/echo", {"Host": "h", "Content-Type": "application/json"}, json.stringify({"n": 1}).to_bytes())
 show("POST, bytes body, so Content-Length", w.bytes())
 
-w = io.buffer()
+w = io.buffer(b"")
 http.write_request(w, "PUT", "/upload", {"host": "h"}, io.buffer(b"streamed"))
 show("PUT, Reader body, so chunked", w.bytes())
 
@@ -119,7 +119,7 @@ def write_error(method, target, headers, body):
 
 
 def _write_error(method, target, headers, body):
-    http.write_request(io.buffer(), method, target, headers, body)
+    http.write_request(io.buffer(b""), method, target, headers, body)
     return "no error"
 
 
@@ -138,7 +138,7 @@ check("a str body", write_error("POST", "/", {"host": "h"}, "not bytes"), "TypeE
 # server parses, with no adapter between them. A `Buffer` is a queue, so this
 # is literally the client's bytes handed to `read_request`.
 print("--- what the client writes is what the server reads")
-wire = io.buffer()
+wire = io.buffer(b"")
 http.write_request(wire, "POST", "/users?active=1", {"host": "example.com:8080", "content-type": "text/plain"}, b"payload")
 req = http.read_request(wire)
 check("method and path", f"{req}", "POST /users HTTP/1.1")
@@ -146,13 +146,13 @@ check("query", f"{req.query}", "{'active': '1'}")
 check("host", req.header("host"), "example.com:8080")
 check("body", req.text(), "payload")
 
-wire = io.buffer()
+wire = io.buffer(b"")
 http.write_request(wire, "PUT", "/big", {"host": "h"}, io.buffer(b"x" * 20000))
 req = http.read_request(wire)
 check("a chunked request body round-trips", len(req.text()), 20000)
 
 # And the same the other way: `write_response` then `read_response`.
-wire = io.buffer()
+wire = io.buffer(b"")
 http.write_response(wire, http.Request("GET", "/", {}, "1.1", {}, io.buffer(b"")), http.json_response({"ok": true}, 201), false)
 resp = http.read_response(wire, "GET")
 check("a response round-trips", f"{resp.status} {resp.json()}", "201 {'ok': true}")
@@ -264,7 +264,7 @@ check("close() on a response that owns nothing is a no-op", f"{resp.close()}", "
 
 # A response read off one connection can be written straight to another, reason
 # phrase and all, which is the whole reason the class is shared.
-relayed = io.buffer()
+relayed = io.buffer(b"")
 upstream = http.read_response(io.buffer(b"HTTP/1.1 418 I am a teapot\r\nContent-Length: 3\r\n\r\nbrb"), "GET")
 upstream.body = upstream.bytes()
 http.write_response(relayed, http.Request("GET", "/", {}, "1.1", {}, io.buffer(b"")), upstream, false)

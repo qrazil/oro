@@ -94,7 +94,7 @@ report("GET /nope", resp)
 # `stream` returns with the body still on the wire. The `finally` is the price
 # of that, and it is the whole difference from `fetch`.
 resp = http.stream("GET", base + "/stream")
-sink = io.buffer()
+sink = io.buffer(b"")
 copied = 0
 try:
     copied = io.copy(sink, resp.body)

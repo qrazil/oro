@@ -44,15 +44,15 @@ conn.write(b"\r\n")
 print(srv.read_until(b"\r\n\r\n", 65536))
 
 conn.write(b"0123456789")
-# `io.read(r, n)` loops until it has exactly n bytes; `r.read(n)` is one
+# `io.read(r, fixed_size=n)` loops until it has exactly n bytes; `r.read(n)` is one
 # syscall's worth and may legally come up short, which is why a socket test
 # never asserts on the raw form.
-print(io.read(srv, 4), io.read(srv, 6))
+print(io.read(srv, fixed_size=4), io.read(srv, fixed_size=6))
 
 # A half-close: FIN one way, and the answer still comes back the other.
 srv.write(b"HTTP/1.1 200 OK\r\n\r\nbody")
 srv.shutdown_write()
-sink = io.buffer()
+sink = io.buffer(b"")
 print(io.copy(sink, conn), sink.bytes())
 # EOF is an empty return, not an exception, and it stays empty.
 print(conn.read(16), conn.read(16) == b"")
@@ -103,7 +103,7 @@ try:
 except ValueError as e:
     print("no port:", e)
 
-# `io.read(r, n)` on a stream that ends short is an `EOFError` — §4's table,
+# `io.read(r, fixed_size=n)` on a stream that ends short is an `EOFError` — §4's table,
 # and the case a hand-rolled read loop gets wrong when a body spans two packets
 # and the peer hangs up in the middle of it.
 ln3 = net.listen("127.0.0.1:0")
@@ -113,7 +113,7 @@ s3.set_timeout(5)
 c3.write(b"ab")
 c3.shutdown_write()
 try:
-    io.read(s3, 5)
+    io.read(s3, fixed_size=5)
 except EOFError as e:
     print("short body:", e)
 ln3.close()

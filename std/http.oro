@@ -58,7 +58,7 @@
 # for as long as the listener is open. `serve_conn` is the seam underneath
 # it, and it is served by handing it anything that is a Reader and a Writer —
 # on a real server the socket, and in every test in `corpus/divergence/` an
-# `io.buffer()`. There are no wrapper objects in the loop: every reader
+# `io.buffer(b"")`. There are no wrapper objects in the loop: every reader
 # buffers by construction, so `read_until` works on the connection directly,
 # and `write_response` batches its own output with the list-append-and-join
 # idiom, so there is nothing to flush and no `flush()` to forget.
@@ -825,7 +825,7 @@ class _LimitReader:
 
     # The stream ended with `self.remaining` bytes of the declared length
     # still owed. On the way *in* that is not this reader's to call: a
-    # handler reading with `io.read(body, n)` already gets an EOFError naming
+    # handler reading with `io.read(body, fixed_size=n)` already gets an EOFError naming
     # the shortfall, one reading with `io.read(body)` asked for "whatever is
     # there", and the connection loop's drain treats a short body as a
     # connection to close either way. On the way *out* it is a lie the peer
@@ -902,7 +902,7 @@ class _ChunkedReader:
     # the shape that wants no temporary at all.
     def terminator(self):
         try:
-            return io.read(self.r, 2)
+            return io.read(self.r, fixed_size=2)
         except EOFError as e:
             return self.fail("connection ended before a chunk terminator")
 
@@ -1150,7 +1150,7 @@ def _error_response(status, message):
 # Serve requests on `conn` until it must close; return how many were served.
 #
 # `conn` is anything that is a Reader and a Writer — a socket in production,
-# an `io.buffer()` in every test — which is why this loop has no wrapper
+# an `io.buffer(b"")` in every test — which is why this loop has no wrapper
 # objects in it and never learned what it is talking to.
 #
 # NOTE: the design's sketch of this loop also sets an idle timeout between
@@ -1573,7 +1573,7 @@ def _match(pat, segs):
 # `write_request` / `read_response` are the seam, and they are the exact
 # mirror of `read_request` / `write_response`: they take a Reader and a
 # Writer, not a socket, so a proxy, a recorded transcript and an
-# `io.buffer()` in the corpus all drive them without a listener existing.
+# `io.buffer(b"")` in the corpus all drive them without a listener existing.
 # `stream` adds the socket, and `fetch` adds the one policy the seam cannot
 # have — "read the whole body and let go of the connection".
 #

@@ -27,4 +27,4 @@ chunk data not followed by CRLF -> 400 chunk data was not followed by CRLF
 a chunked body that stops mid-chunk -> 400 connection ended in the middle of a chunk
 a chunk size line with no CRLF -> 400 chunk size line was not terminated
 --- a Content-Length body that the client never finished
-io.read(body, 10) raised EOFError: stream ended after 3 bytes, expected 10
+io.read(body, fixed_size=10) raised EOFError: stream ended after 3 bytes, expected 10

@@ -840,7 +840,7 @@ Oro signals failure two ways, and both are load-bearing:
 | `Reader.read(n)` | `b""` at EOF |
 | `http.read_request(r)` | `null` at a clean EOF |
 | `dict.pop(k)` | raises `KeyError` |
-| `io.read(r, n)` | raises `EOFError` |
+| `io.read(r, fixed_size=n)` | raises `EOFError` |
 | everything in `net`, `json`, `proc` | raises |
 
 This looks like the sin, and it is not, because the split is principled: **a

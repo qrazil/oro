@@ -186,7 +186,7 @@ fn read_returns_at_most_n_and_at_least_one_byte() {
     wr(&client, b"abc").unwrap();
     // `n` is a maximum, and a short read is not EOF — it is "this is what has
     // arrived". The only thing guaranteed is 1..=3, which is precisely why
-    // code needing exactly n bytes calls `io.read(r, n)`.
+    // code needing exactly n bytes calls `io.read(r, fixed_size=n)`.
     let got = rd(&server, 4096).unwrap();
     assert!(!got.is_empty() && got.len() <= 3, "read(4096) returned {got:?}");
     assert!(b"abc".starts_with(&got[..]));

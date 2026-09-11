@@ -507,7 +507,7 @@ impl OroStream {
 
     /// `read(n)`: between 1 and `n` bytes, or `b""` at EOF. A short read is not
     /// an error and does not mean EOF — it means "this is what has arrived".
-    /// Code that needs exactly `n` bytes calls `io.read(r, n)`.
+    /// Code that needs exactly `n` bytes calls `io.read(r, fixed_size=n)`.
     pub fn read(&self, n: i64) -> VResult<Io<Vec<u8>>> {
         // `read(0)` would return b"" and look like EOF, so it is a ValueError
         // rather than a second thing b"" can mean.

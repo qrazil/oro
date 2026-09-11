@@ -97,6 +97,6 @@ check("a chunk size line with no CRLF", outcome(b"POST / HTTP/1.1\r\nHost: h\r\n
 print("--- a Content-Length body that the client never finished")
 req = parse(b"POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 10\r\n\r\nabc")
 try:
-    print(io.read(req.body, 10))
+    print(io.read(req.body, fixed_size=10))
 except EOFError as e:
-    print(f"io.read(body, 10) raised EOFError: {e}")
+    print(f"io.read(body, fixed_size=10) raised EOFError: {e}")

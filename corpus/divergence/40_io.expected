@@ -9,7 +9,7 @@ true
 short stream: stream ended after 2 bytes, expected 5
 caught as Exception: <class 'EOFError'>
 b''
-negative count: io.read() count must not be negative, got -1
+negative fixed_size: io.read() fixed_size must not be negative, got -1
 b'd' b'r'
 b'dri'
 b'drip'

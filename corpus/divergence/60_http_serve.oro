@@ -57,7 +57,7 @@ def read_response(c):
             closing = true
     body = b""
     if n > 0:
-        body = io.read(c, n)
+        body = io.read(c, fixed_size=n)
     return [status, body.to_str().strip(chars="\n", side="right"), closing]
 
 

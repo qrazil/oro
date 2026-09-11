@@ -7,15 +7,16 @@
 #
 # There is no `class Reader`, nothing to inherit from and no registration. Any
 # object with a `read` method of that shape is a Reader, whether it is a `File`
-# from `open()`, a `Buffer` from `io.buffer()`, `sys.stdin`, or a class someone
+# from `open()`, a `Buffer` from `io.buffer(b"")`, `sys.stdin`, or a class someone
 # wrote this afternoon — which is why every function here is written against
 # `read(n)` and `write(b)` alone, and learned about none of them.
 #
 # API
 # ---
-#   io.read(r, n=null)   -> bytes   everything until EOF, or exactly n
-#   io.copy(dst, src)    -> int     bytes copied, until src is at EOF
-#   io.buffer(b=b"")     -> Buffer  an in-memory Reader + Writer
+#   io.read(r)                  -> bytes   everything until EOF
+#   io.read(r, fixed_size=n)    -> bytes   exactly n, or EOFError
+#   io.copy(dst, src)           -> int     bytes copied, until src is at EOF
+#   io.buffer(b)                -> Buffer  an in-memory Reader + Writer
 #
 # That is the entire module, and the asymmetry in it is deliberate: there is no
 # `io.write`, because `w.write(b)` already writes all of `b` or raises. There is
@@ -33,7 +34,7 @@
 #
 #   s = io.read(f).to_str()                          # a whole file, as text
 #   f.write(s.to_bytes())                            # text, written
-#   lines = io.read(f).to_str().strip("\n", side="right").split("\n")
+#   lines = io.read(f).to_str().strip(chars="\n", side="right").split(sep="\n")
 
 # The two things in this module that cannot be written in Oro: a `Buffer` is a
 # Rust type, and a whole-stream read must `stat` and allocate once (below).
@@ -44,7 +45,7 @@ import _io
 # per buffer-full.
 _CHUNK = 65536
 
-# Everything until EOF, or exactly `n` bytes.
+# Everything until EOF, or exactly `fixed_size` bytes.
 #
 # With no count, reads until EOF. *This holds the entire stream in memory*, and
 # there is no size cap: a whole-stream read takes a path the programmer named,
@@ -53,14 +54,14 @@ _CHUNK = 65536
 # limit would fire on the 200 MB log file you meant to read and never on the
 # dangerous case.
 #
-# With a count, returns exactly `n` bytes or raises EOFError if the stream ends
+# With `fixed_size`, returns exactly that many bytes or raises EOFError if it ends
 # first. That is the form an HTTP body on a keep-alive connection needs: reading
 # to EOF is not available (the connection does not close, that is the point of
 # keep-alive) and `r.read(n)` may legally return fewer. Without it every body
 # read hand-rolls a loop, and a hand-rolled read loop is the bug that works
 # against localhost and fails under load when a request spans two packets.
-def read(r, n=null):
-    if n == null:
+def read(r, fixed_size=null):
+    if fixed_size == null:
         # `stat` and allocate once, in Rust, for the streams whose size is
         # knowable. Growing a buffer chunk by chunk holds the old and the new
         # allocation at the moment of the last doubling — a transient peak of
@@ -79,14 +80,14 @@ def read(r, n=null):
             parts.append(chunk)
             chunk = r.read(_CHUNK)
         return parts.join(b"")
-    if n < 0:
-        raise ValueError(f"io.read() count must not be negative, got {n}")
+    if fixed_size < 0:
+        raise ValueError(f"io.read() fixed_size must not be negative, got {fixed_size}")
     parts = []
     got = 0
-    while got < n:
-        chunk = r.read(n - got)
+    while got < fixed_size:
+        chunk = r.read(fixed_size - got)
         if chunk == b"":
-            raise EOFError(f"stream ended after {got} bytes, expected {n}")
+            raise EOFError(f"stream ended after {got} bytes, expected {fixed_size}")
         parts.append(chunk)
         got = got + len(chunk)
     # Everything arrived in one read, which is the usual case for a body that
@@ -118,5 +119,5 @@ def copy(dst, src):
 # protocol be written, tested and fed adversarial input before a socket exists.
 # `write` appends, `read` consumes from the front, and `bytes()` is what has
 # been written and not yet read.
-def buffer(b=b""):
+def buffer(b):
     return _io.buffer(b)

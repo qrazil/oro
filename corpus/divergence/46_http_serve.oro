@@ -24,7 +24,7 @@ def check(label, got, want):
 class Conn:
     def __init__(self, incoming):
         self.incoming = io.buffer(incoming)
-        self.outgoing = io.buffer()
+        self.outgoing = io.buffer(b"")
 
     def read(self, n):
         return self.incoming.read(n)

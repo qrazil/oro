@@ -218,7 +218,7 @@ print("https is refused before a socket exists:", failure(() => http.fetch("GET"
 # connection is still open when it returns, and the caller closes it.
 print("--- stream() hands back a live connection")
 resp = http.stream("GET", base + "/big")
-sink = io.buffer()
+sink = io.buffer(b"")
 # Bound out here because a name first bound in a `try` body does not survive
 # it, and the claim below is outside the block that does the copying.
 copied = 0

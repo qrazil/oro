@@ -1892,7 +1892,7 @@ fn io_read_works_on_an_oro_class_that_only_has_read() {
 }
 
 /// A Reader may legally return fewer bytes than asked for without being at
-/// EOF. `io.read(r, n)` is the function that hides that; `r.read(n)` is the
+/// EOF. `io.read(r, fixed_size=n)` is the function that hides that; `r.read(n)` is the
 /// primitive that does not.
 #[test]
 fn io_read_with_a_count_loops_over_short_reads() {
@@ -1904,13 +1904,13 @@ fn io_read_with_a_count_loops_over_short_reads() {
                \x20       out = self.data[0:1]\n\
                \x20       self.data = self.data[1:]\n\
                \x20       return out\n\
-               r = io.read(Dribble(b\"drip\"), 3)\n";
+               r = io.read(Dribble(b\"drip\"), fixed_size=3)\n";
     assert_eq!(eval_last(src).repr(), "b'dri'");
 
     // A stream that ends short of `n` is an EOFError — the case a hand-rolled
     // read loop gets wrong when a request spans two packets.
     let e = run_err(
-        "import io\nr = io.read(io.buffer(b\"ab\"), 5)\n",
+        "import io\nr = io.read(io.buffer(b\"ab\"), fixed_size=5)\n",
     );
     assert!(e.message.contains("EOFError"), "got: {}", e.message);
     assert!(e.message.contains("stream ended after 2 bytes"), "got: {}", e.message);
@@ -1919,7 +1919,7 @@ fn io_read_with_a_count_loops_over_short_reads() {
 #[test]
 fn io_copy_moves_bytes_between_any_two_streams() {
     let src = "import io\n\
-               dst = io.buffer()\n\
+               dst = io.buffer(b\"\")\n\
                n = io.copy(dst, io.buffer(b\"payload\"))\n\
                r = f\"{n}:{dst.bytes().to_str()}\"\n";
     assert_eq!(fstr(src), "7:payload");
@@ -2638,7 +2638,7 @@ fn an_error_in_an_embedded_stdlib_module_names_that_module() {
         err.source
     );
 
-    let err = run_err("import io\nio.read(io.buffer(b\"ab\"), 5)\n");
+    let err = run_err("import io\nio.read(io.buffer(b\"ab\"), fixed_size=5)\n");
     assert_eq!(&*err.source, "<std/io.oro>", "got: {}", err.source);
 }
 

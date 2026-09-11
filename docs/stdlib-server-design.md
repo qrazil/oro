@@ -510,7 +510,7 @@ Three Rust-backed types, and that is all of them:
 |---|---|---|---|---|
 | `File` | `open(path, mode="r")` | yes (`"r"`) | yes (`"w"`/`"a"`) | `read_until`, `close()` |
 | `TcpStream` | `net.dial`, `listener.accept()` | yes | yes | `read_until`, `close()`, and §4 |
-| `Buffer` | `io.buffer(b=b"")` | yes | yes | `read_until`, `bytes()` |
+| `Buffer` | `io.buffer(b)` | yes | yes | `read_until`, `bytes()` |
 
 Down from five. `BufReader` and `BufWriter` are gone, for the two reasons that
 follow this table.
@@ -631,9 +631,10 @@ drop-flush and nothing to lose by never calling `close()` at all.
 ### Free functions: three of them
 
 ```python
-io.read(r, n=null)     # everything until EOF, or exactly n (EOFError if short)
-io.copy(dst, src)      # -> int, bytes copied, until src EOF
-io.buffer(b=b"")       # an in-memory Reader + Writer
+io.read(r)                # everything until EOF
+io.read(r, fixed_size=n)  # exactly n, or EOFError if the stream ends short
+io.copy(dst, src)         # -> int, bytes copied, until src EOF
+io.buffer(b)              # an in-memory Reader + Writer
 ```
 
 That is the entire `io` module. `io.copy` is a chunk-at-a-time loop over the
@@ -1752,7 +1753,7 @@ one hierarchy:
 | write to a closed peer | `BrokenPipeError` |
 | local abort | `ConnectionAbortedError` |
 | read/write deadline | `TimeoutError` |
-| `io.read(r, n)` short | `EOFError` |
+| `io.read(r, fixed_size=n)` short | `EOFError` |
 | bind to a used port, and everything else | `OSError` with the errno-shaped message `modules::io_err` already produces |
 
 New classes: `ConnectionError` under `OSError`, with `ConnectionRefusedError`,
@@ -2620,8 +2621,8 @@ These are the load-bearing spellings. Getting one wrong is expensive forever.
   arbitrary size. The *implementation* moved to Rust after 1.0's shape was
   already fixed (§5), which is exactly why moving it changed nothing here: the
   surface was frozen before the loop was.
-- **The three names in `io`**: `io.read(r, n=null)`, `io.copy(dst, src)`,
-  `io.buffer(b=b"")`. A module this small is only defensible if it stays this
+- **The three names in `io`**: `io.read(r, fixed_size=null)`, `io.copy(dst, src)`,
+  `io.buffer(b)`. A module this small is only defensible if it stays this
   small; every addition after 1.0 is permanent.
 - **`open(path, mode="r")`** with `"r"` / `"w"` / `"a"`, all three returning byte
   streams, and no `b` suffix. A later `"rw"` has to fit alongside these three
