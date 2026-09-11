@@ -2220,8 +2220,8 @@ impl Vm {
     fn do_call_method(&mut self, pair: usize) -> Result<Step, VmError> {
         let (name_idx, argc) = self.task.frames.last().expect("no active frame").code.pairs[pair];
         // The top two bits are the chain-fusion hints, not part of the count.
-        let hint = argc & crate::compiler::CHAIN_HINT != 0;
-        let flush = argc & crate::compiler::CHAIN_FLUSH != 0;
+        // Only a *native* method can be a chain step, so they are read in that
+        // arm and nowhere else; an Oro method call never looks at them.
         let n = (argc & !crate::compiler::CHAIN_BITS) as usize;
         let tag_is = {
             let stack = &self.task.frames.last().expect("no active frame").stack;
@@ -2294,7 +2294,14 @@ impl Vm {
                 let name =
                     self.task.frames.last().expect("no active frame").code.names[name_idx as usize]
                         .clone();
-                self.invoke_native_method(recv_or_callee, &name, args, Vec::new(), hint, flush)
+                self.invoke_native_method(
+                    recv_or_callee,
+                    &name,
+                    args,
+                    Vec::new(),
+                    argc & crate::compiler::CHAIN_HINT != 0,
+                    argc & crate::compiler::CHAIN_FLUSH != 0,
+                )
             }
             _ => self.invoke(recv_or_callee, args, Vec::new()),
         }
@@ -2464,29 +2471,8 @@ impl Vm {
         // the pipeline pending and falls through to the native method, which
         // raises the diagnostic it always did.
         if flush {
-            if let Some((limit, pick_first)) = self.chain_tail(&receiver, name, &args) {
-                if let Some(p) = self.take_chain(&receiver) {
-                    let (_, source) = self.seq_receiver(name, &receiver)?;
-                    return self
-                        .begin_seq(SeqJob {
-                            op: SeqOp::Collect,
-                            shape: p.shape,
-                            items: Vec::new(),
-                            results: Vec::new(),
-                            next: 0,
-                            func: None,
-                            stages: p.stages,
-                            src: source,
-                            work: Vec::new(),
-                            held: Value::None,
-                            resume: SeqResume::Terminal,
-                            limit,
-                            pick_first,
-                            line: self.task.line,
-                            col: self.task.col,
-                        })
-                        .map(|()| Step::Next);
-                }
+            if let Some(step) = self.chain_tail(&receiver, name, &args)? {
+                return Ok(step);
             }
         }
         // list.sort(key=…, reverse=…) shares sorted()'s frame-driven
@@ -3132,18 +3118,54 @@ impl Vm {
     /// Returns `None` when the call is not one this can answer (a wrong arity,
     /// a non-integer count). The pipeline is left pending and the native method
     /// runs on the receiver, where it raises the diagnostic it always did.
+    ///
+    /// `#[inline(never)]` and out of line on purpose: the branch that reaches it
+    /// is on every native method call in the program and is taken by almost
+    /// none of them, and pass three's item 32 is the record of what an extra
+    /// few hundred bytes in the middle of a hot function costs everything
+    /// around it.
+    #[inline(never)]
     fn chain_tail(
         &mut self,
         receiver: &Value,
         name: &str,
         args: &[Value],
-    ) -> Option<(usize, bool)> {
-        match (name, args) {
+    ) -> Result<Option<Step>, VmError> {
+        if !matches!(
+            receiver,
+            Value::List(_) | Value::Tuple(_) | Value::Dict(_) | Value::Range(_)
+        ) {
+            return Ok(None);
+        }
+        let Some((limit, pick_first)) = (match (name, args) {
             ("first", []) => Some((1, true)),
             ("take", [Value::Int(n)]) if *n >= 0 => Some((*n as usize, false)),
             _ => None,
-        }
-        .filter(|_| matches!(receiver, Value::List(_) | Value::Tuple(_) | Value::Dict(_) | Value::Range(_)))
+        }) else {
+            return Ok(None);
+        };
+        let Some(p) = self.take_chain(receiver) else {
+            return Ok(None);
+        };
+        let (_, source) = self.seq_receiver(name, receiver)?;
+        self.begin_seq(SeqJob {
+            op: SeqOp::Collect,
+            shape: p.shape,
+            items: Vec::new(),
+            results: Vec::new(),
+            next: 0,
+            func: None,
+            stages: p.stages,
+            src: source,
+            work: Vec::new(),
+            held: Value::None,
+            resume: SeqResume::Terminal,
+            limit,
+            pick_first,
+            line: self.task.line,
+            col: self.task.col,
+        })
+        .map(|()| Some(Step::Next))
     }
 
     /// The elements a collection operation walks, and the shape to rebuild.
