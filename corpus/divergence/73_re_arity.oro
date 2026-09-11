@@ -1,0 +1,24 @@
+# INTENTIONAL DIVERGENCE: every refusal below is a call CPython accepts.
+# Reviewed by hand; every line is a claim in words.
+#
+# The argument rule: a parameter with no default is passed by position, and
+# one with a default is passed by name.
+import re
+
+def refused(label, thunk):
+    try:
+        thunk()
+        print(label, "-> accepted")
+    except TypeError as e:
+        print(label, "->", e)
+
+# --- a Match method's group index is required --------------------------------
+# CPython lets `m.group()` mean `m.group(0)`. The number means itself, every
+# call can say it, and `m.start(0)` is still valid CPython, so it is required.
+m = re.search(r"(\w+)@(\w+)", "mail bob@host now")
+print("group(0), start(0), end(0):", m.group(0), m.start(0), m.end(0))
+print("group(1), start(1), end(1):", m.group(1), m.start(1), m.end(1))
+refused("m.group()", () => m.group())
+refused("m.start()", () => m.start())
+refused("m.end()", () => m.end())
+refused("m.group(n=1)", () => m.group(n=1))

@@ -1293,6 +1293,7 @@ different.
 | `f.write("text")` | `f.write("text".to_bytes())` | Streams take bytes, in both directions, everywhere |
 | `f.flush()` | *(nothing)* | Writers are unbuffered, so there is nothing pending |
 | `sys.stdout` as a name | `sys.stdout.write(b"…")` | It is a real stream on fd 1 now |
+| `m.group()` / `m.start()` / `m.end()` | `m.group(0)` / `m.start(0)` / `m.end(0)` | The group index is required; the number means itself, and `(0)` is still valid CPython |
 | `import subprocess` | `import proc` | Different defaults deserve a different name |
 | `subprocess.run(a, capture_output=True, text=True)` | `proc.run(a)` | Capture is always on, and the output streams live as well |
 | `r.stdout` after a failed command | `proc.run(a, check=false)` first | A nonzero exit now raises `CommandError` |

@@ -708,7 +708,7 @@ fn re_search_and_groups() {
 
 #[test]
 fn re_finditer_positions() {
-    let src = "import re\nspans = []\nfor m in re.finditer(r\"\\w+\", \"aa bb\"):\n    spans.append(m.start())\n    spans.append(m.end())\n";
+    let src = "import re\nspans = []\nfor m in re.finditer(r\"\\w+\", \"aa bb\"):\n    spans.append(m.start(0))\n    spans.append(m.end(0))\n";
     let got: Vec<i64> = run_locals(src)
         .iter()
         .find_map(|v| match v {

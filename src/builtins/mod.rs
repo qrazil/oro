@@ -895,12 +895,16 @@ fn match_method(
     args: Vec<Value>,
 ) -> VResult<Value> {
     use crate::regexutil as rx;
-    // The group index defaults to 0 (the whole match).
+    // The group index is required: `m.group(0)` is the whole match, said.
     let n = match args.as_slice() {
-        [] => 0usize,
         [Value::Int(i)] if *i >= 0 => *i as usize,
         [Value::Int(_)] => return Err(index_error("group index must be non-negative")),
-        _ => return Err(type_error(format!("{name}() takes an optional group index"))),
+        [] => {
+            return Err(type_error(format!(
+                "{name}() missing its group index — m.{name}(0) is the whole match"
+            )))
+        }
+        _ => return Err(type_error(format!("{name}() takes one group index, an int"))),
     };
     match name {
         "group" => rx::group(m, n),

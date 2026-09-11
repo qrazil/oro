@@ -1,0 +1,6 @@
+group(0), start(0), end(0): bob@host 5 13
+group(1), start(1), end(1): bob 5 8
+m.group() -> group() missing its group index — m.group(0) is the whole match
+m.start() -> start() missing its group index — m.start(0) is the whole match
+m.end() -> end() missing its group index — m.end(0) is the whole match
+m.group(n=1) -> group() takes no keyword arguments
