@@ -1,7 +1,6 @@
 s = "hello world"
 print(s.upper())
 print(s.split(" "))
-print("-".join(["a", "b", "c"]))
 print("  pad  ".strip())
 print(s.replace("world", "oro"))
 print(s.startswith("hell"))

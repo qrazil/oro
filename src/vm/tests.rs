@@ -879,17 +879,32 @@ out = f"{hit} {seen}"
 
 #[test]
 fn protocol_names_do_not_steal_string_methods() {
-    // `find` and `join` exist on both str and collections; each keeps its own
-    // meaning, chosen by the receiver's type.
+    // `find` exists on both str and collections; each keeps its own meaning,
+    // chosen by the receiver's type. `join` used to be the second such name
+    // and is not any more: it lives on the collection alone, so a `str`
+    // receiver is the cut message rather than the other half of a pair.
     let src = r#"
 letters = ["a", "b"]
 a = "abcb".find("b")
-b = ", ".join(letters)
 c = letters.join("-")
 d = [1, 2, 3].find(x => x > 1)
-out = f"{a} {b} {c} {d}"
+out = f"{a} {c} {d}"
 "#;
-    assert_eq!(fstr(src), "1 a, b a-b 2");
+    assert_eq!(fstr(src), "1 a-b 2");
+}
+
+/// `str.join`/`bytes.join` are cut, and say so. Both halves were byte-for-byte
+/// the same operation; the one that survives is the one that ends a chain.
+#[test]
+fn str_and_bytes_join_are_cut_naming_the_collection_form() {
+    let e = run_err("r = \", \".join([\"a\", \"b\"])\n");
+    assert!(e.message.contains("`str.join` is not in Oro"), "got: {}", e.message);
+    assert!(e.message.contains("xs.join(sep)"), "got: {}", e.message);
+    let e = run_err("r = b\",\".join([b\"a\"])\n");
+    assert!(e.message.contains("`bytes.join` is not in Oro"), "got: {}", e.message);
+    // One separator, and only one: the extra argument used to be ignored.
+    let e = run_err("r = [\"a\"].join(\"-\", 2)\n");
+    assert!(e.message.contains("join() takes 1 argument"), "got: {}", e.message);
 }
 
 #[test]
@@ -1046,7 +1061,6 @@ fn bytes_methods_mirror_the_str_set() {
     assert_eq!(eval("r = b\"a,b,c\".split(b\",\", 1)\n").repr(), "[b'a', b'b,c']");
     assert_eq!(eval("r = b\"a b\\x0bc\".split()\n").repr(), "[b'a', b'b', b'c']");
     assert_eq!(eval("r = [b\"a\", b\"b\"].join(b\"-\")\n").repr(), "b'a-b'");
-    assert_eq!(eval("r = b\"-\".join([b\"a\", b\"b\"])\n").repr(), "b'a-b'");
     assert_eq!(int(&eval("r = b\"abc\".find(b\"b\")\n")), 1);
     assert_eq!(int(&eval("r = b\"abc\".find(b\"z\")\n")), -1);
     // The empty needle is found at 0, as it is for `str`.

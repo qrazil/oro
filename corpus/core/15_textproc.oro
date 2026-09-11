@@ -6,7 +6,6 @@ for line in lines:
 names = []
 for r in rows:
     names.append(r[0].upper())
-print(", ".join(names))
 
 cities = []
 for r in rows:

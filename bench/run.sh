@@ -43,7 +43,7 @@ done
 BENCHES=(
   "fib"
   "loop"
-  "strjoin"
+  "strjoin:py=strjoin.py"
   "strops"
   "dictops:py=dictops.py"
   "dictstr"

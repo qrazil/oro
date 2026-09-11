@@ -19,7 +19,7 @@ harness checks oro and CPython agree before reporting a time.
 |---|---|
 | `fib` | the call path: `fib(27)`, ~400k frame push/bind/return cycles |
 | `loop` | raw dispatch: a 3M-iteration `while` with integer arithmetic |
-| `strjoin` | 200k f-string formats into a list, then `join` |
+| `strjoin` | 200k f-string formats into a list, then `join` — oro-only since `sep.join(xs)` was cut, CPython twin in `strjoin.py` |
 | `dictops` | 500k integer-keyed dict writes, then a full iteration + lookup scan |
 | `dictstr` | string-keyed dicts: 200k distinct keys, then 500k hits on one small record |
 | `oo` | attribute load/store, method calls, construction, `super()` |

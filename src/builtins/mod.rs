@@ -677,8 +677,8 @@ pub fn is_collection(v: &Value) -> bool {
     )
 }
 
-/// The sixteen names on `str` — and, plus `hex`, on `bytes`. One list, so the
-/// two types can never drift apart.
+/// The fifteen names on `str` — and, plus `hex` and `scan`, on `bytes`. One
+/// list, so the two types can never drift apart.
 pub fn is_str_method(name: &str) -> bool {
     matches!(
         name,
@@ -692,7 +692,6 @@ pub fn is_str_method(name: &str) -> bool {
             | "rm_suffix"
             | "upper"
             | "lower"
-            | "join"
             | "replace"
             | "is_digit"
             | "is_alpha"
@@ -731,6 +730,19 @@ pub fn cut_method_message(recv: &Value, name: &str) -> Option<&'static str> {
             "`zfill` is not in Oro — a format spec pads: f\"{n:05d}\", f\"{s:0>5}\", \
              or f\"{s:0>{width}}\" for a width computed at run time"
         }
+        // `sep.join(xs)` and `xs.join(sep)` were byte-for-byte the same
+        // operation with the same type rules, and the README already argued
+        // for the second one — "the sequence is the subject and the separator
+        // the detail" — against a spelling it still shipped. The collection
+        // form is the half that chains, so it is the half that stays.
+        "join" if matches!(recv, Value::Str(_)) => {
+            "`str.join` is not in Oro — the separator is the argument and the sequence \
+             the receiver: use `xs.join(sep)`"
+        }
+        "join" => {
+            "`bytes.join` is not in Oro — the separator is the argument and the sequence \
+             the receiver: use `xs.join(sep)`"
+        }
         "removeprefix" => "`removeprefix` is spelled `rm_prefix` in Oro",
         "removesuffix" => "`removesuffix` is spelled `rm_suffix` in Oro",
         "isdigit" => "`isdigit` is spelled `is_digit` in Oro",
@@ -753,7 +765,7 @@ pub fn method_exists(recv: &Value, name: &str) -> bool {
     }
     match recv {
         Value::Str(_) => is_str_method(name),
-        // The same sixteen names `str` carries, plus `hex` and `scan`, which
+        // The same fifteen names `str` carries, plus `hex` and `scan`, which
         // only bytes needs.
         Value::Bytes(_) => is_str_method(name) || matches!(name, "hex" | "scan"),
         Value::List(_) => {
@@ -1704,12 +1716,19 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
             Ok(Value::List(OroList::new(out)))
         }
         "join" => {
-            // `xs.join(", ")` rather than `", ".join(xs)`: the separator is the
-            // detail, the sequence is the subject, and this way it ends a chain
-            // instead of forcing the reader back to the front of the line.
+            // The only join in the language: `", ".join(xs)` is cut, because
+            // the separator is the detail and the sequence is the subject, and
+            // this way the call ends a chain instead of forcing the reader back
+            // to the front of the line.
             // The separator's type decides the result's, and the elements
             // must match it: `join` never guesses a conversion, the same rule
             // `json.stringify` applies to dict keys.
+            //
+            // One argument, and only one. `xs.join(sep, 2)` used to answer
+            // confidently having ignored the 2 — the same drift `enumerate`
+            // had, found when `str.join`'s arity probes moved over here and
+            // this side turned out not to have any.
+            exactly(&args, 1, "join")?;
             if let Some(Value::Bytes(sep)) = args.first() {
                 let mut out: Vec<u8> = Vec::new();
                 for (i, it) in items.iter().enumerate() {
@@ -1897,23 +1916,6 @@ fn str_method(
             };
             let parts = parts.into_iter().map(Value::str).collect::<Vec<_>>();
             Ok(Value::List(OroList::new(parts)))
-        }
-        "join" => {
-            exactly(&args, 1, "join")?;
-            let items = crate::vm::iterate_to_vec(&args[0])?;
-            let mut pieces = Vec::with_capacity(items.len());
-            for it in items {
-                match it {
-                    Value::Str(p) => pieces.push(p.s.clone()),
-                    other => {
-                        return Err(format!(
-                            "join() requires str elements, found '{}'",
-                            other.type_name()
-                        ))
-                    }
-                }
-            }
-            Ok(Value::str(pieces.join(s)))
         }
         _ => Err(format!("'str' object has no method '{name}'")),
     }
@@ -2275,26 +2277,6 @@ fn bytes_method(
             };
             let parts = parts.into_iter().map(Value::bytes).collect::<Vec<_>>();
             Ok(Value::List(OroList::new(parts)))
-        }
-        "join" => {
-            exactly(&args, 1, "join")?;
-            let items = crate::vm::iterate_to_vec(&args[0])?;
-            let mut out: Vec<u8> = Vec::new();
-            for (i, it) in items.iter().enumerate() {
-                if i > 0 {
-                    out.extend_from_slice(b);
-                }
-                match it {
-                    Value::Bytes(p) => out.extend_from_slice(p),
-                    other => {
-                        return Err(format!(
-                            "join() requires bytes elements, found '{}'",
-                            other.type_name()
-                        ))
-                    }
-                }
-            }
-            Ok(Value::bytes(out))
         }
         "hex" => {
             exactly(&args, 0, "hex")?;

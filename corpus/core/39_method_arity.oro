@@ -12,6 +12,12 @@
 # the call is an `AttributeError` here and a `TypeError` under CPython. Its
 # replacement is in corpus/divergence/67_dict_pairs.oro, where the cut is
 # recorded with the message the method now answers with.
+#
+# The three `join` blocks went the same way, for the same reason: the separator
+# is no longer the receiver, so `"-".join(["a"], 2)` is an `AttributeError` here
+# and a `TypeError` under CPython. Their replacements — `["a"].join("-", 2)` and
+# `["a"].join()` — are in corpus/divergence/51_string_surface.oro, where the
+# twin still writes them in CPython's spelling and the oracle still answers.
 
 
 try:
@@ -129,18 +135,6 @@ except TypeError:
     print('b"abc".count()', "-> TypeError")
 
 try:
-    "-".join(["a"], 2)
-    print('"-".join(["a"], 2)', "-> no error")
-except TypeError:
-    print('"-".join(["a"], 2)', "-> TypeError")
-
-try:
-    "-".join()
-    print('"-".join()', "-> no error")
-except TypeError:
-    print('"-".join()', "-> TypeError")
-
-try:
     b"abc".upper(1)
     print('b"abc".upper(1)', "-> no error")
 except TypeError:
@@ -199,12 +193,6 @@ try:
     print('b"a b".split(b"b", 1, 2)', "-> no error")
 except TypeError:
     print('b"a b".split(b"b", 1, 2)', "-> TypeError")
-
-try:
-    b"-".join([b"a"], 2)
-    print('b"-".join([b"a"], 2)', "-> no error")
-except TypeError:
-    print('b"-".join([b"a"], 2)', "-> TypeError")
 
 try:
     b"abc".hex(1)

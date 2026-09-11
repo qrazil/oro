@@ -243,7 +243,7 @@ Implemented and working today:
   comparison against someone's local variable. A type name is not callable
   (`range(n)` is the exception — a range has no literal to build it with); to
   convert, use the `to_` casts below, and to build an empty one, the literal.
-- **Methods:** the `str`/`bytes` surface — sixteen names, the same sixteen on
+- **Methods:** the `str`/`bytes` surface — fifteen names, the same fifteen on
   both types (`bytes` adds `hex` and `scan`) — plus the `list`/`dict` methods,
   the `to_` conversions on every value, and the collection protocol below.
   `b.scan(allowed)` is how many bytes at the front of `b` are all in the
@@ -254,7 +254,7 @@ Implemented and working today:
   lives.
 
   `strip` `split` `find` `count` `startswith` `endswith` `rm_prefix`
-  `rm_suffix` `upper` `lower` `join` `replace` `is_digit` `is_alpha`
+  `rm_suffix` `upper` `lower` `replace` `is_digit` `is_alpha`
   `is_alnum` `is_space`
 
   Three of them take a keyword, and only their own. `strip(chars=null,
@@ -335,12 +335,12 @@ Implemented and working today:
   callback is unaffected, fused or not: the receiver is copied before the first
   callback runs, so a chain never sees its own source change under it.
 
-  Note `xs.join(", ")` rather than `", ".join(xs)`: the sequence is the subject
-  and the separator the detail, and this way it ends a chain instead of sending
-  the reader back to the front of the line.
+  Note `xs.join(", ")` and **not** `", ".join(xs)`, which is cut: the sequence
+  is the subject and the separator the detail, and this way it ends a chain
+  instead of sending the reader back to the front of the line.
 - **Lambdas:** `x => x * 2`, `(a, b) => a + b`, `() => 0`.
 - **Generators work everywhere.** A generator can be passed to any builtin that
-  consumes an iterable (`sum`, `sorted`, `join`, …) and can start a chain
+  consumes an iterable (`sum`, `sorted`, `min`, …) and can start a chain
   (`g().map(f)`), not just drive a `for` loop. Builtins run in Rust and can
   never re-enter the interpreter, so the generator is drained a frame at a time
   and the call is retried — the native stack never grows with it.
@@ -521,6 +521,22 @@ Each of these is omitted on purpose. The reason matters more than the list.
   All five raise, naming the replacement. So do CPython's `removeprefix`,
   `removesuffix`, `isdigit`, `isalpha`, `isalnum` and `isspace`, which exist
   here under Oro's own names (`rm_prefix`, `rm_suffix`, `is_digit`, …).
+
+- **No `str.join`/`bytes.join`.** `", ".join(xs)` and `xs.join(", ")` were
+  byte-for-byte the same operation, with the same type rules and the same
+  refusal of a mixed list, and the language shipped both while this document
+  argued for one of them. The collection form is the one that survives: the
+  sequence is the subject and the separator the detail, so the call ends a
+  chain — `pairs.map(encode).join("&")` — instead of sending the reader back
+  to the front of the line to find out what is being joined. The str form
+  raises, naming it.
+
+  The evidence that two spellings cost something even when both are correct is
+  that `std/http.oro` used each of them, 244 lines apart, and nothing in the
+  file explains why. Tree-wide it was 26 uses of one and 16 of the other:
+  neither had won, and a model asked to join a list had no way to tell which
+  the codebase wanted, because the codebase wanted both. That is the whole
+  argument for the thesis in one method name.
 
 - **No `re.match`.** It anchors at the start of the string — almost always not
   what people mean, and endlessly confused with `re.search`. Use `re.search`, or
@@ -1197,6 +1213,7 @@ different.
 | `s.zfill(n)` | `f"{n:05d}"`, `f"{s:0>5}"`, `f"{s:0>{w}}"` | Fully covered by the format spec, which also pads with anything else |
 | `s.removeprefix(p)` / `s.removesuffix(p)` | `s.rm_prefix(p)` / `s.rm_suffix(p)` | Same method, shorter name |
 | `s.isdigit()` / `isalpha()` / `isalnum()` / `isspace()` | `s.is_digit()` / `is_alpha()` / `is_alnum()` / `is_space()` | Same predicates, in the language's own naming |
+| `sep.join(xs)` | `xs.join(sep)` | One join, on the collection; the sequence is the subject and the call ends a chain |
 
 `f"{x}"` is unchanged and is usually the better replacement for `str(x)` in
 string building — it also still runs under CPython, which keeps those programs
@@ -1217,7 +1234,7 @@ Stated plainly:
   module scope makes it *local* (exactly as in Python) — Oro turns the resulting
   unbound-variable error into a message that explains the fix.
 - **Consuming an infinite generator hangs.** A generator passed to a builtin
-  (`sum`, `sorted`, `join`, …) or used to start a chain is drained eagerly, so
+  (`sum`, `sorted`, `min`, …) or used to start a chain is drained eagerly, so
   `sum(forever())` never returns rather than failing. Inside a `for` loop it
   stays lazy, as it always was.
 - **`proc.run` retains at most 64 MiB per stream.** Capture is no longer

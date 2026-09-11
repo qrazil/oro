@@ -103,3 +103,28 @@ for s in ["123", "12a", "abc", "café", "a1", "", " ", " \t\n", "\x1c", "３", "
     print(repr(s), s.isdigit(), s.isalpha(), s.isalnum(), s.isspace())
 for b in [b"123", b"12a", b"abc", b"a1", b"", b" ", b" \t\x0b", b"\xff"]:
     print(b, b.isdigit(), b.isalpha(), b.isalnum(), b.isspace())
+
+# `join`, written the way CPython spells it: the separator is the receiver.
+print("--- join")
+print(repr("-".join(["a", "b", "c"])), repr("-".join(["a"])), repr("-".join([])))
+print(repr("".join(["a", "b"])), repr(", ".join(["alice", "bob"])))
+print(repr("-".join(("a", "b"))))
+print(b",".join([b"a", b"b", b"c"]), b"".join([b"a", b"b"]), b",".join([]))
+
+try:
+    "-".join(["a"], 2)
+    print('["a"].join("-", 2)', "-> no error")
+except TypeError:
+    print('["a"].join("-", 2)', "-> TypeError")
+
+try:
+    "-".join()
+    print('["a"].join()', "-> no error")
+except TypeError:
+    print('["a"].join()', "-> TypeError")
+
+try:
+    "-".join(["a", 1])
+    print('["a", 1].join("-")', "-> no error")
+except TypeError:
+    print('["a", 1].join("-")', "-> TypeError")

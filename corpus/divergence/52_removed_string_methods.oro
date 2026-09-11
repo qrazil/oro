@@ -43,6 +43,12 @@ except AttributeError as e:
     print(e)
 
 try:
+    "-".join(["a", "b"])
+    print('"-".join(["a", "b"])', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
     "abc".removeprefix("a")
     print('"abc".removeprefix("a")', "-> still here")
 except AttributeError as e:
@@ -113,6 +119,12 @@ except AttributeError as e:
 try:
     b"abc".index(b"b")
     print('b"abc".index(b"b")', "-> still here")
+except AttributeError as e:
+    print(e)
+
+try:
+    b"-".join([b"a", b"b"])
+    print('b"-".join([b"a", b"b"])', "-> still here")
 except AttributeError as e:
     print(e)
 

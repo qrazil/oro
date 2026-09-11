@@ -224,3 +224,11 @@ b'' false false false false
 b' ' false false false true
 b' \t\x0b' false false false true
 b'\xff' false false false false
+--- join
+'a-b-c' 'a' ''
+'ab' 'alice, bob'
+'a-b'
+b'a,b,c' b'ab' b''
+["a"].join("-", 2) -> TypeError
+["a"].join() -> TypeError
+["a", 1].join("-") -> TypeError

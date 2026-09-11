@@ -1770,7 +1770,7 @@ def encode_query(params):
                 out.append(key + "=" + quote_plus(_query_bytes(item, "value")).to_str())
         else:
             out.append(key + "=" + quote_plus(_query_bytes(v, "value")).to_str())
-    return "&".join(out)
+    return out.join("&")
 
 
 # `out`, as the type `s` was: bytes stay bytes, and anything else — which is

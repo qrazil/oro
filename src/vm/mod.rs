@@ -6211,6 +6211,11 @@ fn classify_error(msg: &str) -> &'static str {
         || m.contains("argument must be")
         || m.contains("must be str")
         || m.contains("requires string")
+        // `join() requires str elements, found 'int'` — CPython's
+        // `sequence item 1: expected str instance, int found`, which is a
+        // TypeError there and was a bare RuntimeError here.
+        || m.contains("requires str elements")
+        || m.contains("requires bytes elements")
         || m.contains("as left operand")
         || m.contains("not supported between")
         || m.contains("takes")

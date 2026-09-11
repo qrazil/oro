@@ -5,13 +5,13 @@ def total(*nums):
     return t
 
 def describe(name, *tags, **opts):
-    parts = [name]
+    out = name
     for t in tags:
-        parts.append(t)
+        out = out + " " + t
     keys = sorted(opts.keys())
     for k in keys:
-        parts.append(k + "=" + f"{opts[k]}")
-    return " ".join(parts)
+        out = out + " " + k + "=" + f"{opts[k]}"
+    return out
 
 def forward(*args, **kwargs):
     return describe(*args, **kwargs)

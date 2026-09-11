@@ -5,5 +5,5 @@ while i < 200000:
     parts.append(f"{i}")
     i = i + 1
 
-s = ",".join(parts)
+s = parts.join(",")
 print(len(s))
