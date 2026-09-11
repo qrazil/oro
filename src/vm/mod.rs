@@ -5041,9 +5041,13 @@ impl Vm {
     /// raised as-is; anything else is a TypeError.
     fn normalize_raise(&mut self, v: Value) -> Result<Value, VmError> {
         match v {
-            Value::Class(c) if c.is_exception => {
-                Ok(self.make_exception_instance(c, Vec::new()))
-            }
+            // `raise E` and `raise E()` used to be the same, so `raise <name>`
+            // meant re-raise or construct depending on what the name held at
+            // run time. One spelling: the operand is always an instance.
+            Value::Class(c) if c.is_exception => Err(self.err(type_error(format!(
+                "`raise` needs an exception instance, not the class — write `raise {}()`",
+                c.name
+            )))),
             Value::Instance(ref i) if i.class.is_exception => Ok(v),
             other => Err(self.err(type_error(format!(
                 "exceptions must derive from BaseException, not '{}'",

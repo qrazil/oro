@@ -115,6 +115,49 @@ fn op_is_one_word() {
     assert_copy::<Op>();
 }
 
+// --- Jumps out of `finally` -------------------------------------------------
+
+/// A `return`, `break` or `continue` that leaves a `finally` body would discard
+/// the exception it is running for. Refused, including from inside an `if` or
+/// an inner `try` within the `finally`.
+#[test]
+fn a_jump_out_of_finally_is_refused() {
+    let cases = [
+        ("def f():\n    try:\n        pass\n    finally:\n        return 1\n", "`return`"),
+        ("while true:\n    try:\n        pass\n    finally:\n        break\n", "`break`"),
+        ("for x in [1]:\n    try:\n        pass\n    finally:\n        continue\n", "`continue`"),
+        (
+            "def f():\n    try:\n        pass\n    finally:\n        if true:\n            return 1\n",
+            "`return`",
+        ),
+        (
+            "def f():\n    try:\n        pass\n    finally:\n        try:\n            pass\n        \
+             except ValueError:\n            return 1\n",
+            "`return`",
+        ),
+    ];
+    for (src, word) in cases {
+        let e = compile_err(src);
+        assert!(
+            e.message.starts_with(word) && e.message.contains("inside `finally`"),
+            "{src:?} gave {:?}",
+            e.message
+        );
+    }
+}
+
+/// A jump that stays inside the `finally` is fine — a loop that starts there,
+/// or a function defined there — and so is a `return` from the `try` body.
+#[test]
+fn a_jump_that_stays_inside_finally_is_allowed() {
+    compile_src(
+        "try:\n    pass\nfinally:\n    for x in [1, 2]:\n        if x == 1:\n            \
+         continue\n        break\n",
+    );
+    compile_src("try:\n    pass\nfinally:\n    def g():\n        return 1\n");
+    compile_src("def f():\n    for x in [1]:\n        try:\n            return x\n        finally:\n            pass\n");
+}
+
 // --- Type keywords ----------------------------------------------------------
 
 fn compile_err(src: &str) -> CompileError {

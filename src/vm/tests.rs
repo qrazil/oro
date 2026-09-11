@@ -69,6 +69,18 @@ fn compile_err(src: &str) -> crate::compiler::CompileError {
     compile(&program, Rc::from("test.oro")).expect_err("expected a compile error")
 }
 
+/// `raise` takes an instance. `raise E` used to construct one silently, so
+/// `raise <name>` meant re-raise or construct depending on what the name held.
+#[test]
+fn raise_needs_an_instance_not_a_class() {
+    let src = "def f():\n    try:\n        raise ValueError\n    except TypeError as e:\n        return f\"{e}\"\n\
+               r = f()\n";
+    match eval_last(src) {
+        Value::Str(s) => assert!(s.s.contains("write `raise ValueError()`"), "{:?}", s.s),
+        other => panic!("expected str, got {}", other.repr()),
+    }
+}
+
 fn int(v: &Value) -> i64 {
     match v {
         Value::Int(i) => *i,

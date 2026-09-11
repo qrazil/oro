@@ -52,6 +52,9 @@ struct Codegen<'a> {
     /// Cursor into the current scope's child list.
     cursor: usize,
     loops: Vec<LoopCtx>,
+    /// One entry per `finally` body being compiled in this function, holding
+    /// `loops.len()` where it starts. See [`Codegen::refuse_jump_out_of_finally`].
+    finally_loops: Vec<usize>,
     /// True while compiling a function body that contains `yield`.
     is_generator: bool,
 }
@@ -88,6 +91,7 @@ impl<'a> Codegen<'a> {
             protos: Vec::new(),
             cursor: 0,
             loops: Vec::new(),
+            finally_loops: Vec::new(),
             is_generator: false,
         }
     }
@@ -231,6 +235,7 @@ impl<'a> Codegen<'a> {
                 self.emit_def(name, params, body, *line, *col)?;
             }
             Stmt::Return { value, line, col } => {
+                self.refuse_jump_out_of_finally("return", false, *line, *col)?;
                 match value {
                     Some(v) => self.emit_expr(v)?,
                     None => {
@@ -569,7 +574,9 @@ impl<'a> Codegen<'a> {
             self.emit(Op::BeginFinally, line, col);
             let finally_body = self.here();
             self.set_target(sf, finally_body);
+            self.finally_loops.push(self.loops.len());
             self.emit_child_block(finalbody.as_ref().unwrap())?;
+            self.finally_loops.pop();
             self.emit(Op::EndFinally, line, col);
         }
         Ok(())
@@ -665,6 +672,7 @@ impl<'a> Codegen<'a> {
         if self.loops.is_empty() {
             return Err(self.err("`break` outside of a loop", line, col));
         }
+        self.refuse_jump_out_of_finally("break", true, line, col)?;
         // The VM unwinds to the innermost loop block, running any enclosing
         // finally first, then restores the stack and jumps past the loop.
         self.emit(Op::Break, line, col);
@@ -675,7 +683,39 @@ impl<'a> Codegen<'a> {
         if self.loops.is_empty() {
             return Err(self.err("`continue` outside of a loop", line, col));
         }
+        self.refuse_jump_out_of_finally("continue", true, line, col)?;
         self.emit(Op::Continue, line, col);
+        Ok(())
+    }
+
+    /// Refuse a `return`, `break` or `continue` that would leave a `finally`
+    /// body. Leaving one early discards the exception it is running for, so
+    /// `try: raise E() / finally: return` would make the `raise` do nothing —
+    /// the one construct in the language that could. CPython 3.14 warns on it
+    /// (PEP 765); nothing in the tree depends on it, so Oro refuses it.
+    ///
+    /// A loop that starts inside the `finally` keeps its own `break` and
+    /// `continue`, and a function defined there compiles in a `Codegen` of its
+    /// own, so neither is caught here.
+    fn refuse_jump_out_of_finally(
+        &self,
+        word: &str,
+        loop_jump: bool,
+        line: usize,
+        col: usize,
+    ) -> CResult<()> {
+        let leaves =
+            self.finally_loops.last().is_some_and(|&d| !loop_jump || self.loops.len() == d);
+        if leaves {
+            return Err(self.err(
+                format!(
+                    "`{word}` inside `finally` would discard an exception in flight — \
+                     move it after the `try` statement"
+                ),
+                line,
+                col,
+            ));
+        }
         Ok(())
     }
 

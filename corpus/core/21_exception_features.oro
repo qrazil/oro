@@ -96,10 +96,10 @@ def wrap_error():
 
 print(wrap_error())
 
-# raising a bare exception class (no message).
+# raising an exception with no message.
 def bare():
     try:
-        raise RuntimeError
+        raise RuntimeError()
     except RuntimeError as e:
         return "got runtime error: [" + f"{e}" + "]"
 
