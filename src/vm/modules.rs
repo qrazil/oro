@@ -440,12 +440,21 @@ fn proc_run_stub(_args: Vec<Value>) -> VResult<Value> {
 /// as the message: the fourth and last rider on that channel, gone with the
 /// other three. The VM still recognises it specially, because `SystemExit`'s
 /// single argument is an `int` rather than a rendered message.
+///
+/// The code has no default, so every exit states its status: `sys.exit(0)`.
 fn sys_exit(args: Vec<Value>) -> VResult<Value> {
     let code = match args.as_slice() {
-        [] | [Value::None] => 0,
+        [Value::None] => 0,
         [Value::Int(n)] => *n,
         [Value::Bool(b)] => *b as i64,
-        _ => return Err(type_error("sys.exit() code must be an int or None in this build")),
+        [] => return Err(type_error("sys.exit() missing its exit code — sys.exit(0) for success")),
+        [_] => return Err(type_error("sys.exit() code must be an int or None in this build")),
+        _ => {
+            return Err(type_error(format!(
+                "sys.exit() takes 1 argument(s) but {} were given",
+                args.len()
+            )))
+        }
     };
     Err(VErr::new(Exc::SystemExit, code.to_string()))
 }

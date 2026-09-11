@@ -1293,6 +1293,7 @@ different.
 | `f.write("text")` | `f.write("text".to_bytes())` | Streams take bytes, in both directions, everywhere |
 | `f.flush()` | *(nothing)* | Writers are unbuffered, so there is nothing pending |
 | `sys.stdout` as a name | `sys.stdout.write(b"…")` | It is a real stream on fd 1 now |
+| `sys.exit()` | `sys.exit(0)` | The code has no default, so every exit states its status |
 | `m.group()` / `m.start()` / `m.end()` | `m.group(0)` / `m.start(0)` / `m.end(0)` | The group index is required; the number means itself, and `(0)` is still valid CPython |
 | `re.sub(p, r, s, count)`, and `re`'s `flags` / `maxsplit` / `pos` | *(refused)* | Not implemented, and no longer silently ignored: the count used to be dropped, so every match was replaced |
 | `import subprocess` | `import proc` | Different defaults deserve a different name |
