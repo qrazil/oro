@@ -1,0 +1,24 @@
+--- the dropped defaults are missing-argument errors now
+write_request needs its headers -> TypeError: write_request() missing required argument: 'headers'
+read_response needs the method -> TypeError: read_response() missing required argument: 'method'
+--- and the first of them was dead: there was no Host to be had
+an empty header dict is the same refusal -> ValueError: a request needs a Host header — `fetch` fills it in from the URL, and a caller using `write_request` directly has to say
+--- and the second was harmful: a HEAD reply is not what it says
+the HEAD reply declares a length -> 5
+and still has no body -> b''
+so the next message is untouched -> true
+with nothing taken off its front -> 45
+read as a GET, the body is the next message's first five bytes -> b'HTTP/'
+and the connection is out of step -> 40
+--- io.read(r) reads to EOF; io.read(r, fixed_size=n) reads exactly n
+to EOF -> b'whole stream'
+to EOF on an empty stream -> b''
+exactly fixed_size, twice over -> [b'0123', b'456789']
+and then the stream is spent -> b''
+fixed_size=0 is the empty read -> b''
+a stream that ends short of fixed_size raises -> EOFError: stream ended after 2 bytes, expected 5
+where the same stream read to EOF is just short -> b'ab'
+and a negative count is refused by name -> ValueError: io.read() fixed_size must not be negative, got -1
+--- the other two arguments the rule made required
+io.buffer states its contents -> TypeError: buffer() missing required argument: 'b'
+a Response states its status -> TypeError: __init__() missing required argument: 'status'

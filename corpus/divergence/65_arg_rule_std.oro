@@ -1,0 +1,89 @@
+# INTENTIONAL DIVERGENCE.
+# The argument rule where it reaches `std`: a parameter with no default can
+# only be passed by position, and one with a default can only be passed by
+# name. Most of that is a spelling change with nothing to assert, but three
+# parameters changed *behaviour* and this file is what pins them.
+#
+# Two defaults were dropped, each for its own reason, and the reasons are
+# asserted here rather than only argued in a commit message: one was dead —
+# the call could never succeed while taking it — and one was harmful, quietly
+# desynchronising a keep-alive stream. The third is `io.read`'s count, which
+# kept its function and gained a name that says which of the two contracts
+# the caller asked for.
+#
+# Nothing here runs under CPython, so the baseline is reviewed by hand.
+import http
+import io
+
+
+def check(label, got, want):
+    if got == want:
+        print(f"{label} -> {want}")
+    else:
+        print(f"{label} -> MISMATCH: got {got}, want {want}")
+
+
+def failure(f):
+    try:
+        return f()
+    except TypeError as e:
+        return f"TypeError: {e}"
+    except ValueError as e:
+        return f"ValueError: {e}"
+    except EOFError as e:
+        return f"EOFError: {e}"
+
+
+print("--- the dropped defaults are missing-argument errors now")
+check("write_request needs its headers", failure(() => http.write_request(io.buffer(b""), "GET", "/health")), "TypeError: write_request() missing required argument: 'headers'")
+check("read_response needs the method", failure(() => http.read_response(io.buffer(b"HTTP/1.1 200 OK\r\n\r\n"))), "TypeError: read_response() missing required argument: 'method'")
+
+# Why `write_request`'s default went: it was **dead**. `headers=null` folded to
+# an empty dict, an empty dict has no Host, and a request with no Host is
+# refused before a byte reaches the writer — so no call that took the default
+# ever wrote a request. Passing `{}` explicitly reaches the same wall, which is
+# what makes the old default unreachable rather than merely unused.
+print("--- and the first of them was dead: there was no Host to be had")
+check("an empty header dict is the same refusal", failure(() => http.write_request(io.buffer(b""), "GET", "/health", {})), "ValueError: a request needs a Host header — `fetch` fills it in from the URL, and a caller using `write_request` directly has to say")
+
+# Why `read_response`'s went: it was **harmful**. A response is not
+# self-describing — the reply to a HEAD carries the Content-Length the GET
+# would have carried and no body at all — so a parser told the wrong method
+# reads the next message on the connection as this one's body. Two pipelined
+# replies on one stream, read with the method that was actually sent:
+print("--- and the second was harmful: a HEAD reply is not what it says")
+_PIPELINED = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"
+r = io.buffer(_PIPELINED)
+resp = http.read_response(r, "HEAD")
+check("the HEAD reply declares a length", resp.header("content-length"), "5")
+check("and still has no body", resp.bytes(), b"")
+left = io.read(r)
+check("so the next message is untouched", left.startswith(b"HTTP/1.1 404 Not Found"), true)
+check("with nothing taken off its front", len(left), 45)
+
+# The same stream read as a GET is the bug the default shipped: the parser
+# believes the Content-Length, takes five bytes that belong to the next
+# message, and leaves the connection out of step.
+r = io.buffer(_PIPELINED)
+resp = http.read_response(r, "GET")
+check("read as a GET, the body is the next message's first five bytes", resp.bytes(), b"HTTP/")
+check("and the connection is out of step", len(io.read(r)), 40)
+
+print("--- io.read(r) reads to EOF; io.read(r, fixed_size=n) reads exactly n")
+check("to EOF", io.read(io.buffer(b"whole stream")), b"whole stream")
+check("to EOF on an empty stream", io.read(io.buffer(b"")), b"")
+r = io.buffer(b"0123456789")
+check("exactly fixed_size, twice over", [io.read(r, fixed_size=4), io.read(r, fixed_size=6)], [b"0123", b"456789"])
+check("and then the stream is spent", io.read(r), b"")
+check("fixed_size=0 is the empty read", io.read(io.buffer(b"abc"), fixed_size=0), b"")
+
+# The difference between the two forms is the failure contract, and this is it:
+# to EOF a short stream is simply the end of it, and with a count it is an
+# error, because the caller said how many bytes the message was.
+check("a stream that ends short of fixed_size raises", failure(() => io.read(io.buffer(b"ab"), fixed_size=5)), "EOFError: stream ended after 2 bytes, expected 5")
+check("where the same stream read to EOF is just short", io.read(io.buffer(b"ab")), b"ab")
+check("and a negative count is refused by name", failure(() => io.read(io.buffer(b"abc"), fixed_size=-1)), "ValueError: io.read() fixed_size must not be negative, got -1")
+
+print("--- the other two arguments the rule made required")
+check("io.buffer states its contents", failure(() => io.buffer()), "TypeError: buffer() missing required argument: 'b'")
+check("a Response states its status", failure(() => http.Response()), "TypeError: __init__() missing required argument: 'status'")
