@@ -875,6 +875,14 @@ fn regex_method(
     args: Vec<Value>,
 ) -> VResult<Value> {
     use crate::regexutil as rx;
+    let (n, missing) = match name {
+        "search" | "fullmatch" | "findall" | "finditer" => (1, rx::POS),
+        "split" => (1, "CPython's maxsplit is not supported"),
+        "sub" => (2, "CPython's count is not supported"),
+        // Not a method at all: the last arm below says so.
+        _ => (usize::MAX, ""),
+    };
+    rx::no_extra(&args, n, "Pattern", name, missing)?;
     match name {
         "search" => Ok(rx::search(&r.re, &str_arg(&args, 0, "search")?)),
         "fullmatch" => Ok(rx::fullmatch(&r.re, &str_arg(&args, 0, "fullmatch")?)),

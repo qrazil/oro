@@ -188,37 +188,44 @@ fn str_at(args: &[Value], i: usize, who: &str) -> VResult<String> {
 }
 
 fn re_search(args: Vec<Value>) -> VResult<Value> {
+    crate::regexutil::no_extra(&args, 2, "re", "search", crate::regexutil::FLAGS)?;
     let re = crate::regexutil::compile(&str_at(&args, 0, "search")?)?;
     Ok(crate::regexutil::search(&re, &str_at(&args, 1, "search")?))
 }
 
 fn re_findall(args: Vec<Value>) -> VResult<Value> {
+    crate::regexutil::no_extra(&args, 2, "re", "findall", crate::regexutil::FLAGS)?;
     let re = crate::regexutil::compile(&str_at(&args, 0, "findall")?)?;
     Ok(crate::regexutil::findall(&re, &str_at(&args, 1, "findall")?))
 }
 
 fn re_finditer(args: Vec<Value>) -> VResult<Value> {
+    crate::regexutil::no_extra(&args, 2, "re", "finditer", crate::regexutil::FLAGS)?;
     let re = crate::regexutil::compile(&str_at(&args, 0, "finditer")?)?;
     Ok(crate::regexutil::finditer(&re, &str_at(&args, 1, "finditer")?))
 }
 
 fn re_fullmatch(args: Vec<Value>) -> VResult<Value> {
+    crate::regexutil::no_extra(&args, 2, "re", "fullmatch", crate::regexutil::FLAGS)?;
     let re = crate::regexutil::compile(&str_at(&args, 0, "fullmatch")?)?;
     Ok(crate::regexutil::fullmatch(&re, &str_at(&args, 1, "fullmatch")?))
 }
 
 fn re_sub(args: Vec<Value>) -> VResult<Value> {
+    crate::regexutil::no_extra(&args, 3, "re", "sub", "CPython's count and flags are not supported")?;
     let re = crate::regexutil::compile(&str_at(&args, 0, "sub")?)?;
     let repl = str_at(&args, 1, "sub")?;
     Ok(crate::regexutil::sub(&re, &repl, &str_at(&args, 2, "sub")?))
 }
 
 fn re_split(args: Vec<Value>) -> VResult<Value> {
+    crate::regexutil::no_extra(&args, 2, "re", "split", "CPython's maxsplit and flags are not supported")?;
     let re = crate::regexutil::compile(&str_at(&args, 0, "split")?)?;
     Ok(crate::regexutil::split(&re, &str_at(&args, 1, "split")?))
 }
 
 fn re_compile(args: Vec<Value>) -> VResult<Value> {
+    crate::regexutil::no_extra(&args, 1, "re", "compile", crate::regexutil::FLAGS)?;
     crate::regexutil::regex_value(&str_at(&args, 0, "compile")?)
 }
 

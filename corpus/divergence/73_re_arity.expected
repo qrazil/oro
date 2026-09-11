@@ -4,3 +4,20 @@ m.group() -> group() missing its group index — m.group(0) is the whole match
 m.start() -> start() missing its group index — m.start(0) is the whole match
 m.end() -> end() missing its group index — m.end(0) is the whole match
 m.group(n=1) -> group() takes no keyword arguments
+re.sub(p, r, s, 1) -> re.sub() takes 3 argument(s) but 4 were given — CPython's count and flags are not supported
+without a count, sub replaces every match: bbb
+re.search(p, s, 0) -> re.search() takes 2 argument(s) but 3 were given — CPython's flags argument is not supported; write flags inline in the pattern, as in (?i)
+re.fullmatch(p, s, 0) -> re.fullmatch() takes 2 argument(s) but 3 were given — CPython's flags argument is not supported; write flags inline in the pattern, as in (?i)
+re.findall(p, s, 0) -> re.findall() takes 2 argument(s) but 3 were given — CPython's flags argument is not supported; write flags inline in the pattern, as in (?i)
+re.finditer(p, s, 0) -> re.finditer() takes 2 argument(s) but 3 were given — CPython's flags argument is not supported; write flags inline in the pattern, as in (?i)
+re.split(p, s, 1) -> re.split() takes 2 argument(s) but 3 were given — CPython's maxsplit and flags are not supported
+re.compile(p, 0) -> re.compile() takes 1 argument(s) but 2 were given — CPython's flags argument is not supported; write flags inline in the pattern, as in (?i)
+a flag goes inline instead: a
+p.search(s, 1) -> Pattern.search() takes 1 argument(s) but 2 were given — CPython's pos and endpos are not supported
+p.fullmatch(s, 0) -> Pattern.fullmatch() takes 1 argument(s) but 2 were given — CPython's pos and endpos are not supported
+p.findall(s, 1) -> Pattern.findall() takes 1 argument(s) but 2 were given — CPython's pos and endpos are not supported
+p.finditer(s, 1) -> Pattern.finditer() takes 1 argument(s) but 2 were given — CPython's pos and endpos are not supported
+p.split(s, 1) -> Pattern.split() takes 1 argument(s) but 2 were given — CPython's maxsplit is not supported
+p.sub(r, s, 1) -> Pattern.sub() takes 2 argument(s) but 3 were given — CPython's count is not supported
+the forms Oro takes still answer: ['a', 'b', 'c'] a;b;c
+re.sub(p, r, s, count=1) -> re.sub() takes no keyword arguments

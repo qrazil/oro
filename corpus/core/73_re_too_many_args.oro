@@ -1,0 +1,73 @@
+import re
+
+# Every call below passes more arguments than CPython's own signature takes,
+# so CPython refuses it, and Oro refuses it with the same class. Oro's limit
+# is lower still: it implements none of CPython's optional flags, count,
+# maxsplit, pos or endpos, and refuses them rather than ignoring them. The
+# refusals CPython would not make are in divergence/73_re_arity.oro.
+
+def search_4():
+    re.search("a", "xa", 0, 0)
+
+def fullmatch_4():
+    re.fullmatch("a", "a", 0, 0)
+
+def findall_4():
+    re.findall("a", "aaa", 0, 0)
+
+def finditer_4():
+    re.finditer("a", "aaa", 0, 0)
+
+def split_5():
+    re.split(",", "a,b", 0, 0, 0)
+
+def sub_6():
+    re.sub("a", "b", "aaa", 0, 0, 0)
+
+def compile_3():
+    re.compile("a", 0, 0)
+
+p = re.compile(",")
+
+def p_search_4():
+    p.search("a,b", 0, 3, 0)
+
+def p_fullmatch_4():
+    p.fullmatch(",", 0, 1, 0)
+
+def p_findall_4():
+    p.findall("a,b", 0, 3, 0)
+
+def p_finditer_4():
+    p.finditer("a,b", 0, 3, 0)
+
+def p_split_3():
+    p.split("a,b", 0, 0)
+
+def p_sub_4():
+    p.sub(";", "a,b", 0, 0)
+
+cases = [
+    ("re.search", search_4),
+    ("re.fullmatch", fullmatch_4),
+    ("re.findall", findall_4),
+    ("re.finditer", finditer_4),
+    ("re.split", split_5),
+    ("re.sub", sub_6),
+    ("re.compile", compile_3),
+    ("Pattern.search", p_search_4),
+    ("Pattern.fullmatch", p_fullmatch_4),
+    ("Pattern.findall", p_findall_4),
+    ("Pattern.finditer", p_finditer_4),
+    ("Pattern.split", p_split_3),
+    ("Pattern.sub", p_sub_4),
+]
+for label, call in cases:
+    try:
+        call()
+        print(label + ": accepted")
+    except TypeError:
+        print(label + ": TypeError")
+
+# The forms both languages take still answer, and answer alike.
+print(re.sub("a", "b", "aaa"), p.split("a,b"), p.sub(";", "a,b"))
