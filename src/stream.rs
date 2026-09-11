@@ -641,7 +641,7 @@ impl OroStream {
                 let inner = self.borrow_open("bytes")?;
                 Ok(inner.buf[inner.pos..inner.end].to_vec())
             }
-            _ => Err(runtime_error(format!(
+            _ => Err(attribute_error(format!(
                 "'{}' object has no method 'bytes'",
                 self.kind.type_name()
             ))),

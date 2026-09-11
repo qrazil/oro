@@ -2020,7 +2020,7 @@ impl Vm {
         // `>= 0.0` rather than `!(< 0.0)`: NaN is not a length, and the
         // negative message is the right one for it.
         if !(secs.is_finite() && secs >= 0.0) {
-            return Err(self.err(runtime_error("sleep length must be non-negative")));
+            return Err(self.err(value_error("sleep length must be non-negative")));
         }
         self.park_seq += 1;
         let seq = self.park_seq;

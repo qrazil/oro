@@ -438,7 +438,7 @@ fn sys_exit(args: Vec<Value>) -> VResult<Value> {
         [] | [Value::None] => 0,
         [Value::Int(n)] => *n,
         [Value::Bool(b)] => *b as i64,
-        _ => return Err(runtime_error("sys.exit() code must be an int or None in this build")),
+        _ => return Err(type_error("sys.exit() code must be an int or None in this build")),
     };
     Err(VErr::new(Exc::SystemExit, code.to_string()))
 }

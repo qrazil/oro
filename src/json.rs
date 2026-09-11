@@ -22,7 +22,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::bigint::BigInt;
-use crate::exc::{runtime_error, type_error, value_error, VErr};
+use crate::exc::{recursion_error, type_error, value_error, VErr};
 use crate::value::{OroDict, OroList, VResult, Value};
 
 /// The deepest nesting `parse` accepts, and the deepest `stringify` will walk.
@@ -443,9 +443,9 @@ pub fn stringify(value: &Value, indent: Option<&Value>) -> VResult<String> {
     while let Some(job) = jobs.pop() {
         if jobs.len() > MAX_DEPTH {
             // A cycle, or a structure deeper than anything JSON should hold.
-            // The message is the one the Oro encoder's own runaway recursion
-            // produced, so `except RuntimeError` still catches it.
-            return Err(runtime_error("maximum recursion depth exceeded"));
+            // `RecursionError`, the class CPython raises here and a subclass of
+            // `RuntimeError`, so `except RuntimeError` still catches it.
+            return Err(recursion_error("maximum recursion depth exceeded"));
         }
         match job {
             Job::Value(v, level) => write_value(&mut out, &mut jobs, v, level, indent)?,

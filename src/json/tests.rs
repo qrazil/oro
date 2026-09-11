@@ -162,7 +162,7 @@ fn stringify_is_bounded_too() {
     }
     let e = stringify(&v, None).expect_err("past the limit");
     assert_eq!(e.message, "maximum recursion depth exceeded");
-    assert_eq!(e.class, Exc::RuntimeError);
+    assert_eq!(e.class, Exc::RecursionError);
 
     let cycle = OroList::new(Vec::new());
     cycle.borrow_mut().push(Value::List(cycle.clone()));

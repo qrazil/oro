@@ -288,10 +288,10 @@ y.append(y)
 print(x == x)
 try:
     print(x == y)
-except RuntimeError as e:
+except RecursionError as e:
     print(e)
 try:
     print(x in [y])
-except RuntimeError as e:
+except RecursionError as e:
     print(e)
 print(x == x, a in [b])

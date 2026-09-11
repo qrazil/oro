@@ -13,7 +13,9 @@ use std::fmt::Write as _;
 use std::rc::Rc;
 
 use crate::bigint::BigInt;
-use crate::exc::{index_error, key_error, runtime_error, type_error, value_error, VErr};
+use crate::exc::{
+    attribute_error, index_error, key_error, runtime_error, type_error, value_error, VErr,
+};
 use crate::value::{
     Builtin, OroDict, OroList, OroStr, OroTuple, RangeVal, TypeTag, VResult, Value,
 };
@@ -378,7 +380,7 @@ fn as_i64(v: &Value) -> VResult<i64> {
     match v {
         Value::Bool(b) => Ok(*b as i64),
         Value::Int(i) => Ok(*i),
-        other => Err(runtime_error(format!("expected an integer, got '{}'", other.type_name()))),
+        other => Err(type_error(format!("expected an integer, got '{}'", other.type_name()))),
     }
 }
 
@@ -422,7 +424,7 @@ fn parse_int_str(s: &str) -> VResult<Value> {
 /// agrees with `base`, and underscore separators — matching CPython.
 fn parse_int_base(s: &str, base: i64) -> VResult<Value> {
     if base != 0 && !(2..=36).contains(&base) {
-        return Err(runtime_error("int() base must be >= 2 and <= 36, or 0"));
+        return Err(value_error("int() base must be >= 2 and <= 36, or 0"));
     }
     let t = s.trim();
     let (neg, t) = match t.strip_prefix('-') {
@@ -600,7 +602,7 @@ fn bi_round(args: Vec<Value>) -> VResult<Value> {
         Value::Bool(b) => return Ok(Value::Int(*b as i64)),
         Value::Float(f) => *f,
         other => {
-            return Err(runtime_error(format!(
+            return Err(type_error(format!(
                 "type '{}' doesn't define __round__ method",
                 other.type_name()
             )))
@@ -837,7 +839,7 @@ pub fn call_method(
         Value::Stream(s) => stream_method(s, name, args),
         Value::Regex(r) => regex_method(r, name, args),
         Value::Match(m) => match_method(m, name, args),
-        other => Err(runtime_error(format!(
+        other => Err(attribute_error(format!(
             "'{}' object has no method '{}'",
             other.type_name(),
             name
@@ -861,7 +863,7 @@ fn regex_method(
             let repl = str_arg(&args, 0, "sub")?;
             Ok(rx::sub(&r.re, &repl, &str_arg(&args, 1, "sub")?))
         }
-        _ => Err(runtime_error(format!("'Pattern' object has no method '{name}'"))),
+        _ => Err(attribute_error(format!("'Pattern' object has no method '{name}'"))),
     }
 }
 
@@ -875,14 +877,14 @@ fn match_method(
     let n = match args.as_slice() {
         [] => 0usize,
         [Value::Int(i)] if *i >= 0 => *i as usize,
-        [Value::Int(_)] => return Err(runtime_error("group index must be non-negative")),
+        [Value::Int(_)] => return Err(index_error("group index must be non-negative")),
         _ => return Err(type_error(format!("{name}() takes an optional group index"))),
     };
     match name {
         "group" => rx::group(m, n),
         "start" => rx::start(m, n),
         "end" => rx::end(m, n),
-        _ => Err(runtime_error(format!("'Match' object has no method '{name}'"))),
+        _ => Err(attribute_error(format!("'Match' object has no method '{name}'"))),
     }
 }
 
@@ -941,7 +943,7 @@ fn stream_method(
             s.set_nodelay(on)?;
             Ok(Value::None)
         }
-        _ => Err(runtime_error(format!("'{}' object has no method '{name}'", s.kind.type_name()))),
+        _ => Err(attribute_error(format!("'{}' object has no method '{name}'", s.kind.type_name()))),
     }
 }
 
@@ -1424,7 +1426,7 @@ fn cast_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
                 // unwriteable.
                 Value::List(l) => ints_to_bytes(&l.borrow()),
                 Value::Tuple(t) => ints_to_bytes(t),
-                other => Err(runtime_error(format!(
+                other => Err(type_error(format!(
                     "'{}' object has no conversion to bytes",
                     other.type_name()
                 ))),
@@ -1450,7 +1452,7 @@ fn cast_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
                         "could not convert string to float: '{}'",
                         s.s
                     ))),
-                other => Err(runtime_error(format!(
+                other => Err(type_error(format!(
                     "'{}' object has no conversion to float",
                     other.type_name()
                 ))),
@@ -1470,7 +1472,7 @@ fn cast_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
                         parse_int_base(&s.s, base)
                     }
                 }
-                other => Err(runtime_error(format!(
+                other => Err(type_error(format!(
                     "'{}' object has no conversion to int",
                     other.type_name()
                 ))),
@@ -1495,14 +1497,14 @@ fn cast_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
                     Value::Tuple(t) => t.as_slice().to_vec(),
                     Value::List(l) => l.borrow().clone(),
                     other => {
-                        return Err(runtime_error(format!(
+                        return Err(type_error(format!(
                             "to_dict() requires (key, value) pairs, found '{}'",
                             other.type_name()
                         )))
                     }
                 };
                 if parts.len() != 2 {
-                    return Err(runtime_error(format!(
+                    return Err(value_error(format!(
                         "to_dict() requires 2-element pairs, found one of length {}",
                         parts.len()
                     )));
@@ -1561,7 +1563,7 @@ fn seq_parts(recv: &Value, who: &str) -> VResult<(Shape, Vec<Value>)> {
         ),
         Value::Range(_) => (Shape::List, crate::vm::iterate_to_vec(recv)?),
         other => {
-            return Err(runtime_error(format!(
+            return Err(attribute_error(format!(
                 "'{}' object has no method '{who}'",
                 other.type_name()
             )))
@@ -1587,14 +1589,14 @@ fn rebuild(shape: Shape, items: Vec<Value>) -> VResult<Value> {
                     Value::Tuple(t) => t.as_slice().to_vec(),
                     Value::List(l) => l.borrow().clone(),
                     other => {
-                        return Err(runtime_error(format!(
+                        return Err(type_error(format!(
                             "rebuilding a dict needs (key, value) pairs, not '{}'",
                             other.type_name()
                         )))
                     }
                 };
                 if pair.len() != 2 {
-                    return Err(runtime_error(format!(
+                    return Err(value_error(format!(
                         "rebuilding a dict needs 2-element pairs, got {}",
                         pair.len()
                     )));
@@ -1618,7 +1620,7 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
             let pick = if name == "first" { items.first() } else { items.last() };
             match pick {
                 Some(v) => Ok(v.clone()),
-                None => Err(runtime_error(format!("{name}() on an empty sequence"))),
+                None => Err(index_error(format!("{name}() on an empty sequence"))),
             }
         }
         "sum" => {
@@ -1671,7 +1673,7 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
         "take" | "drop" => {
             let n = opt_int_arg(&args, 0, name, -1)?;
             if n < 0 {
-                return Err(runtime_error(format!("{name}() needs a count >= 0")));
+                return Err(value_error(format!("{name}() needs a count >= 0")));
             }
             let n = (n as usize).min(items.len());
             let out = if name == "take" {
@@ -1692,7 +1694,7 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
         "chunk" => {
             let n = opt_int_arg(&args, 0, "chunk", 0)?;
             if n <= 0 {
-                return Err(runtime_error("chunk() needs a size >= 1"));
+                return Err(value_error("chunk() needs a size >= 1"));
             }
             let out: Vec<Value> = items
                 .chunks(n as usize)
@@ -1739,7 +1741,7 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
                     match it {
                         Value::Bytes(p) => out.extend_from_slice(p),
                         other => {
-                            return Err(runtime_error(format!(
+                            return Err(type_error(format!(
                                 "join() requires bytes elements, found '{}'",
                                 other.type_name()
                             )))
@@ -1754,7 +1756,7 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
                 match it {
                     Value::Str(p) => pieces.push(p.s.clone()),
                     other => {
-                        return Err(runtime_error(format!(
+                        return Err(type_error(format!(
                             "join() requires str elements, found '{}'",
                             other.type_name()
                         )))
@@ -1926,7 +1928,7 @@ fn str_method(
                 match it {
                     Value::Str(p) => pieces.push(p.s.clone()),
                     other => {
-                        return Err(runtime_error(format!(
+                        return Err(type_error(format!(
                             "join() requires str elements, found '{}'",
                             other.type_name()
                         )))
@@ -1935,7 +1937,7 @@ fn str_method(
             }
             Ok(Value::str(pieces.join(s)))
         }
-        _ => Err(runtime_error(format!("'str' object has no method '{name}'"))),
+        _ => Err(attribute_error(format!("'str' object has no method '{name}'"))),
     }
 }
 
@@ -2290,7 +2292,7 @@ fn bytes_method(
                     split_sep_bytes(b, sep, maxsplit, side)
                 }
                 Some(other) => {
-                    return Err(runtime_error(format!(
+                    return Err(type_error(format!(
                         "{name}() separator must be bytes, not '{}'",
                         other.type_name()
                     )))
@@ -2310,7 +2312,7 @@ fn bytes_method(
                 match it {
                     Value::Bytes(p) => out.extend_from_slice(p),
                     other => {
-                        return Err(runtime_error(format!(
+                        return Err(type_error(format!(
                             "join() requires bytes elements, found '{}'",
                             other.type_name()
                         )))
@@ -2327,7 +2329,7 @@ fn bytes_method(
             }
             Ok(Value::str(out))
         }
-        _ => Err(runtime_error(format!("'bytes' object has no method '{name}'"))),
+        _ => Err(attribute_error(format!("'bytes' object has no method '{name}'"))),
     }
 }
 
@@ -2380,7 +2382,7 @@ fn list_method(l: &Rc<OroList>, name: &str, args: Vec<Value>) -> VResult<Value> 
             l.borrow_mut().reverse();
             Ok(Value::None)
         }
-        _ => Err(runtime_error(format!("'list' object has no method '{name}'"))),
+        _ => Err(attribute_error(format!("'list' object has no method '{name}'"))),
     }
 }
 
@@ -2420,7 +2422,7 @@ fn dict_method(d: &Rc<RefCell<OroDict>>, name: &str, args: Vec<Value>) -> VResul
             exactly(&args, 0, "values")?;
             Ok(Value::List(OroList::new(d.borrow().values())))
         }
-        _ => Err(runtime_error(format!("'dict' object has no method '{name}'"))),
+        _ => Err(attribute_error(format!("'dict' object has no method '{name}'"))),
     }
 }
 

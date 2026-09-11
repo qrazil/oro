@@ -8,7 +8,7 @@
 //!
 //! The formatter never calls back into Oro, so the flat VM loop is undisturbed.
 
-use crate::exc::{runtime_error, value_error};
+use crate::exc::{type_error, value_error};
 use crate::value::{VResult, Value};
 
 /// Conversion requested by `!r`/`!s`/`!a` (0 = none). Kept as a `u8` so it can
@@ -171,7 +171,7 @@ fn parse_spec(s: &str) -> VResult<Spec> {
                 spec.precision = Some(p);
                 i = ni;
             }
-            None => return Err(runtime_error("Format specifier missing precision")),
+            None => return Err(value_error("Format specifier missing precision")),
         }
     }
 
@@ -184,7 +184,7 @@ fn parse_spec(s: &str) -> VResult<Spec> {
     }
 
     if i != chars.len() {
-        return Err(runtime_error(format!("Invalid format specifier '{s}'")));
+        return Err(value_error(format!("Invalid format specifier '{s}'")));
     }
     Ok(spec)
 }
@@ -216,7 +216,7 @@ fn apply(value: &Value, spec: &Spec) -> VResult<String> {
         Value::Str(s) => format_str(&s.s, spec),
         Value::Bool(_) | Value::Int(_) | Value::Big(_) => format_int(value, spec),
         Value::Float(f) => format_float(*f, spec),
-        other => Err(runtime_error(format!(
+        other => Err(type_error(format!(
             "unsupported format string passed to {}.__format__",
             other.type_name()
         ))),
@@ -226,12 +226,12 @@ fn apply(value: &Value, spec: &Spec) -> VResult<String> {
 fn format_str(s: &str, spec: &Spec) -> VResult<String> {
     match spec.ty {
         None | Some('s') => {}
-        Some(t) => return Err(runtime_error(format!(
+        Some(t) => return Err(value_error(format!(
             "Unknown format code '{t}' for object of type 'str'"
         ))),
     }
     if spec.sign != Sign::Minus || spec.alt || spec.zero || spec.grouping.is_some() {
-        return Err(runtime_error("invalid format spec for a string"));
+        return Err(value_error("invalid format spec for a string"));
     }
     // Precision truncates a string to that many characters.
     let mut body: String = match spec.precision {
@@ -255,7 +255,7 @@ fn format_int(value: &Value, spec: &Spec) -> VResult<String> {
     let base_ty = spec.ty.unwrap_or('d');
 
     if spec.precision.is_some() {
-        return Err(runtime_error("Precision not allowed in integer format specifier"));
+        return Err(value_error("Precision not allowed in integer format specifier"));
     }
 
     let (mut body, prefix) = match base_ty {
@@ -270,7 +270,7 @@ fn format_int(value: &Value, spec: &Spec) -> VResult<String> {
                 .ok_or_else(|| value_error("%c arg not in range(0x110000)"))?;
             return format_str(&ch.to_string(), &Spec { ty: None, ..copy_spec(spec) });
         }
-        other => return Err(runtime_error(format!(
+        other => return Err(value_error(format!(
             "Unknown format code '{other}' for object of type 'int'"
         ))),
     };
@@ -320,7 +320,7 @@ fn format_float(f: f64, spec: &Spec) -> VResult<String> {
             Some(p) => general(mag, Some(p.max(1)), false, spec.alt),
             None => default_float(mag),
         },
-        Some(other) => return Err(runtime_error(format!(
+        Some(other) => return Err(value_error(format!(
             "Unknown format code '{other}' for object of type 'float'"
         ))),
     };

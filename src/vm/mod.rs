@@ -30,8 +30,8 @@ use std::rc::Rc;
 
 use crate::ast::CmpOp;
 use crate::exc::{
-    attribute_error, command_error, index_error, key_error, name_error, runtime_error,
-    timeout_error, type_error, value_error, Exc, VErr,
+    attribute_error, command_error, index_error, key_error, name_error, recursion_error,
+    runtime_error, timeout_error, type_error, value_error, Exc, VErr,
 };
 use crate::compiler::{CaptureSource, ClassSpec, CodeObject, Op, ParamInfo, VarTarget};
 use crate::task::{TaskHandle, TaskId};
@@ -1567,7 +1567,7 @@ impl Vm {
                 Op::LoadCell(s) => {
                     let v = self.top().cells[s as usize].borrow().clone();
                     if matches!(v, Value::Unbound) {
-                        return Err(self.err(runtime_error(
+                        return Err(self.err(name_error(
                             "local variable referenced before assignment",
                         )));
                     }
@@ -1580,7 +1580,7 @@ impl Vm {
                 Op::LoadFree(s) => {
                     let v = self.top().free[s as usize].borrow().clone();
                     if matches!(v, Value::Unbound) {
-                        return Err(self.err(runtime_error(
+                        return Err(self.err(name_error(
                             "free variable referenced before assignment",
                         )));
                     }
@@ -2123,7 +2123,7 @@ impl Vm {
         // assignment (no `global`) is the classic footgun — teach the fix.
         for (s, name) in &code.shadow_hints {
             if *s == slot {
-                return runtime_error(format!(
+                return name_error(format!(
                     "local variable '{name}' referenced before assignment: '{name}' is assigned \
                      inside this function, which makes it local and shadows the module-level \
                      '{name}'. To read and update the module value, declare `global {name}` at \
@@ -2137,14 +2137,14 @@ impl Vm {
         for p in &code.params {
             if let VarTarget::Local(s) = p.target {
                 if s == slot {
-                    return runtime_error(format!(
+                    return name_error(format!(
                         "local variable '{}' referenced before assignment",
                         p.name
                     ));
                 }
             }
         }
-        runtime_error("local variable referenced before assignment")
+        name_error("local variable referenced before assignment")
     }
 
     // --- Closures ------------------------------------------------------------
@@ -2210,7 +2210,7 @@ impl Vm {
     /// frame's slots. No argument vector, no re-copy — the values are moved once.
     fn call_fast(&mut self, func: Rc<Function>, n: usize) -> Result<Step, VmError> {
         if self.task.frames.len() >= MAX_FRAMES {
-            return Err(self.err(runtime_error("maximum recursion depth exceeded")));
+            return Err(self.err(recursion_error("maximum recursion depth exceeded")));
         }
         self.call_fast_unchecked(func, n);
         Ok(Step::Next)
@@ -2720,7 +2720,7 @@ impl Vm {
             },
             Value::Func(f) => {
                 if self.task.frames.len() >= MAX_FRAMES {
-                    return Err(self.err(runtime_error("maximum recursion depth exceeded")));
+                    return Err(self.err(recursion_error("maximum recursion depth exceeded")));
                 }
                 let frame = self.bind_call(&f, None, args, kwargs)?;
                 if f.code.is_generator {
@@ -2837,7 +2837,7 @@ impl Vm {
         kwargs: Vec<(String, Value)>,
     ) -> Result<Step, VmError> {
         if self.task.frames.len() >= MAX_FRAMES {
-            return Err(self.err(runtime_error("maximum recursion depth exceeded")));
+            return Err(self.err(recursion_error("maximum recursion depth exceeded")));
         }
         let mut frame = self.bind_call(func, Some(receiver.clone()), args, kwargs)?;
         frame.super_ctx = Some((defclass, receiver));
@@ -2860,7 +2860,7 @@ impl Vm {
         action: ReturnAction,
     ) -> Result<(), VmError> {
         if self.task.frames.len() >= MAX_FRAMES {
-            return Err(self.err(runtime_error("maximum recursion depth exceeded")));
+            return Err(self.err(recursion_error("maximum recursion depth exceeded")));
         }
         // An ordinary `obj.m()` with a `yield` in it is handled at the call
         // site, where it produces a generator the way a plain `def` does. What
@@ -2873,7 +2873,7 @@ impl Vm {
         // same answer `sorted(key=…)` already gives.
         if func.code.is_generator {
             let name = func.code.name.clone();
-            return Err(self.err(runtime_error(format!(
+            return Err(self.err(type_error(format!(
                 "{name}() has a `yield` in it, and Oro does not carry generators \
                  through dunders and callbacks — move it to a module-level def"
             ))));
@@ -2904,7 +2904,7 @@ impl Vm {
                 self.push(inst.clone());
                 self.invoke_user(init, inst, defclass, args, kwargs, ReturnAction::DropForInit)
             }
-            Some(_) => Err(self.err(runtime_error(format!(
+            Some(_) => Err(self.err(type_error(format!(
                 "{}.__init__ is not a function",
                 class.name
             )))),
@@ -3008,7 +3008,7 @@ impl Vm {
             SeqOp::Reduce => match args.as_slice() {
                 [init, f] if callable(f) => (Some(f.clone()), Some(init.clone())),
                 [_, other] => {
-                    return Err(self.err(runtime_error(format!(
+                    return Err(self.err(type_error(format!(
                         "reduce() needs a function as its second argument, not '{}'",
                         other.type_name()
                     ))))
@@ -3024,7 +3024,7 @@ impl Vm {
                 [] => (None, None),
                 [f] if callable(f) => (Some(f.clone()), None),
                 [other] => {
-                    return Err(self.err(runtime_error(format!(
+                    return Err(self.err(type_error(format!(
                         "{who}() needs a function, not '{}'",
                         other.type_name()
                     ))))
@@ -3034,7 +3034,7 @@ impl Vm {
             _ => match args.as_slice() {
                 [f] if callable(f) => (Some(f.clone()), None),
                 [other] => {
-                    return Err(self.err(runtime_error(format!(
+                    return Err(self.err(type_error(format!(
                         "{who}() needs a function, not '{}'",
                         other.type_name()
                     ))))
@@ -3249,7 +3249,7 @@ impl Vm {
             Value::Dict(_) => SeqShape::Dict,
             Value::Range(_) => SeqShape::List,
             other => {
-                return Err(self.err(runtime_error(format!(
+                return Err(self.err(attribute_error(format!(
                     "'{}' object has no method '{who}'",
                     other.type_name()
                 ))))
@@ -3362,7 +3362,7 @@ impl Vm {
             match func {
                 Value::Func(f) => {
                     if self.task.frames.len() >= MAX_FRAMES {
-                        return Err(self.err(runtime_error("maximum recursion depth exceeded")));
+                        return Err(self.err(recursion_error("maximum recursion depth exceeded")));
                     }
                     if f.code.is_generator {
                         // This says something about the *call*, not about the
@@ -3371,7 +3371,7 @@ impl Vm {
                         // where the VM's position has got to once a fused chain
                         // has run a callback or two.
                         (self.task.line, self.task.col) = at;
-                        return Err(self.err(runtime_error(format!(
+                        return Err(self.err(type_error(format!(
                             "{who}() callback must not be a generator function"
                         ))));
                     }
@@ -3396,7 +3396,7 @@ impl Vm {
                         MethodKind::User { func, defclass } => {
                             if self.task.frames.len() >= MAX_FRAMES {
                                 return Err(
-                                    self.err(runtime_error("maximum recursion depth exceeded"))
+                                    self.err(recursion_error("maximum recursion depth exceeded"))
                                 );
                             }
                             return self.invoke_user(
@@ -3469,7 +3469,7 @@ impl Vm {
                     // belongs to the `first()` that ended the chain.
                     self.task.line = job.line;
                     self.task.col = job.col;
-                    Err(self.err(runtime_error("first() on an empty sequence")))
+                    Err(self.err(index_error("first() on an empty sequence")))
                 }
             };
         }
@@ -3635,14 +3635,14 @@ impl Vm {
                         Value::Tuple(t) => t.as_slice().to_vec(),
                         Value::List(l) => l.borrow().clone(),
                         other => {
-                            return Err(runtime_error(format!(
+                            return Err(type_error(format!(
                                 "rebuilding a dict needs (key, value) pairs, not '{}'",
                                 other.type_name()
                             )))
                         }
                     };
                     if pair.len() != 2 {
-                        return Err(runtime_error(format!(
+                        return Err(value_error(format!(
                             "rebuilding a dict needs 2-element pairs, got {} elements",
                             pair.len()
                         )));
@@ -3748,7 +3748,7 @@ impl Vm {
             match taken {
                 Some(Some(frame)) => {
                     if self.task.frames.len() >= MAX_FRAMES {
-                        return Err(self.err(runtime_error("maximum recursion depth exceeded")));
+                        return Err(self.err(recursion_error("maximum recursion depth exceeded")));
                     }
                     self.task.gen_stack.push((gen, GenDriver::Materialize));
                     self.task.frames.push(frame);
@@ -3833,7 +3833,7 @@ impl Vm {
                     Value::None => {}
                     f @ (Value::Func(_) | Value::Builtin(_) | Value::Method(_)) => keyfn = Some(f),
                     other => {
-                        return Err(self.err(runtime_error(format!(
+                        return Err(self.err(type_error(format!(
                             "{who}() key must be callable or None, not '{}'",
                             other.type_name()
                         ))))
@@ -3907,10 +3907,10 @@ impl Vm {
                     // A plain (non-method) key function: bind it the same way an
                     // ordinary call does, but route its return into the sort job.
                     if self.task.frames.len() >= MAX_FRAMES {
-                        return Err(self.err(runtime_error("maximum recursion depth exceeded")));
+                        return Err(self.err(recursion_error("maximum recursion depth exceeded")));
                     }
                     if f.code.is_generator {
-                        return Err(self.err(runtime_error(
+                        return Err(self.err(type_error(
                             "sort key must not be a generator function",
                         )));
                     }
@@ -3933,7 +3933,7 @@ impl Vm {
                         MethodKind::Native(name) => self
                             .wrap(crate::builtins::call_method(&m.receiver, name, vec![item], Vec::new()))?,
                         _ => {
-                            return Err(self.err(runtime_error("sort key must be a plain function")))
+                            return Err(self.err(type_error("sort key must be a plain function")))
                         }
                     };
                     self.task.sort_jobs.last_mut().unwrap().keys.push(key);
@@ -4244,7 +4244,7 @@ impl Vm {
         // does. Descending is what grows the level stack, so it is where the
         // cycle guard sits.
         if self.task.cmp_jobs.last().expect("cmp job").levels.len() >= CMP_DEPTH_LIMIT {
-            return Err(self.err(runtime_error("maximum recursion depth exceeded in comparison")));
+            return Err(self.err(recursion_error("maximum recursion depth exceeded in comparison")));
         }
         let level = match (&a, &b) {
             (Value::List(x), Value::List(y)) => {
@@ -4708,7 +4708,7 @@ impl Vm {
             match self.pop() {
                 Value::Class(c) => Some(c),
                 other => {
-                    return Err(self.err(runtime_error(format!(
+                    return Err(self.err(type_error(format!(
                         "base of class '{}' must be a class, not '{}'",
                         spec.name,
                         other.type_label()
@@ -4755,7 +4755,7 @@ impl Vm {
             Some(Value::List(l)) => l.borrow().clone(),
             Some(Value::Str(_)) => {
                 return Err(self.err(
-                    runtime_error("proc.run() needs a list of separate string arguments, e.g. \
+                    type_error("proc.run() needs a list of separate string arguments, e.g. \
                      [\"git\", \"status\"], not a single string — Oro will not split it (that \
                      would mean reimplementing shell quoting) and there is no shell=True.",)
                 ))
@@ -4763,14 +4763,14 @@ impl Vm {
             _ => return Err(self.err(type_error("proc.run() takes a list of strings"))),
         };
         if list.is_empty() {
-            return Err(self.err(runtime_error("proc.run() got an empty argument list")));
+            return Err(self.err(value_error("proc.run() got an empty argument list")));
         }
         let mut parts: Vec<String> = Vec::with_capacity(list.len());
         for v in &list {
             match v {
                 Value::Str(s) => parts.push(s.s.clone()),
                 other => {
-                    return Err(self.err(runtime_error(format!(
+                    return Err(self.err(type_error(format!(
                         "proc.run() arguments must all be strings, got '{}'",
                         other.type_label()
                     ))))
@@ -4778,7 +4778,7 @@ impl Vm {
             }
         }
         if parts[0].is_empty() || parts[0].contains(char::is_whitespace) {
-            return Err(self.err(runtime_error(format!(
+            return Err(self.err(value_error(format!(
                 "proc.run() program '{}' contains whitespace — pass separate arguments \
                  like [\"git\", \"status\"], not one combined string",
                 parts[0]
@@ -4795,7 +4795,7 @@ impl Vm {
             match k.as_str() {
                 "cwd" => match v {
                     Value::Str(s) => cwd = Some(s.s.clone()),
-                    _ => return Err(self.err(runtime_error("proc.run() cwd must be a string"))),
+                    _ => return Err(self.err(type_error("proc.run() cwd must be a string"))),
                 },
                 "env" => match v {
                     Value::Dict(d) => {
@@ -4805,19 +4805,19 @@ impl Vm {
                         }
                         env = Some(pairs);
                     }
-                    _ => return Err(self.err(runtime_error("proc.run() env must be a dict"))),
+                    _ => return Err(self.err(type_error("proc.run() env must be a dict"))),
                 },
                 "timeout" => match v {
                     Value::Int(i) => timeout = Some(*i as f64),
                     Value::Float(f) => timeout = Some(*f),
-                    _ => return Err(self.err(runtime_error("proc.run() timeout must be a number"))),
+                    _ => return Err(self.err(type_error("proc.run() timeout must be a number"))),
                 },
                 "check" => check = v.truthy(),
                 "quiet" => quiet = v.truthy(),
                 // CPython's knobs for what Oro now does by default. Name them
                 // explicitly rather than let them silently do nothing.
                 "capture_output" | "text" => {
-                    return Err(self.err(runtime_error(format!(
+                    return Err(self.err(type_error(format!(
                         "proc.run() does not take '{k}' — it always captures stdout/stderr as \
                          bytes, and streams them live unless quiet=True. Call `.to_str()` on \
                          one to decode it."
@@ -5045,7 +5045,7 @@ impl Vm {
                 Ok(self.make_exception_instance(c, Vec::new()))
             }
             Value::Instance(ref i) if i.class.is_exception => Ok(v),
-            other => Err(self.err(runtime_error(format!(
+            other => Err(self.err(type_error(format!(
                 "exceptions must derive from BaseException, not '{}'",
                 other.type_label()
             )))),
@@ -5079,7 +5079,7 @@ impl Vm {
         let cls = match class {
             Value::Class(c) if c.is_exception => c,
             other => {
-                return Err(self.err(runtime_error(format!(
+                return Err(self.err(type_error(format!(
                     "catching classes that do not inherit from BaseException is not allowed \
                      (got '{}')",
                     other.type_label()
@@ -5170,7 +5170,7 @@ impl Vm {
                 // __init__ must return None; the instance is already on the
                 // caller's stack as the constructor result.
                 if !matches!(value, Value::None) {
-                    return Err(self.err(runtime_error("__init__() should return None")));
+                    return Err(self.err(type_error("__init__() should return None")));
                 }
             }
             ReturnAction::DrivePrint => {
@@ -5535,7 +5535,7 @@ impl Vm {
         for (name, value) in kwargs {
             if let Some(pos) = normal.iter().position(|p| *p.name == name) {
                 if filled[pos].is_some() {
-                    return Err(self.err(runtime_error(format!(
+                    return Err(self.err(type_error(format!(
                         "{}() got multiple values for argument '{name}'",
                         code.name
                     ))));
@@ -5560,7 +5560,7 @@ impl Vm {
                 if i >= first_defaulted {
                     *slot = Some(func.defaults[i - first_defaulted].clone());
                 } else {
-                    return Err(self.err(runtime_error(format!(
+                    return Err(self.err(type_error(format!(
                         "{}() missing required argument: '{}'",
                         code.name, normal[i].name
                     ))));
@@ -5745,7 +5745,7 @@ fn as_index(v: &Value) -> VResult<i64> {
     match v {
         Value::Bool(b) => Ok(*b as i64),
         Value::Int(i) => Ok(*i),
-        other => Err(runtime_error(format!(
+        other => Err(type_error(format!(
             "indices must be integers, not '{}'",
             other.type_name()
         ))),
@@ -5806,7 +5806,7 @@ fn subscript_set(obj: &Value, index: &Value, value: Value) -> VResult<()> {
         }
         Value::Dict(d) => d.borrow_mut().insert(index.clone(), value),
         other => {
-            Err(runtime_error(format!(
+            Err(type_error(format!(
                 "'{}' object does not support item assignment",
                 other.type_name()
             )))

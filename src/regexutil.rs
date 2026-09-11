@@ -5,7 +5,7 @@
 
 use std::rc::Rc;
 
-use crate::exc::{runtime_error, value_error, VErr};
+use crate::exc::{index_error, value_error, VErr};
 use crate::value::{OroList, OroMatch, OroRegex, OroTuple, Value};
 
 pub type RResult<T> = Result<T, VErr>;
@@ -109,7 +109,7 @@ pub fn group(m: &OroMatch, n: usize) -> RResult<Value> {
     match m.groups.get(n) {
         Some(Some((_, _, text))) => Ok(Value::str(text.clone())),
         Some(None) => Ok(Value::None),
-        None => Err(runtime_error(format!("no such group: {n}"))),
+        None => Err(index_error(format!("no such group: {n}"))),
     }
 }
 
@@ -126,7 +126,7 @@ fn span(m: &OroMatch, n: usize) -> RResult<Option<(usize, usize)>> {
     match m.groups.get(n) {
         Some(Some((s, e, _))) => Ok(Some((*s, *e))),
         Some(None) => Ok(None),
-        None => Err(runtime_error(format!("no such group: {n}"))),
+        None => Err(index_error(format!("no such group: {n}"))),
     }
 }
 
