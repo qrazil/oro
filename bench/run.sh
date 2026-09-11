@@ -45,7 +45,7 @@ BENCHES=(
   "loop"
   "strjoin"
   "strops"
-  "dictops"
+  "dictops:py=dictops.py"
   "dictstr"
   "oo"
   "genpipe"

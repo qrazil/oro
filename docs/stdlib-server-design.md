@@ -2458,7 +2458,7 @@ def write_response(w, req, resp, keep_alive):
     h["date"] = _http_date(time.time())
 
     parts = [f"HTTP/1.1 {resp.status} {_reason(resp.status)}\r\n".to_bytes()]
-    for k, v in h.items():
+    for k, v in h:
         parts.append(f"{k}: {v}\r\n".to_bytes())
     parts.append(b"\r\n")
 

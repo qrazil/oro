@@ -228,10 +228,11 @@ Implemented and working today:
   `enumerate` and `zip` return lists rather than lazy iterators — the same eager
   choice `dict.keys()` already makes. Nine of them have a collection-method twin
   (`len sum min max sorted any all enumerate zip`), and where both spellings
-  exist they answer the same thing: `zip(a, b, c)` is `a.zip(b, c)` and
-  `sorted(x)` keeps `x`'s shape exactly as `x.sorted()` does, so
-  `sorted((3, 1, 2))` is `(1, 2, 3)` and not a list. See
-  `corpus/divergence/65_builtin_method_agreement.oro`.
+  exist they answer the same thing: `zip(a, b, c)` is `a.zip(b, c)`,
+  `sorted(x)` keeps `x`'s shape exactly as `x.sorted()` does (so
+  `sorted((3, 1, 2))` is `(1, 2, 3)` and `sorted(d)` is a dict), and both halves
+  walk a dict as its `(key, value)` pairs, which is what `for k, v in d` yields.
+  See `corpus/divergence/65_builtin_method_agreement.oro`.
 - **Type keywords:** `bool`, `int`, `float`, `str`, `bytes`, `list`, `tuple`,
   `dict`, `range`, and the runtime handles `File`, `Buffer`, `TcpStream`,
   `TcpListener`, `Pattern`, `Match`, `Task`, `Channel`. Each *is* the type, and
@@ -288,10 +289,11 @@ Implemented and working today:
   Two rules govern the whole set. **Operations that select or reorder preserve
   the receiver's type** (a tuple stays a tuple, a dict stays a dict); operations
   that reshape the data return a list. `sorted` reorders, so the rule reaches
-  the builtin too: `sorted(t)` is a tuple. It is only a list where there is no
-  other shape to keep — a range, a generator, a `str`, or a dict, which a
-  builtin walks as its keys. And **a dict's callback takes two
-  arguments**, key and value, so `d.filter((k, v) => v > 1)` reads directly.
+  the builtin too: `sorted(t)` is a tuple and `sorted(d)` is a dict. It is only
+  a list where there is no other shape to keep — a range, a generator, or a
+  `str`. And **a dict's element is its `(key, value)` pair**, everywhere: the
+  callback takes two arguments, so `d.filter((k, v) => v > 1)` reads directly,
+  and `for k, v in d` yields the same pair the callback is handed.
 
   ```python
   orders.filter(o => o.paid).group_by(o => o.region)
@@ -527,7 +529,7 @@ depends on an interpreter flag — `raise` is the one way to fail.)
 
 ## Deliberate divergences from Python
 
-Oro is a subset, but in seven places it deliberately behaves *differently* from
+Oro is a subset, but in eight places it deliberately behaves *differently* from
 Python. Each divergence is a place where Python made a choice it could not later
 reverse, and Oro — starting fresh, with a single implementation — makes the
 choice Python would arguably prefer.
@@ -696,7 +698,54 @@ family of stream types.
 The full reasoning, including what was cut and why, is in
 `docs/stdlib-server-design.md` §2.
 
-### `dict.keys()` / `.values()` / `.items()` answer lists
+### Iterating a dict yields `(key, value)`, and `.items()` is gone
+
+```python
+d = {"a": 1, "b": 2}
+
+for k, v in d:         # the one spelling. In Python this raises.
+    print(k, v)
+
+for k in d.keys():     # when you want only the keys
+    print(k)
+
+d.items()              # AttributeError: iterating the dict *is* its items
+```
+
+Python iterates a dict's keys. Oro iterates its entries, and the argument is
+not ergonomics — it is that **the pair shape is already this language's answer
+for a dict everywhere else**. `d.map(f)` hands `f` the `(key, value)` pair.
+A dict's `filter`, `find`, `count`, `any` and `all` callbacks take *two*
+arguments, key and value. `group_by` builds a dict whose entries are what you
+then want. Key iteration was the single place where a dict's element was
+something other than its entry, and `.items()` existed only to undo it — a
+method whose whole job is to reverse a choice nothing else in the language
+makes. So the choice went instead.
+
+`.keys()` and `.values()` stay: they are how you ask for *one half* of an
+entry, which is a different question, and neither of them is the pair. What
+goes is the third spelling. Before, a dict could be walked three ways — `for k
+in d`, `for k in d.keys()`, `for k, v in d.items()` — of which the first two
+were the same operation; now there are two, and they ask for different things.
+
+**`k in d` still tests keys.** Membership is a hash lookup, not a walk — it
+never touches the iterator — so `"a" in d` is true and `("a", 1) in d` is not.
+That is the thing a change like this is most likely to break silently, so it is
+pinned explicitly in `corpus/divergence/67_dict_pairs.oro`, along with pair
+order (insertion order, the same order the keys came out in) and the behaviour
+of a dict mutated mid-loop (a dict iterator walks a snapshot taken when the
+loop starts, as it always has — inserting neither raises nor is seen).
+
+**The cost is paid in the corpus, not hidden.** Dict iteration leaves the
+CPython oracle, so `corpus/divergence/67_dict_pairs.oro` has a hand-reviewed
+baseline — checked against `67_dict_pairs.twin.py`, the same program with
+`.items()` written back in, so the expectation is still CPython's output for
+every line except the divergence itself. `sum(d)` is the one thing that got
+worse rather than different: it summed the keys and is now an attempt to add a
+tuple to an int, on both the builtin and the method side. `d.values().sum()` is
+what it was reaching for.
+
+### `dict.keys()` / `.values()` answer lists
 
 ```python
 d = {"a": 1}
@@ -719,7 +768,8 @@ views or not having them, because it would look like the thing it is not.
 So Oro answers a list, prints a list, and the whole collection protocol works on
 it with no second type to learn: `d.keys().sorted()`, `d.values().sum()`,
 `d.keys().join("-")`. Recorded, with all three behavioural differences shown,
-in `corpus/divergence/59_dict_views.oro`. The related case is already settled the
+in `corpus/divergence/59_dict_views.oro`. (There is no `.items()` to ask the
+question about — see above — and `d.to_list()` is the list of pairs.) The related case is already settled the
 same way: CPython's repr of an `enumerate` or a `zip` carries a heap address
 (`<enumerate object at 0x7f…>`), which is not reproducible output and could not
 be matched even in principle.

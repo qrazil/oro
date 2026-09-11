@@ -1,20 +1,22 @@
 # `sorted()` answers a list for every argument that has no other shape to keep:
-# a list is already one, a str, a range and a generator have no literal to
-# rebuild, and a dict is walked as its keys, which is a sequence. All of that is
-# CPython's answer too, so the oracle pins it.
+# a list is already one, and a str, a range and a generator have no literal to
+# rebuild. All of that is CPython's answer too, so the oracle pins it.
 #
-# The one argument Oro treats differently is a tuple — `sorted((3, 1, 2))` is
-# `(1, 2, 3)` here, because sorting reorders and reordering preserves the
-# receiver's type. That case cannot live in this file; it is in
-# corpus/divergence/65_builtin_method_agreement.oro, together with the method
-# spelling it now agrees with.
+# Two arguments Oro treats differently, and neither can live in this file:
+#
+#   a tuple  `sorted((3, 1, 2))` is `(1, 2, 3)` here, because sorting reorders
+#            and reordering preserves the receiver's type;
+#   a dict   the same rule, now that walking a dict yields its `(key, value)`
+#            pairs: `sorted({"b": 1, "a": 2})` is `{'a': 2, 'b': 1}`, a dict —
+#            and `sorted({})` is `{}`, so even the empty case has left.
+#
+# Both are in corpus/divergence/65_builtin_method_agreement.oro, together with
+# the method spellings they agree with.
 
 print(sorted([3, 1, 2]))
 print(sorted([]))
 print(sorted("cab"))
 print(sorted(range(3, 0, -1)))
-print(sorted({"b": 1, "a": 2}))
-print(sorted({}))
 print(sorted([3, 1, 2], reverse=true))
 
 

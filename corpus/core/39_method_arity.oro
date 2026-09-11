@@ -6,6 +6,12 @@
 #
 # Missing-argument and wrong-type cases are here too: they were already errors,
 # and this keeps them from drifting into acceptance.
+#
+# `{"a": 1}.items(1)` used to be in the dict block below and is not any more:
+# `.items()` is cut, because iterating a dict yields its (key, value) pairs, so
+# the call is an `AttributeError` here and a `TypeError` under CPython. Its
+# replacement is in corpus/divergence/67_dict_pairs.oro, where the cut is
+# recorded with the message the method now answers with.
 
 
 try:
@@ -217,12 +223,6 @@ try:
     print('{"a": 1}.values(1)', "-> no error")
 except TypeError:
     print('{"a": 1}.values(1)', "-> TypeError")
-
-try:
-    {"a": 1}.items(1)
-    print('{"a": 1}.items(1)', "-> no error")
-except TypeError:
-    print('{"a": 1}.items(1)', "-> TypeError")
 
 try:
     {"a": 1}.get()

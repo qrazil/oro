@@ -9,8 +9,8 @@ for w in ["red", "blue", "red", "green", "blue", "red"]:
     counts[w] = counts.get(w, 0) + 1
 print(counts)
 
-for key in counts:
-    print(key, counts[key])
+for word, n in counts:
+    print(word, n)
 
 pairs = [(1, "one"), (2, "two"), (3, "three")]
 for num, word in pairs:

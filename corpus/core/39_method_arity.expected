@@ -33,7 +33,6 @@ b"-".join([b"a"], 2) -> TypeError
 b"abc".hex(1) -> TypeError
 {"a": 1}.keys(1) -> TypeError
 {"a": 1}.values(1) -> TypeError
-{"a": 1}.items(1) -> TypeError
 {"a": 1}.get() -> TypeError
 {"a": 1}.get("a", 1, 2) -> TypeError
 [1].append() -> TypeError

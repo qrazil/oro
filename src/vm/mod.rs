@@ -5079,7 +5079,10 @@ fn get_iter(v: &Value) -> Result<Value, String> {
             IterState::Str { chars, idx: 0 }
         }
         Value::Bytes(b) => IterState::Bytes { bytes: b.clone(), idx: 0 },
-        Value::Dict(d) => IterState::Snapshot { items: d.borrow().keys(), idx: 0 },
+        // Iterating a dict yields `(key, value)`, not the key — the pair shape
+        // the rest of the collection protocol already uses for a dict. `.keys()`
+        // and `.values()` are how you ask for one half.
+        Value::Dict(d) => IterState::DictPairs { items: d.borrow().items().to_vec(), idx: 0 },
         // A generator is its own iterator; ForIter resumes it directly.
         Value::Generator(_) => return Ok(v.clone()),
         // So is a channel: `ForIter` recvs from it (and may park).
@@ -5147,11 +5150,11 @@ fn iter_next(it: &Value) -> Result<Option<Value>, String> {
                 Ok(None)
             }
         }
-        IterState::Snapshot { items, idx } => {
+        IterState::DictPairs { items, idx } => {
             if *idx < items.len() {
-                let v = items[*idx].clone();
+                let (k, v) = items[*idx].clone();
                 *idx += 1;
-                Ok(Some(v))
+                Ok(Some(Value::Tuple(OroTuple::new(vec![k, v]))))
             } else {
                 Ok(None)
             }
@@ -5982,13 +5985,13 @@ fn sort_kind(in_place: Option<Rc<OroList>>, shape: SeqShape) -> OrdKind {
 
 /// The shape `sorted(x)` rebuilds, for the VM-driven spellings (`key=`,
 /// `reverse=`, a user `__lt__`). One rule, stated once, in
-/// [`crate::builtins::sorted_keeps_tuple`], so the native and frame-driven
+/// [`crate::builtins::sorted_shape_of`], so the native and frame-driven
 /// paths cannot answer different types for the same call.
 fn sorted_shape(v: &Value) -> SeqShape {
-    if crate::builtins::sorted_keeps_tuple(v) {
-        SeqShape::Tuple
-    } else {
-        SeqShape::List
+    match crate::builtins::sorted_shape_of(v) {
+        crate::builtins::SortedShape::Tuple => SeqShape::Tuple,
+        crate::builtins::SortedShape::Dict => SeqShape::Dict,
+        crate::builtins::SortedShape::List => SeqShape::List,
     }
 }
 

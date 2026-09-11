@@ -31,13 +31,13 @@ Everything below was checked by running it, not by reading the parser.
 | # | Candidate | Verdict | Confidence |
 |---|---|---|---|
 | 1 | `sep.join(xs)` alongside `xs.join(sep)` | **cut `str.join`/`bytes.join`** | high |
-| 2 | Nine builtins that duplicate collection methods | **cut six, narrow two, keep `len`** — the two that *disagreed* are fixed | high |
+| 2 | Nine builtins that duplicate collection methods | **cut six, narrow two, keep `len`** — all three disagreements are fixed | high |
 | 3 | Six spellings of "sort this" | **cut `sorted()`, `list.sort`, `list.reverse`** | high |
 | 4 | `type(x) == "<class 'bytes'>"` alongside `isinstance` | **cut the string form; close the gap that forces it** | high |
 | 5 | Five exception classes nothing raises or catches | **cut `LookupError`, `ArithmeticError`, `NotImplementedError`, `StopIteration`** | high |
 | 6 | Bare `raise` alongside `raise e` | **cut bare `raise`** | high |
 | 7 | `while i < n: … i = i + 1` alongside `for i in range(n)` | **not a cut — a rule, and the stdlib is the offender** | high |
-| 8 | Three spellings of "iterate a dict" | **cut bare `for k in d:`** | medium |
+| 8 | Three spellings of "iterate a dict" | **done — cut `.items()` instead**, and bare iteration yields the pair | high |
 | 9 | Three spellings of "loop with an index" | **settle on `.enumerate()`** | medium |
 | 10 | `ModuleNotFoundError` under `ImportError` | **merge, weakly** | low |
 | 11 | Exception versus sentinel as a failure signal | **keep — but write the rule down** | high |
@@ -189,25 +189,43 @@ would have meant changing `.sorted()` now and changing it back when the builtin
 goes. Nothing in the tree passed a tuple to `sorted()`, so the change cost no
 churn; `corpus/core/48_sorted_shape.oro` pins the cases that stay CPython's.
 
-**What is left, and it is not these two.** A builtin walks a dict as its *keys*
-(the iteration protocol) and a collection method walks it as its `(key, value)`
-*pairs* (the collection protocol):
+**The third disagreement was a dict, and it is now closed too.** A builtin
+walked a dict as its *keys* (the iteration protocol) and a collection method as
+its `(key, value)` *pairs* (the collection protocol):
 
 ```python
-sorted({"b": 1})        # ['b']      — the keys
-{"b": 1}.sorted()       # {'b': 1}   — the dict, sorted
-min({"b": 1, "a": 2})   # 'a'        vs  ('a', 2)
-enumerate({"b": 1})     # [(0, 'b')] vs  [(0, ('b', 1))]
+sorted({"b": 1})        # was ['b']      — the keys
+{"b": 1}.sorted()       # {'b': 1}       — the dict, sorted
+min({"b": 1, "a": 2})   # was 'a'        vs  ('a', 2)
+enumerate({"b": 1})     # was [(0, 'b')] vs  [(0, ('b', 1))]
 ```
 
-That is **one** divergence, not six: it hits `sorted`, `min`, `max`, `sum`,
-`enumerate` and `zip` identically, and it is the only case in which any of the
-nine pairs still answer different things. It is also not a bug in those six
-names — it is a language-level question ("what is a dict's element?") already
-answered twice, deliberately, in two protocols, and changing the builtin half
-would put `enumerate(d)` at odds with `for x in d`. The cut below dissolves it
-for free: when the collection-taking builtins go, only the method answer
-remains. So neither answer should be entrenched first.
+That was **one** divergence, not six: it hit `sorted`, `min`, `max`, `sum`,
+`enumerate` and `zip` identically, because all six read their argument through
+`iterate_to_vec`. It was left open here on the ground that changing the builtin
+half would put `enumerate(d)` at odds with `for x in d`.
+
+**That ground moved.** `for k, v in d` now yields the pair (§7d, and the README's
+divergence list), so the iteration protocol and the collection protocol give the
+same answer to "what is a dict's element?", and the six builtins followed
+without being touched — they read the iterator. What had been the argument for
+leaving the builtins alone became the argument for the change: after it, keeping
+them on keys would have made `enumerate(d)` the odd one out.
+
+`sorted` needed one line beyond that. `sorted_shape_of` excluded a dict from the
+shape-preserving rule because "a dict is walked as its keys, which is a
+sequence" — true when it was written and false now, since what `sorted`
+reordered is a sequence of *entries*, and a sequence of entries is a dict. So
+`sorted(d)` rebuilds a dict, exactly as `d.sorted()` always did. The
+CPython-oracle argument that once favoured a list is spent either way: CPython
+answers `['a', 'b']` and neither Oro spelling does.
+
+**What it cost.** `sum(d)` summed the keys and is now an attempt to add a tuple
+to an int — a `TypeError`, on *both* sides. That is the one case where the
+consistent answer is worse than what the builtin did rather than merely
+different; `d.values().sum()` is what such a call meant. All nine pairs now
+agree on a dict argument, pinned line by line in
+`corpus/divergence/65_builtin_method_agreement.oro`.
 
 ### The rule to draw
 
@@ -664,7 +682,7 @@ while i < len(xs):          # 3 uses
 `enumerate` builtin, which leaves `.enumerate()` as the one spelling and folds
 this question into that one.
 
-### 7d. Three ways to iterate a dict
+### 7d. Three ways to iterate a dict — **done**, and not the way this proposed
 
 ```python
 for k in d:            # implicit keys
@@ -673,18 +691,42 @@ for k, v in d.items(): # pairs
 ```
 
 The first two are the same operation. `d.keys()` already answers a real list —
-that is a documented divergence with its own corpus file — so `for k in d:` is
-not saving an allocation, it is saving five characters and asking the reader to
+that is a documented divergence with its own corpus file — so `for k in d:` was
+not saving an allocation, it was saving five characters and asking the reader to
 remember that iterating a dict means iterating its keys rather than its entries,
 which is the one thing about dict iteration that people get wrong.
 
-**Verdict: cut bare `for k in d:`**, with an error naming `.keys()` and
-`.items()`. Medium confidence — it is CPython-identical behaviour under
-CPython-identical syntax, so it is not *wrong*, and cutting it costs oracle
-coverage on any core program that uses it. The argument for cutting anyway is
-that Oro already broke with CPython on what `.keys()` *returns*, so the "views
-are cheap, iteration is the fast path" reasoning that justifies the implicit form
-in Python does not hold here.
+The verdict here was **cut bare `for k in d:`**, with an error naming `.keys()`
+and `.items()`, at medium confidence. What shipped instead cuts one spelling
+rather than one syntax, and is better:
+
+```python
+for k, v in d:         # the one spelling — bare iteration *is* the pairs
+for k in d.keys():     # when you want one half of an entry
+```
+
+`.items()` is the spelling that went, and bare iteration was redefined onto the
+pair rather than removed. Three ways became two, which was the goal; the two
+that remain ask *different questions*, where the pair the proposal would have
+kept (`for k in d` / `for k in d.keys()`) asked the same one twice.
+
+The argument that decided it is one this section did not make: the pair shape is
+already the language's answer for a dict in the *other* protocol — `d.map(f)`
+hands `f` the pair, and a dict's `filter`, `find`, `any`, `all` and `count`
+callbacks take two arguments. Key iteration was the inconsistency, and `.items()`
+was a method whose only job was to undo it. Cutting bare `for k in d` would have
+left that inconsistency in place and added a third thing to remember.
+
+It also closes §2's last disagreement, which cutting the syntax would not have:
+the six dict-walking builtins read the iterator, so they moved with it.
+
+**What it cost in oracle coverage**, measured rather than estimated: exactly one
+`corpus/core/` program iterates a dict at all (`48_sorted_shape.oro`, two lines),
+and one more calls `.items()` without iterating (`39_method_arity.oro`, one
+case). No program moved whole; three lines left `core/` for
+`corpus/divergence/65_builtin_method_agreement.oro` and
+`corpus/divergence/67_dict_pairs.oro`, and the latter carries a `.twin.py`, so
+even its baseline is still CPython's output.
 
 ---
 
@@ -1032,8 +1074,9 @@ shape. Consistent.
    it makes a sentence the README already prints become true.
 2. **Draw the builtin/method line and cut the six builtins it removes** (§2, §3).
    This is the largest ambiguity surface in the language and it is currently
-   split 50/50 in usage. Two of the pairs silently disagreed; those two are
-   fixed (§2), which removes the urgency but not the case — nine names still
+   split 50/50 in usage. Three of the pairs silently disagreed — two on a tuple
+   and every dict-walking one on what a dict's element is; all three are fixed
+   (§2, §7d), which removes the urgency but not the case — nine names still
    mean the same nine things.
 3. **Rewrite the 67 manual-counter loops as `for … in range(…)` and write the
    loop rule down** (§7b). Nothing is cut, the code gets shorter and 35% faster,

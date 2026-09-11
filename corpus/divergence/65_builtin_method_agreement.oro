@@ -11,9 +11,15 @@
 #   sorted((3, 1, 2))            answered a list where (3, 1, 2).sorted() answered a tuple
 #
 # Every line below prints the builtin form and then the method form. They must
-# match. Where they cannot — a dict, whose elements are its keys to a builtin
-# and its (key, value) pairs to the collection protocol — the pair is left out;
-# that divergence is one language-level decision, not a bug in these two names.
+# match — every pair, on every argument, with no case left out.
+#
+# A dict used to be the case left out, because the two halves disagreed about
+# what a dict's *element* is: a builtin walked one as its keys (the iteration
+# protocol) and a collection method as its (key, value) pairs (the collection
+# protocol), which separated `sorted`, `min`, `max`, `sum`, `enumerate` and
+# `zip` on a dict argument and nothing else. That is now one answer and not two
+# — iterating a dict yields the pair — so the dict block below is the record of
+# the last of the nine disagreements closing.
 
 # --- zip: the method takes N sequences, exactly as the builtin does ----------
 print(zip([1, 2], [3, 4], [5, 6]))
@@ -64,3 +70,36 @@ try:
     print(enumerate([7, 8], 1, 9))
 except TypeError as e:
     print(e)
+
+# --- a dict: one answer to "what is a dict's element?" ----------------------
+# Both halves walk it as its (key, value) pairs, which is what `for k, v in d`
+# yields. Nothing here was true before that change: every line was a pair of
+# different answers.
+d = {"b": 1, "a": 2}
+print(min(d), d.min())
+print(max(d), d.max())
+print(enumerate(d), d.enumerate())
+print(zip(d, [10, 20]), d.zip([10, 20]))
+print(any(d), d.any())
+print(all(d), d.all())
+print(len(d), d.len())
+
+# `sorted` follows the same rule it follows for a tuple: what it reordered is a
+# sequence of entries, so a dict is what it rebuilds into.
+print(sorted(d), d.sorted())
+print(sorted({}), {}.sorted())
+print(type(sorted(d)), type(d.sorted()))
+
+# The one case that costs something: `sum` over a dict was a sum of keys and is
+# now an attempt to add a tuple to an int. It is a TypeError on *both* sides —
+# agreement is the property this file pins, and the two spellings agree about
+# refusing it. `d.values().sum()` is how you add up a dict.
+try:
+    print(sum(d))
+except TypeError as e:
+    print("sum(d) ->", e)
+try:
+    print(d.sum())
+except TypeError as e:
+    print("d.sum() ->", e)
+print(d.values().sum())

@@ -589,8 +589,11 @@ pub enum IterState {
     /// Iterating `bytes` yields the octets as `int`s, so no per-element
     /// allocation is needed — the source `Rc` is simply held and indexed.
     Bytes { bytes: Rc<Vec<u8>>, idx: usize },
-    /// Dict/set iteration works over a snapshot taken at `GetIter` time.
-    Snapshot { items: Vec<Value>, idx: usize },
+    /// Iterating a dict yields its `(key, value)` pairs — the same shape
+    /// `map` and `filter` over a dict already answer with. The entries are
+    /// snapshotted at `GetIter` time; the pair tuple itself is built per step,
+    /// so a loop that unpacks and drops it never holds more than one.
+    DictPairs { items: Vec<(Value, Value)>, idx: usize },
 }
 
 /// A compiled Oro function together with its captured environment.

@@ -1,4 +1,9 @@
 # Dict-heavy: 500k integer-keyed writes, then a full scan summing the values.
+#
+# The scan is `for k, v in d`, which is dict iteration: iterating a dict yields
+# its (key, value) pairs. CPython cannot run that line, so this program has a
+# twin (dictops.py) that spells the same scan `d.items()` — the harness runs the
+# twin for the CPython column and checks both print the same total.
 d = {}
 i = 0
 while i < 500000:
@@ -6,7 +11,7 @@ while i < 500000:
     i = i + 1
 
 total = 0
-for k in d:
-    total = total + d[k]
+for k, v in d:
+    total = total + v
 
 print(total)

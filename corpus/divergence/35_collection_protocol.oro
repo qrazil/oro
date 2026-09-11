@@ -36,7 +36,7 @@ orders = [
     {"region": "eu", "total": 20},
 ]
 by_region = orders.group_by(o => o["region"])
-for region, rows in by_region.items():
+for region, rows in by_region:
     print(region, rows.map(r => r["total"]).sum())
 print(orders.max_by(o => o["total"])["region"])
 

@@ -1,4 +1,9 @@
-# `dict.keys()` / `.values()` / `.items()` answer lists, and print as lists.
+# `dict.keys()` / `.values()` answer lists, and print as lists.
+#
+# (`.items()` is not here because it is not in the language: iterating a dict
+# yields its `(key, value)` pairs, so `d.to_list()` is the list of pairs and
+# 67_dict_pairs.oro records that cut. Everything below is about the two halves
+# that remain, and about what they *are*.)
 #
 # CPython answers *views* — `dict_keys(['a'])` — and this was filed as a bug to
 # fix. It is not one; it is a deliberate divergence, and the reason is that only
@@ -26,13 +31,12 @@
 
 d = {"a": 1, "b": 2}
 
-# CPython: dict_keys(['a', 'b']) / dict_values([1, 2]) / dict_items([...])
+# CPython: dict_keys(['a', 'b']) / dict_values([1, 2])
 print(d.keys())
 print(d.values())
-print(d.items())
 
 # 1. Indexable, where a view is not (CPython: TypeError, not subscriptable).
-print(d.keys()[0], d.values()[-1], d.items()[1])
+print(d.keys()[0], d.values()[-1])
 
 # 2. Equal to the list it is (CPython: false; a view compares as a set).
 print(d.keys() == ["a", "b"], d.values() == [1, 2])
@@ -45,6 +49,9 @@ print(k, d.keys())
 # And being a list is the point: the whole collection protocol is available on
 # one, with no second type to learn and no conversion to remember.
 print(d.keys().sorted(), d.values().sum(), d.keys().join("-"))
-print(d.items().map(pair => pair[0]))
+
+# The half that used to be `.items()` is the dict itself, and `to_list()` is the
+# list form of it — one list, with the same protocol on it as the other two.
+print(d.to_list().map(pair => pair[0]))
 for key in d.keys():
     print("key", key)

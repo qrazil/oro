@@ -251,15 +251,29 @@ fn bi_sorted(args: Vec<Value>) -> VResult<Value> {
         [it] => it,
         _ => return Err("sorted() takes exactly 1 argument".to_string()),
     };
-    let tuple = sorted_keeps_tuple(iterable);
+    let shape = sorted_shape_of(iterable);
     let mut items = crate::vm::iterate_to_vec(iterable)?;
     sort_values(&mut items)?;
-    rebuild(if tuple { Shape::Tuple } else { Shape::List }, items)
+    rebuild(
+        match shape {
+            SortedShape::List => Shape::List,
+            SortedShape::Tuple => Shape::Tuple,
+            SortedShape::Dict => Shape::Dict,
+        },
+        items,
+    )
 }
 
-/// Whether `sorted(x)` — and `sorted(x, key=…)`, which the VM drives — answers
-/// a tuple.
-///
+/// The shape `sorted(x)` rebuilds — for the native path and, through
+/// [`crate::vm::sorted_shape`], for the frame-driven ones (`key=`, `reverse=`,
+/// a user `__lt__`) too, so the two cannot answer different types for one call.
+#[derive(Clone, Copy)]
+pub enum SortedShape {
+    List,
+    Tuple,
+    Dict,
+}
+
 /// Sorting *reorders*, and the collection protocol's stated rule is that an
 /// operation which selects or reorders preserves the receiver's type. `.sorted()`
 /// has always obeyed it; the builtin hardcoded a list, so `sorted((3, 1, 2))`
@@ -267,12 +281,19 @@ fn bi_sorted(args: Vec<Value>) -> VResult<Value> {
 /// method is the spelling that survives the builtin/method line (a builtin takes
 /// scalars, a collection method takes a collection), so the builtin moves.
 ///
-/// Only a tuple has another shape to keep. A list is already a list; a range,
-/// a generator, a str and a bytes have no literal to rebuild; and a dict is
-/// walked by `iterate_to_vec` as its *keys*, so what is being sorted here is a
-/// sequence of keys and a list is what it is.
-pub fn sorted_keeps_tuple(v: &Value) -> bool {
-    matches!(v, Value::Tuple(_))
+/// A tuple and a dict are the two shapes there are to keep. A list is already a
+/// list, and a range, a generator, a str and a bytes have no literal to rebuild.
+/// A dict is here because iterating one yields its `(key, value)` pairs: what
+/// `sorted` reordered *is* a sequence of entries, so a dict is what it rebuilds
+/// into, exactly as `d.sorted()` has always answered. While a dict was walked as
+/// its keys there was no dict to rebuild and a list was the honest answer; that
+/// stopped being true when the iterator changed.
+pub fn sorted_shape_of(v: &Value) -> SortedShape {
+    match v {
+        Value::Tuple(_) => SortedShape::Tuple,
+        Value::Dict(_) => SortedShape::Dict,
+        _ => SortedShape::List,
+    }
 }
 
 /// The error a native ordering answers with when it meets an operand whose
@@ -684,6 +705,17 @@ pub fn is_str_method(name: &str) -> bool {
 /// their replacement — silently answering "no such attribute" would leave the
 /// reader to guess what happened to it.
 pub fn cut_method_message(recv: &Value, name: &str) -> Option<&'static str> {
+    // `.items()` went when iterating a dict started yielding the pair itself:
+    // the method's whole job was to undo a choice — iterate keys — that the
+    // language no longer makes. It is the one Python habit likely to be typed
+    // out of muscle memory, so it is named rather than left to fail as a bare
+    // "no such attribute".
+    if matches!(recv, Value::Dict(_)) {
+        return (name == "items").then_some(
+            "`dict.items()` is not in Oro — iterating a dict already yields its (key, value) \
+             pairs, so write `for k, v in d`; `d.to_list()` is the list of pairs",
+        );
+    }
     if !matches!(recv, Value::Str(_) | Value::Bytes(_)) {
         return None;
     }
@@ -732,7 +764,7 @@ pub fn method_exists(recv: &Value, name: &str) -> bool {
             matches!(name, "map" | "filter")
         }
         Value::Dict(_) => {
-            matches!(name, "get" | "pop" | "keys" | "values" | "items" | "map" | "filter")
+            matches!(name, "get" | "pop" | "keys" | "values" | "map" | "filter")
         }
         // The protocol is `read`/`write`; `read_until` and `close` are methods
         // on the concrete type, the way `bufio.Reader` has `ReadSlice` in Go.
@@ -2364,16 +2396,6 @@ fn dict_method(d: &Rc<RefCell<OroDict>>, name: &str, args: Vec<Value>) -> VResul
         "values" => {
             exactly(&args, 0, "values")?;
             Ok(Value::List(OroList::new(d.borrow().values())))
-        }
-        "items" => {
-            exactly(&args, 0, "items")?;
-            let items: Vec<Value> = d
-                .borrow()
-                .items()
-                .iter()
-                .map(|(k, v)| Value::Tuple(OroTuple::new(vec![k.clone(), v.clone()])))
-                .collect();
-            Ok(Value::List(OroList::new(items)))
         }
         _ => Err(format!("'dict' object has no method '{name}'")),
     }

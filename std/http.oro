@@ -1018,7 +1018,7 @@ def _is_bodiless(status):
 # header block early. This is the response side of the same check the parser
 # makes on the way in.
 def _check_headers(headers, kind="response"):
-    for name, value in headers.items():
+    for name, value in headers:
         _check_header(name, value, kind)
 
 
@@ -1082,7 +1082,7 @@ def write_response(w, req, resp, keep_alive):
     reason = resp.reason_phrase()
     parts = [f"HTTP/1.1 {resp.status} {reason}\r\n".to_bytes()]
     _check_headers(h)
-    for k, v in h.items():
+    for k, v in h:
         parts.append(f"{k}: {v}\r\n".to_bytes())
     parts.append(b"\r\n")
     if suppress:
@@ -1756,11 +1756,11 @@ def unquote(s, plus=false):
 # keeps only the last of them, which is a limit of a dict and not of the
 # encoding.
 def encode_query(params):
-    pairs = params
-    if type(params) == dict:
-        pairs = params.items()
     out = []
-    for k, v in pairs:
+    # A dict and a list of pairs need no distinguishing: iterating a dict
+    # yields its (key, value) pairs, which is exactly what the list spelling
+    # already is.
+    for k, v in params:
         # `_query_bytes` hands back octets and `quote_plus` returns the type
         # it was given, so these are bytes — and `.to_str()` on them cannot
         # fail, because what comes out of a percent-encoder is ASCII.
@@ -2015,7 +2015,7 @@ def write_request(w, method, target, headers=null, body=b""):
     if h.get("host") == null:
         raise ValueError("a request needs a Host header — `fetch` fills it in from the URL, and a caller using `write_request` directly has to say")
     parts = [f"{method} {target} HTTP/1.1\r\n".to_bytes()]
-    for k, v in h.items():
+    for k, v in h:
         parts.append(f"{k}: {v}\r\n".to_bytes())
     parts.append(b"\r\n")
     if not streamed:
@@ -2037,7 +2037,7 @@ def _request_headers(headers):
     h = {}
     if headers == null:
         return h
-    for name, value in headers.items():
+    for name, value in headers:
         key = name.lower()
         if key in h:
             raise ValueError(f"header '{name}' was given twice, in two spellings")

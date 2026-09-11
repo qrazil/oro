@@ -33,3 +33,16 @@
 [(1, 7), (2, 8)]
 enumerate() takes at most 1 argument(s) but 2 were given
 enumerate() takes 1 or 2 arguments
+('a', 2) ('a', 2)
+('b', 1) ('b', 1)
+[(0, ('b', 1)), (1, ('a', 2))] [(0, ('b', 1)), (1, ('a', 2))]
+[(('b', 1), 10), (('a', 2), 20)] [(('b', 1), 10), (('a', 2), 20)]
+true true
+true true
+2 2
+{'a': 2, 'b': 1} {'a': 2, 'b': 1}
+{} {}
+<class 'dict'> <class 'dict'>
+sum(d) -> unsupported operand type(s) for +: 'int' and 'tuple'
+d.sum() -> unsupported operand type(s) for +: 'int' and 'tuple'
+3

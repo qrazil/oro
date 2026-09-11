@@ -1,0 +1,104 @@
+# DIVERGENCE: iterating a dict yields its `(key, value)` pairs, not its keys.
+#
+#     for k, v in d:      the one spelling
+#     for k in d.keys():  when you want only the keys
+#     d.items()           gone — iterating the dict *is* iterating its items
+#
+# CPython iterates the keys, so this file cannot be oracled the way core/ is.
+# Its baseline is reviewed by hand against `67_dict_pairs.twin.py`, which is
+# this program with `.items()` written back in and run under CPython:
+#
+#     python3 corpus/divergence/67_dict_pairs.twin.py \
+#       | diff - corpus/divergence/67_dict_pairs.expected
+#
+# An empty diff is the review, so the expectation is still CPython's answer for
+# everything except the divergence itself.
+#
+# The argument for the change is that the pair shape is *already* this
+# language's answer for a dict everywhere else: `d.map(f)` hands `f` the pair,
+# a dict's `filter` callback takes two arguments, `d.find((k, v) => …)` takes
+# two, and `group_by` builds a dict you then want the entries of. Key
+# iteration was the one place a dict's element was something else, and
+# `.items()` existed only to undo it.
+
+d = {"b": 2, "a": 1, "c": 3}
+
+# --- the one spelling -------------------------------------------------------
+for k, v in d:
+    print(k, v)
+
+# Bound to a single name, the element is the pair itself. This is the line that
+# changed meaning in existing code, so it is pinned deliberately.
+for pair in d:
+    print(pair, pair[0], pair[1])
+
+# --- order: pairs come out in the order the keys did ------------------------
+# Oro dicts are insertion-ordered, and the pair iterator is the entry order, not
+# a re-hash. `"b"` was inserted first and comes out first.
+print(d.keys())
+seen = []
+for k, v in d:
+    seen.append(k)
+print(seen == d.keys())
+
+# --- `in` is not iteration --------------------------------------------------
+# Membership tests *keys*, and it always did: it is a hash lookup and never
+# walks the entries at all, which is why the iterator changing does not reach
+# it. A pair is not a key, and asking for one finds nothing.
+print("a" in d, "z" in d)
+print(("a", 1) in d)
+print("a" in d.keys(), ("a", 1) in d.to_list())
+
+# --- the two halves stay ----------------------------------------------------
+# `.keys()` and `.values()` are how you ask for one half of an entry. They are
+# not redundant with the iterator: neither of them is the pair.
+print(d.keys(), d.values())
+for k in d.keys():
+    print("key", k)
+
+# --- `.items()` is cut ------------------------------------------------------
+# It is the one Python habit likely to be typed from muscle memory, so it is
+# named and redirected rather than left to fail as a bare missing attribute.
+try:
+    d.items()
+except AttributeError as e:
+    print(e)
+
+# --- everything that walks an iterable sees the same element ----------------
+print(d.to_list())
+print(sorted(d))
+print(enumerate(d))
+print(min(d), max(d))
+print(d.map((k, v) => (k, v * 10)))
+print(d.filter((k, v) => v > 1))
+
+# `**d` is a mapping splat and `*d` is a spread of the elements — two different
+# operators, and only the second one is iteration.
+def kw(**rest):
+    print(rest)
+
+
+def pos(*args):
+    print(args)
+
+
+kw(**d)
+pos(*d)
+
+# --- the empty dict ---------------------------------------------------------
+for k, v in {}:
+    print("never")
+print("empty ok")
+
+# --- mutation during iteration ----------------------------------------------
+# Unchanged in kind: a dict iterator has always walked a snapshot taken when the
+# loop started, so inserting during the loop neither raises (as it would for a
+# list) nor is seen. What the snapshot *holds* is now the entries rather than
+# the keys, so a value replaced mid-loop is not seen either; `d[k]` reads the
+# live one, as it always did.
+m = {"a": 1, "b": 2}
+for k, v in m:
+    m["c"] = 3
+    m["b"] = 20
+    print(k, v, m[k])
+print(m)
