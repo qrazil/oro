@@ -4,7 +4,7 @@ import re
 # so CPython refuses it, and Oro refuses it with the same class. Oro's limit
 # is lower still: it implements none of CPython's optional flags, count,
 # maxsplit, pos or endpos, and refuses them rather than ignoring them. The
-# refusals CPython would not make are in divergence/73_re_arity.oro.
+# refusals CPython would not make are in divergence/77_re_arity.oro.
 
 def search_4():
     re.search("a", "xa", 0, 0)

@@ -77,6 +77,21 @@ fn ranges_compare_and_hash_as_the_sequence_they_denote() {
     assert_eq!(d.get(&r(0, 0, 1)).unwrap().unwrap().try_equals(&Value::Int(3)), Some(true));
 }
 
+/// A range's repr is a call the language takes back: the end is the one
+/// positional argument, and a start or step that is not the default is named.
+/// CPython prints `range(2, 10, 3)`, which the argument rule now rejects as
+/// input, and a repr that cannot be typed back in is the inconsistency the
+/// rule exists to remove.
+#[test]
+fn range_repr_is_a_call_oro_accepts() {
+    let r = |start, stop, step| Value::Range(Rc::new(RangeVal { start, stop, step }));
+    assert_eq!(r(0, 5, 1).repr(), "range(5)");
+    assert_eq!(r(2, 10, 1).repr(), "range(10, start=2)");
+    assert_eq!(r(0, 4, 2).repr(), "range(4, step=2)");
+    assert_eq!(r(2, 10, 3).repr(), "range(10, start=2, step=3)");
+    assert_eq!(r(3, 0, -1).repr(), "range(0, start=3, step=-1)");
+}
+
 /// The two things that stay unhashable, and the one that newly is not.
 #[test]
 fn mutable_containers_stay_unhashable() {

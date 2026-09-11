@@ -1319,12 +1319,21 @@ impl Value {
                 out.push('}');
                 out
             }
+            // Spelled the way the language accepts it back: the end is the one
+            // positional argument, and a start or step that is not the default
+            // is named. CPython prints `range(2, 10, 3)`, which is no longer a
+            // call Oro will take, and a repr that cannot be typed back in is
+            // the inconsistency the argument rule exists to remove.
             Value::Range(r) => {
-                if r.step == 1 {
-                    format!("range({}, {})", r.start, r.stop)
-                } else {
-                    format!("range({}, {}, {})", r.start, r.stop, r.step)
+                let mut out = format!("range({}", r.stop);
+                if r.start != 0 {
+                    let _ = write!(out, ", start={}", r.start);
                 }
+                if r.step != 1 {
+                    let _ = write!(out, ", step={}", r.step);
+                }
+                out.push(')');
+                out
             }
             Value::Iter(_) => "<iterator>".to_string(),
             Value::Func(f) => format!("<function {}>", f.code.name),

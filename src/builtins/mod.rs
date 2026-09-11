@@ -88,19 +88,6 @@ pub(crate) fn exactly(args: &[Value], n: usize, who: &str) -> VResult<()> {
     }
 }
 
-/// Reject arguments past the `n`th. A method that accepts an argument it then
-/// ignores answers confidently and wrongly, which is worse than refusing.
-fn at_most(args: &[Value], n: usize, who: &str) -> VResult<()> {
-    if args.len() > n {
-        Err(type_error(format!(
-            "{who}() takes at most {n} argument(s) but {} were given",
-            args.len()
-        )))
-    } else {
-        Ok(())
-    }
-}
-
 /// The keyword arguments a native takes, bound by name. Under the argument
 /// rule every parameter with a default is keyword-only, so this is where a
 /// native reads one: a name it does not take is a TypeError, and so is a name
@@ -1198,7 +1185,7 @@ fn match_method(
     args: Vec<Value>,
 ) -> VResult<Value> {
     use crate::regexutil as rx;
-    // The group index is required: `m.group(0)` is the whole match, said.
+    // The group index is required, so `m.group(0)` says "the whole match".
     let n = match args.as_slice() {
         [Value::Int(i)] if *i >= 0 => *i as usize,
         [Value::Int(_)] => return Err(index_error("group index must be non-negative")),
@@ -1280,20 +1267,6 @@ fn stream_method(
 /// missing argument reads the same way a wrong one does.
 pub(crate) fn type_of(args: &[Value], i: usize) -> &'static str {
     args.get(i).map(|v| v.type_name()).unwrap_or_else(|| Value::None.type_name())
-}
-
-/// Optional integer argument (Python's `maxsplit`, `width`, ... style).
-/// Absent or `None` yields `default`.
-fn opt_int_arg(args: &[Value], i: usize, who: &str, default: i64) -> VResult<i64> {
-    match args.get(i) {
-        None | Some(Value::None) => Ok(default),
-        Some(Value::Int(n)) => Ok(*n),
-        Some(Value::Bool(b)) => Ok(*b as i64),
-        Some(other) => Err(type_error(format!(
-            "{who}() argument must be int, not '{}'",
-            other.type_name()
-        ))),
-    }
 }
 
 /// CPython's `ADJUST_INDICES`: fold a pair of Python slice bounds into offsets

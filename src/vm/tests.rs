@@ -1716,7 +1716,7 @@ fn other_methods_refuse_keywords() {
 /// keyword-only, so every old positional spelling is refused — and the refusal
 /// *names the new spelling*, because the old one was valid Oro until now and a
 /// bare arity error would leave the reader to guess where the argument went.
-/// `corpus/divergence/73_argument_rule_natives.oro` runs the whole set end to
+/// `corpus/divergence/76_argument_rule_natives.oro` runs the whole set end to
 /// end; these pin the part that matters, which is what the message says.
 #[test]
 fn old_positional_spellings_name_the_keyword_that_replaced_them() {
