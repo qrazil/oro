@@ -77,18 +77,19 @@ print(d.min(), d.max())
 print(d.map((k, v) => (k, v * 10)))
 print(d.filter((k, v) => v > 1))
 
-# `**d` is a mapping splat and `*d` is a spread of the elements — two different
-# operators, and only the second one is iteration.
-def kw(**rest):
-    print(rest)
+# A dict reaches a call two ways, and they are two different bindings:
+# `apply(f, kwargs=d)` binds it by name, and `apply(f, args=d.to_list())` binds
+# its pairs by position. Only the second one is iteration.
+def named(a=0, b=0, c=0):
+    print(a, b, c)
 
 
-def pos(*args):
-    print(args)
+def positional(first, second, third):
+    print(first, second, third)
 
 
-kw(**d)
-pos(*d)
+apply(named, kwargs=d)
+apply(positional, args=d.to_list())
 
 # --- the empty dict ---------------------------------------------------------
 for k, v in {}:

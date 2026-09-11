@@ -240,14 +240,24 @@ r = fib(12)
     assert_eq!(int(&eval_last(fib)), 144);
 }
 
+/// What `*args` and `**kwargs` used to do, done with the types the language
+/// already has: a list parameter for "any number of these", a dict parameter
+/// for named options, and `apply` to forward either into a call.
 #[test]
-fn varargs_and_kwargs_binding() {
+fn a_list_parameter_and_a_dict_parameter_replace_the_variadic_forms() {
     let src = "\
-def f(a, *rest, **opts):
-    return a + rest.sum() + opts.get(\"bonus\", default=0)
-r = f(1, 2, 3, bonus=100)
+def f(a, rest, opts):
+    return a + rest.sum(start=0) + opts.get(\"bonus\", default=0)
+r = f(1, [2, 3], {\"bonus\": 100})
 ";
     assert_eq!(int(&eval_last(src)), 106);
+
+    let forwarded = "\
+def f(a, rest, opts):
+    return a + rest.sum(start=0) + opts.get(\"bonus\", default=0)
+r = apply(f, args=[1, [2, 3], {\"bonus\": 100}])
+";
+    assert_eq!(int(&eval_last(forwarded)), 106);
 }
 
 #[test]
@@ -972,11 +982,11 @@ out = f"{a} {b} {c} {e} {f} {g}"
     );
 }
 
-/// What counts is the positional parameters without a default. Defaults,
-/// `*args` and `**kwargs` do not count, a bound method's `self` does not, and
-/// `reduce` counts only the ones after its accumulator. A native callable
-/// declares nothing to count, so it is handed a dict's pair as two arguments
-/// and any other element whole.
+/// What counts is the parameters without a default. A defaulted parameter does
+/// not count (it is keyword-only, so a callback can never be handed one), a
+/// bound method's `self` does not, and `reduce` counts only the ones after its
+/// accumulator. A native callable declares nothing to count, so it is handed a
+/// dict's pair as two arguments and any other element whole.
 #[test]
 fn which_parameters_count_toward_destructuring() {
     let src = r#"
@@ -985,15 +995,6 @@ def scaled(x, by=10):
 
 def label(k, v, sep="="):
     return k + sep + v.to_str()
-
-def arity(*args):
-    return len(args)
-
-def collect(acc, *rest):
-    return acc + [len(rest)]
-
-def kw(p, **opts):
-    return p
 
 def fold(acc, k, v, extra=0):
     return acc + v + extra
@@ -1012,19 +1013,16 @@ s = Shelf()
 d = {"a": 1, "b": 2}
 a = [1, 2].map(scaled)
 b = d.to_list().map(label)
-c = d.to_list().map(arity)
-e = d.reduce([], collect)
-f = [(1, 2)].map(kw)
 g = d.reduce(0, fold)
 h = d.to_list().map(s.pair)
 i = d.map(s.whole)
 j = {3: 1, 0: 0}.count(max)
 k = [(1, 2), (3, 4, 5)].map(len)
-out = f"{a} {b} {c} {e} {f} {g} {h} {i} {j} {k}"
+out = f"{a} {b} {g} {h} {i} {j} {k}"
 "#;
     assert_eq!(
         fstr(src),
-        "[10, 20] ['a=1', 'b=2'] [1, 1] [1, 1] [(1, 2)] 3 ['a', 'b'] {'a': 1, 'b': 2} 1 [2, 3]"
+        "[10, 20] ['a=1', 'b=2'] 3 ['a', 'b'] {'a': 1, 'b': 2} 1 [2, 3]"
     );
 }
 
@@ -2392,11 +2390,11 @@ fn spawn_rejects_what_cannot_park() {
     }
 }
 
-/// `spawn(f, *args, **kwargs)` binds exactly as `f(*args, **kwargs)` would:
-/// the same binder, in the spawner, before a task exists. So keywords reach the
-/// task, and every binding error is the direct call's — same class, same
-/// message, same line — raised at the `spawn` call, where a positional arity
-/// error has always surfaced.
+/// `spawn(f, …)` binds exactly as the call `f(…)` would: the same binder, in
+/// the spawner, before a task exists. So keywords reach the task, and every
+/// binding error is the direct call's — same class, same message, same line —
+/// raised at the `spawn` call, where a positional arity error has always
+/// surfaced.
 #[test]
 fn spawn_binds_keywords_like_a_direct_call() {
     let v = eval_var(
@@ -2407,7 +2405,7 @@ class K:
     def m(self, x, y=0):
         return x + y
 kw = {\"b\": 7}
-r = [spawn(f, 1, c=9).join(), spawn(f, a=5).join(), spawn(f, *[3], **kw).join(), spawn(K().m, 1, y=41).join()]
+r = [spawn(f, 1, c=9).join(), spawn(f, a=5).join(), apply(spawn, args=[f, 3], kwargs=kw).join(), spawn(K().m, 1, y=41).join()]
 ",
         "r",
     );

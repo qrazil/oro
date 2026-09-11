@@ -29,8 +29,7 @@
 use std::fmt;
 
 use crate::ast::{
-    Arg, AugOp, BinOp, BoolOp, CmpOp, ExceptHandler, Expr, Kwarg, MatchCase, Param, ParamKind,
-    Pattern, Stmt, UnaryOp,
+    AugOp, BinOp, BoolOp, CmpOp, ExceptHandler, Expr, MatchCase, Param, Pattern, Stmt, UnaryOp,
 };
 use crate::lexer::{Token, TokenKind};
 
@@ -593,108 +592,57 @@ impl Parser {
         Ok(Stmt::Def { name, params, body, line, col })
     }
 
-    /// Parse a `def` parameter list, enforcing the fixed order: positional
-    /// parameters, then defaulted ones, then a single `*args`, then a single
-    /// `**kwargs`. Each ordering violation gets its own diagnostic.
+    /// Parse a `def` parameter list, enforcing the one ordering rule left:
+    /// every parameter without a default comes before every parameter with
+    /// one. `*args` and `**kwargs` are not parameter forms in Oro, and each is
+    /// refused here by name.
     fn param_list(&mut self) -> PResult<Vec<Param>> {
         let mut params = Vec::new();
         let mut seen_default = false;
-        let mut seen_varargs = false;
-        let mut seen_kwargs = false;
 
         while !self.check(&TokenKind::RParen) {
             let (tok_line, tok_col) = self.cur_pos();
 
-            if self.eat(&TokenKind::DoubleStar) {
-                // `**kwargs`
-                if seen_kwargs {
-                    return Err(self.error_at(
-                        "a function may have only one `**kwargs` parameter",
-                        tok_line,
-                        tok_col,
-                    ));
-                }
-                let (name, line, col) = self.expect_ident("a parameter name after `**`")?;
-                if self.check(&TokenKind::Colon) {
-                    return Err(self.error(ANNOTATION_CUT));
-                }
-                params.push(Param {
-                    name,
-                    default: None,
-                    kind: ParamKind::KwArgs,
-                    line,
-                    col,
-                });
-                seen_kwargs = true;
-            } else if self.eat(&TokenKind::Star) {
-                // `*args`
-                if seen_kwargs {
-                    return Err(self.error_at(
-                        "`*args` must come before `**kwargs`",
-                        tok_line,
-                        tok_col,
-                    ));
-                }
-                if seen_varargs {
-                    return Err(self.error_at(
-                        "a function may have only one `*args` parameter",
-                        tok_line,
-                        tok_col,
-                    ));
-                }
-                let (name, line, col) = self.expect_ident("a parameter name after `*`")?;
-                if self.check(&TokenKind::Colon) {
-                    return Err(self.error(ANNOTATION_CUT));
-                }
-                params.push(Param {
-                    name,
-                    default: None,
-                    kind: ParamKind::VarArgs,
-                    line,
-                    col,
-                });
-                seen_varargs = true;
-            } else {
-                // An ordinary parameter.
-                if seen_kwargs {
-                    return Err(self.error_at(
-                        "`**kwargs` must be the last parameter",
-                        tok_line,
-                        tok_col,
-                    ));
-                }
-                if seen_varargs {
-                    return Err(self.error_at(
-                        "a parameter cannot follow `*args` — only `**kwargs` may",
-                        tok_line,
-                        tok_col,
-                    ));
-                }
-                let (name, line, col) = self.expect_ident("a parameter name")?;
-                if self.check(&TokenKind::Colon) {
-                    return Err(self.error(ANNOTATION_CUT));
-                }
-                let default = if self.eat(&TokenKind::Eq) {
-                    seen_default = true;
-                    Some(self.expression()?)
+            // A variadic parameter was how a function said "any number of
+            // these". A list or a dict parameter says it with types the
+            // language already has, and it keeps a parameter list a fixed list
+            // of names — which is what lets the `=` in the header decide, on
+            // its own, how each parameter is passed.
+            if self.check(&TokenKind::Star) || self.check(&TokenKind::DoubleStar) {
+                let (spelling, take, call, forward) = if self.check(&TokenKind::DoubleStar) {
+                    ("`**kwargs`", "a dict parameter", "f({\"retries\": 3})", "kwargs=opts")
                 } else {
-                    if seen_default {
-                        return Err(self.error_at(
-                            "a required parameter cannot follow a defaulted parameter",
-                            line,
-                            col,
-                        ));
-                    }
-                    None
+                    ("`*args`", "a list parameter", "f([a, b])", "args=items")
                 };
-                params.push(Param {
-                    name,
-                    default,
-                    kind: ParamKind::Normal,
-                    line,
-                    col,
-                });
+                return Err(self.error_at(
+                    format!(
+                        "{spelling} is not a parameter form in Oro — take {take} instead, \
+                         called as `{call}`; to forward one into a call, write \
+                         `apply(f, {forward})`"
+                    ),
+                    tok_line,
+                    tok_col,
+                ));
             }
+
+            let (name, line, col) = self.expect_ident("a parameter name")?;
+            if self.check(&TokenKind::Colon) {
+                return Err(self.error(ANNOTATION_CUT));
+            }
+            let default = if self.eat(&TokenKind::Eq) {
+                seen_default = true;
+                Some(self.expression()?)
+            } else {
+                if seen_default {
+                    return Err(self.error_at(
+                        "a required parameter cannot follow a defaulted parameter",
+                        line,
+                        col,
+                    ));
+                }
+                None
+            };
+            params.push(Param { name, default, line, col });
 
             if !self.eat(&TokenKind::Comma) {
                 break;
@@ -976,34 +924,37 @@ impl Parser {
         let mut args = Vec::new();
         let mut kwargs = Vec::new();
         while !self.check(&TokenKind::RParen) {
-            if self.eat(&TokenKind::DoubleStar) {
-                // `**mapping` keyword unpacking.
-                let value = self.expression()?;
-                kwargs.push(Kwarg::DoubleStar(value));
-            } else if self.eat(&TokenKind::Star) {
-                // `*iterable` positional unpacking.
-                if !kwargs.is_empty() {
-                    return Err(self.error(
-                        "positional arguments cannot follow keyword arguments",
-                    ));
-                }
-                let value = self.expression()?;
-                args.push(Arg::Star(value));
-            } else if matches!(self.cur_kind(), TokenKind::Ident(_))
+            // Unpacking at a call site is not in the grammar. `apply` forwards
+            // a list and a dict into a call, and being an ordinary call it
+            // binds them by the ordinary rule: the list by position, and so
+            // only into parameters with no default; the dict by name, and so
+            // only into parameters with one.
+            if self.check(&TokenKind::Star) || self.check(&TokenKind::DoubleStar) {
+                let (spelling, fix, binds) = if self.check(&TokenKind::DoubleStar) {
+                    ("`**d`", "apply(f, kwargs=d)", "by name")
+                } else {
+                    ("`*xs`", "apply(f, args=xs)", "by position")
+                };
+                return Err(self.error(format!(
+                    "{spelling} is not an argument in Oro — write `{fix}`, which forwards it \
+                     {binds}"
+                )));
+            }
+            if matches!(self.cur_kind(), TokenKind::Ident(_))
                 && *self.peek_kind() == TokenKind::Eq
             {
                 // Keyword argument: `name = value`, distinguished from `==`.
                 let (name, _, _) = self.expect_ident("a keyword argument name")?;
                 self.advance(); // `=`
                 let value = self.expression()?;
-                kwargs.push(Kwarg::Keyword(name, value));
+                kwargs.push((name, value));
             } else {
                 if !kwargs.is_empty() {
                     return Err(self.error(
                         "positional arguments cannot follow keyword arguments",
                     ));
                 }
-                args.push(Arg::Positional(self.expression()?));
+                args.push(self.expression()?);
             }
             if !self.eat(&TokenKind::Comma) {
                 break;
@@ -1389,13 +1340,9 @@ fn build_infix(op: &TokenKind, left: Expr, right: Expr, line: usize, col: usize)
 fn lambda_params(left: &Expr) -> Option<Vec<crate::ast::Param>> {
     fn one(e: &Expr) -> Option<crate::ast::Param> {
         match e {
-            Expr::Name { name, line, col } => Some(crate::ast::Param {
-                name: name.clone(),
-                default: None,
-                kind: crate::ast::ParamKind::Normal,
-                line: *line,
-                col: *col,
-            }),
+            Expr::Name { name, line, col } => {
+                Some(crate::ast::Param { name: name.clone(), default: None, line: *line, col: *col })
+            }
             _ => None,
         }
     }

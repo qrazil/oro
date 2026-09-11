@@ -88,34 +88,22 @@ pub enum AugOp {
     Div,
 }
 
-/// The role of a parameter in a `def` header, which fixes both its calling
-/// convention and its legal position in the list (positional → defaulted →
-/// `*args` → `**kwargs`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParamKind {
-    /// An ordinary parameter: `name`, `name = default`.
-    Normal,
-    /// The variadic positional parameter `*args`, collecting the extra
-    /// positional arguments. At most one, after every `Normal` parameter.
-    VarArgs,
-    /// The variadic keyword parameter `**kwargs`, collecting the extra keyword
-    /// arguments. At most one, and always last.
-    KwArgs,
-}
-
-/// A single parameter in a `def` header: `name`, `name = default`, or the
-/// variadic forms `*args` / `**kwargs`.
+/// A single parameter in a `def` header: `name`, or `name = default`.
+///
+/// Those are the only two forms. There is no `*args` and no `**kwargs`: a
+/// function that takes any number of values takes a list, and one that takes
+/// named options takes a dict, so the parameter list is always a fixed list of
+/// names. The `=` is therefore the whole of a parameter's calling convention —
+/// without a default it can only be passed by position, with one only by name.
 ///
 /// There is no annotation field. Oro has no type annotations, and a node that
 /// held one nothing ever read is how `def f(a: int)` came to accept a string.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Param {
     pub name: String,
-    /// Optional default value (`name = default`). Never present on `*args` /
-    /// `**kwargs`.
+    /// Optional default value (`name = default`), which also makes the
+    /// parameter keyword-only.
     pub default: Option<Expr>,
-    /// Whether this is an ordinary, `*args`, or `**kwargs` parameter.
-    pub kind: ParamKind,
     pub line: usize,
     pub col: usize,
 }
@@ -131,26 +119,6 @@ pub struct LambdaData {
     /// cursor that walks `def`/block scopes in source order is unaffected — this
     /// id is how a lambda finds its scope instead.
     pub scope: std::cell::Cell<usize>,
-}
-
-/// A single positional-side argument at a call site. Keyword-side arguments are
-/// [`Kwarg`]. Kept as an ordered list so unpacking position is preserved
-/// (`f(a, *b, c)` differs from `f(a, c, *b)`).
-#[derive(Debug, Clone, PartialEq)]
-pub enum Arg {
-    /// A plain positional argument: `f(x)`.
-    Positional(Expr),
-    /// An iterable unpacked into positional arguments: `f(*xs)`.
-    Star(Expr),
-}
-
-/// A single keyword-side argument at a call site.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Kwarg {
-    /// A named keyword argument: `f(name=value)`.
-    Keyword(String, Expr),
-    /// A mapping unpacked into keyword arguments: `f(**opts)`.
-    DoubleStar(Expr),
 }
 
 /// A single `except` clause of a `try` statement.
@@ -360,13 +328,16 @@ pub enum Expr {
         line: usize,
         col: usize,
     },
-    /// A call: `func(args, *rest, kw=val, **opts)`. `args` holds the
-    /// positional-side arguments in order (including `*` unpacking); `kwargs`
-    /// holds the keyword-side arguments in order (including `**` unpacking).
+    /// A call: `func(a, b, kw=val)`. `args` holds the positional arguments in
+    /// order, `kwargs` the keyword ones as `(name, value)` pairs in order.
+    ///
+    /// There is no unpacking at a call site: `f(*xs)` and `f(**d)` are not in
+    /// the grammar, and the builtin `apply(f, args=xs, kwargs=d)` is what
+    /// forwards a list and a dict into a call.
     Call {
         func: Box<Expr>,
-        args: Vec<Arg>,
-        kwargs: Vec<Kwarg>,
+        args: Vec<Expr>,
+        kwargs: Vec<(String, Expr)>,
         line: usize,
         col: usize,
     },

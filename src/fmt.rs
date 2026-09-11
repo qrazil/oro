@@ -99,8 +99,7 @@ use std::collections::HashSet;
 use std::fmt;
 
 use crate::ast::{
-    Arg, AugOp, BinOp, BoolOp, CmpOp, ExceptHandler, Expr, Kwarg, Param, ParamKind, Pattern, Stmt,
-    UnaryOp,
+    AugOp, BinOp, BoolOp, CmpOp, ExceptHandler, Expr, Param, Pattern, Stmt, UnaryOp,
 };
 use crate::lexer::{Comment, LexError, Lexer, Token, TokenKind};
 use crate::parser::{ParseError, Parser};
@@ -893,11 +892,6 @@ fn def_params_str(lb: &LineBreaks, params: &[Param]) -> String {
 
 fn def_param_str(lb: &LineBreaks, p: &Param) -> String {
     let mut s = String::new();
-    match p.kind {
-        ParamKind::VarArgs => s.push('*'),
-        ParamKind::KwArgs => s.push_str("**"),
-        ParamKind::Normal => {}
-    }
     s.push_str(&p.name);
     if let Some(default) = &p.default {
         s.push('=');
@@ -909,19 +903,13 @@ fn def_param_str(lb: &LineBreaks, p: &Param) -> String {
 /// A call's argument list, always on one line. An individual *argument* may
 /// still be a broken literal — `configure({\n    "retries": 3,\n})` — which is
 /// what makes the narrower rule sufficient; see the module docs.
-fn call_args_str(lb: &LineBreaks, args: &[Arg], kwargs: &[Kwarg]) -> String {
+fn call_args_str(lb: &LineBreaks, args: &[Expr], kwargs: &[(String, Expr)]) -> String {
     let mut parts = Vec::with_capacity(args.len() + kwargs.len());
     for a in args {
-        match a {
-            Arg::Positional(e) => parts.push(expr(lb, e, 0)),
-            Arg::Star(e) => parts.push(format!("*{}", expr(lb, e, 0))),
-        }
+        parts.push(expr(lb, a, 0));
     }
-    for k in kwargs {
-        match k {
-            Kwarg::Keyword(name, e) => parts.push(format!("{name}={}", expr(lb, e, 0))),
-            Kwarg::DoubleStar(e) => parts.push(format!("**{}", expr(lb, e, 0))),
-        }
+    for (name, e) in kwargs {
+        parts.push(format!("{name}={}", expr(lb, e, 0)));
     }
     parts.join(", ")
 }

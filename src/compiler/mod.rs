@@ -23,7 +23,7 @@ mod symbols;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::ast::{CmpOp, ParamKind, Stmt};
+use crate::ast::{CmpOp, Stmt};
 use crate::value::Value;
 
 #[cfg(test)]
@@ -205,12 +205,8 @@ pub enum Op {
     BuildMap(u32),
     /// Append the top value to the list one below it (list stays on the stack).
     ListAppend,
-    /// Extend the list one below the top with the iterable on top.
-    ListExtend,
     /// Set `dict[key] = value` for the dict below `key, value`.
     MapSetItem,
-    /// Merge the mapping on top into the dict below it.
-    MapMerge,
 
     // Indexing.
     LoadSubscript,
@@ -339,9 +335,9 @@ pub enum Op {
 #[derive(Debug, Clone)]
 pub struct ParamInfo {
     pub name: Rc<str>,
-    pub kind: ParamKind,
     pub target: VarTarget,
-    /// True for a `Normal` parameter that has a default value.
+    /// True when the parameter has a default value — which, under the argument
+    /// rule, is also what makes it keyword-only.
     pub has_default: bool,
 }
 
@@ -430,10 +426,6 @@ pub struct CodeObject {
     pub nfree: usize,
     /// Parameters in declaration order (empty for a module).
     pub params: Vec<ParamInfo>,
-    /// True when every parameter is a plain positional one — no `*args`, no
-    /// `**kwargs`. Computed here so the VM's argument binder can take its
-    /// static path on a simple `f(a, b)` without walking `params` first.
-    pub simple_params: bool,
     /// Local slots whose name also exists at module scope but was made local by
     /// assignment (no `global` declaration). Used only to turn an
     /// unbound-local error into a teaching message. Empty for the module.

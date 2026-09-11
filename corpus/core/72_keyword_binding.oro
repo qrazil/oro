@@ -1,9 +1,9 @@
 # Keyword arguments at a call site, oracled against CPython.
 #
-# This is the reference `spawn(f, *args, **kwargs)` is held to: spawn binds
-# through the same binder as a direct call, so what a direct call accepts,
-# refuses and says here is what `spawn` accepts, refuses and says
-# (divergence/47_spawn.oro checks the spawn half, which CPython cannot run).
+# This is the reference `spawn(f, …)` is held to: spawn binds through the same
+# binder as a direct call, so what a direct call accepts, refuses and says here
+# is what `spawn` accepts, refuses and says (divergence/47_spawn.oro checks the
+# spawn half, which CPython cannot run).
 #
 # Two messages are printed in full because Oro's wording is CPython's to the
 # character. The other refusals print their class only: Oro says "missing
@@ -22,19 +22,6 @@ print(f(a=5))
 print(f(c=3, a=4))
 print(f(1, 2, c=3))
 
-# --- unpacking at the call site binds the same way ----------------------------
-print(f(*[1, 2], **{"c": 3}))
-print(f(**{"a": 7, "b": 8}))
-
-
-def g(*args, **kwargs):
-    return f"{args} {kwargs}"
-
-
-print(g(1, 2, x=3))
-print(g(x=1, y=2))
-
-
 class K:
     def m(self, x, y=0):
         return x + y
@@ -51,11 +38,6 @@ except TypeError as e:
 
 try:
     f(1, a=2)
-except TypeError as e:
-    print("TypeError:", e)
-
-try:
-    f(1, **{"a": 2})
 except TypeError as e:
     print("TypeError:", e)
 

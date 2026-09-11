@@ -838,12 +838,12 @@ all. With nothing else ready it returns immediately: a yielding task is still
 runnable, so it goes to the back of the ready queue rather than into the parked
 map, and it can no more deadlock than a `pass` can.
 
-**`spawn(f, *args)`** creates the task for `f(*args)` and enqueues it
+**`spawn(f, …)`** creates the task for `f(…)` and enqueues it
 immediately; the *spawner* keeps running, and gets the `Task` back. It is a
 builtin, not a module member, because it is a control-flow construct — the same
 reason `print` and `len` are builtins.
 
-This used to read "starts `f(*args)` as a task, immediately, and returns a
+This used to read "starts `f(…)` as a task, immediately, and returns a
 `Task`", and both halves of that cannot be literally true at once: if the callee
 ran first, `spawn` would not have returned yet, and `t = spawn(...)` would be
 unwritable. "Immediately" belongs to the *creation and enqueueing*, not to the
@@ -3021,7 +3021,7 @@ scheduler:
 
 Everything this document proposes to add to the frozen language:
 
-**Builtins:** `spawn(f, *args, **kwargs)`, `chan(cap=0)`. `open(path, mode="r")` keeps its
+**Builtins:** `spawn(f, …)`, `chan(cap=0)`, `apply(f, args=[], kwargs={})`. `open(path, mode="r")` keeps its
 three mode letters and returns a byte stream from all of them.
 
 **Types:** `bytes`. And, not user-constructible: `File`, `TcpStream`,

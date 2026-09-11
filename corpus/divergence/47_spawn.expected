@@ -6,7 +6,7 @@ joining twice gives the same value: true
 three tasks summed into one dict: true
 nothing interleaved a task that never blocks: true
 a keyword reaches the task: true
-so does ** unpacking: true
+so do forwarded ones: true
 spawn refuses what the direct call refuses, in the same words: true
   TypeError: recorded() got an unexpected keyword argument 'bogus'
   TypeError: recorded() got multiple values for argument 'a'

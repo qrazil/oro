@@ -33,7 +33,7 @@ use crate::exc::{
     attribute_error, command_error, index_error, key_error, name_error, recursion_error,
     runtime_error, timeout_error, type_error, value_error, Exc, VErr,
 };
-use crate::compiler::{CaptureSource, ClassSpec, CodeObject, Op, ParamInfo, VarTarget};
+use crate::compiler::{CaptureSource, ClassSpec, CodeObject, Op, VarTarget};
 use crate::task::{TaskHandle, TaskId};
 use crate::value::{
     BoundMethod, Class, Fields, Function, Instance, IterState, MethodKind, OroDict, OroList,
@@ -602,12 +602,9 @@ fn unpack_exact(seq: &Value, n: usize) -> VResult<Vec<Value>> {
 ///
 /// What counts is the positional parameters **without a default**, after the
 /// `leading` ones the caller fills itself: the accumulator `reduce` threads,
-/// and a bound method's own `self`. A defaulted parameter, `*args` and
-/// `**kwargs` never count — a callback may accept them but does not ask for
-/// them — so `def f(x, scale=2)` still takes its element whole, and a callback
-/// with only `*args` is handed one argument. Oro has no keyword-only
-/// parameters (`*args` comes after every ordinary one), so nothing else is
-/// left to count.
+/// and a bound method's own `self`. A defaulted parameter never counts — it is
+/// keyword-only, so a callback cannot be handed one at all — which is why
+/// `def f(x, scale=2)` still takes its element whole.
 #[inline(never)]
 fn declared_spread(func: &Value, leading: usize) -> Option<Spread> {
     let (f, leading) = match func {
@@ -622,7 +619,7 @@ fn declared_spread(func: &Value, leading: usize) -> Option<Spread> {
         .code
         .params
         .iter()
-        .filter(|p| p.kind == crate::ast::ParamKind::Normal && !p.has_default)
+        .filter(|p| !p.has_default)
         .count()
         .saturating_sub(leading);
     Some(if asked >= 2 { Spread::Unpack(asked as u32) } else { Spread::Whole })
@@ -1924,25 +1921,11 @@ impl Vm {
                     let list = self.expect_list_tos("ListAppend")?;
                     list.borrow_mut().push(v);
                 }
-                Op::ListExtend => {
-                    let iterable = self.pop();
-                    let items = self.wrap(iterate_to_vec(&iterable))?;
-                    let list = self.expect_list_tos("ListExtend")?;
-                    list.borrow_mut().extend(items);
-                }
                 Op::MapSetItem => {
                     let v = self.pop();
                     let k = self.pop();
                     let dict = self.expect_dict_tos("MapSetItem")?;
                     self.wrap(dict.borrow_mut().insert(k, v))?;
-                }
-                Op::MapMerge => {
-                    let mapping = self.pop();
-                    let pairs = self.wrap(dict_pairs(&mapping))?;
-                    let dict = self.expect_dict_tos("MapMerge")?;
-                    for (k, v) in pairs {
-                        self.wrap(dict.borrow_mut().insert(k, v))?;
-                    }
                 }
                 Op::LoadSubscript => {
                     let index = self.pop();
@@ -2356,7 +2339,7 @@ impl Vm {
             _ => return None,
         };
         let code = &f.code;
-        if code.is_generator || !code.simple_params || n > code.params.len() {
+        if code.is_generator || n > code.params.len() {
             return None;
         }
         let first_defaulted = code.params.len() - f.defaults.len();
@@ -2427,7 +2410,6 @@ impl Vm {
                     Value::Func(f) => {
                         let code = &f.code;
                         !code.is_generator
-                            && code.simple_params
                             && n < code.params.len()
                             && n + 1 >= code.params.len() - f.defaults.len()
                     }
@@ -5805,9 +5787,8 @@ impl Vm {
     ///
     /// Two paths, as the spec calls out: the **static** path fills positional
     /// parameters straight into their numbered slots; the **dynamic** path is
-    /// taken when keyword arguments are present or the function has `*args` /
-    /// `**kwargs`, where some argument names are only known at runtime and must
-    /// be matched by name against the parameter list.
+    /// taken when keyword arguments are present, where the argument names are
+    /// only known at runtime and must be matched against the parameter list.
     ///
     /// `receiver`, when present, is the method call's `self`: it binds to the
     /// first parameter ahead of `args`. It is passed separately rather than
@@ -5826,7 +5807,7 @@ impl Vm {
 
         // --- The static path ---------------------------------------------
         //
-        // No keywords, no `*args`/`**kwargs`, and every parameter filled by a
+        // No keywords, and every parameter filled by a
         // positional argument or its own default. That is the overwhelming
         // majority of calls, and it needs no name matching at all — so it needs
         // no allocation either. The dynamic path below builds three vectors
@@ -5835,7 +5816,6 @@ impl Vm {
         let supplied = args.len() + usize::from(receiver.is_some());
         let first_defaulted = code.params.len().saturating_sub(func.defaults.len());
         if kwargs.is_empty()
-            && code.simple_params
             && supplied <= code.params.len()
             && supplied >= first_defaulted
         {
@@ -5859,58 +5839,45 @@ impl Vm {
             args.insert(0, receiver);
         }
 
-        let normal: Vec<&ParamInfo> =
-            code.params.iter().filter(|p| p.kind == crate::ast::ParamKind::Normal).collect();
-        let var_param = code.params.iter().find(|p| p.kind == crate::ast::ParamKind::VarArgs);
-        let kw_param = code.params.iter().find(|p| p.kind == crate::ast::ParamKind::KwArgs);
+        let params = &code.params;
 
-        // Slots for normal params, filled as we go (None = still missing).
-        let mut filled: Vec<Option<Value>> = vec![None; normal.len()];
+        // Slots for the parameters, filled as we go (None = still missing).
+        let mut filled: Vec<Option<Value>> = vec![None; params.len()];
 
-        // 1. Positional arguments fill normal params left to right.
-        if args.len() > normal.len() && var_param.is_none() {
+        // 1. Positional arguments fill parameters left to right.
+        if args.len() > params.len() {
             return Err(self.err(type_error(format!(
                 "{}() takes {} positional argument{} but {} were given",
                 code.name,
-                normal.len(),
-                if normal.len() == 1 { "" } else { "s" },
+                params.len(),
+                if params.len() == 1 { "" } else { "s" },
                 args.len()
             ))));
         }
-        let mut extra_positional = Vec::new();
         for (i, a) in args.into_iter().enumerate() {
-            if i < normal.len() {
-                filled[i] = Some(a);
-            } else {
-                extra_positional.push(a);
-            }
+            filled[i] = Some(a);
         }
 
-        // 2. Keyword arguments: match by name, else collect for **kwargs.
-        let mut extra_kw = OroDict::new();
+        // 2. Keyword arguments: match by name.
         for (name, value) in kwargs {
-            if let Some(pos) = normal.iter().position(|p| *p.name == name) {
-                if filled[pos].is_some() {
-                    return Err(self.err(type_error(format!(
-                        "{}() got multiple values for argument '{name}'",
-                        code.name
-                    ))));
-                }
-                filled[pos] = Some(value);
-            } else if kw_param.is_some() {
-                self.wrap(extra_kw.insert(Value::str(name), value))?;
-            } else {
+            let Some(pos) = params.iter().position(|p| *p.name == name) else {
                 return Err(self.err(type_error(format!(
                     "{}() got an unexpected keyword argument '{name}'",
                     code.name
                 ))));
+            };
+            if filled[pos].is_some() {
+                return Err(self.err(type_error(format!(
+                    "{}() got multiple values for argument '{name}'",
+                    code.name
+                ))));
             }
+            filled[pos] = Some(value);
         }
 
-        // 3. Defaults fill any remaining normal params; error if none.
+        // 3. Defaults fill any remaining parameters; error if none.
         //    `func.defaults` aligns with the trailing defaulted params.
-        let n_defaults = func.defaults.len();
-        let first_defaulted = normal.len() - n_defaults;
+        let first_defaulted = params.len() - func.defaults.len();
         for (i, slot) in filled.iter_mut().enumerate() {
             if slot.is_none() {
                 if i >= first_defaulted {
@@ -5918,21 +5885,15 @@ impl Vm {
                 } else {
                     return Err(self.err(type_error(format!(
                         "{}() missing required argument: '{}'",
-                        code.name, normal[i].name
+                        code.name, params[i].name
                     ))));
                 }
             }
         }
 
         // 4. Write bound values into the frame via each parameter's target.
-        for (p, value) in normal.iter().zip(filled) {
-            store_param(&mut frame, p.target, value.expect("all normal params filled"));
-        }
-        if let Some(p) = var_param {
-            store_param(&mut frame, p.target, Value::Tuple(OroTuple::new(extra_positional)));
-        }
-        if let Some(p) = kw_param {
-            store_param(&mut frame, p.target, Value::Dict(Rc::new(RefCell::new(extra_kw))));
+        for (p, value) in params.iter().zip(filled) {
+            store_param(&mut frame, p.target, value.expect("every parameter filled"));
         }
 
         Ok(frame)
@@ -6083,16 +6044,6 @@ pub fn iterate_to_vec(v: &Value) -> VResult<Vec<Value>> {
         out.push(x);
     }
     Ok(out)
-}
-
-fn dict_pairs(v: &Value) -> VResult<Vec<(Value, Value)>> {
-    match v {
-        Value::Dict(d) => Ok(d.borrow().items().to_vec()),
-        other => Err(type_error(format!(
-            "argument after ** must be a mapping, not '{}'",
-            other.type_name()
-        ))),
-    }
 }
 
 // --- Indexing and slicing ---------------------------------------------------

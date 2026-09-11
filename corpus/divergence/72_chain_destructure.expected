@@ -26,7 +26,7 @@ true true 2
 --- which parameters count
 ['apples=3', 'pears=0', 'plums=7']
 [30, 10, 40, 10]
-[1, 1, 1]
+[2, 2, 2]
 ['s:apples', 's:pears', 's:plums']
 --- the unpacking is for's
 ['yx', 'ba']

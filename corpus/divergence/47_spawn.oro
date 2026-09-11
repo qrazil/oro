@@ -59,14 +59,14 @@ spawn(loud, "y").join()
 print("nothing interleaved a task that never blocks:", trace == ["x1", "x2", "y1", "y2"])
 
 # --- keyword arguments bind exactly as a direct call would -------------------
-# `spawn(f, *args, **kwargs)` is `f(*args, **kwargs)` started as a task. The
-# arguments are bound in the spawner by the binder a direct call uses, so a
-# tuning number can be passed by its name through `spawn` as well as without it.
+# `spawn(f, …)` is the call `f(…)` started as a task. The arguments are bound
+# in the spawner by the binder a direct call uses, so a tuning number can be
+# passed by its name through `spawn` as well as without it.
 def configure(name, retries=1, timeout=30):
     return f"{name} retries={retries} timeout={timeout}"
 
 print("a keyword reaches the task:", spawn(configure, "db", timeout=5).join() == "db retries=1 timeout=5")
-print("so does ** unpacking:", spawn(configure, **{"name": "q", "retries": 3}).join() == "q retries=3 timeout=30")
+print("so do forwarded ones:", apply(spawn, args=[configure, "q"], kwargs={"retries": 3}).join() == "q retries=3 timeout=30")
 
 # A binding error is the direct call's error, word for word, raised at the
 # `spawn` line before any task exists — the same place a positional arity error

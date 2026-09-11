@@ -12,8 +12,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::ast::{
-    Arg, BinOp, BoolOp, ExceptHandler, Expr, Kwarg, MatchCase, Param, ParamKind, Pattern, Stmt,
-    UnaryOp,
+    BinOp, BoolOp, ExceptHandler, Expr, MatchCase, Param, Pattern, Stmt, UnaryOp,
 };
 use crate::bigint::BigInt;
 use crate::lexer::Lexer;
@@ -111,7 +110,6 @@ impl<'a> Codegen<'a> {
             nlocals: self.table.scopes()[self.func].nlocals as usize,
             ncells: self.table.ncells(self.func) as usize,
             nfree: self.table.nfree(self.func) as usize,
-            simple_params: params.iter().all(|p| p.kind == ParamKind::Normal),
             params,
             is_generator: self.is_generator,
             module_names: if self.func == self.table.module() {
@@ -952,9 +950,8 @@ impl<'a> Codegen<'a> {
             };
             infos.push(ParamInfo {
                 name: Rc::from(p.name.as_str()),
-                kind: p.kind,
                 target,
-                has_default: p.default.is_some() && p.kind == ParamKind::Normal,
+                has_default: p.default.is_some(),
             });
         }
         let n_defaults = params.iter().filter(|p| p.default.is_some()).count();
@@ -1243,8 +1240,8 @@ impl<'a> Codegen<'a> {
     fn emit_call(
         &mut self,
         func: &Expr,
-        args: &[Arg],
-        kwargs: &[Kwarg],
+        args: &[Expr],
+        kwargs: &[(String, Expr)],
         line: usize,
         col: usize,
         hint: bool,
@@ -1262,7 +1259,9 @@ impl<'a> Codegen<'a> {
             }
         }
 
-        let simple = args.iter().all(|a| matches!(a, Arg::Positional(_))) && kwargs.is_empty();
+        // Every argument is either positional or named — there is no unpacking
+        // at a call site — so "simple" is now exactly "no keywords".
+        let simple = kwargs.is_empty();
         // `obj.m(a, b)` — a simple call whose callee is an attribute — is the
         // one call shape that need not build a bound method to make. It emits
         // the `LoadMethod`/`CallMethod` pair instead, one instruction for one
@@ -1286,10 +1285,7 @@ impl<'a> Codegen<'a> {
                 // inert — a call there could start a second chain over the same
                 // receiver while this one is still pending.
                 let fusable_recv = crate::compiler::chain_flushes(attr)
-                    && args.iter().all(|a| match a {
-                        Arg::Positional(e) => inert(e),
-                        _ => false,
-                    })
+                    && args.iter().all(inert)
                     && chain_step(value).is_some_and(crate::compiler::chain_defers);
                 if fusable_recv {
                     match value.as_ref() {
@@ -1304,9 +1300,7 @@ impl<'a> Codegen<'a> {
                 let n = self.add_name(attr);
                 self.emit(Op::LoadMethod(n), *aline, *acol);
                 for a in args {
-                    if let Arg::Positional(e) = a {
-                        self.emit_expr(e)?;
-                    }
+                    self.emit_expr(a)?;
                 }
                 let pair = self.add_pair();
                 let argc = args.len() as u32
@@ -1320,9 +1314,7 @@ impl<'a> Codegen<'a> {
         self.emit_expr(func)?;
         if simple {
             for a in args {
-                if let Arg::Positional(e) = a {
-                    self.emit_expr(e)?;
-                }
+                self.emit_expr(a)?;
             }
             self.emit(Op::Call(args.len() as u32), line, col);
             return Ok(());
@@ -1330,31 +1322,15 @@ impl<'a> Codegen<'a> {
         // General path: assemble a positional list and a keyword dict.
         self.emit(Op::BuildList(0), line, col);
         for a in args {
-            match a {
-                Arg::Positional(e) => {
-                    self.emit_expr(e)?;
-                    self.emit(Op::ListAppend, line, col);
-                }
-                Arg::Star(e) => {
-                    self.emit_expr(e)?;
-                    self.emit(Op::ListExtend, line, col);
-                }
-            }
+            self.emit_expr(a)?;
+            self.emit(Op::ListAppend, line, col);
         }
         self.emit(Op::BuildMap(0), line, col);
-        for k in kwargs {
-            match k {
-                Kwarg::Keyword(name, e) => {
-                    let idx = self.add_const(Value::str(name.clone()));
-                    self.emit(Op::LoadConst(idx), line, col);
-                    self.emit_expr(e)?;
-                    self.emit(Op::MapSetItem, line, col);
-                }
-                Kwarg::DoubleStar(e) => {
-                    self.emit_expr(e)?;
-                    self.emit(Op::MapMerge, line, col);
-                }
-            }
+        for (name, e) in kwargs {
+            let idx = self.add_const(Value::str(name.clone()));
+            self.emit(Op::LoadConst(idx), line, col);
+            self.emit_expr(e)?;
+            self.emit(Op::MapSetItem, line, col);
         }
         self.emit(Op::CallEx, line, col);
         Ok(())
@@ -1867,10 +1843,7 @@ fn parse_float(text: &str) -> Option<f64> {
 /// chain (`xs` itself, a subscript, a parenthesised expression).
 fn chain_step(e: &Expr) -> Option<&str> {
     match e {
-        Expr::Call { func, args, kwargs, .. }
-            if kwargs.is_empty()
-                && args.iter().all(|a| matches!(a, Arg::Positional(_))) =>
-        {
+        Expr::Call { func, kwargs, .. } if kwargs.is_empty() => {
             match func.as_ref() {
                 Expr::Attribute { attr, .. } => Some(attr),
                 _ => None,

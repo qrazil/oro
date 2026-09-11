@@ -101,18 +101,9 @@ fn sexp(e: &Expr) -> String {
             s
         }
         Expr::Call { func, args, kwargs, .. } => {
-            let mut parts: Vec<String> = args
-                .iter()
-                .map(|a| match a {
-                    Arg::Positional(e) => sexp(e),
-                    Arg::Star(e) => format!("*{}", sexp(e)),
-                })
-                .collect();
-            for kw in kwargs {
-                match kw {
-                    Kwarg::Keyword(k, v) => parts.push(format!("{k}={}", sexp(v))),
-                    Kwarg::DoubleStar(e) => parts.push(format!("**{}", sexp(e))),
-                }
+            let mut parts: Vec<String> = args.iter().map(sexp).collect();
+            for (k, v) in kwargs {
+                parts.push(format!("{k}={}", sexp(v)));
             }
             format!("(call {} [{}])", sexp(func), parts.join(" "))
         }
@@ -251,20 +242,29 @@ fn call_with_args_and_kwargs() {
     assert_eq!(sexp_of("f(1, 2, k=3)"), "(call f [1 2 k=3])");
 }
 
+/// Unpacking at a call site is not in the grammar, and the refusal names the
+/// builtin that replaced it. `apply` is an ordinary call, so what it forwards
+/// binds by the ordinary rule — which is the point of cutting the syntax: there
+/// is no second way for an argument to arrive.
 #[test]
-fn call_with_star_and_double_star_unpacking() {
-    assert_eq!(sexp_of("f(*items)"), "(call f [*items])");
-    assert_eq!(sexp_of("f(**opts)"), "(call f [**opts])");
-    // Forwarding, the canonical stdlib wrapper shape, keeps everything in order.
-    assert_eq!(
-        sexp_of("f(a, *rest, k=1, **opts)"),
-        "(call f [a *rest k=1 **opts])"
-    );
+fn call_unpacking_is_refused_and_names_apply() {
+    for (src, fix) in [
+        ("f(*items)", "apply(f, args=xs)"),
+        ("f(**opts)", "apply(f, kwargs=d)"),
+        ("f(a, *rest)", "apply(f, args=xs)"),
+        ("f(a, k=1, **opts)", "apply(f, kwargs=d)"),
+        ("f(k=1, *rest)", "apply(f, args=xs)"),
+    ] {
+        let e = parse_err(src);
+        assert!(e.message.contains(fix), "for `{src}` expected `{fix}`, got: {}", e.message);
+    }
 }
 
+/// A positional argument after a keyword one is still its own error — the star
+/// refusal above does not swallow it.
 #[test]
-fn call_star_after_keyword_is_rejected() {
-    let e = parse_err("f(k=1, *rest)");
+fn positional_after_keyword_is_rejected() {
+    let e = parse_err("f(k=1, rest)");
     assert!(
         e.message.contains("positional arguments cannot follow keyword arguments"),
         "got: {}",
@@ -534,8 +534,8 @@ def f(a, b, c=1, d=2):
 #[test]
 fn cut_type_annotations() {
     assert_cut("def f(a: int):\n    pass\n", "no type annotations");
-    assert_cut("def f(a, b=1, *rest: int):\n    pass\n", "no type annotations");
-    assert_cut("def f(**kw: str):\n    pass\n", "no type annotations");
+    assert_cut("def f(a, b: int = 1):\n    pass\n", "no type annotations");
+    assert_cut("def f(a, b, kw: str = \"x\"):\n    pass\n", "no type annotations");
     assert_cut("def f() -> int:\n    pass\n", "no type annotations");
     assert_cut("x: int = 5", "no type annotations");
     assert_cut("x: int", "no type annotations");
@@ -561,44 +561,41 @@ fn cut_chained_assignment() {
     parse("x += 1\n");
 }
 
+/// A parameter is a name, optionally with a default. Those are the two forms,
+/// and the `=` is the whole of a parameter's calling convention.
 #[test]
-fn def_with_all_four_param_kinds() {
+fn def_params_are_names_with_optional_defaults() {
     let src = "\
-def f(a, b=1, *args, **kwargs):
+def f(a, b=1):
     return a
 ";
     match parse_one(src) {
         Stmt::Def { params, .. } => {
-            assert_eq!(params.len(), 4);
+            assert_eq!(params.len(), 2);
 
             assert_eq!(params[0].name, "a");
-            assert_eq!(params[0].kind, ParamKind::Normal);
             assert!(params[0].default.is_none());
 
             assert_eq!(params[1].name, "b");
-            assert_eq!(params[1].kind, ParamKind::Normal);
             assert!(params[1].default.is_some());
-
-            assert_eq!(params[2].name, "args");
-            assert_eq!(params[2].kind, ParamKind::VarArgs);
-            assert!(params[2].default.is_none());
-
-            assert_eq!(params[3].name, "kwargs");
-            assert_eq!(params[3].kind, ParamKind::KwArgs);
-            assert!(params[3].default.is_none());
         }
         other => panic!("expected def, got {other:?}"),
     }
 }
 
+/// `*args` and `**kwargs` are not parameter forms, and each refusal names what
+/// to take instead: a list parameter, or a dict one.
 #[test]
-fn def_varargs_only() {
-    match parse_one("def f(*args):\n    pass\n") {
-        Stmt::Def { params, .. } => {
-            assert_eq!(params.len(), 1);
-            assert_eq!(params[0].kind, ParamKind::VarArgs);
-        }
-        other => panic!("expected def, got {other:?}"),
+fn def_varargs_is_refused_and_names_the_alternative() {
+    for (src, want) in [
+        ("def f(*args):\n    pass\n", "take a list parameter"),
+        ("def f(**kwargs):\n    pass\n", "take a dict parameter"),
+        ("def f(a, b=1, *rest):\n    pass\n", "take a list parameter"),
+        ("def f(a, **opts):\n    pass\n", "take a dict parameter"),
+    ] {
+        let e = parse_err(src);
+        assert!(e.message.contains(want), "for `{src}` expected {want:?}, got: {}", e.message);
+        assert!(e.message.contains("apply(f, "), "the fix forwards with apply: {}", e.message);
     }
 }
 
@@ -612,45 +609,6 @@ fn def_required_after_default_is_rejected() {
     );
 }
 
-#[test]
-fn def_param_after_varargs_is_rejected() {
-    let e = parse_err("def f(*args, b):\n    pass\n");
-    assert!(
-        e.message.contains("cannot follow `*args`"),
-        "got: {}",
-        e.message
-    );
-}
-
-#[test]
-fn def_param_after_kwargs_is_rejected() {
-    let e = parse_err("def f(**kwargs, b):\n    pass\n");
-    assert!(
-        e.message.contains("`**kwargs` must be the last parameter"),
-        "got: {}",
-        e.message
-    );
-}
-
-#[test]
-fn def_kwargs_before_varargs_is_rejected() {
-    let e = parse_err("def f(**kwargs, *args):\n    pass\n");
-    assert!(
-        e.message.contains("`*args` must come before `**kwargs`"),
-        "got: {}",
-        e.message
-    );
-}
-
-#[test]
-fn def_duplicate_varargs_is_rejected() {
-    let e = parse_err("def f(*a, *b):\n    pass\n");
-    assert!(
-        e.message.contains("only one `*args`"),
-        "got: {}",
-        e.message
-    );
-}
 
 #[test]
 fn class_without_base() {

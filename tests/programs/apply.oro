@@ -1,0 +1,30 @@
+# Forwarding arguments with `apply`, and defaults bound by name.
+def describe(label, values, scale=1):
+    print(label)
+    print(values)
+    total = 0
+    for a in values:
+        total = total + a
+    print(total)
+    print(scale)
+
+
+def forward(label, values, opts):
+    return apply(describe, args=[label, values], kwargs=opts)
+
+
+describe("direct", [1, 2, 3], scale=10)
+forward("forwarded", [4, 5, 6], {"scale": 20})
+
+
+def add(a, b, c=100):
+    return a + b + c
+
+
+print(add(1, 2))
+print(add(1, 2, c=50))
+
+args = [7, 8]
+opts = {"c": 9}
+print(apply(add, args=args, kwargs=opts))
+print(apply(add, args=args))

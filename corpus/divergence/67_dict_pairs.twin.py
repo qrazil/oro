@@ -81,16 +81,16 @@ print({k: v * 10 for k, v in d.items()})
 print({k: v for k, v in d.items() if v > 1})
 
 
-def kw(**rest):
-    print(rest)
+def named(a=0, b=0, c=0):
+    print(a, b, c)
 
 
-def pos(*args):
-    print(args)
+def positional(first, second, third):
+    print(first, second, third)
 
 
-kw(**d)
-pos(*d.items())
+named(**d)
+positional(*d.items())
 
 for k, v in {}.items():
     print("never")

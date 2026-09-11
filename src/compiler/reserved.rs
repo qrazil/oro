@@ -25,7 +25,7 @@
 //! the tree and a program that does not parse breaks it. A compile error can,
 //! so the diagnostics below are oracled like any other behaviour.
 
-use crate::ast::{Arg, Expr, Kwarg, Param, Pattern, Stmt};
+use crate::ast::{Expr, Param, Pattern, Stmt};
 use crate::value::keyword_type;
 
 use super::CompileError;
@@ -238,17 +238,13 @@ fn check_expr(expr: &Expr) -> Result<(), CompileError> {
         Expr::Call { func, args, kwargs, .. } => {
             check_expr(func)?;
             for a in args {
-                match a {
-                    Arg::Positional(e) | Arg::Star(e) => check_expr(e)?,
-                }
+                check_expr(a)?;
             }
-            for k in kwargs {
-                match k {
-                    // A keyword *argument* name is a parameter of the callee,
-                    // not a binding here — and the callee's own parameters were
-                    // checked where it was defined.
-                    Kwarg::Keyword(_, e) | Kwarg::DoubleStar(e) => check_expr(e)?,
-                }
+            // A keyword *argument* name is a parameter of the callee, not a
+            // binding here — and the callee's own parameters were checked where
+            // it was defined.
+            for (_, e) in kwargs {
+                check_expr(e)?;
             }
         }
         Expr::Attribute { value, .. } => check_expr(value)?,

@@ -78,8 +78,8 @@ def scaled(x, by=10):
     return x * by
 
 
-def arity(*args):
-    return len(args)
+def pair_len(item):
+    return len(item)
 
 
 class Shelf:
@@ -93,7 +93,7 @@ class Shelf:
 shelf = Shelf("s")
 print([label(k, v) for k, v in stock.items()])
 print([scaled(x) for x in counts])
-print([arity(p) for p in stock.items()])
+print([pair_len(p) for p in stock.items()])
 print([shelf.line(k, v) for k, v in stock.items()])
 
 print("--- the unpacking is for's")

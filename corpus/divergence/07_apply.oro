@@ -1,0 +1,36 @@
+# INTENTIONAL DIVERGENCE.
+# `apply` is Oro's whole forwarding surface, and CPython has no such builtin —
+# it spells the same two bindings `f(*xs)` and `f(**d)`, which is what the twin
+# uses, so this `.expected` is still CPython's own output.
+#
+# This file replaces 07_varargs.oro. A function that takes any number of values
+# takes a list, a function that takes named options takes a dict, and a call
+# that forwards either one writes `apply`.
+
+def total(nums):
+    t = 0
+    for n in nums:
+        t = t + n
+    return t
+
+
+def describe(name, tags, w=0, h=0):
+    out = name
+    for t in tags:
+        out = out + " " + t
+    return out + f" w={w} h={h}"
+
+
+# Forwarding, which is what `*args, **kwargs` existed for: the list binds by
+# position and the dict by name, so between them they can reach every parameter
+# — and neither can reach one the rule keeps for the other.
+def forward(name, tags, opts):
+    return apply(describe, args=[name, tags], kwargs=opts)
+
+
+print(total([1, 2, 3, 4]))
+print(total([]))
+print(describe("box", ["red", "small"], w=3, h=4))
+print(forward("box", ["blue"], {"h": 9}))
+print(apply(total, args=[[5, 6]]))
+print(apply(describe, args=["bare", []]))

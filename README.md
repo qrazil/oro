@@ -189,9 +189,13 @@ Implemented and working today:
   indexing permanently beyond CPython's reach as an oracle.
 - **Control flow:** `if` / `elif` / `else`, `while`, `for … in …`,
   `break`, `continue`, `pass`, and `match` (a value-only switch — see below).
-- **Functions:** positional params, defaults, `*args`, `**kwargs`, and the call-
-  site `*`/`**` unpacking that mirrors them. Deep and mutual recursion work
-  (the VM never recurses in Rust — see [Architecture](#architecture)).
+- **Functions:** parameters are names, optionally with a default, and the `=` is
+  the whole calling convention — no default means positional-only, a default
+  means keyword-only. There is no `*args`, no `**kwargs` and no call-site
+  `*`/`**`: a function that takes any number of values takes a list, one that
+  takes named options takes a dict, and `apply(f, args=xs, kwargs=d)` forwards
+  either into a call. Deep and mutual recursion work (the VM never recurses in
+  Rust — see [Architecture](#architecture)).
 - **Classes:** single inheritance, `__init__`/instance attributes/methods,
   class-level attributes, `super()`, and a fixed dunder set —
   `__str__`, `__repr__`, `__eq__`, `__len__`, the arithmetic dunders
@@ -311,8 +315,9 @@ Implemented and working today:
   orders.group_by(o => o.region).to_list().map((region, rows) => (region, rows.len()))
   ```
 
-  What counts is the positional parameters without a default: `def f(x, n=2)`
-  takes the element whole, `*args`/`**kwargs` never count, a bound method's
+  What counts is the parameters without a default: `def f(x, n=2)`
+  takes the element whole, a defaulted parameter never counts (it is
+  keyword-only), a bound method's
   `self` does not, and `reduce` counts those after the accumulator —
   `d.reduce(0, (acc, k, v) => acc + v)`. Any element `for` can unpack will do,
   and a length mismatch is `for`'s `ValueError`. A native callable (`len`,
@@ -369,7 +374,7 @@ Implemented and working today:
   never re-enter the interpreter, so the generator is drained a frame at a time
   and the call is retried — the native stack never grows with it.
 - **Green threads: `spawn`, `chan` and `yield_now`, seven names in total.**
-  `spawn(f, *args, **kwargs)` starts `f(*args, **kwargs)` as a task and returns a handle;
+  `spawn(f, …)` starts `f(…)` as a task and returns a handle;
   `t.join()` waits and returns the function's value. `chan()` is a rendezvous
   and `chan(cap=n)` a buffer of `n`, with `send`, `recv`, `close`, and
   `for msg in ch` iterating until the channel is closed and drained.
@@ -507,7 +512,7 @@ Each of these is omitted on purpose. The reason matters more than the list.
   everything else in Oro), not in the frozen core. `{1, 2, 3}` and `set()` each
   give an error pointing at a dict or a list. **Tuples stay** — they are the
   only hashable composite, so `counts[(host, port)]` has no substitute, and they
-  are load-bearing for multiple return, `a, b = b, a`, and `*args`.
+  are load-bearing for multiple return and `a, b = b, a`.
 
 - **No `bytearray`, and no growable byte buffer.** Oro already has one frozen
   idiom for building a string incrementally — append to a list, `join` at the
@@ -1382,8 +1387,9 @@ Stated plainly:
   it assigns never reaches the emitted lambda. The real fix is to parse f-string
   fields into the AST like any other expression, which is also what CPython
   moved to in 3.12.
-- **Lambda parameters are plain names only** — no defaults, `*args`, `**kwargs`,
-  or annotations, and the body is a single expression. Anything more is a `def`.
+- **Lambda parameters are plain names only** — no defaults and no annotations,
+  and the body is a single expression. Anything more is a `def`. With no
+  defaults, every lambda parameter is positional-only.
 - **Streams take `bytes`, and `print` takes `str`.** `sys.stdout.write("hi")`
   is a `TypeError`; write `print("hi")`, or `sys.stdout.write(b"hi")`, or
   `sys.stdout.write(s.to_bytes())`. The two reach fd 1 in program order — they

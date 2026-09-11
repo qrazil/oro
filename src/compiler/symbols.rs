@@ -14,7 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{Arg, Expr, Kwarg, Stmt};
+use crate::ast::{Expr, Stmt};
 
 /// The kind of a lexical scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -552,16 +552,10 @@ impl SymTable {
             Expr::Call { func, args, kwargs, .. } => {
                 self.resolve_expr(scope_id, func);
                 for a in args {
-                    match a {
-                        Arg::Positional(e) | Arg::Star(e) => self.resolve_expr(scope_id, e),
-                    }
+                    self.resolve_expr(scope_id, a);
                 }
-                for k in kwargs {
-                    match k {
-                        Kwarg::Keyword(_, e) | Kwarg::DoubleStar(e) => {
-                            self.resolve_expr(scope_id, e)
-                        }
-                    }
+                for (_, e) in kwargs {
+                    self.resolve_expr(scope_id, e);
                 }
             }
             Expr::Attribute { value, .. } => self.resolve_expr(scope_id, value),

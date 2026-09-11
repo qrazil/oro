@@ -1016,7 +1016,7 @@ protocol. Neither is a redundancy; the second is a gap worth remembering when
 someone asks why `"abc".map(f)` is an `AttributeError`.
 
 **Functions.** `def` versus `=>` is genuinely two things: a lambda body is one
-expression and cannot hold statements, defaults, `*args` or `**kwargs`. There is
+expression and cannot hold statements or defaults. There is
 no case where both apply and one is better. `logged(h)` in
 `examples/server.oro` shows them composing rather than competing — a `def` that
 returns a lambda that calls a `def`.

@@ -61,8 +61,8 @@ def label(k, v, sep="="):
 def scaled(x, by=10):
     return x * by
 
-def arity(*args):
-    return len(args)
+def pair_len(item):
+    return len(item)
 
 class Shelf:
     def __init__(self, name):
@@ -74,7 +74,7 @@ class Shelf:
 shelf = Shelf("s")
 print(stock.to_list().map(label))
 print(counts.map(scaled))
-print(stock.to_list().map(arity))
+print(stock.to_list().map(pair_len))
 print(stock.to_list().map(shelf.line))
 
 print("--- the unpacking is for's")

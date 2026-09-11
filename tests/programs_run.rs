@@ -51,7 +51,7 @@ program_test!(
     strings,
     closures,
     collections,
-    varargs,
+    apply,
     deep_recursion,
 );
 
