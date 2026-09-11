@@ -58,6 +58,39 @@ spawn(loud, "x").join()
 spawn(loud, "y").join()
 print("nothing interleaved a task that never blocks:", trace == ["x1", "x2", "y1", "y2"])
 
+# --- keyword arguments bind exactly as a direct call would -------------------
+# `spawn(f, *args, **kwargs)` is `f(*args, **kwargs)` started as a task. The
+# arguments are bound in the spawner by the binder a direct call uses, so a
+# tuning number can be passed by its name through `spawn` as well as without it.
+def configure(name, retries=1, timeout=30):
+    return f"{name} retries={retries} timeout={timeout}"
+
+print("a keyword reaches the task:", spawn(configure, "db", timeout=5).join() == "db retries=1 timeout=5")
+print("so does ** unpacking:", spawn(configure, **{"name": "q", "retries": 3}).join() == "q retries=3 timeout=30")
+
+# A binding error is the direct call's error, word for word, raised at the
+# `spawn` line before any task exists — the same place a positional arity error
+# has always surfaced, so the two cannot disagree.
+ran = []
+
+def recorded(a, b=1):
+    ran.append(a)
+
+def refusal(thunk):
+    try:
+        thunk()
+    except TypeError as e:
+        return f"{e}"
+    return "no raise"
+
+direct = [refusal(() => recorded(1, bogus=2)), refusal(() => recorded(1, a=2)), refusal(() => recorded(b=2)), refusal(() => recorded(1, 2, 3))]
+spawned = [refusal(() => spawn(recorded, 1, bogus=2)), refusal(() => spawn(recorded, 1, a=2)), refusal(() => spawn(recorded, b=2)), refusal(() => spawn(recorded, 1, 2, 3))]
+print("spawn refuses what the direct call refuses, in the same words:", direct == spawned)
+for m in spawned:
+    print("  TypeError:", m)
+spawn(recorded, "the one real task").join()
+print("and no refused spawn left a task behind:", ran == ["the one real task"])
+
 # --- the implicit join-all at exit -------------------------------------------
 # Main returning does not kill the spawned task: the program is finished when
 # main has returned *and* every task has. Go loses this line; Oro prints it.

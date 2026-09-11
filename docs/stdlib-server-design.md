@@ -3020,7 +3020,7 @@ scheduler:
 
 Everything this document proposes to add to the frozen language:
 
-**Builtins:** `spawn(f, *args)`, `chan(n=0)`. `open(path, mode)` keeps its
+**Builtins:** `spawn(f, *args, **kwargs)`, `chan(n=0)`. `open(path, mode)` keeps its
 three mode letters and returns a byte stream from all of them.
 
 **Types:** `bytes`. And, not user-constructible: `File`, `TcpStream`,

@@ -1450,19 +1450,23 @@ impl Vm {
 
     // --- `spawn` -------------------------------------------------------------
 
-    /// `spawn(f, *args)` — start `f(*args)` as a task and hand back its handle.
+    /// `spawn(f, *args, **kwargs)` — start `f(*args, **kwargs)` as a task and
+    /// hand back its handle.
     ///
     /// The spawner keeps running and the new task goes to the back of the ready
     /// queue. That is the only reading of §3 that fits "returns a `Task`": if
     /// the callee ran first, `spawn` could not have returned yet.
+    ///
+    /// Arguments are bound here, in the spawner, by the same `bind_call` a
+    /// direct call uses — so every binding error (an unexpected keyword, a
+    /// missing argument, too many positionals) is the direct call's error,
+    /// raised at the `spawn` line, before a task exists. `spawn` has no
+    /// keyword parameters of its own, so every keyword belongs to `f`.
     pub(super) fn do_spawn(
         &mut self,
         mut args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
     ) -> Result<Step, VmError> {
-        if !kwargs.is_empty() {
-            return Ok(self.raise(Exc::TypeError, "spawn() takes no keyword arguments"));
-        }
         if args.is_empty() {
             return Ok(self.raise(Exc::TypeError, "spawn() takes at least 1 argument (0 given)"));
         }
@@ -1472,7 +1476,7 @@ impl Vm {
         // builtin runs to completion without ever reaching a park point, so
         // spawning one would be a slower way of calling it.
         let frame = match &callee {
-            Value::Func(f) if !f.code.is_generator => self.bind_call(f, None, args, Vec::new())?,
+            Value::Func(f) if !f.code.is_generator => self.bind_call(f, None, args, kwargs)?,
             Value::Func(_) => {
                 return Ok(self.raise(Exc::TypeError,
                     "spawn() cannot start a generator function as a task",
@@ -1481,7 +1485,7 @@ impl Vm {
             Value::Method(m) => match &m.kind {
                 MethodKind::User { func, defclass } if !func.code.is_generator => {
                     let mut frame =
-                        self.bind_call(func, Some(m.receiver.clone()), args, Vec::new())?;
+                        self.bind_call(func, Some(m.receiver.clone()), args, kwargs)?;
                     frame.super_ctx = Some((defclass.clone(), m.receiver.clone()));
                     frame
                 }
