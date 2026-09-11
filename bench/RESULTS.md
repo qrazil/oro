@@ -1282,6 +1282,196 @@ binary is 2.98 MB, unchanged to three digits. No dependency was added, no
 `unsafe` was written, and the two `#![deny(unsafe_code)]` crate roots are
 untouched.
 
+## Pass four — chain fusion
+
+Not an optimisation pass but one change, measured by this file's rules.
+`xs.filter(p).map(f).filter(q)` walked its receiver three times and built three
+collections; it now walks it once and builds one. The README documented the old
+behaviour as a known limitation, and it mattered more than a limitation
+normally does, because chains are the construct that replaced comprehensions.
+
+### The measurement problem, and a way around it
+
+Every A/B in passes one to three is a recompile, and pass three established
+that a recompile alone is worth ±7% on `loop`. Re-measured at the start of this
+pass with the same never-called-function probe, on this machine today, it read
+**-10.56% on `loop`, +5.66% on `fib`, -3.21% on `exc`, -2.89% on `chain`,
+-2.06% on the suite mean**. The effect being looked for here — the allocation a
+fused chain does not do — is smaller than that.
+
+So the fusion decision was put behind a **compile-time switch read from the
+environment**, temporarily, and the A/B was run on **one binary** with the
+switch on and off. The two runs are byte-identical code with identical layout,
+so the A/A floor genuinely bounds them: on programs with no chain in them the
+switch reads **-0.31% on `loop`, +0.36%** on a 400k `append` loop. That is the
+floor these numbers sit above. The switch was removed before the commit.
+
+**This is the technique pass three's "give the placement band a control" item
+was asking for, and it generalises**: any change that can be expressed as a
+decision rather than as different code can be measured this way, and the
+placement band stops mattering.
+
+### What fusion is worth
+
+Fusion on versus off, one binary, n=15, pinned to one core, min and median.
+`f` is a named two-line function; 120k-400k element receivers.
+
+| program | d min | d med |
+|---|---|---|
+| a 400k `append` loop, no chain — the floor | +0.20% | +0.38% |
+| `bench/progs/loop.oro`, no chain — the floor | -0.84% | +0.03% |
+| `xs.map(f)` — nothing to fuse, the control | +0.14% | +0.10% |
+| `xs.filter(p).map(f)` | **-2.17%** | -3.24% |
+| `xs.map(f).filter(p)` | **-0.82%** | -1.16% |
+| `xs.map(f).map(f)` | **-3.22%** | -3.20% |
+| `xs.map(f).map(f).map(f).map(f)` | **-3.73%** | -4.37% |
+| four steps, two of them filters | **-0.68%** | -2.19% |
+| four steps with a `sorted` barrier in the middle | +0.06% | -1.05% |
+| `bench/progs/chain.oro` | **-1.82%** | -3.01% |
+| `bench/progs/fuse.oro` | **-0.36%** | -0.31% |
+| `xs.map(f).first()`, 400k elements | **-43.73%** | -43.88% |
+| `bench/progs/fusesc.oro` | **-97.37%** | -97.38% |
+
+**The two halves of the win are two orders of magnitude apart, and the smaller
+one is the one the work was started for.** Removing an allocation per step is
+worth 0-4%, and on a four-step chain with a barrier in the middle it is a wash.
+Short-circuiting *through* the chain is worth 43% on one program and 97% on
+another, because `xs.map(f).first()` called `f` four hundred thousand times to
+look at one answer and now calls it once.
+
+The reason the allocation half is so small is worth writing down: **a chain
+step's cost is almost entirely the callback, not the collection.** A 400k
+`map` with a two-line callback takes 55 ms; a `for` loop making the same 400k
+calls and appending takes 54 ms. The intermediate vector is about 5% of a step,
+and fusing it away costs some per-element bookkeeping back. Anyone reading
+"each step allocates a new collection" as the reason a four-step chain is 3.8x
+a one-step chain was reading it wrong: it is 3.8x because it makes 3.8x as many
+calls, and fusion does not change that. It changes how many calls a
+short-circuit can *avoid*.
+
+### Three ways the first fused version paid for the intermediate twice
+
+All three were found by the switch, and none would have been visible against
+the recompile band.
+
+1. **The element was cloned three times per stage** — out of the work list,
+   into the held slot, and into the argument vector. A fused chain touches one
+   element once per step, so a clone here is a clone per element per step.
+   `seq_args` takes the element by value now, and only `filter` — which answers
+   about an element it does not replace — keeps a copy.
+
+2. **The terminal recorded every element it was handed.** `map`, `flat_map`,
+   `any`, `all`, `count` and `reduce` build their answer out of callback
+   results and never read the elements. Unfused that vector is the receiver's
+   snapshot and is free; fused it was a second full-length copy built to be
+   thrown away.
+
+3. **A `filter` ending a fused run was the terminal rather than a stage.** As
+   the terminal it is handed every element and answers with a parallel vector
+   of booleans about them — two full-length vectors to build one short one. As
+   a stage it does not pass on what it rejects. This is the one that flipped
+   `xs.map(f).filter(p)` from **+2.9% to -1.4%**.
+
+### What it cost everything else, and how that was established
+
+The first version cost the rest of the system about 1.7%: `builtins` +1.67%,
+`strops` +1.84%, `strjoin` +1.85%, `chain` +1.76% against the pre-fusion
+binary — small, but consistent, and above each benchmark's band. Two causes,
+both structural rather than incidental:
+
+* **Every native method call asked whether a pipeline was waiting for it.**
+  `first()` and `take(n)` end a fused chain and are ordinary native methods, so
+  noticing one had arrived meant checking VM state on every `xs.append(i)` in
+  every program. Codegen already knows which call flushes — it is the one whose
+  receiver it emitted with the hint — so that became a second bit on the
+  instruction (`CHAIN_FLUSH`) and the question is answered from a register.
+* **The pending list was a field on `Task`,** which the dispatch loop reads on
+  every instruction. It does not belong there: a pending chain lives between one
+  `CallMethod` and the next, and nothing in that gap can yield, so it is empty
+  at every point a task can be switched at. It lives on the `Vm`.
+
+After both: `builtins` +0.67%, `strops` +0.67%, `oo` +0.16%, `chain` +0.55%,
+`json` -0.57% — at or inside their bands.
+
+What is left moves and does not settle. Against the pre-fusion binary the
+final build reads `loop` +10.0%, `fib` +8.1%, `listbuild` +3.3%,
+`fuse` +2.7%: the while-loop programs, which are exactly the ones pass three
+measured a 14-point placement band on. **Three builds of this branch differing
+only in an `#[inline(never)]` attribute on a cold function and in where two
+`&` operations sit read `listbuild` at +1.66%, +2.23% and +3.30%** — a 1.6-point
+spread from changes neither program executes. The layout-controlled switch
+reads those same programs at the floor. Reported as placement, and the honest
+statement is that the residual is not separable from it with the apparatus
+available (no `perf` on this machine; retired-instruction counts would settle
+it in one command).
+
+### What fuses, what does not, and why
+
+**Stages** (deferrable into a pipeline): `map`, `filter`. Both produce their
+output one element at a time, in order, with no view of the whole input.
+
+**Terminals** (can end a fused run): every one of the sixteen callback-taking
+chain methods, plus the two native short-circuiting ones, `first()` and
+`take(n)`, which fuse as a *limit* on the pass.
+
+**Barriers**: `sorted`, `sort_by`, `reversed`, `unique`, `unique_by`, `chunk`,
+`flatten`, `zip`, `enumerate`, `group_by`, `partition`, `min_by`, `max_by`.
+Each needs the finished intermediate. A chain fuses the runs between barriers
+and materialises at each one.
+
+`take_while` is a barrier for a different reason and it is a documentation
+finding as much as an implementation one: **it evaluates its predicate over the
+whole receiver**, not up to the first false. Fusing it would have been a silent
+change in how many times a user predicate runs. The README now says so.
+
+`flat_map` is a barrier for a third reason: as a stage it would have to call
+`iterate_to_vec` per element, and the diagnostic that raises would move from
+after the last callback (where it is today) to the middle of the pass. It is
+fusable in principle and the work list keeps the `(stage, value)` shape that
+would take it.
+
+`map` over a **dict** declines mid-chain. It rebuilds a dict from what the
+callback answers, and the check that those answers are `(key, value)` pairs
+happens when the dict is built — so a bad callback must still raise after the
+whole receiver has been walked. Every other dict step passes the original pair
+through and fuses. This was the fiddly case and it is the one place the
+implementation says no on purpose.
+
+### Two semantics, one preserved and one deliberately changed
+
+**Mutating the receiver from inside a callback is unchanged**, fused or not.
+The classic fusion hazard turned out to be closed already: `seq_receiver`
+snapshots the receiver before the first callback runs, so neither form sees its
+own source change under it. Checked both ways — a callback that appends to the
+receiver and one that pops from it produce identical answers and identical
+final receivers under both binaries.
+
+**The order two callbacks in different steps run in does change**, and it has
+to: `xs.map(f).map(g)` ran every `f` and then every `g`, and now runs
+`f(x0), g(y0), f(x1), g(y1)`. That is the order a `for` loop would run them,
+and it is the definition of the pass happening once. Along with the
+short-circuit, it is the only way a program can tell.
+
+### Gates
+
+425 tests in debug, corpus 86 pass / 0 fail / 0 known-failing, `oracle.sh` a
+no-op on a clean tree, `cargo clippy --all-targets -- -D warnings` clean, and
+the four size tripwires (`Value` 16, `Op` 8, `Step` 24, `Result<Step, VmError>`
+24 — none of them touched). The diagnostic differential went from **93
+programs to 110**: the sixteen new ones are a raise inside a callback on the
+first element and mid-pass, a generator callback in a stage and in a terminal,
+a barrier mid-chain, a non-callable and a wrong-arity chain step, a dict `map`
+answering a non-pair, `first()` on an empty fused result, `take()` with a bad
+count and a bad type, an unbound name as a step's argument, a caught error
+followed by more chains, a type error inside a stage, chains nested inside
+chain callbacks, and tuple/range receivers. **Three of them failed on the first
+run** and all three were the same bug: a diagnostic raised after a fused
+callback had returned reported the callback's `return` rather than the call it
+belongs to, because the VM's position had moved on. Stages and jobs carry their
+own span now.
+
+No dependency was added and no `unsafe` was written.
+
 ## What is left, ranked (after pass three)
 
 The shape has changed again. Pass one's list was about allocations; pass two's
