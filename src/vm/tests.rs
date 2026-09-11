@@ -2780,6 +2780,98 @@ fn apply_refuses_what_the_written_call_refuses() {
     }
 }
 
+/// A default is evaluated on each call that omits it, not once when the `def`
+/// runs. `def f(x=[])` therefore hands out a fresh list every time, which is
+/// the whole point: Python's shared mutable default is the one argument trap
+/// the language had left, and it is gone.
+#[test]
+fn a_default_is_evaluated_on_each_call() {
+    let v = eval_var(
+        "\
+def f(x=[]):
+    x.append(1)
+    return x
+def d(m={}):
+    m[\"k\"] = len(m)
+    return m
+r = [f(), f(), f([9]), d(), d()]
+",
+        "r",
+    );
+    assert_eq!(v.repr(), "[[1], [1], [9, 1], {'k': 0}, {'k': 0}]");
+}
+
+/// A name in a default is read when the call happens, not when the `def` ran,
+/// and it resolves in the callee — so it captures an enclosing local the way
+/// any other name in the body does.
+#[test]
+fn a_default_reads_its_names_at_call_time() {
+    let v = eval_var(
+        "\
+n = 1
+def f(c=n):
+    return c
+before = f()
+n = 5
+r = [before, f()]
+",
+        "r",
+    );
+    assert_eq!(v.repr(), "[1, 5]");
+
+    // Captured from an enclosing function, which is only possible because the
+    // default resolves in the callee's scope.
+    let v = eval_var(
+        "\
+def outer():
+    items = [7]
+    def inner(xs=items):
+        return xs
+    items.append(8)
+    return inner()
+r = outer()
+",
+        "r",
+    );
+    assert_eq!(v.repr(), "[7, 8]");
+
+    // An earlier parameter is in scope for a later one's default, because by
+    // then it is bound.
+    let v = eval_var(
+        "\
+def f(a, b=a):
+    return [a, b]
+r = [f(3), f(3, b=4)]
+",
+        "r",
+    );
+    assert_eq!(v.repr(), "[[3, 3], [3, 4]]");
+}
+
+/// The prologue reaches every callable shape that can have a default: a plain
+/// `def`, a method, `__init__`, and a generator (whose prologue runs when the
+/// body first does). A lambda cannot have one at all.
+#[test]
+fn per_call_defaults_reach_methods_and_generators() {
+    let v = eval_var(
+        "\
+class K:
+    def __init__(self, tags=[]):
+        self.tags = tags
+    def push(self, xs=[]):
+        xs.append(1)
+        return xs
+def gen(xs=[]):
+    xs.append(2)
+    yield xs
+k = K()
+r = [K().tags == K().tags, k.push(), k.push(), gen().to_list(), gen().to_list()]
+",
+        "r",
+    );
+    assert_eq!(v.repr(), "[true, [1], [1], [[2]], [[2]]]");
+}
+
 /// Every [`Exc`] names a class the registry actually has.
 ///
 /// `error_to_exception` indexes the registry by `Exc::name()`, so a variant

@@ -69,7 +69,7 @@ pub fn compile_module(
     cg.emit_body(body)?;
     cg.emit(Op::LoadNone, 1, 1);
     cg.emit(Op::Return, 1, 1);
-    Ok(Rc::new(cg.finish("<module>".to_string(), Vec::new())))
+    Ok(Rc::new(cg.finish("<module>".to_string(), Vec::new(), Vec::new())))
 }
 
 impl<'a> Codegen<'a> {
@@ -95,7 +95,12 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    fn finish(self, name: String, params: Vec<ParamInfo>) -> CodeObject {
+    fn finish(
+        self,
+        name: String,
+        params: Vec<ParamInfo>,
+        defaults: Vec<Value>,
+    ) -> CodeObject {
         CodeObject {
             name,
             source: self.source,
@@ -111,6 +116,7 @@ impl<'a> Codegen<'a> {
             ncells: self.table.ncells(self.func) as usize,
             nfree: self.table.nfree(self.func) as usize,
             params,
+            defaults,
             is_generator: self.is_generator,
             module_names: if self.func == self.table.module() {
                 self.table.module_member_targets()
@@ -830,12 +836,9 @@ impl<'a> Codegen<'a> {
         let proto = self.compile_function(name, params, body, child)?;
         let proto_idx = self.protos.len() as u32;
         self.protos.push(Rc::new(proto));
-        // Evaluate default values in this (enclosing) scope, in order.
-        for p in params {
-            if let Some(d) = &p.default {
-                self.emit_expr(d)?;
-            }
-        }
+        // Nothing is pushed for the defaults: a constant one was folded onto
+        // the code object, and any other is the callee's own prologue. Running
+        // a `def` is now exactly "make the closure".
         self.emit(Op::MakeFunction(proto_idx), line, col);
         Ok(())
     }
@@ -933,12 +936,11 @@ impl<'a> Codegen<'a> {
         // A `yield` anywhere in the body (but not in nested defs) makes this a
         // generator function.
         inner.is_generator = contains_yield(body);
-        inner.emit_body(body)?;
-        let (ll, cc) = body.last().map(|s| s.pos()).unwrap_or((0, 0));
-        inner.emit(Op::LoadNone, ll, cc);
-        inner.emit(Op::Return, ll, cc);
 
-        // Parameter descriptors, resolved against the child scope.
+        // Parameter descriptors, resolved against the child scope. Built before
+        // the body is emitted, because the defaults' prologue is emitted from
+        // them and has to come first — it runs before the function's own first
+        // statement.
         let mut infos = Vec::with_capacity(params.len());
         for p in params {
             let target = match self.table.resolve_name(child, &p.name) {
@@ -954,9 +956,45 @@ impl<'a> Codegen<'a> {
                 has_default: p.default.is_some(),
             });
         }
-        let n_defaults = params.iter().filter(|p| p.default.is_some()).count();
 
-        let code = Rc::new(inner.finish(name.to_string(), infos));
+        // The defaults. A constant is folded here and stored on the code
+        // object; anything else becomes a prologue entry — `Value::Unbound` in
+        // the table, and code at the top of the body that evaluates the
+        // expression on the calls that left the parameter unbound.
+        //
+        // Evaluating per call is what stops `def f(x=[])` from accumulating
+        // across calls, which is Python's one famous argument trap. It costs
+        // nothing where a default is a number, a string or `null`, which is
+        // nearly all of them: those never reach the prologue at all.
+        let mut defaults = Vec::new();
+        for (i, p) in params.iter().enumerate() {
+            let Some(d) = &p.default else { continue };
+            match const_default(d) {
+                Some(()) => defaults.push(inner.literal_value(d)?),
+                None => {
+                    defaults.push(Value::Unbound);
+                    let (dl, dc) = d.pos();
+                    let pair = inner.add_pair();
+                    inner.emit(Op::DefaultIfBound(pair), dl, dc);
+                    let jump = inner.ops.len() - 1;
+                    inner.emit_expr(d)?;
+                    match infos[i].target {
+                        VarTarget::Local(s) => inner.emit(Op::StoreFast(s), dl, dc),
+                        VarTarget::Cell(s) => inner.emit(Op::StoreCell(s), dl, dc),
+                    };
+                    let here = inner.here();
+                    inner.pairs[pair as usize] = (i as u32, here);
+                    debug_assert!(matches!(inner.ops[jump], Op::DefaultIfBound(_)));
+                }
+            }
+        }
+
+        inner.emit_body(body)?;
+        let (ll, cc) = body.last().map(|s| s.pos()).unwrap_or((0, 0));
+        inner.emit(Op::LoadNone, ll, cc);
+        inner.emit(Op::Return, ll, cc);
+
+        let code = Rc::new(inner.finish(name.to_string(), infos, defaults));
 
         // Capture plan: for each free variable of the child, say where the
         // enclosing (this) frame keeps its cell.
@@ -981,7 +1019,7 @@ impl<'a> Codegen<'a> {
             }
         }
 
-        Ok(FuncProto { code, captures, n_defaults })
+        Ok(FuncProto { code, captures })
     }
 
     // --- Stores --------------------------------------------------------------
@@ -1835,6 +1873,31 @@ fn parse_float(text: &str) -> Option<f64> {
         return text.replace('_', "").parse().ok();
     }
     text.parse().ok()
+}
+
+/// Whether a default value can be precomputed: a literal number, string, bytes,
+/// bool or `null`, or one of those negated.
+///
+/// These are the defaults worth folding, and they are nearly all of them — a
+/// tuning number, a mode string, `null`. Everything else (a list or dict
+/// literal, a call, a name) is evaluated per call in the callee's prologue,
+/// which is both the correct semantics and the only way `def f(x=[])` stops
+/// being a shared list.
+///
+/// `Some(())` rather than a `Value` because folding the value needs the
+/// `Codegen` (a bad float literal is a diagnostic with a position); this is the
+/// shape test that says calling [`Codegen::literal_value`] is safe.
+fn const_default(e: &Expr) -> Option<()> {
+    match e {
+        Expr::Int { .. }
+        | Expr::Float { .. }
+        | Expr::Str { .. }
+        | Expr::Bytes { .. }
+        | Expr::Bool { .. }
+        | Expr::NoneLit { .. } => Some(()),
+        Expr::Unary { op: UnaryOp::Neg, operand, .. } => const_default(operand),
+        _ => None,
+    }
 }
 
 /// The method name of `recv.name(args)` when it is written in the simple form

@@ -1,0 +1,72 @@
+# INTENTIONAL DIVERGENCE.
+# A default value is evaluated on each call that omits it. CPython evaluates it
+# once, when the `def` runs, and shares the result across every call — the
+# mutable-default trap. So this program's output is deliberately not CPython's,
+# and there is no twin: the difference *is* the subject.
+#
+# JavaScript, Ruby, Kotlin and Swift all evaluate per call. Oro does too.
+
+# --- the trap, which is no longer one ----------------------------------------
+def collect(x=[]):
+    x.append(1)
+    return x
+
+
+print("a fresh list each call:", collect() == [1] and collect() == [1])
+print("an argument still wins:", collect([9]) == [9, 1])
+
+
+def counts(m={}):
+    m["n"] = len(m)
+    return m
+
+
+print("and a fresh dict:", counts() == {"n": 0} and counts() == {"n": 0})
+
+# --- a default is an expression, evaluated where the callee can see it --------
+# The name is read when the call happens, not when the `def` ran.
+size = 1
+
+
+def sized(n=size):
+    return n
+
+
+first = sized()
+size = 5
+print("a name in a default is read at call time:", [first, sized()] == [1, 5])
+
+
+# An earlier parameter is in scope for a later one's default: by the time the
+# default runs, the parameters before it are bound.
+def span(start, stop=start):
+    return [start, stop]
+
+
+print("a default may name an earlier parameter:", span(2) == [2, 2])
+
+
+# It closes over an enclosing local the way the body does.
+def make():
+    seen = []
+
+    def add(item, into=seen):
+        into.append(item)
+        return into
+
+    return add
+
+
+add = make()
+add("a")
+print("a default captures like any other name:", add("b") == ["a", "b"])
+
+# --- a constant default is precomputed, and indistinguishable -----------------
+# Literal numbers, strings, bools and `null` are folded at compile time, so the
+# common case costs a call nothing. That is an implementation detail and must
+# stay one: it has to behave exactly like the evaluated form.
+def tuned(x, scale=2, label="n", on=false, missing=null):
+    return [x * scale, label, on, missing]
+
+
+print("constants behave the same:", tuned(3) == [6, "n", false, null])

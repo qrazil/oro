@@ -1873,6 +1873,26 @@ impl Vm {
                     }
                 }
                 Op::Jump(t) => self.top().pc = t as usize,
+                // A defaulted parameter's prologue. The binder left the slot
+                // `Unbound` when the call omitted the argument and its default
+                // is not a constant; the expression that follows is evaluated
+                // then, in this frame, on this call. A bound slot jumps over
+                // it, which is every call that passed the argument.
+                Op::DefaultIfBound(pair) => {
+                    let frame = self.top();
+                    let (param, target) = frame.code.pairs[pair as usize];
+                    let bound = match frame.code.params[param as usize].target {
+                        VarTarget::Local(s) => {
+                            !matches!(frame.locals[s as usize], Value::Unbound)
+                        }
+                        VarTarget::Cell(s) => {
+                            !matches!(*frame.cells[s as usize].borrow(), Value::Unbound)
+                        }
+                    };
+                    if bound {
+                        frame.pc = target as usize;
+                    }
+                }
                 Op::PopJumpIfFalse(t) => {
                     let v = self.pop();
                     if !v.truthy() {
@@ -2294,7 +2314,6 @@ impl Vm {
 
     fn make_function(&mut self, idx: usize) -> Result<(), VmError> {
         let proto = self.task.frames.last().unwrap().code.protos[idx].clone();
-        let defaults = self.popn(proto.n_defaults);
         let frame = self.task.frames.last().unwrap();
         let freevars: Vec<Rc<RefCell<Value>>> = proto
             .captures
@@ -2304,7 +2323,7 @@ impl Vm {
                 CaptureSource::Free(i) => frame.free[*i as usize].clone(),
             })
             .collect();
-        let func = Function { code: proto.code.clone(), defaults, freevars };
+        let func = Function { code: proto.code.clone(), freevars };
         self.push(Value::Func(Rc::new(func)));
         Ok(())
     }
@@ -2342,7 +2361,7 @@ impl Vm {
         if code.is_generator || n > code.params.len() {
             return None;
         }
-        let first_defaulted = code.params.len() - f.defaults.len();
+        let first_defaulted = code.params.len() - code.defaults.len();
         if n < first_defaulted {
             return None;
         }
@@ -2374,9 +2393,13 @@ impl Vm {
             caller.stack.pop().expect("the callee itself");
         }
         // Any trailing parameters the call did not supply take their defaults.
-        let first_defaulted = params.len() - func.defaults.len();
+        // A non-constant default is `Unbound` here and is filled by the
+        // callee's prologue, so this loop is the same one instruction either
+        // way — the check costs the fast path nothing.
+        let defaults = &func.code.defaults;
+        let first_defaulted = params.len() - defaults.len();
         for (i, p) in params.iter().enumerate().skip(n) {
-            store_param(&mut frame, p.target, func.defaults[i - first_defaulted].clone());
+            store_param(&mut frame, p.target, defaults[i - first_defaulted].clone());
         }
         self.task.frames.push(frame);
     }
@@ -2411,7 +2434,7 @@ impl Vm {
                         let code = &f.code;
                         !code.is_generator
                             && n < code.params.len()
-                            && n + 1 >= code.params.len() - f.defaults.len()
+                            && n + 1 >= code.params.len() - code.defaults.len()
                     }
                     _ => false,
                 }
@@ -2503,9 +2526,10 @@ impl Vm {
         };
         store_param(&mut frame, params[0].target, receiver.clone());
         // Any trailing parameters the call did not supply take their defaults.
-        let first_defaulted = params.len() - func.defaults.len();
+        let defaults = &func.code.defaults;
+        let first_defaulted = params.len() - defaults.len();
         for (i, p) in params.iter().enumerate().skip(n + 1) {
-            store_param(&mut frame, p.target, func.defaults[i - first_defaulted].clone());
+            store_param(&mut frame, p.target, defaults[i - first_defaulted].clone());
         }
         frame.super_ctx = Some((defclass, receiver));
         self.task.frames.push(frame);
@@ -5814,7 +5838,7 @@ impl Vm {
         // (the normal-parameter list, the fill slots, the leftovers) before it
         // can bind anything; on a call-heavy program that dominated.
         let supplied = args.len() + usize::from(receiver.is_some());
-        let first_defaulted = code.params.len().saturating_sub(func.defaults.len());
+        let first_defaulted = code.params.len().saturating_sub(code.defaults.len());
         if kwargs.is_empty()
             && supplied <= code.params.len()
             && supplied >= first_defaulted
@@ -5825,7 +5849,7 @@ impl Vm {
                 store_param(&mut frame, p.target, v);
             }
             for (i, p) in code.params.iter().enumerate().skip(supplied) {
-                let v = func.defaults[i - first_defaulted].clone();
+                let v = code.defaults[i - first_defaulted].clone();
                 store_param(&mut frame, p.target, v);
             }
             return Ok(frame);
@@ -5876,12 +5900,12 @@ impl Vm {
         }
 
         // 3. Defaults fill any remaining parameters; error if none.
-        //    `func.defaults` aligns with the trailing defaulted params.
-        let first_defaulted = params.len() - func.defaults.len();
+        //    `code.defaults` aligns with the trailing defaulted params.
+        let first_defaulted = params.len() - code.defaults.len();
         for (i, slot) in filled.iter_mut().enumerate() {
             if slot.is_none() {
                 if i >= first_defaulted {
-                    *slot = Some(func.defaults[i - first_defaulted].clone());
+                    *slot = Some(code.defaults[i - first_defaulted].clone());
                 } else {
                     return Err(self.err(type_error(format!(
                         "{}() missing required argument: '{}'",

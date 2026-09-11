@@ -1,0 +1,7 @@
+a fresh list each call: true
+an argument still wins: true
+and a fresh dict: true
+a name in a default is read at call time: true
+a default may name an earlier parameter: true
+a default captures like any other name: true
+constants behave the same: true

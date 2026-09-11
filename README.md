@@ -194,7 +194,10 @@ Implemented and working today:
   means keyword-only. There is no `*args`, no `**kwargs` and no call-site
   `*`/`**`: a function that takes any number of values takes a list, one that
   takes named options takes a dict, and `apply(f, args=xs, kwargs=d)` forwards
-  either into a call. Deep and mutual recursion work (the VM never recurses in
+  either into a call. **A default is evaluated on each call that omits it**, not
+  once when the `def` runs, so `def f(x=[])` hands out a fresh list every time
+  rather than accumulating into one — Python's mutable-default trap is not in
+  Oro. Deep and mutual recursion work (the VM never recurses in
   Rust — see [Architecture](#architecture)).
 - **Classes:** single inheritance, `__init__`/instance attributes/methods,
   class-level attributes, `super()`, and a fixed dunder set —

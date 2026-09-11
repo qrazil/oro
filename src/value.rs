@@ -602,11 +602,13 @@ pub enum IterState {
 /// A compiled Oro function together with its captured environment.
 pub struct Function {
     pub code: Rc<CodeObject>,
-    /// Default values for the trailing defaulted parameters, evaluated once when
-    /// the `def` executes (Python semantics).
-    pub defaults: Vec<Value>,
     /// Captured cells, one per entry in `code.freevars`, shared with the scope
     /// that defined this function.
+    ///
+    /// There is no `defaults` field beside it. A default is not a value the
+    /// `def` computed once and this function carries: a constant one lives on
+    /// the code object, and any other is evaluated in the callee's frame on
+    /// each call that omits it. See [`CodeObject::defaults`].
     pub freevars: Vec<Rc<RefCell<Value>>>,
 }
 

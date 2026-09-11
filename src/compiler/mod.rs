@@ -324,6 +324,16 @@ pub enum Op {
     /// Jump to the innermost loop's continue point, running enclosing `finally`
     /// bodies first.
     Continue,
+    /// A defaulted parameter's prologue, at the top of the function that owns
+    /// it: if the parameter is bound, jump past its default expression;
+    /// otherwise fall through and evaluate it.
+    ///
+    /// Needs two operands — which parameter, and where to jump — so they live
+    /// in [`CodeObject::pairs`] as `(param index, target)` and the instruction
+    /// carries the index. Only a function with a non-constant default has any
+    /// of these; a constant default is precomputed into
+    /// [`CodeObject::defaults`] and emits nothing.
+    DefaultIfBound(u32),
     /// Enter a finally body on the normal fall-through path (no suspended
     /// exception or return).
     BeginFinally,
@@ -357,9 +367,6 @@ pub struct FuncProto {
     /// One entry per free variable of `code`, telling the VM where in the
     /// enclosing frame to fetch the shared cell.
     pub captures: Vec<CaptureSource>,
-    /// Number of default values the enclosing frame pushes before
-    /// `MakeFunction`, in defaulted-parameter order.
-    pub n_defaults: usize,
 }
 
 /// A compiled unit of code: a module body or a function body.
@@ -426,6 +433,19 @@ pub struct CodeObject {
     pub nfree: usize,
     /// Parameters in declaration order (empty for a module).
     pub params: Vec<ParamInfo>,
+    /// One entry per defaulted parameter, aligned with the trailing ones: the
+    /// default's value when it is a constant (a literal number, string, bytes,
+    /// bool or `null`), and [`Value::Unbound`] when it is not.
+    ///
+    /// The sentinel is what makes per-call defaults free for the binder: it
+    /// stores this value into the slot without asking any question, and a slot
+    /// left `Unbound` is filled by the prologue — [`Op::DefaultIfBound`] — in
+    /// the callee's own frame, on the calls that omitted the argument.
+    ///
+    /// It lives on the code object rather than on the function because a
+    /// constant is the same for every closure made from this code, and a
+    /// non-constant one is no longer a value at all until a call asks for it.
+    pub defaults: Vec<Value>,
     /// Local slots whose name also exists at module scope but was made local by
     /// assignment (no `global` declaration). Used only to turn an
     /// unbound-local error into a teaching message. Empty for the module.

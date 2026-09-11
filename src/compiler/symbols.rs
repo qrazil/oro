@@ -481,8 +481,15 @@ impl SymTable {
         }
     }
 
-    /// Resolve a `def`/method: its default expressions in the enclosing scope,
-    /// then its body in the next child scope.
+    /// Resolve a `def`/method in the next child scope: its default expressions
+    /// first, then its body.
+    ///
+    /// The defaults resolve in the **child** scope, not the enclosing one,
+    /// because that is where they now run: a default is evaluated in the
+    /// callee's frame, on each call that omits the argument. So a name in a
+    /// default is captured the way a name in the body is — and it reads the
+    /// value that name has when the call happens, not the one it had when the
+    /// `def` ran.
     fn resolve_function(
         &mut self,
         scope_id: usize,
@@ -490,12 +497,12 @@ impl SymTable {
         body: &[Stmt],
         cursor: &mut usize,
     ) {
+        let child = self.next_child(scope_id, cursor);
         for p in params {
             if let Some(d) = &p.default {
-                self.resolve_expr(scope_id, d);
+                self.resolve_expr(child, d);
             }
         }
-        let child = self.next_child(scope_id, cursor);
         let mut c = 0;
         self.resolve_block(child, body, &mut c);
     }
