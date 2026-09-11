@@ -12,14 +12,13 @@
 # ----------------
 #   http.serve(addr, handler, ready=null, ...)  -> dict, the shutdown tally
 #   http.read_request(r)                     -> Request | null at a clean EOF
-#   http.write_response(w, req, resp, keep)  -> null, in one write() call
+#   http.write_response(w, req, resp, keep_alive=false)  -> null, one write()
 #   http.should_keep_alive(req, resp)        -> bool
 #   http.serve_conn(conn, handler, max_requests=1000, watch=null)
 #                                            -> int, requests served
 #
-#   http.Request(method, path, query, version, headers, body)
-#   http.Response(status=200, headers=null, body=b"", version="1.1",
-#                 reason=null)
+#   http.Request(method, path, query, version="1.1", headers=null, body=null)
+#   http.Response(status, headers=null, body=b"", version="1.1", reason=null)
 #   http.text(s, status=200)                 -> Response
 #   http.json_response(v, status=200)        -> Response
 #   http.Router().add(method, path, handler) -> Router (chains)
@@ -30,8 +29,8 @@
 #   http.fetch(method, url, headers=null, body=null, timeout=30,
 #              max_body=33554432, params=null)  -> Response, body in memory
 #   http.stream(method, url, ...)            -> Response, body a live Reader
-#   http.write_request(w, method, target, headers=null, body=b"")   -> null
-#   http.read_response(r, method="GET")      -> Response
+#   http.write_request(w, method, target, headers, body=b"")   -> null
+#   http.read_response(r, method)            -> Response
 #   http.parse_url(url)                      -> Url
 #   http.BadResponse(message)                -> Exception
 #
@@ -363,16 +362,25 @@ def _fail_response(msg):
 # --- types ----------------------------------------------------------------
 
 class Request:
-    def __init__(self, method, path, query, version, headers, body):
+    def __init__(self, method, path, query, version="1.1", headers=null, body=null):
         self.method = method
         self.path = path
         self.query = query
         self.version = version
-        self.headers = headers
+        # `null` is the absence of the argument rather than a value: the three
+        # optional fields are the ones a *parser* fills in and a program
+        # standing one up by hand does not, and each normalises to the empty
+        # thing rather than staying null. A Request is one shape however it
+        # was built.
+        self.headers = {}
+        if headers != null:
+            self.headers = headers
         # Always a Reader, never null and never sometimes-bytes: a GET with no
         # body gets an empty Buffer. One shape means a handler never branches
         # on it and `text()` is one line instead of three.
-        self.body = body
+        self.body = io.buffer(b"")
+        if body != null:
+            self.body = body
         self.params = {}
 
     def header(self, name, default=null):
@@ -403,7 +411,7 @@ class Request:
 # peer actually said, and losing it would make this class lossy for the one
 # job the two-way shape exists for.
 class Response:
-    def __init__(self, status=200, headers=null, body=b"", version="1.1", reason=null):
+    def __init__(self, status, headers=null, body=b"", version="1.1", reason=null):
         self.status = status
         self.headers = {}
         if headers != null:
@@ -461,11 +469,11 @@ class Response:
 
 
 def text(s, status=200):
-    return Response(status, {"content-type": "text/plain; charset=utf-8"}, s.to_bytes())
+    return Response(status, headers={"content-type": "text/plain; charset=utf-8"}, body=s.to_bytes())
 
 
 def json_response(v, status=200):
-    return Response(status, {"content-type": "application/json"}, json.stringify(v).to_bytes())
+    return Response(status, headers={"content-type": "application/json"}, body=json.stringify(v).to_bytes())
 
 
 def _is_streamed(body):
@@ -527,7 +535,7 @@ def _is_target(b):
 # instead of being hard-coded to "the request target". `_pct.decode` knows
 # none of that: it returns the bytes, or `null` for "this does not decode",
 # and every word of the diagnosis is written here.
-def _percent_decode(b, plus_is_space, fail=_fail_request, where="the request target"):
+def _percent_decode(b, plus_is_space, fail, where):
     out = _pct.decode(b, plus_is_space)
     if out == null:
         fail(f"{_escape_fault(b)} percent-escape in {where}")
@@ -586,7 +594,7 @@ class _HeadParser:
     # that is identical in both directions — is inherited verbatim and
     # reports through whichever failure its subclass installed.
     def fail(self, msg, status=400):
-        raise BadRequest(msg, status)
+        raise BadRequest(msg, status=status)
 
     # RFC 9112 asks a recipient to ignore at least one empty line before the
     # first line of a message, which is what a peer that ended its last
@@ -618,7 +626,7 @@ class _HeadParser:
             self.fail("unrecognised protocol in the request line")
         v = version[5:].to_str()
         if v != "1.1" and v != "1.0":
-            self.fail(f"unsupported HTTP version '{v}'", 505)
+            self.fail(f"unsupported HTTP version '{v}'", status=505)
         return method.to_str(), target, v
 
     def headers(self):
@@ -627,7 +635,7 @@ class _HeadParser:
         while self.i < self.n and len(self.lines[self.i]) > 0:
             count = count + 1
             if count > _MAX_HEADERS:
-                self.fail(f"more than {_MAX_HEADERS} header fields", 431)
+                self.fail(f"more than {_MAX_HEADERS} header fields", status=431)
             line = self.lines[self.i]
             self.i = self.i + 1
             # Obsolete line folding: a header continued on an indented line.
@@ -722,7 +730,7 @@ def _authority_path(rest):
 # which is what a plain dict assignment gives; a program that needs every
 # value of a repeated key is doing something this dict cannot express and
 # should read `req.query` from the raw target itself.
-def _parse_query(qs, fail=_fail_request, where="the request target"):
+def _parse_query(qs, fail, where):
     out = {}
     for pair in qs.split(sep=b"&"):
         if len(pair) == 0:
@@ -758,7 +766,7 @@ def read_request(r):
     if version == "1.1" and headers.get("host") == null:
         raise BadRequest("HTTP/1.1 request without a Host header")
     path, query = _split_target(target)
-    return Request(method, path, query, version, headers, _body_reader(r, headers))
+    return Request(method, path, query, version=version, headers=headers, body=_body_reader(r, headers))
 
 
 # The head, or a 431 if the client would not stop sending one. Split out
@@ -769,7 +777,7 @@ def _read_head(r):
     try:
         return r.read_until(b"\r\n\r\n", _MAX_HEAD)
     except ValueError as e:
-        raise BadRequest(f"header block exceeded {_MAX_HEAD} bytes", 431)
+        raise BadRequest(f"header block exceeded {_MAX_HEAD} bytes", status=431)
 
 
 # --- body framing ---------------------------------------------------------
@@ -793,7 +801,7 @@ def _body_reader(r, headers):
         # chunked" is well-formed and unimplemented, which is a 501 — not a
         # 400, and certainly not a silently un-gzipped body.
         if te.lower() != "chunked":
-            raise BadRequest(f"unsupported Transfer-Encoding '{te}'", 501)
+            raise BadRequest(f"unsupported Transfer-Encoding '{te}'", status=501)
         return _ChunkedReader(r)
     if n == null:
         # Neither header: no body at all. Not "read until EOF" — on a
@@ -801,10 +809,10 @@ def _body_reader(r, headers):
         # next request as this one's body is the same smuggling bug from the
         # other direction.
         return io.buffer(b"")
-    return _LimitReader(r, _content_length(n))
+    return _LimitReader(r, _content_length(n, _fail_request))
 
 
-def _content_length(s, fail=_fail_request):
+def _content_length(s, fail):
     if len(s) == 0:
         fail("empty Content-Length")
     for ch in s:
@@ -864,7 +872,7 @@ class _ChunkedReader:
     # one coding and one decoder, and the only thing that differs between a
     # chunked request body and a chunked response body is who is at fault.
     def fail(self, msg, status=400):
-        raise BadRequest(msg, status)
+        raise BadRequest(msg, status=status)
 
     def read(self, n):
         if n < 1:
@@ -915,7 +923,7 @@ class _ChunkedReader:
         while line != b"\r\n" and line != b"":
             count = count + 1
             if count > _MAX_HEADERS:
-                self.fail(f"more than {_MAX_HEADERS} trailer fields", 431)
+                self.fail(f"more than {_MAX_HEADERS} trailer fields", status=431)
             line = self.r.read_until(b"\r\n", _MAX_TRAILER_LINE)
 
     # A chunk size line: hex digits, optional `;ext=...` extensions that are
@@ -1007,16 +1015,16 @@ def _is_bodiless(status):
 # A header a handler built out of user input must not be able to end the
 # header block early. This is the response side of the same check the parser
 # makes on the way in.
-def _check_headers(headers, kind="response"):
+def _check_headers(headers):
     for name, value in headers:
-        _check_header(name, value, kind)
+        _check_header(name, value, "response")
 
 
 # `kind` is in the message and nowhere else. The check is the same in both
 # directions — this is response splitting on the way out and request splitting
 # on the way in — but a client told that its *request* header is an illegal
 # *response* header spends the next ten minutes looking in the wrong place.
-def _check_header(name, value, kind="response"):
+def _check_header(name, value, kind):
     if name.find("\r") >= 0 or name.find("\n") >= 0 or name.find(":") >= 0:
         raise ValueError(f"illegal character in {kind} header name '{name}'")
     if value.find("\r") >= 0 or value.find("\n") >= 0:
@@ -1034,7 +1042,7 @@ def _check_header(name, value, kind="response"):
 #
 # `date` is only filled in if the caller has not set one, which keeps this
 # function a pure translation of its arguments when a test wants it to be.
-def write_response(w, req, resp, keep_alive):
+def write_response(w, req, resp, keep_alive=false):
     h = resp.headers
     body = resp.body
     streamed = _is_streamed(body)
@@ -1144,7 +1152,7 @@ def _drain_loop(body):
 
 
 def _error_response(status, message):
-    return text(message + "\n", status)
+    return text(message + "\n", status=status)
 
 
 # Serve requests on `conn` until it must close; return how many were served.
@@ -1196,7 +1204,7 @@ def serve_conn(conn, handler, max_requests=_MAX_REQUESTS_PER_CONN, watch=null):
             keep = should_keep_alive(req, resp)
         if keep and watch != null and watch.stopping:
             keep = false
-        write_response(conn, req, resp, keep)
+        write_response(conn, req, resp, keep_alive=keep)
         served = served + 1
         if watch != null:
             watch.busy = false
@@ -1249,8 +1257,8 @@ def _dispatch(handler, req):
 # so a blank one stands in: it exists only to tell `write_response` the
 # method is not HEAD and the version is not 1.0.
 def _answer(conn, status, message):
-    blank = Request("GET", "/", {}, "1.1", {}, io.buffer(b""))
-    write_response(conn, blank, _error_response(status, message), false)
+    blank = Request("GET", "/", {})
+    write_response(conn, blank, _error_response(status, message), keep_alive=false)
 
 
 # --- the accept loop ------------------------------------------------------
@@ -1434,7 +1442,7 @@ def serve(addr, handler, ready=null, max_conns=_MAX_CONNS, max_requests=_MAX_REQ
 # bug. Anything else is a bug, and gets exactly one line naming the peer.
 def _conn_task(handler, live, entry, max_requests):
     try:
-        serve_conn(entry.conn, handler, max_requests, watch=entry)
+        serve_conn(entry.conn, handler, max_requests=max_requests, watch=entry)
     except OSError as e:
         pass
     except ValueError as e:
@@ -1516,8 +1524,8 @@ class Router:
         if len(allowed) > 0:
             # A 405 must say what is allowed instead; a bare 405 tells a
             # client nothing it can act on.
-            return Response(405, {"allow": allowed.join(", ")}, b"method not allowed\n")
-        return Response(404, {}, b"not found\n")
+            return Response(405, headers={"allow": allowed.join(", ")}, body=b"method not allowed\n")
+        return Response(404, body=b"not found\n")
 
     def handler_for(self, method, req):
         h = self.exact.get(method + " " + req.path)
@@ -1982,7 +1990,7 @@ def _port(digits, url):
 # Origin-form only. Absolute-form ("GET http://host/p HTTP/1.1") is what a
 # client says to a *proxy*, and there is no proxy support here to make it
 # mean anything.
-def write_request(w, method, target, headers=null, body=b""):
+def write_request(w, method, target, headers, body=b""):
     if not _is_token(method.to_bytes()):
         raise ValueError(f"'{method}' is not a valid HTTP method")
     if not _is_target(target.to_bytes()):
@@ -2033,7 +2041,7 @@ def _request_headers(headers):
             raise ValueError(f"header '{name}' was given twice, in two spellings")
         if key == "content-length" or key == "transfer-encoding":
             raise ValueError(f"'{key}' is set by the body argument, not by a header")
-        _check_header(key, value, kind="request")
+        _check_header(key, value, "request")
         h[key] = value
     return h
 
@@ -2086,8 +2094,10 @@ class _ResponseParser(_HeadParser):
 # know what was asked will read the next response — or block forever waiting
 # for a body that is never coming. This is the sharpest difference between
 # the two directions: a request says what it is, a response only says what it
-# is *given what you asked*. The default is "GET" because that is the honest
-# common case, not because it is safe to leave wrong.
+# is *given what you asked*. So `method` is required: it had a default of
+# "GET" once, and a HEAD reply read with it took `b'HTTP/'` off the front of
+# the *next* message and called it the body. A default that is wrong in the
+# one case the argument exists for is worse than no default.
 #
 # Interim 1xx responses are stepped over rather than returned. Nothing here
 # sends `Expect: 100-continue`, but `103 Early Hints` arrives unasked, and a
@@ -2095,7 +2105,7 @@ class _ResponseParser(_HeadParser):
 # `101 Switching Protocols` is *not* stepped over: it is a final answer that
 # ends HTTP/1.1 on that connection, and swallowing it would leave the caller
 # reading a protocol this module does not speak.
-def read_response(r, method="GET"):
+def read_response(r, method):
     resp = _read_one_response(r, method)
     interim = 0
     while resp.status < 200 and resp.status != 101:
@@ -2120,7 +2130,7 @@ def _read_one_response(r, method):
     p = _ResponseParser(raw)
     version, status, reason = p.status_line()
     headers = p.headers()
-    return Response(status, headers, _response_body_reader(r, status, method, headers), version, reason)
+    return Response(status, headers=headers, body=_response_body_reader(r, status, method, headers), version=version, reason=reason)
 
 
 # `_read_head`'s twin, and four duplicated lines that are worth their cost: a
@@ -2180,7 +2190,7 @@ def _response_body_reader(r, status, method, headers):
             raise BadResponse(f"unsupported Transfer-Encoding '{te}' in the response")
         return _ResponseChunkedReader(r)
     if n != null:
-        return _ResponseLimitReader(r, _content_length(n, fail=_fail_response))
+        return _ResponseLimitReader(r, _content_length(n, _fail_response))
     return r
 
 
@@ -2215,8 +2225,8 @@ class _ResponseChunkedReader(_ChunkedReader):
 #     resp = http.fetch("GET", "http://127.0.0.1:8080/health")
 #     print(resp.status, resp.text())
 #
-#     http.fetch("POST", url, {"content-type": "application/json"},
-#                json.stringify(payload).to_bytes())
+#     http.fetch("POST", url, headers={"content-type": "application/json"},
+#                body=json.stringify(payload).to_bytes())
 #
 # This is the whole convenience layer, and there is deliberately no
 # `http.get` / `http.post` / `http.put` underneath it. Every one of them
@@ -2237,7 +2247,7 @@ class _ResponseChunkedReader(_ChunkedReader):
 # That costs a TCP handshake per call and it is the honest price of a client
 # that has no lifecycle for a caller to get wrong.
 def fetch(method, url, headers=null, body=null, timeout=_CLIENT_TIMEOUT, max_body=_MAX_BODY, params=null):
-    resp = stream(method, url, headers, body, timeout, params)
+    resp = stream(method, url, headers=headers, body=body, timeout=timeout, params=params)
     try:
         resp.body = _read_capped(resp.body, max_body)
         return resp
@@ -2278,7 +2288,7 @@ def stream(method, url, headers=null, body=null, timeout=_CLIENT_TIMEOUT, params
     try:
         if timeout != null:
             conn.set_timeout(timeout)
-        write_request(conn, method, u.target, h, payload)
+        write_request(conn, method, u.target, h, body=payload)
         resp = read_response(conn, method)
         resp.conn = conn
         handed_over = true
