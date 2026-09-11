@@ -22,21 +22,21 @@ _TOP = 12
 
 
 def read_lines(path):
-    f = open(path, "r")
+    f = open(path)
     text = io.read(f).to_str()
     # One trailing newline would otherwise become one empty last line.
-    return text.strip("\n", side="right").split("\n")
+    return text.strip(chars="\n", side="right").split(sep="\n")
 
 
 def words(line):
-    return line.lower().split(null).map(w => w.strip(_EDGES)).filter(w => w != "")
+    return line.lower().split().map(w => w.strip(chars=_EDGES)).filter(w => w != "")
 
 
 def count_words(lines):
     counts = {}
     for line in lines:
         for word in words(line):
-            counts[word] = counts.get(word, 0) + 1
+            counts[word] = counts.get(word, default=0) + 1
     return counts
 
 
@@ -61,9 +61,9 @@ counts = count_words(lines)
 text = report(counts, _TOP)
 
 print(f"{source}: {len(lines)} lines, {len(counts)} distinct words")
-print(text.strip("\n", side="right"))
+print(text.strip(chars="\n", side="right"))
 
 if dest != null:
-    out = open(dest, "w")
+    out = open(dest, mode="w")
     out.write(text.to_bytes())
     print(f"wrote {len(text)} bytes to {dest}")

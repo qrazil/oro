@@ -12,31 +12,26 @@
 '  hi  ' ''   hi     hi     hi  
 '  hi  ' 'α'   hi     hi     hi  
 '  hi  ' 'abc'   hi     hi     hi  
-'  hi  ' null hi hi     hi
 'xxhixx' 'x' hi hixx xxhi
 'xxhixx' 'xy' hi hixx xxhi
 'xxhixx' '' xxhixx xxhixx xxhixx
 'xxhixx' 'α' xxhixx xxhixx xxhixx
 'xxhixx' 'abc' xxhixx xxhixx xxhixx
-'xxhixx' null xxhixx xxhixx xxhixx
 'xyxhixyx' 'x' yxhixy yxhixyx xyxhixy
 'xyxhixyx' 'xy' hi hixyx xyxhi
 'xyxhixyx' '' xyxhixyx xyxhixyx xyxhixyx
 'xyxhixyx' 'α' xyxhixyx xyxhixyx xyxhixyx
 'xyxhixyx' 'abc' xyxhixyx xyxhixyx xyxhixyx
-'xyxhixyx' null xyxhixyx xyxhixyx xyxhixyx
 '' 'x'   
 '' 'xy'   
 '' ''   
 '' 'α'   
 '' 'abc'   
-'' null   
 'xxx' 'x'   
 'xxx' 'xy'   
 'xxx' '' xxx xxx xxx
 'xxx' 'α' xxx xxx xxx
 'xxx' 'abc' xxx xxx xxx
-'xxx' null xxx xxx xxx
 '\thi\n ' 'x' 	hi
   	hi
   	hi
@@ -57,14 +52,11 @@
   	hi
   	hi
  
-'\thi\n ' null hi hi
-  	hi
 'ααhiα' 'x' ααhiα ααhiα ααhiα
 'ααhiα' 'xy' ααhiα ααhiα ααhiα
 'ααhiα' '' ααhiα ααhiα ααhiα
 'ααhiα' 'α' hi hiα ααhi
 'ααhiα' 'abc' ααhiα ααhiα ααhiα
-'ααhiα' null ααhiα ααhiα ααhiα
 --- bytes.strip(side=...)
 b'hi' b'hi  ' b'  hi'
 b'  hi  ' b'  hi  ' b'  hi  '
@@ -125,7 +117,7 @@ b'\x00a\xff' b'\x00a\xff' b'\x00a\xff'
 'x.png.png' 'x.png.png' 'x.png.png'
 'abc' 'abc'
 b'a' b'a.png' b'png'
---- split(sep, maxsplit, side="right")
+--- split(sep=, maxsplit=, side="right")
 'a.b.c' '.' -1 ['a', 'b', 'c']
 'a.b.c' '.' 0 ['a.b.c']
 'a.b.c' '.' 1 ['a.b', 'c']
@@ -151,7 +143,7 @@ b'a' b'a.png' b'png'
 'aXXbXXc' 'XX' 1 ['aXXb', 'c']
 'aXXbXXc' 'XX' 2 ['a', 'b', 'c']
 'aXXbXXc' 'XX' 5 ['a', 'b', 'c']
---- split(null, maxsplit, side="right")
+--- split(maxsplit=, side="right")
 ' a  b  c ' -1 ['a', 'b', 'c']
 ' a  b  c ' 0 [' a  b  c']
 ' a  b  c ' 1 [' a  b', 'c']
@@ -177,13 +169,13 @@ b'a' b'a.png' b'png'
 'a' 1 ['a']
 'a' 2 ['a']
 'a' 5 ['a']
---- bytes.split(sep, maxsplit, side="right")
+--- bytes.split(sep=, maxsplit=, side="right")
 -1 [b'a', b'b', b'c'] [b'a', b'', b'b']
 0 [b'a.b.c'] [b'a..b']
 1 [b'a.b', b'c'] [b'a.', b'b']
 2 [b'a', b'b', b'c'] [b'a', b'', b'b']
 5 [b'a', b'b', b'c'] [b'a', b'', b'b']
---- bytes.split(null, maxsplit, side="right")
+--- bytes.split(maxsplit=, side="right")
 -1 [b'a', b'b', b'c'] [b'a', b'b']
 0 [b' a  b  c'] [b'  a b']
 1 [b' a  b', b'c'] [b'  a', b'b']

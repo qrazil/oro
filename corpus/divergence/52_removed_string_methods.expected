@@ -1,6 +1,6 @@
 `lstrip` is not in Oro — use `strip(side="left")`
 `rstrip` is not in Oro — use `strip(side="right")`
-`rsplit` is not in Oro — use `split(sep, maxsplit, side="right")`
+`rsplit` is not in Oro — use `split(sep=…, maxsplit=…, side="right")`
 `rfind` is not in Oro — use `find(sub, reverse=true)`
 `zfill` is not in Oro — a format spec pads: f"{n:05d}", f"{s:0>5}", or f"{s:0>{width}}" for a width computed at run time
 `index` is not in Oro — use `find(sub)`, which answers -1 rather than raising
@@ -14,7 +14,7 @@
 ---
 `lstrip` is not in Oro — use `strip(side="left")`
 `rstrip` is not in Oro — use `strip(side="right")`
-`rsplit` is not in Oro — use `split(sep, maxsplit, side="right")`
+`rsplit` is not in Oro — use `split(sep=…, maxsplit=…, side="right")`
 `rfind` is not in Oro — use `find(sub, reverse=true)`
 `zfill` is not in Oro — a format spec pads: f"{n:05d}", f"{s:0>5}", or f"{s:0>{width}}" for a width computed at run time
 `index` is not in Oro — use `find(sub)`, which answers -1 rather than raising

@@ -8,8 +8,8 @@ print(d.pop("b"))
 print(d)
 
 # The default arity never raises, and a default of `null` is a real default.
-print(d.pop("zz", "fallback"))
-print(d.pop("zz", null))
+print(d.pop("zz", default="fallback"))
+print(d.pop("zz", default=null))
 print(d)
 
 # No default: KeyError, with the key's repr as the message — the quotes are the

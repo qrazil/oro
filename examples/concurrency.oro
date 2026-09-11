@@ -62,7 +62,7 @@ spawn(closer, workers, results)
 # channel, which happens when the last worker has returned.
 tally = {}
 for name, job, size in results:
-    tally[name] = tally.get(name, 0) + 1
+    tally[name] = tally.get(name, default=0) + 1
     print(f"{name} finished {job} ({size})")
 
 # `join` is idempotent and still has the value, even though `closer` already

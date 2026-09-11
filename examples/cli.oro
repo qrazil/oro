@@ -40,10 +40,10 @@ def parse_args(argv):
 
 
 def measure(path):
-    f = open(path, "r")
+    f = open(path)
     data = io.read(f)
     text = data.to_str()
-    return text.count("\n"), len(text.split(null)), len(data)
+    return text.count("\n"), len(text.split()), len(data)
 
 
 flags, paths = parse_args(sys.argv)

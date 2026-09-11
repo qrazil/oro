@@ -45,8 +45,8 @@ def get(c, path, extra):
 # A four-line HTTP client, which is all a test needs and all the module has no
 # intention of shipping (§6, "what is deliberately not in http").
 def read_response(c):
-    lines = c.read_until(b"\r\n\r\n", 65536).split(b"\r\n")
-    status = lines[0].split(b" ")[1].to_str()
+    lines = c.read_until(b"\r\n\r\n", 65536).split(sep=b"\r\n")
+    status = lines[0].split(sep=b" ")[1].to_str()
     n = 0
     closing = false
     for line in lines:
@@ -58,7 +58,7 @@ def read_response(c):
     body = b""
     if n > 0:
         body = io.read(c, n)
-    return [status, body.to_str().strip("\n", side="right"), closing]
+    return [status, body.to_str().strip(chars="\n", side="right"), closing]
 
 
 # --- one task per connection, and the proof it is not a queue ---------------

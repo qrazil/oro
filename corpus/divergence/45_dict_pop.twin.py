@@ -1,0 +1,74 @@
+# The manual oracle for 45_dict_pop.oro: that file with Oro's spellings
+# translated one for one into CPython's. The Oro program uses the argument
+# rule's keyword-only spellings (`d.pop(key, default=)`), which CPython rejects,
+# so the oracle cannot run the program itself; this twin is what its
+# .expected is still generated from, and diffing the two is the review.
+#
+# This file prints Python's `True`/`False`/`None`, so its output goes through
+# the same outbound rename `oracle.sh` applies before it is the expectation.
+#
+#   python3 corpus/divergence/45_dict_pop.twin.py \
+#     | sed -E 's/\bTrue\b/true/g; s/\bFalse\b/false/g; s/\bNone\b/null/g' \
+#     | diff - corpus/divergence/45_dict_pop.expected
+
+# `d.pop(k)` — the method the README has cited as `del`'s replacement since
+# before it existed. Both CPython arities: raise on a missing key, or answer a
+# default that was given.
+
+d = {"a": 1, "b": 2, "c": 3}
+
+print(d.pop("b"))
+print(d)
+
+# The default arity never raises, and a default of `null` is a real default.
+print(d.pop("zz", "fallback"))
+print(d.pop("zz", None))
+print(d)
+
+# No default: KeyError, with the key's repr as the message — the quotes are the
+# difference between a missing `zz` and a missing `zz ` with a space on it.
+try:
+    d.pop("zz")
+    print("no raise")
+except KeyError as e:
+    print("KeyError", f"{e}")
+
+# Insertion order survives a removal from the middle, and a re-inserted key goes
+# to the back rather than back to where it was.
+n = {}
+for i in range(6):
+    n[i] = i * i
+print(n.pop(2))
+print(n)
+print(n.pop(0))
+print(n)
+n[2] = 99
+print(n)
+print(len(n))
+
+# Popping everything, one key at a time, leaves an empty dict that still works.
+e = {"x": 1, "y": 2}
+print(e.pop("x"), e.pop("y"), e, len(e))
+e["z"] = 3
+print(e)
+
+# Every key type a dict takes pops the same way, including the numeric
+# normalisation that makes 1 and 1.0 one key.
+m = {1: "int", "1": "str", (1, 2): "tuple", 2.5: "float"}
+print(m.pop(1.0))
+print(m.pop((1, 2)))
+print(m)
+
+# The value comes back whatever it is, and the dict it came out of is unaffected
+# by what is done to it afterwards.
+holder = {"list": [1, 2]}
+got = holder.pop("list")
+got.append(3)
+print(got, holder)
+
+# A missing key on an empty dict, and a non-str key in the message.
+try:
+    {}.pop(7)
+    print("no raise")
+except KeyError as e:
+    print("KeyError", f"{e}")

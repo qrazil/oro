@@ -487,7 +487,7 @@ def read_it_too():
         conn.read(64)
         print("BUG: two readers were allowed")
     except Exception as e:
-        print("second reader:", e.args[0].split(" (task")[0])
+        print("second reader:", e.args[0].split(sep=" (task")[0])
 
 a = spawn(read_it)
 b = spawn(read_it_too)
@@ -604,7 +604,7 @@ fn a_hostname_dial_parks_and_the_vm_keeps_scheduling() {
 import net
 
 ln = net.listen("127.0.0.1:0")
-host = "localhost:" + ln.local.split(":")[1]
+host = "localhost:" + ln.local.split(sep=":")[1]
 
 log = []
 
@@ -660,7 +660,7 @@ fn a_failed_lookup_raises_in_its_own_task_and_leaves_the_others_alone() {
 import net
 
 ln = net.listen("127.0.0.1:0")
-host = "localhost:" + ln.local.split(":")[1]
+host = "localhost:" + ln.local.split(sep=":")[1]
 bad = ({UNRESOLVABLE}) + ":80"
 
 def doomed():
@@ -668,13 +668,13 @@ def doomed():
         net.dial(bad)
         return "resolved, which cannot happen"
     except OSError as e:
-        return "raised " + e.to_str().split(":")[0]
+        return "raised " + e.to_str().split(sep=":")[0]
 
 def fine():
     c = net.dial(host)
     peer = c.peer
     c.close()
-    return "dialled " + peer.split(":")[0]
+    return "dialled " + peer.split(sep=":")[0]
 
 a = spawn(doomed)
 b = spawn(fine)
@@ -705,7 +705,7 @@ fn many_lookups_run_at_once_and_the_rest_queue() {
 import net
 
 ln = net.listen("127.0.0.1:0")
-host = "localhost:" + ln.local.split(":")[1]
+host = "localhost:" + ln.local.split(sep=":")[1]
 
 def dial_one(n):
     c = net.dial(host)
@@ -774,7 +774,7 @@ sys.exit(0)
 import net
 
 ln = net.listen("127.0.0.1:0")
-host = "localhost:" + ln.local.split(":")[1]
+host = "localhost:" + ln.local.split(sep=":")[1]
 
 def dialer():
     c = net.dial(host)
@@ -835,12 +835,12 @@ fn a_dial_falls_through_to_the_next_address() {
 import net
 
 ln = net.listen("127.0.0.1:0")
-host = "localhost:" + ln.local.split(":")[1]
+host = "localhost:" + ln.local.split(sep=":")[1]
 
 c = net.dial(host)
 s = ln.accept()
 c.write(b"fell through")
-print(c.peer.split(":")[0], s.read(32).to_str())
+print(c.peer.split(sep=":")[0], s.read(32).to_str())
 c.close()
 s.close()
 ln.close()

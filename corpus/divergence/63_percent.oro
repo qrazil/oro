@@ -31,7 +31,7 @@ def row(items):
 
 def table(label, f):
     print(f"--- {label}")
-    for i in range(0, 256, 16):
+    for i in range(256, step=16):
         cells = []
         for j in range(16):
             cells.append(f([i + j].to_bytes()).to_str())

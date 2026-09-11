@@ -29,7 +29,7 @@ _ORDERS = [
 
 def payload(argv):
     if len(argv) > 1:
-        f = open(argv[1], "r")
+        f = open(argv[1])
         return io.read(f).to_str()
     return json.stringify(_ORDERS)
 
@@ -42,13 +42,13 @@ def summarise(orders):
     paid = orders.filter(o => o["paid"])
     regions = paid.group_by(o => o["region"]).map((name, rows) => (name, {
         "orders": len(rows),
-        "revenue": round(rows.map(o => o["total"]).sum(), 2),
+        "revenue": round(rows.map(o => o["total"]).sum(), ndigits=2),
         "largest": rows.max_by(o => o["total"])["id"],
     }))
     return {
         "orders": len(orders),
         "unpaid": len(orders) - len(paid),
-        "revenue": round(paid.map(o => o["total"]).sum(), 2),
+        "revenue": round(paid.map(o => o["total"]).sum(), ndigits=2),
         "regions": regions.sort_by((name, stats) => -stats["revenue"]),
     }
 

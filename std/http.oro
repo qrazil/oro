@@ -188,7 +188,7 @@ _STREAM_CHUNK = 8192
 # tchar: the characters a method or a header field name may contain.
 _TOKEN_DELIMS = '"(),/:;<=>?@[\\]{}'
 _tchars = []
-for _tb in range(33, 127):
+for _tb in range(127, start=33):
     if f"{_tb:c}" not in _TOKEN_DELIMS:
         _tchars.append(_tb)
 _TOKEN_OK = _tchars.to_bytes()
@@ -196,7 +196,7 @@ _TOKEN_OK = _tchars.to_bytes()
 # A field value: HTAB, and every octet from 0x20 up except DEL. Bytes above
 # 127 are allowed here and answered for at the strict decode below.
 _vchars = [9]
-for _vb in range(32, 256):
+for _vb in range(256, start=32):
     if _vb != 127:
         _vchars.append(_vb)
 _FIELD_VALUE_OK = _vchars.to_bytes()
@@ -204,7 +204,7 @@ _FIELD_VALUE_OK = _vchars.to_bytes()
 # A request target: visible ASCII or above. Control characters are rejected;
 # bytes above 127 are not, because clients do send raw UTF-8 in a path.
 _gchars = []
-for _gb in range(33, 256):
+for _gb in range(256, start=33):
     if _gb != 127:
         _gchars.append(_gb)
 _TARGET_OK = _gchars.to_bytes()
@@ -299,7 +299,7 @@ _REASONS = {
 # clients are required to ignore it — so an unrecognised code gets a
 # placeholder rather than an exception.
 def _reason(status):
-    return _REASONS.get(status, "Unknown")
+    return _REASONS.get(status, default="Unknown")
 
 
 # --- errors ---------------------------------------------------------------
@@ -376,7 +376,7 @@ class Request:
         self.params = {}
 
     def header(self, name, default=null):
-        return self.headers.get(name.lower(), default)
+        return self.headers.get(name.lower(), default=default)
 
     def text(self):
         return io.read(self.body).to_str()
@@ -423,7 +423,7 @@ class Response:
         self.conn = null
 
     def header(self, name, default=null):
-        return self.headers.get(name.lower(), default)
+        return self.headers.get(name.lower(), default=default)
 
     # The three ways to spend the body, and they are the same three
     # `Request` has, for the same reason: a caller should not have to know
@@ -548,7 +548,7 @@ def _escape_fault(b):
             return "truncated"
         if _HEX_VALUE.get(b[i + 1]) == null or _HEX_VALUE.get(b[i + 2]) == null:
             return "invalid"
-        i = b.find(b"%", i + 3)
+        i = b.find(b"%", start=i + 3)
     # Unreachable: `_pct.decode` only refuses on a `%`, so one is always
     # found. Naming a kind rather than falling off the end keeps a future
     # third failure mode from arriving as a silent `null` in a 400.
@@ -562,7 +562,7 @@ def _escape_fault(b):
 def _has_token(value, token):
     if value == null:
         return false
-    for part in value.split(","):
+    for part in value.split(sep=","):
         if part.strip().lower() == token:
             return true
     return false
@@ -576,7 +576,7 @@ def _has_token(value, token):
 
 class _HeadParser:
     def __init__(self, raw):
-        self.lines = raw.split(b"\r\n")
+        self.lines = raw.split(sep=b"\r\n")
         self.n = len(self.lines)
         self.i = 0
 
@@ -600,7 +600,7 @@ class _HeadParser:
         self.skip_blank()
         if self.i >= self.n:
             self.fail("empty request line")
-        parts = self.lines[self.i].split(b" ")
+        parts = self.lines[self.i].split(sep=b" ")
         self.i = self.i + 1
         # Exactly one space on either side of the target. Tolerating runs of
         # spaces here is how a request line becomes ambiguous to two parsers
@@ -724,7 +724,7 @@ def _authority_path(rest):
 # should read `req.query` from the raw target itself.
 def _parse_query(qs, fail=_fail_request, where="the request target"):
     out = {}
-    for pair in qs.split(b"&"):
+    for pair in qs.split(sep=b"&"):
         if len(pair) == 0:
             continue
         e = pair.find(b"=")
@@ -1450,7 +1450,7 @@ def _conn_task(handler, live, entry, max_requests):
         # and "the task has finished" are the same instant to every other
         # task in the VM.
         entry.conn.close()
-        live.pop(entry.conn, null)
+        live.pop(entry.conn, default=null)
 
 
 # Stop accepting, then finish what is in flight, then close the rest.
@@ -1497,7 +1497,7 @@ class Router:
         if path.find(":") < 0:
             self.exact[method + " " + path] = handler
         else:
-            self.patterns.append((method, path.split("/"), handler))
+            self.patterns.append((method, path.split(sep="/"), handler))
         # Returned so routes chain in the reading order Oro prefers.
         return self
 
@@ -1523,7 +1523,7 @@ class Router:
         h = self.exact.get(method + " " + req.path)
         if h != null:
             return h
-        segs = req.path.split("/")
+        segs = req.path.split(sep="/")
         for m, pat, fn in self.patterns:
             if m == method:
                 params = _match(pat, segs)
@@ -1534,7 +1534,7 @@ class Router:
 
     def allowed(self, path):
         out = []
-        segs = path.split("/")
+        segs = path.split(sep="/")
         for key in self.exact.keys():
             sp = key.find(" ")
             if key[sp + 1:] == path:
@@ -2055,7 +2055,7 @@ class _ResponseParser(_HeadParser):
         # `maxsplit=2`, because the reason phrase is the one field in HTTP
         # that may contain spaces — and may also be empty, or absent
         # altogether, since a client is required to ignore it.
-        parts = self.lines[self.i].split(b" ", 2)
+        parts = self.lines[self.i].split(sep=b" ", maxsplit=2)
         self.i = self.i + 1
         if len(parts) < 2:
             self.fail("malformed status line")

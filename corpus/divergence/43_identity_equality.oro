@@ -62,9 +62,9 @@ print(f != f, f != other, gen != gen)
 
 print("--- a range is a sequence, and compares as one")
 print(range(3) == range(3), range(3) == range(4))
-print(range(0) == range(2, 2, 7), range(5, 5) == range(9, 9, 3))
-print(range(1, 2) == range(1, 2, 5), range(1, 4) == range(1, 4, 2))
-print(range(0, 4, 2) == range(0, 5, 2), range(0, 4, 2) == range(0, 4, 3))
+print(range(0) == range(2, start=2, step=7), range(5, start=5) == range(9, start=9, step=3))
+print(range(2, start=1) == range(2, start=1, step=5), range(4, start=1) == range(4, start=1, step=2))
+print(range(4, step=2) == range(5, step=2), range(4, step=2) == range(4, step=3))
 
 print("--- membership follows equality")
 print(f in [other, f], f in [other], gen in [gen])
@@ -94,7 +94,7 @@ print(len(registry))
 # Two empty ranges are one key, because they are equal.
 r = {}
 r[range(0)] = "a"
-r[range(2, 2, 7)] = "b"
+r[range(2, start=2, step=7)] = "b"
 print(len(r), r[range(0)])
 
 print("--- what stays unhashable")

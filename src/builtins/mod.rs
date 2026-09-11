@@ -101,6 +101,192 @@ fn at_most(args: &[Value], n: usize, who: &str) -> VResult<()> {
     }
 }
 
+/// The keyword arguments a native takes, bound by name. Under the argument
+/// rule every parameter with a default is keyword-only, so this is where a
+/// native reads one: a name it does not take is a TypeError, and so is a name
+/// given twice, rather than either being silently dropped.
+fn bind_kwargs<'a, const N: usize>(
+    who: &str,
+    kwargs: &'a [(String, Value)],
+    names: [&str; N],
+) -> VResult<[Option<&'a Value>; N]> {
+    let mut out = [None; N];
+    for (k, v) in kwargs {
+        let Some(i) = names.iter().position(|n| n == k) else {
+            return Err(type_error(format!("{who}() got an unexpected keyword argument '{k}'")));
+        };
+        if out[i].is_some() {
+            return Err(type_error(format!(
+                "{who}() got multiple values for keyword argument '{k}'"
+            )));
+        }
+        out[i] = Some(v);
+    }
+    Ok(out)
+}
+
+/// An explicit `null` for a keyword whose default is not `null`. It used to
+/// mean "omitted", which made `f(x=null)` a second spelling of `f()`; the
+/// refusal names the one spelling that is left.
+fn null_is_not_omitted(who: &str, name: &str, want: &str) -> VErr {
+    type_error(format!(
+        "{who}(): {name}= must be {want}, not null — null does not mean \"omitted\"; \
+         leave {name}= out for the default"
+    ))
+}
+
+/// A keyword-only integer: `default` when omitted, and never `null`.
+fn kw_int(who: &str, name: &str, v: Option<&Value>, default: i64) -> VResult<i64> {
+    match v {
+        None => Ok(default),
+        Some(Value::Int(n)) => Ok(*n),
+        Some(Value::Bool(b)) => Ok(*b as i64),
+        Some(Value::None) => Err(null_is_not_omitted(who, name, "int")),
+        Some(other) => Err(type_error(format!(
+            "{who}(): {name}= must be int, not '{}'",
+            other.type_name()
+        ))),
+    }
+}
+
+/// Refuse positional arguments past the `n` a native takes, and say where the
+/// rest went. Each of these was a valid positional spelling until the
+/// argument rule made defaulted parameters keyword-only, so a bare arity error
+/// would leave the reader to rediscover the keyword; `fix` says it, usually as
+/// the reader's own call rewritten (see [`respell`]).
+fn positional_at_most(
+    args: &[Value],
+    n: usize,
+    who: &str,
+    fix: impl FnOnce() -> String,
+) -> VResult<()> {
+    if args.len() <= n {
+        return Ok(());
+    }
+    let takes = match n {
+        0 => "no positional arguments".to_string(),
+        1 => "1 positional argument".to_string(),
+        _ => format!("{n} positional arguments"),
+    };
+    let given = args.len();
+    let verb = if given == 1 { "was" } else { "were" };
+    Err(type_error(format!("{who}() takes {takes} but {given} {verb} given — {}", fix())))
+}
+
+/// How an argument appears in a rewritten call: a scalar as its literal, so the
+/// fix can be pasted, and anything else as `…`.
+fn lit(v: &Value) -> String {
+    match v {
+        Value::None | Value::Bool(_) | Value::Int(_) | Value::Float(_) => v.repr(),
+        Value::Str(s) if s.char_len() <= 24 => v.repr(),
+        Value::Bytes(b) if b.len() <= 24 => v.repr(),
+        _ => "…".to_string(),
+    }
+}
+
+/// A call rewritten into the argument rule's shape: `fixed` stay positional,
+/// and each of `named` becomes `name=value` — or is dropped, where the old
+/// positional spelling passed `null` to mean "omitted".
+fn respell(who: &str, fixed: &[&Value], named: &[(&str, &Value)]) -> String {
+    let parts: Vec<String> = fixed
+        .iter()
+        .map(|v| lit(v))
+        .chain(
+            named
+                .iter()
+                .filter(|(_, v)| !matches!(v, Value::None))
+                .map(|(n, v)| format!("{n}={}", lit(v))),
+        )
+        .collect();
+    format!("`{who}({})`", parts.join(", "))
+}
+
+/// `find(sub, 2, 5)` as `find(sub, start=2, end=5)`: the window `find`,
+/// `count`, `startswith` and `endswith` share.
+fn window_spelling(who: &str, args: &[Value]) -> String {
+    match args {
+        [sub, rest @ ..] if rest.len() <= 2 => {
+            let named: Vec<(&str, &Value)> = ["start", "end"].into_iter().zip(rest).collect();
+            format!("write {}: the window is keyword-only", respell(who, &[sub], &named))
+        }
+        _ => format!("write `{who}(sub, start=…, end=…)`"),
+    }
+}
+
+/// `replace(old, new, 2)` as `replace(old, new, count=2)`.
+fn replace_spelling(args: &[Value]) -> String {
+    match args {
+        [old, new, count] => format!(
+            "write {}: the count is keyword-only",
+            respell("replace", &[old, new], &[("count", count)])
+        ),
+        _ => "write `replace(old, new, count=…)`".to_string(),
+    }
+}
+
+/// `strip("xy")` as `strip(chars="xy")`.
+fn strip_spelling(args: &[Value]) -> String {
+    match args {
+        [chars] => format!(
+            "write {}: the character set is keyword-only",
+            respell("strip", &[], &[("chars", chars)])
+        ),
+        _ => "write `strip(chars=…, side=…)`".to_string(),
+    }
+}
+
+/// `split(",", 1)` as `split(sep=",", maxsplit=1)`, and `split(null, 1)` as
+/// `split(maxsplit=1)`.
+fn split_spelling(args: &[Value]) -> String {
+    match args {
+        [_] | [_, _] => {
+            let named: Vec<(&str, &Value)> = ["sep", "maxsplit"].into_iter().zip(args).collect();
+            format!(
+                "write {}: the separator is keyword-only, and `split()` with none splits on \
+                 runs of whitespace",
+                respell("split", &[], &named)
+            )
+        }
+        _ => "write `split(sep=…, maxsplit=…, side=…)`".to_string(),
+    }
+}
+
+/// `range(2, 10, 3)` as `range(10, start=2, step=3)`. A start of 0 is the
+/// default, so `range(0, n)` comes back as plain `range(n)`.
+fn range_spelling(args: &[Value]) -> String {
+    match args {
+        [start, end, step @ ..] if step.len() <= 1 => {
+            let mut named: Vec<(&str, &Value)> = Vec::new();
+            if !matches!(start, Value::Int(0)) {
+                named.push(("start", start));
+            }
+            if let [step] = step {
+                named.push(("step", step));
+            }
+            format!(
+                "write {}: the one positional argument is the end, and the start and step are \
+                 keyword-only",
+                respell("range", &[end], &named)
+            )
+        }
+        _ => "write `range(end, start=…, step=…)`".to_string(),
+    }
+}
+
+/// A plain builtin called with keyword arguments. `round` and `open` are the
+/// two whose parameters have defaults, so they are the two that take one.
+pub fn call_builtin_kw(
+    name: &str,
+    args: Vec<Value>,
+    kwargs: &[(String, Value)],
+) -> VResult<Value> {
+    match name {
+        "round" => round_with(args, kwargs),
+        "open" => open_with(args, kwargs),
+        _ => Err(type_error(format!("{name}() takes no keyword arguments"))),
+    }
+}
+
 // --- Builtins ---------------------------------------------------------------
 
 fn bi_print(args: Vec<Value>) -> VResult<Value> {
@@ -145,12 +331,36 @@ fn bi_set(_args: Vec<Value>) -> VResult<Value> {
 }
 
 fn bi_open(args: Vec<Value>) -> VResult<Value> {
+    open_with(args, &[])
+}
+
+/// `open(path, mode="r")`. The mode is a code word (`"r"`, `"w"`, `"a"`),
+/// which is the kind of argument that is named.
+fn open_with(args: Vec<Value>, kwargs: &[(String, Value)]) -> VResult<Value> {
     use crate::stream::OroStream;
-    let (path, mode) = match args.as_slice() {
-        [Value::Str(p)] => (p.s.clone(), "r".to_string()),
-        [Value::Str(p), Value::Str(m)] => (p.s.clone(), m.s.clone()),
-        [_] | [_, _] => return Err(type_error("open() arguments must be strings")),
-        _ => return Err(type_error("open() takes 1 or 2 arguments")),
+    positional_at_most(&args, 1, "open", || match args.as_slice() {
+        [path, mode] => format!(
+            "write {}: the mode is keyword-only",
+            respell("open", &[path], &[("mode", mode)])
+        ),
+        _ => "write `open(path, mode=…)`".to_string(),
+    })?;
+    let [mode] = bind_kwargs("open", kwargs, ["mode"])?;
+    let path = match args.as_slice() {
+        [Value::Str(p)] => p.s.clone(),
+        [_] => return Err(type_error("open() arguments must be strings")),
+        _ => return Err(type_error("open() missing its required argument: the path")),
+    };
+    let mode = match mode {
+        None => "r".to_string(),
+        Some(Value::Str(m)) => m.s.clone(),
+        Some(Value::None) => return Err(null_is_not_omitted("open", "mode", "str")),
+        Some(other) => {
+            return Err(type_error(format!(
+                "open(): mode= must be str, not '{}'",
+                other.type_name()
+            )))
+        }
     };
     let io_err = |e: std::io::Error| crate::vm::modules::io_err(&e, &path);
     let stream = match mode.as_str() {
@@ -451,16 +661,23 @@ fn type_name_is_not_callable(who: &str, method: &str, literal: &str) -> VErr {
 /// second way to write a thing that already has one. The conversions are
 /// methods (`x.to_int()`), which is where a conversion belongs: it reads left
 /// to right and it is one spelling, not two.
-pub fn call_type(t: TypeTag, args: Vec<Value>) -> VResult<Value> {
+pub fn call_type(t: TypeTag, args: Vec<Value>, kwargs: &[(String, Value)]) -> VResult<Value> {
     match t {
+        // `range(end, start=0, step=1)`. The one positional argument is always
+        // the end, so `range(5)` reads as it always has, and the bounds that
+        // the two- and three-argument forms used to tell apart by arity are
+        // named instead.
         TypeTag::Range => {
-            let ints: Vec<i64> = args.iter().map(as_i64).collect::<VResult<_>>()?;
-            let (start, stop, step) = match ints.as_slice() {
-                [stop] => (0, *stop, 1),
-                [start, stop] => (*start, *stop, 1),
-                [start, stop, step] => (*start, *stop, *step),
-                _ => return Err(type_error("range() takes 1 to 3 integer arguments")),
+            positional_at_most(&args, 1, "range", || range_spelling(&args))?;
+            let Some(end) = args.first() else {
+                return Err(type_error(
+                    "range() missing its required argument: the end — `range(end, start=0, step=1)`",
+                ));
             };
+            let [start, step] = bind_kwargs("range", kwargs, ["start", "step"])?;
+            let stop = as_i64(end)?;
+            let start = kw_int("range", "start", start, 0)?;
+            let step = kw_int("range", "step", step, 1)?;
             if step == 0 {
                 return Err(value_error("range() step argument must not be zero"));
             }
@@ -507,13 +724,30 @@ fn zip_cols(cols: Vec<Vec<Value>>) -> Value {
     Value::List(OroList::new(out))
 }
 
-/// `round(x)` -> int, `round(x, n)` -> float. Uses banker's rounding (ties to
-/// even) exactly as CPython does: `round(0.5)` is 0 and `round(2.5)` is 2.
 fn bi_round(args: Vec<Value>) -> VResult<Value> {
-    let (v, ndigits) = match args.as_slice() {
-        [v] => (v, None),
-        [v, n] => (v, Some(as_i64(n)?)),
-        _ => return Err(type_error("round() takes 1 or 2 arguments")),
+    round_with(args, &[])
+}
+
+/// `round(x)` -> int, `round(x, ndigits=n)` -> float. Uses banker's rounding
+/// (ties to even) exactly as CPython does: `round(0.5)` is 0 and `round(2.5)`
+/// is 2. Omitting `ndigits=` is not the same as `ndigits=0` — that one answers
+/// a float, as CPython's does — so the omission is a real third case, and an
+/// explicit `null` is not a way to spell it.
+fn round_with(args: Vec<Value>, kwargs: &[(String, Value)]) -> VResult<Value> {
+    positional_at_most(&args, 1, "round", || match args.as_slice() {
+        [x, n] => format!(
+            "write {}: the precision is keyword-only",
+            respell("round", &[x], &[("ndigits", n)])
+        ),
+        _ => "write `round(x, ndigits=…)`".to_string(),
+    })?;
+    let [nd] = bind_kwargs("round", kwargs, ["ndigits"])?;
+    let Some(v) = args.first() else {
+        return Err(type_error("round() missing its required argument: the number"));
+    };
+    let ndigits = match nd {
+        None => None,
+        given => Some(kw_int("round", "ndigits", given, 0)?),
     };
     let x = match v {
         Value::Int(n) => {
@@ -742,7 +976,7 @@ fn cut_str_method_message(recv: &Value, name: &str) -> Option<&'static str> {
         "lstrip" => "`lstrip` is not in Oro — use `strip(side=\"left\")`",
         "rstrip" => "`rstrip` is not in Oro — use `strip(side=\"right\")`",
         "rsplit" => {
-            "`rsplit` is not in Oro — use `split(sep, maxsplit, side=\"right\")`"
+            "`rsplit` is not in Oro — use `split(sep=…, maxsplit=…, side=\"right\")`"
         }
         "rfind" => "`rfind` is not in Oro — use `find(sub, reverse=true)`",
         "index" => "`index` is not in Oro — use `find(sub)`, which answers -1 rather than raising",
@@ -833,12 +1067,24 @@ pub fn method_exists(recv: &Value, name: &str) -> bool {
     }
 }
 
-/// The only native methods that take a keyword: `strip(side=…)`,
-/// `split(…, side=…)` and `find(…, reverse=…)`, on `str` and `bytes`.
+/// The native methods that take a keyword. Under the argument rule these are
+/// exactly the ones with a defaulted parameter: on `str` and `bytes`, the
+/// search window (`start=`, `end=`), `find(reverse=)`, `replace(count=)`,
+/// `strip(chars=, side=)` and `split(sep=, maxsplit=, side=)`; `to_int(base=)`
+/// on any value; `list.pop(index=)`; and `dict.get`/`dict.pop(default=)`.
 /// Everything else refuses one, so a misplaced keyword is an error rather than
 /// a silently discarded argument.
 fn takes_kwargs(recv: &Value, name: &str) -> bool {
-    matches!(recv, Value::Str(_) | Value::Bytes(_)) && matches!(name, "strip" | "split" | "find")
+    match recv {
+        _ if name == "to_int" => true,
+        Value::Str(_) | Value::Bytes(_) => matches!(
+            name,
+            "strip" | "split" | "find" | "count" | "startswith" | "endswith" | "replace"
+        ),
+        Value::List(_) => name == "pop",
+        Value::Dict(_) => matches!(name, "get" | "pop"),
+        _ => false,
+    }
 }
 
 /// Dispatch a bound method call.
@@ -852,12 +1098,12 @@ pub fn call_method(
         return Err(type_error(format!("{name}() takes no keyword arguments")));
     }
     match recv {
-        _ if is_cast_method(name) => cast_method(recv, name, args),
+        _ if is_cast_method(name) => cast_method(recv, name, args, &kwargs),
         _ if is_collection(recv) && is_seq_native(name) => seq_native_method(recv, name, args),
         Value::Str(_) => str_method(recv, name, args, &kwargs),
         Value::Bytes(b) => bytes_method(b, name, args, &kwargs),
-        Value::List(l) => list_method(l, name, args),
-        Value::Dict(d) => dict_method(d, name, args),
+        Value::List(l) => list_method(l, name, args, &kwargs),
+        Value::Dict(d) => dict_method(d, name, args, &kwargs),
         Value::Stream(s) => stream_method(s, name, args),
         Value::Regex(r) => regex_method(r, name, args),
         Value::Match(m) => match_method(m, name, args),
@@ -1006,12 +1252,18 @@ fn adjust_indices(start: i64, end: i64, len: i64) -> (i64, i64) {
     (start, end)
 }
 
-/// The `[start, end)` window that `find`/`startswith`/`endswith` search, read
-/// from the optional arguments beginning at `i`. `None` means the window has
-/// negative width, in which case nothing matches — not even an empty needle.
-fn search_window(args: &[Value], i: usize, who: &str, len: i64) -> VResult<Option<(i64, i64)>> {
-    let start = opt_int_arg(args, i, who, 0)?;
-    let end = opt_int_arg(args, i + 1, who, i64::MAX)?;
+/// The `[start, end)` window that `find`/`count`/`startswith`/`endswith`
+/// search, read from their `start=` and `end=` keywords. `None` means the
+/// window has negative width, in which case nothing matches — not even an
+/// empty needle.
+fn search_window(
+    start: Option<&Value>,
+    end: Option<&Value>,
+    who: &str,
+    len: i64,
+) -> VResult<Option<(i64, i64)>> {
+    let start = kw_int(who, "start", start, 0)?;
+    let end = kw_int(who, "end", end, i64::MAX)?;
     let (start, end) = adjust_indices(start, end, len);
     Ok(if end < start { None } else { Some((start, end)) })
 }
@@ -1079,35 +1331,31 @@ impl Side {
     }
 }
 
-/// The one keyword `strip` takes. Keyword-only, and validated by name: a value
+/// `strip`'s `side=`. Validated by name: a value
 /// outside the three is a `ValueError` that *names the three*, because a strip
 /// that silently did nothing is exactly the class of bug this language exists
 /// to refuse.
-fn strip_side(kwargs: &[(String, Value)]) -> VResult<Side> {
-    let mut side = Side::Both;
-    for (k, v) in kwargs {
-        if k != "side" {
-            return Err(type_error(format!("strip() got an unexpected keyword argument '{k}'")));
+fn strip_side(side: Option<&Value>) -> VResult<Side> {
+    let Some(v) = side else {
+        return Ok(Side::Both);
+    };
+    let Value::Str(s) = v else {
+        return Err(type_error(format!("strip(): side must be str, not '{}'", v.type_name())));
+    };
+    Ok(match &*s.s {
+        "both" => Side::Both,
+        "left" => Side::Left,
+        "right" => Side::Right,
+        other => {
+            return Err(value_error(format!(
+                "strip(): side must be \"both\", \"left\" or \"right\", not {}",
+                crate::value::repr_str(other)
+            )))
         }
-        let Value::Str(s) = v else {
-            return Err(type_error(format!("strip(): side must be str, not '{}'", v.type_name())));
-        };
-        side = match &*s.s {
-            "both" => Side::Both,
-            "left" => Side::Left,
-            "right" => Side::Right,
-            other => {
-                return Err(value_error(format!(
-                    "strip(): side must be \"both\", \"left\" or \"right\", not {}",
-                    crate::value::repr_str(other)
-                )))
-            }
-        };
-    }
-    Ok(side)
+    })
 }
 
-/// The one keyword `split` takes: which end `maxsplit` counts its splits from.
+/// `split`'s `side=`: which end `maxsplit=` counts its splits from.
 /// `"right"` is what `rsplit` did.
 ///
 /// Two values, not `strip`'s three, and the error names two: a split from
@@ -1120,30 +1368,27 @@ fn strip_side(kwargs: &[(String, Value)]) -> VResult<Side> {
 /// error honestly anyway: "`side` had no effect" is a property of the *data*
 /// (`maxsplit` at or above the number of separators), not of the call, so a
 /// check could only fire on the syntactic absence of the argument. That would
-/// reject `split(sep, side="right")` while waving through `split(sep, -1,
-/// side="right")` and `split(sep, 99, side="right")`, which are equally inert.
+/// reject `split(sep=s, side="right")` while waving through `split(sep=s,
+/// maxsplit=-1, side="right")` and `split(sep=s, maxsplit=99, side="right")`,
+/// which are equally inert.
 /// A rule that catches one of its three cases is worse than no rule.
-fn split_side(kwargs: &[(String, Value)]) -> VResult<Side> {
-    let mut side = Side::Left;
-    for (k, v) in kwargs {
-        if k != "side" {
-            return Err(type_error(format!("split() got an unexpected keyword argument '{k}'")));
+fn split_side(side: Option<&Value>) -> VResult<Side> {
+    let Some(v) = side else {
+        return Ok(Side::Left);
+    };
+    let Value::Str(s) = v else {
+        return Err(type_error(format!("split(): side must be str, not '{}'", v.type_name())));
+    };
+    Ok(match &*s.s {
+        "left" => Side::Left,
+        "right" => Side::Right,
+        other => {
+            return Err(value_error(format!(
+                "split(): side must be \"left\" or \"right\", not {}",
+                crate::value::repr_str(other)
+            )))
         }
-        let Value::Str(s) = v else {
-            return Err(type_error(format!("split(): side must be str, not '{}'", v.type_name())));
-        };
-        side = match &*s.s {
-            "left" => Side::Left,
-            "right" => Side::Right,
-            other => {
-                return Err(value_error(format!(
-                    "split(): side must be \"left\" or \"right\", not {}",
-                    crate::value::repr_str(other)
-                )))
-            }
-        };
-    }
-    Ok(side)
+    })
 }
 
 /// `strip`'s trim, with the end(s) chosen by `side`.
@@ -1156,17 +1401,20 @@ fn trim_with(s: &str, side: Side, hit: impl Fn(char) -> bool + Copy) -> &str {
     }
 }
 
-/// The one keyword `find` takes: `reverse=true` asks for the last occurrence
+/// `find`'s `reverse=`: `true` asks for the last occurrence
 /// rather than the first. Spelled the way `sorted(reverse=…)` already is.
-fn find_reverse(kwargs: &[(String, Value)]) -> VResult<bool> {
-    let mut reverse = false;
-    for (k, v) in kwargs {
-        if k != "reverse" {
-            return Err(type_error(format!("find() got an unexpected keyword argument '{k}'")));
-        }
-        reverse = v.truthy();
+/// A bool and nothing else: any truthy value used to count, so
+/// `reverse="no"` searched from the end.
+fn find_reverse(reverse: Option<&Value>) -> VResult<bool> {
+    match reverse {
+        None => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(Value::None) => Err(null_is_not_omitted("find", "reverse", "bool")),
+        Some(other) => Err(type_error(format!(
+            "find(): reverse= must be bool, not '{}'",
+            other.type_name()
+        ))),
     }
-    Ok(reverse)
 }
 
 /// Non-overlapping occurrences of `sub` in an already-windowed slice,
@@ -1298,7 +1546,7 @@ fn split_whitespace_all(s: &str) -> Vec<String> {
     s.split(is_py_space).filter(|p| !p.is_empty()).map(|p| p.to_string()).collect()
 }
 
-/// `str.split(null, maxsplit)`: runs of whitespace separate, leading and
+/// `str.split(maxsplit=n)`: runs of whitespace separate, leading and
 /// trailing whitespace is discarded, and once `maxsplit` splits are made the
 /// remainder is returned verbatim (interior whitespace and all) — from
 /// whichever end `side` names.
@@ -1409,7 +1657,12 @@ pub fn is_cast_method(name: &str) -> bool {
     )
 }
 
-fn cast_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
+fn cast_method(
+    recv: &Value,
+    name: &str,
+    args: Vec<Value>,
+    kwargs: &[(String, Value)],
+) -> VResult<Value> {
     match name {
         "to_str" => {
             exactly(&args, 0, "to_str")?;
@@ -1481,19 +1734,41 @@ fn cast_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
             }
         }
         "to_int" => {
-            // `to_int(base)` for strings, mirroring CPython's int(s, base).
-            let base = opt_int_arg(&args, 0, "to_int", 10)?;
+            // `to_int(base=16)` for strings, mirroring CPython's
+            // `int(s, base=16)`. It takes nothing else: extra arguments used to
+            // be read past, so `"10".to_int(16, 2)` answered 16.
+            positional_at_most(&args, 0, "to_int", || match args.as_slice() {
+                [base] => format!(
+                    "write {}: the base is keyword-only",
+                    respell("to_int", &[], &[("base", base)])
+                ),
+                _ => "write `to_int(base=…)`".to_string(),
+            })?;
+            let [base] = bind_kwargs("to_int", kwargs, ["base"])?;
+            let base = match base {
+                None => None,
+                given => Some(kw_int("to_int", "base", given, 10)?),
+            };
             match recv {
+                // A number has no digits to read in a base, so a base given to
+                // one is a mistake — which used to be quietly ignored, so that
+                // `(5).to_int(base=16)` answered 5. CPython refuses it too.
+                Value::Bool(_) | Value::Int(_) | Value::Big(_) | Value::Float(_)
+                    if base.is_some() =>
+                {
+                    Err(type_error(format!(
+                        "to_int(): base= only applies to a str — a '{}' has no digits to read \
+                         in a base",
+                        recv.type_name()
+                    )))
+                }
                 Value::Bool(b) => Ok(Value::Int(*b as i64)),
                 Value::Int(_) | Value::Big(_) => Ok(recv.clone()),
                 Value::Float(f) => Ok(float_to_int(*f)),
-                Value::Str(s) => {
-                    if base == 10 && args.is_empty() {
-                        parse_int_str(&s.s)
-                    } else {
-                        parse_int_base(&s.s, base)
-                    }
-                }
+                Value::Str(s) => match base {
+                    None => parse_int_str(&s.s),
+                    Some(base) => parse_int_base(&s.s, base),
+                },
                 other => Err(type_error(format!(
                     "'{}' object has no conversion to int",
                     other.type_name()
@@ -1830,18 +2105,20 @@ fn str_method(
             Ok(Value::str(s.to_lowercase()))
         }
         "strip" => {
-            at_most(&args, 1, name)?;
-            let side = strip_side(kwargs)?;
-            // `chars` is a *set* of characters to remove from the end(s), not a
-            // prefix or a suffix: `"xyx".strip("xy")` is `""`. That is the
-            // footgun `rm_prefix`/`rm_suffix` exist to answer. Omitted (or
-            // null), whitespace is stripped instead.
-            let trimmed = match args.first() {
-                None | Some(Value::None) => trim_with(s, side, is_py_space),
+            positional_at_most(&args, 0, name, || strip_spelling(&args))?;
+            let [chars, side] = bind_kwargs(name, kwargs, ["chars", "side"])?;
+            let side = strip_side(side)?;
+            // `chars=` is a *set* of characters to remove from the end(s), not
+            // a prefix or a suffix: `"xyx".strip(chars="xy")` is `""`. That is
+            // the footgun `rm_prefix`/`rm_suffix` exist to answer. Omitted,
+            // whitespace is stripped instead.
+            let trimmed = match chars {
+                None => trim_with(s, side, is_py_space),
                 Some(Value::Str(set)) => trim_with(s, side, |c| set.s.contains(c)),
+                Some(Value::None) => return Err(null_is_not_omitted(name, "chars", "str")),
                 Some(other) => {
                     return Err(type_error(format!(
-                        "{name}() argument must be str, not '{}'",
+                        "{name}(): chars= must be str, not '{}'",
                         other.type_name()
                     )))
                 }
@@ -1867,14 +2144,15 @@ fn str_method(
             }
         }
         "count" => {
-            at_most(&args, 3, "count")?;
+            positional_at_most(&args, 1, "count", || window_spelling("count", &args))?;
+            let [start, end] = bind_kwargs("count", kwargs, ["start", "end"])?;
             let sub = str_arg(&args, 0, "count")?;
             let len = os.char_len() as i64;
             // The same window `find` searches, read the same way — `count` is
             // "how many times", `find` is "where", and asking them over
             // different regions of the same string would be the asymmetry this
             // surface exists to not have.
-            let Some((start, end)) = search_window(&args, 1, "count", len)? else {
+            let Some((start, end)) = search_window(start, end, "count", len)? else {
                 return Ok(Value::Int(0));
             };
             let (b0, b1) = char_window_bytes(os, start as usize, end as usize);
@@ -1885,10 +2163,11 @@ fn str_method(
             Ok(Value::Bool(str_is_class(s, name)))
         }
         "startswith" | "endswith" => {
-            at_most(&args, 3, name)?;
+            positional_at_most(&args, 1, name, || window_spelling(name, &args))?;
+            let [start, end] = bind_kwargs(name, kwargs, ["start", "end"])?;
             let affix = str_arg(&args, 0, name)?;
             let len = os.char_len() as i64;
-            let Some((start, end)) = search_window(&args, 1, name, len)? else {
+            let Some((start, end)) = search_window(start, end, name, len)? else {
                 return Ok(Value::Bool(false));
             };
             let alen = if os.is_ascii && affix.is_ascii() {
@@ -1906,11 +2185,12 @@ fn str_method(
             Ok(Value::Bool(s[b0..b1] == *affix))
         }
         "find" => {
-            at_most(&args, 3, "find")?;
-            let reverse = find_reverse(kwargs)?;
+            positional_at_most(&args, 1, "find", || window_spelling("find", &args))?;
+            let [start, end, reverse] = bind_kwargs("find", kwargs, ["start", "end", "reverse"])?;
+            let reverse = find_reverse(reverse)?;
             let needle = str_arg(&args, 0, "find")?;
             let len = os.char_len() as i64;
-            let Some((start, end)) = search_window(&args, 1, "find", len)? else {
+            let Some((start, end)) = search_window(start, end, "find", len)? else {
                 return Ok(Value::Int(-1));
             };
             let (start, end) = (start as usize, end as usize);
@@ -1921,35 +2201,42 @@ fn str_method(
             }))
         }
         "replace" => {
-            at_most(&args, 3, "replace")?;
+            positional_at_most(&args, 2, "replace", || replace_spelling(&args))?;
+            let [count] = bind_kwargs("replace", kwargs, ["count"])?;
             let from = str_arg(&args, 0, "replace")?;
             let to = str_arg(&args, 1, "replace")?;
             // A negative count means "every occurrence", which is the default.
-            let count = opt_int_arg(&args, 2, "replace", -1)?;
+            let count = kw_int("replace", "count", count, -1)?;
             if count < 0 {
                 return Ok(Value::str(s.replace(&from, &to)));
             }
             Ok(Value::str(s.replacen(&from, &to, count as usize)))
         }
         "split" => {
-            at_most(&args, 2, name)?;
+            positional_at_most(&args, 0, name, || split_spelling(&args))?;
+            let [sep, maxsplit, side] = bind_kwargs(name, kwargs, ["sep", "maxsplit", "side"])?;
             // maxsplit < 0 (the default) means "no limit"; maxsplit == n caps the
             // number of *splits*, so at most n + 1 pieces come back. `side`
             // picks the end those n splits are counted from, and is what
             // `rsplit` used to be.
-            let side = split_side(kwargs)?;
-            let maxsplit = opt_int_arg(&args, 1, name, -1)?;
-            let parts: Vec<String> = match args.first() {
-                None | Some(Value::None) => split_whitespace_n(s, maxsplit, side),
+            let side = split_side(side)?;
+            let maxsplit = kw_int(name, "maxsplit", maxsplit, -1)?;
+            // Two algorithms, and the keyword is what picks one: with no `sep=`
+            // runs of whitespace separate and the ends are dropped; with one,
+            // every occurrence of that literal separates. No value of `sep`
+            // means "whitespace", so `null` is not one either.
+            let parts: Vec<String> = match sep {
+                None => split_whitespace_n(s, maxsplit, side),
                 Some(Value::Str(sep)) => {
                     if sep.s.is_empty() {
                         return Err(value_error("empty separator"));
                     }
                     split_sep_n(s, &sep.s, maxsplit, side)
                 }
+                Some(Value::None) => return Err(null_is_not_omitted(name, "sep", "str")),
                 Some(other) => {
                     return Err(type_error(format!(
-                        "{name}() separator must be str, not '{}'",
+                        "{name}(): sep= must be str, not '{}'",
                         other.type_name()
                     )))
                 }
@@ -2082,7 +2369,7 @@ fn split_sep_bytes_right(s: &[u8], sep: &[u8], limit: usize) -> Vec<Vec<u8>> {
     parts
 }
 
-/// `bytes.split(null, maxsplit)` — the byte-level twin of
+/// `bytes.split(maxsplit=n)` — the byte-level twin of
 /// [`split_whitespace_n`]: runs of whitespace separate, leading and trailing
 /// whitespace is discarded, and the remainder after `maxsplit` splits comes
 /// back verbatim, from whichever end `side` names.
@@ -2201,19 +2488,21 @@ fn bytes_method(
             Ok(Value::bytes(b.to_ascii_lowercase()))
         }
         "strip" => {
-            at_most(&args, 1, name)?;
-            let side = strip_side(kwargs)?;
-            // As for `str`, the argument is a *set* of octets to remove from
-            // the end(s); omitted (or null), whitespace is removed instead.
-            let cut: Box<dyn Fn(u8) -> bool> = match args.first() {
-                None | Some(Value::None) => Box::new(is_bytes_space),
+            positional_at_most(&args, 0, name, || strip_spelling(&args))?;
+            let [chars, side] = bind_kwargs(name, kwargs, ["chars", "side"])?;
+            let side = strip_side(side)?;
+            // As for `str`, `chars=` is a *set* of octets to remove from the
+            // end(s); omitted, whitespace is removed instead.
+            let cut: Box<dyn Fn(u8) -> bool> = match chars {
+                None => Box::new(is_bytes_space),
                 Some(Value::Bytes(set)) => {
                     let set = set.clone();
                     Box::new(move |x| set.contains(&x))
                 }
+                Some(Value::None) => return Err(null_is_not_omitted(name, "chars", "bytes")),
                 Some(other) => {
                     return Err(type_error(format!(
-                        "{name}() argument must be bytes, not '{}'",
+                        "{name}(): chars= must be bytes, not '{}'",
                         other.type_name()
                     )))
                 }
@@ -2250,9 +2539,10 @@ fn bytes_method(
             }
         }
         "count" => {
-            at_most(&args, 3, "count")?;
+            positional_at_most(&args, 1, "count", || window_spelling("count", &args))?;
+            let [start, end] = bind_kwargs("count", kwargs, ["start", "end"])?;
             let sub = bytes_arg(&args, 0, "count")?;
-            let Some((start, end)) = search_window(&args, 1, "count", b.len() as i64)? else {
+            let Some((start, end)) = search_window(start, end, "count", b.len() as i64)? else {
                 return Ok(Value::Int(0));
             };
             Ok(Value::Int(count_bytes(&b[start as usize..end as usize], &sub)))
@@ -2262,9 +2552,10 @@ fn bytes_method(
             Ok(Value::Bool(bytes_is_class(b, name)))
         }
         "startswith" | "endswith" => {
-            at_most(&args, 3, name)?;
+            positional_at_most(&args, 1, name, || window_spelling(name, &args))?;
+            let [start, end] = bind_kwargs(name, kwargs, ["start", "end"])?;
             let affix = bytes_arg(&args, 0, name)?;
-            let Some((start, end)) = search_window(&args, 1, name, b.len() as i64)? else {
+            let Some((start, end)) = search_window(start, end, name, b.len() as i64)? else {
                 return Ok(Value::Bool(false));
             };
             let Some(at) = tail_window(start, end, affix.len() as i64, name == "startswith")
@@ -2275,10 +2566,11 @@ fn bytes_method(
             Ok(Value::Bool(b[at..at + affix.len()] == **affix))
         }
         "find" => {
-            at_most(&args, 3, "find")?;
-            let reverse = find_reverse(kwargs)?;
+            positional_at_most(&args, 1, "find", || window_spelling("find", &args))?;
+            let [start, end, reverse] = bind_kwargs("find", kwargs, ["start", "end", "reverse"])?;
+            let reverse = find_reverse(reverse)?;
             let needle = bytes_arg(&args, 0, "find")?;
-            let Some((start, end)) = search_window(&args, 1, "find", b.len() as i64)? else {
+            let Some((start, end)) = search_window(start, end, "find", b.len() as i64)? else {
                 return Ok(Value::Int(-1));
             };
             let (start, end) = (start as usize, end as usize);
@@ -2293,27 +2585,30 @@ fn bytes_method(
             }))
         }
         "replace" => {
-            at_most(&args, 3, "replace")?;
+            positional_at_most(&args, 2, "replace", || replace_spelling(&args))?;
+            let [count] = bind_kwargs("replace", kwargs, ["count"])?;
             let from = bytes_arg(&args, 0, "replace")?;
             let to = bytes_arg(&args, 1, "replace")?;
-            let count = opt_int_arg(&args, 2, "replace", -1)?;
+            let count = kw_int("replace", "count", count, -1)?;
             Ok(Value::bytes(bytes_replace(b, &from, &to, count)))
         }
         "split" => {
-            at_most(&args, 2, name)?;
-            let side = split_side(kwargs)?;
-            let maxsplit = opt_int_arg(&args, 1, name, -1)?;
-            let parts: Vec<Vec<u8>> = match args.first() {
-                None | Some(Value::None) => split_space_bytes(b, maxsplit, side),
+            positional_at_most(&args, 0, name, || split_spelling(&args))?;
+            let [sep, maxsplit, side] = bind_kwargs(name, kwargs, ["sep", "maxsplit", "side"])?;
+            let side = split_side(side)?;
+            let maxsplit = kw_int(name, "maxsplit", maxsplit, -1)?;
+            let parts: Vec<Vec<u8>> = match sep {
+                None => split_space_bytes(b, maxsplit, side),
                 Some(Value::Bytes(sep)) => {
                     if sep.is_empty() {
                         return Err(value_error("empty separator"));
                     }
                     split_sep_bytes(b, sep, maxsplit, side)
                 }
+                Some(Value::None) => return Err(null_is_not_omitted(name, "sep", "bytes")),
                 Some(other) => {
                     return Err(type_error(format!(
-                        "{name}() separator must be bytes, not '{}'",
+                        "{name}(): sep= must be bytes, not '{}'",
                         other.type_name()
                     )))
                 }
@@ -2333,7 +2628,12 @@ fn bytes_method(
     }
 }
 
-fn list_method(l: &Rc<OroList>, name: &str, args: Vec<Value>) -> VResult<Value> {
+fn list_method(
+    l: &Rc<OroList>,
+    name: &str,
+    args: Vec<Value>,
+    kwargs: &[(String, Value)],
+) -> VResult<Value> {
     match name {
         "append" => {
             exactly(&args, 1, "append")?;
@@ -2346,26 +2646,29 @@ fn list_method(l: &Rc<OroList>, name: &str, args: Vec<Value>) -> VResult<Value> 
             l.borrow_mut().extend(items);
             Ok(Value::None)
         }
+        // `xs.pop(index=-1)`. The index is named so that a positional
+        // argument to `pop` only ever means one thing — a dict key.
         "pop" => {
+            positional_at_most(&args, 0, "pop", || match args.as_slice() {
+                [i] => format!(
+                    "write {}: on a list the index is keyword-only, so that a positional \
+                     argument to `pop` only ever means a dict key",
+                    respell("pop", &[], &[("index", i)])
+                ),
+                _ => "write `pop(index=…)`".to_string(),
+            })?;
+            let [index] = bind_kwargs("pop", kwargs, ["index"])?;
+            let i = kw_int("pop", "index", index, -1)?;
             let mut b = l.borrow_mut();
-            let idx = match args.as_slice() {
-                [] => {
-                    if b.is_empty() {
-                        return Err(index_error("pop from empty list"));
-                    }
-                    b.len() - 1
-                }
-                [v] => {
-                    let i = as_i64(v)?;
-                    let adj = if i < 0 { i + b.len() as i64 } else { i };
-                    if adj < 0 || adj as usize >= b.len() {
-                        return Err(index_error("pop index out of range"));
-                    }
-                    adj as usize
-                }
-                _ => return Err(type_error("pop() takes at most 1 argument")),
-            };
-            Ok(b.remove(idx))
+            // CPython checks for an empty list before it looks at the index.
+            if b.is_empty() {
+                return Err(index_error("pop from empty list"));
+            }
+            let adj = if i < 0 { i + b.len() as i64 } else { i };
+            if adj < 0 || adj as usize >= b.len() {
+                return Err(index_error("pop index out of range"));
+            }
+            Ok(b.remove(adj as usize))
         }
         "sort" => {
             exactly(&args, 0, "sort")?;
@@ -2386,25 +2689,48 @@ fn list_method(l: &Rc<OroList>, name: &str, args: Vec<Value>) -> VResult<Value> 
     }
 }
 
-fn dict_method(d: &Rc<RefCell<OroDict>>, name: &str, args: Vec<Value>) -> VResult<Value> {
+fn dict_method(
+    d: &Rc<RefCell<OroDict>>,
+    name: &str,
+    args: Vec<Value>,
+    kwargs: &[(String, Value)],
+) -> VResult<Value> {
     match name {
+        // `d.get(k, default=null)`. Here `null` is the default, so an explicit
+        // `default=null` is simply that value, not a refusal.
         "get" => {
-            let (key, default) = match args.as_slice() {
-                [k] => (k, Value::None),
-                [k, def] => (k, def.clone()),
-                _ => return Err(type_error("get() takes 1 or 2 arguments")),
+            positional_at_most(&args, 1, "get", || match args.as_slice() {
+                [k, def] => format!(
+                    "write `get({}, default={})`: the fallback is keyword-only",
+                    lit(k),
+                    lit(def)
+                ),
+                _ => "write `get(key, default=…)`".to_string(),
+            })?;
+            let [default] = bind_kwargs("get", kwargs, ["default"])?;
+            let Some(key) = args.first() else {
+                return Err(type_error("get() missing its required argument: the key"));
             };
-            Ok(d.borrow().get(key)?.unwrap_or(default))
+            Ok(d.borrow().get(key)?.unwrap_or_else(|| default.cloned().unwrap_or(Value::None)))
         }
         // The removal, and the reason `del` could be cut: `d.pop(k)` raises
-        // `KeyError` when the key is absent, `d.pop(k, default)` answers the
-        // default. CPython's two arities exactly — the README has cited this
-        // method as `del`'s replacement since before it existed.
+        // `KeyError` when the key is absent, `d.pop(k, default=v)` answers `v`.
+        // Giving `default=` at all is what turns the raise off, so
+        // `default=null` is a real default that answers `null` — the one
+        // keyword in this file where an explicit `null` is a value.
         "pop" => {
-            let (key, default) = match args.as_slice() {
-                [k] => (k, None),
-                [k, def] => (k, Some(def)),
-                _ => return Err(type_error("pop() takes 1 or 2 arguments")),
+            positional_at_most(&args, 1, "pop", || match args.as_slice() {
+                [k, def] => format!(
+                    "write `pop({}, default={})`: the fallback is keyword-only, and without it \
+                     a missing key raises KeyError",
+                    lit(k),
+                    lit(def)
+                ),
+                _ => "write `pop(key)`, or `pop(key, default=…)`".to_string(),
+            })?;
+            let [default] = bind_kwargs("pop", kwargs, ["default"])?;
+            let Some(key) = args.first() else {
+                return Err(type_error("pop() missing its required argument: the key"));
             };
             match d.borrow_mut().remove(key)? {
                 Some(v) => Ok(v),

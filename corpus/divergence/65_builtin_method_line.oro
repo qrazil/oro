@@ -123,7 +123,7 @@ print([1, 2].sum(), [1, 2].sum(10), [].sum())
 # builtin had. `xs.sorted().reversed()` is *not* `xs.sorted(reverse=true)`:
 # reversing a sorted sequence flips the ties too.
 print([3, 1, 2].sorted(), (3, 1, 2).sorted(), ().sorted())
-print(range(3, 0, -1).sorted())
+print(range(0, start=3, step=-1).sorted())
 print(type((3, 1, 2).sorted()))
 ties = [("a", 2), ("b", 1), ("c", 2), ("d", 1)]
 print(ties.sorted(key=p => p[1], reverse=true))

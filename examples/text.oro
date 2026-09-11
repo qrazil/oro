@@ -21,19 +21,19 @@ print(repr(line.strip(side="left")))
 print(repr(line.strip(side="right")))
 # With an argument it is a *set* of characters, not a suffix. This is the
 # classic Python footgun, and it is why rm_prefix/rm_suffix exist below.
-print(repr("ping.png".strip(".png", side="right")))
+print(repr("ping.png".strip(chars=".png", side="right")))
 print(repr("ping.png".rm_suffix(".png")))
 print(repr("v1.2.3".rm_prefix("v")), repr("v1.2.3".rm_prefix("x")))
 
 # --- split: on a separator, on whitespace, or from the right ----------------
-level, rest = line.strip().split(null, 1)
+level, rest = line.strip().split(maxsplit=1)
 print(level, repr(rest))
-print("a.b.c".split("."))
-print("a.b.c".split(".", 1))
-print("a.b.c".split(".", 1, side="right"))
+print("a.b.c".split(sep="."))
+print("a.b.c".split(sep=".", maxsplit=1))
+print("a.b.c".split(sep=".", maxsplit=1, side="right"))
 # `split(null)` collapses runs of whitespace and drops the empty ends, which
 # `split(" ")` deliberately does not.
-print("  two   spaced  words ".split(null), "a  b".split(" "))
+print("  two   spaced  words ".split(), "a  b".split(sep=" "))
 
 # --- find: first, last, and "not there" is -1 -------------------------------
 path = "/var/log/oro/today.log"
@@ -41,7 +41,7 @@ print(path.find("/"), path.find("/", reverse=true), path.find("zzz"))
 cut = path.find("/", reverse=true)
 print(repr(path[:cut]), repr(path[cut + 1:]))
 # ... which is the same answer `side="right"` gives directly, in fields.
-print(path.split("/", 1, side="right"))
+print(path.split(sep="/", maxsplit=1, side="right"))
 
 # --- count ------------------------------------------------------------------
 print(path.count("/"), path.count("log"), path.count("zzz"), path.count(""))
@@ -60,9 +60,9 @@ RAW = 'ts=2026-09-10T11:04:22Z level=warn code=429 msg="rate limited"'
 # space in it, so the split has to stop counting after three.
 def fields(raw, n):
     out = {}
-    for pair in raw.split(" ", n):
-        key, value = pair.split("=", 1)
-        out[key] = value.strip('"')
+    for pair in raw.split(sep=" ", maxsplit=n):
+        key, value = pair.split(sep="=", maxsplit=1)
+        out[key] = value.strip(chars='"')
     return out
 
 

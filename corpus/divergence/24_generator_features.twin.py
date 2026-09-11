@@ -1,3 +1,16 @@
+# The manual oracle for 24_generator_features.oro: that file with Oro's spellings
+# translated one for one into CPython's. The Oro program uses the argument
+# rule's keyword-only spellings (`range(end, start=)`), which CPython rejects,
+# so the oracle cannot run the program itself; this twin is what its
+# .expected is still generated from, and diffing the two is the review.
+#
+# This file prints Python's `True`/`False`/`None`, so its output goes through
+# the same outbound rename `oracle.sh` applies before it is the expectation.
+#
+#   python3 corpus/divergence/24_generator_features.twin.py \
+#     | sed -E 's/\bTrue\b/true/g; s/\bFalse\b/false/g; s/\bNone\b/null/g' \
+#     | diff - corpus/divergence/24_generator_features.expected
+
 # A generator suspends and resumes on the heap-allocated frame — no Rust
 # recursion, so pipelines of generators nest freely.
 

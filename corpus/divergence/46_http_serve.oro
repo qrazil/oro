@@ -43,7 +43,7 @@ class Conn:
 
 
 def scrub(raw):
-    return raw.split(b"\r\n").map(line => _scrub_line(line)).join(b"\r\n")
+    return raw.split(sep=b"\r\n").map(line => _scrub_line(line)).join(b"\r\n")
 
 
 def _scrub_line(line):
@@ -54,7 +54,7 @@ def _scrub_line(line):
 
 def show(label, raw):
     print(f"--- {label}")
-    for line in scrub(raw).split(b"\r\n"):
+    for line in scrub(raw).split(sep=b"\r\n"):
         print(f"    {line}")
 
 
@@ -147,7 +147,7 @@ def route(method, path):
     req = http.Request(method, path, {}, "1.1", {}, io.buffer(b""))
     resp = r.dispatch(req)
     body = resp.body
-    allow = resp.headers.get("allow", "-")
+    allow = resp.headers.get("allow", default="-")
     return f"{resp.status} allow={allow} {body}"
 
 

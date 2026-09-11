@@ -2792,10 +2792,13 @@ impl Vm {
                     }
                 }
                 if !kwargs.is_empty() {
-                    return Err(self.err(type_error(format!(
-                        "{}() takes no keyword arguments",
-                        b.name
-                    ))));
+                    // `round(x, ndigits=)` and `open(path, mode=)` are the plain
+                    // builtins with a defaulted parameter, so they are the ones
+                    // that take a keyword; every other one refuses. Only a call
+                    // that passed a keyword gets here, so no other call pays.
+                    let r = self.wrap(crate::builtins::call_builtin_kw(b.name, args, &kwargs))?;
+                    self.push(r);
+                    return Ok(Step::Next);
                 }
                 let r = self.wrap((b.func)(args))?;
                 self.push(r);
@@ -2847,13 +2850,13 @@ impl Vm {
             // refuses with the reason, which is the same refusal it gave when
             // these names were builtins.
             Value::Type(t) => {
-                if !kwargs.is_empty() {
+                if !kwargs.is_empty() && t != crate::value::TypeTag::Range {
                     return Err(self.err(type_error(format!(
                         "{}() takes no keyword arguments",
                         t.name()
                     ))));
                 }
-                let r = self.wrap(crate::builtins::call_type(t, args))?;
+                let r = self.wrap(crate::builtins::call_type(t, args, &kwargs))?;
                 self.push(r);
                 Ok(Step::Next)
             }

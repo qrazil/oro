@@ -13,8 +13,8 @@ print(["a", "b"].enumerate(1))
 print([1, 2, 3].zip([4, 5]))
 print([].zip([1]))
 print([false, true].any(), [].any(), [true, true].all(), [true, false].all(), [].all())
-print("ff".to_int(16), "0x1f".to_int(16), "777".to_int(8), "1010".to_int(2))
-print("-ff".to_int(16), "+10".to_int(10), "1_0".to_int(10), "z".to_int(36))
+print("ff".to_int(base=16), "0x1f".to_int(base=16), "777".to_int(base=8), "1010".to_int(base=2))
+print("-ff".to_int(base=16), "+10".to_int(base=10), "1_0".to_int(base=10), "z".to_int(base=36))
 for i, x in ["p", "q"].enumerate():
     print(i, x)
 for a, b in [1, 2].zip(["x", "y"]):
