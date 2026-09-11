@@ -1,0 +1,14 @@
+re.search: TypeError
+re.fullmatch: TypeError
+re.findall: TypeError
+re.finditer: TypeError
+re.split: TypeError
+re.sub: TypeError
+re.compile: TypeError
+Pattern.search: TypeError
+Pattern.fullmatch: TypeError
+Pattern.findall: TypeError
+Pattern.finditer: TypeError
+Pattern.split: TypeError
+Pattern.sub: TypeError
+bbb ['a', 'b'] a;b

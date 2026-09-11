@@ -1,7 +1,7 @@
 two sends into a buffer of two did not block: true
 values come out in order: true
-chan()  is <channel cap=0>
-chan(0) is <channel cap=0>
+chan()      is <channel cap=0>
+chan(cap=0) is <channel cap=0>
 round trip through two channels: true
 and again on the same pair: true
 values arrived in order: true
@@ -12,3 +12,7 @@ send on a closed channel raises ChannelClosed: channel is closed
 closing a closed channel is a no-op: true
 one receiver got the value, the other got the close: true
 except Exception catches it: <class 'ChannelClosed'>
+TypeError: chan() takes no positional arguments — the capacity is passed by name: chan(cap=8)
+TypeError: chan() cap must be an int, not null — leave it out for a rendezvous: chan()
+TypeError: chan() got an unexpected keyword argument 'size'
+ValueError: chan() cap must not be negative (-1)

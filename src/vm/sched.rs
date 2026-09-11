@@ -1581,30 +1581,49 @@ impl Vm {
 
     // --- Channels ------------------------------------------------------------
 
-    /// `chan()` / `chan(n)`. `chan(0)` is an explicit spelling of the default,
-    /// not an error (§3).
+    /// `chan()` / `chan(cap=n)`. The capacity has a default, so it is passed by
+    /// name: `chan(8)` does not say what the 8 is, and `repr` already prints it
+    /// as `cap=`. `chan(cap=0)` is an explicit spelling of the default, not an
+    /// error (§3); `chan(cap=null)` is not a third one.
     pub(super) fn do_chan(
         &mut self,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
     ) -> Result<Step, VmError> {
-        if !kwargs.is_empty() {
-            return Ok(self.raise(Exc::TypeError, "chan() takes no keyword arguments"));
+        if let Some(first) = args.first() {
+            let spelled = match first {
+                Value::Int(n) => format!("chan(cap={n})"),
+                _ => "chan(cap=n)".to_string(),
+            };
+            return Ok(self.raise(Exc::TypeError, format!(
+                "chan() takes no positional arguments — the capacity is passed by name: {spelled}"
+            )));
         }
-        let cap = match args.as_slice() {
-            [] => 0,
-            [Value::Int(n)] if *n >= 0 => *n as usize,
-            [Value::Int(n)] => {
-                return Ok(self
-                    .raise(Exc::ValueError, format!("chan() capacity must not be negative ({n})")))
-            }
-            [other] => {
-                return Ok(self.raise(Exc::TypeError,
-                    format!("chan() capacity must be an int, not '{}'", other.type_label()),
-                ))
-            }
-            _ => return Ok(self.raise(Exc::TypeError, "chan() takes at most 1 argument")),
-        };
+        let mut cap = 0;
+        for (k, v) in &kwargs {
+            cap = match (k.as_str(), v) {
+                ("cap", Value::Int(n)) if *n >= 0 => *n as usize,
+                ("cap", Value::Int(n)) => {
+                    return Ok(self
+                        .raise(Exc::ValueError, format!("chan() cap must not be negative ({n})")))
+                }
+                ("cap", Value::None) => {
+                    return Ok(self.raise(Exc::TypeError,
+                        "chan() cap must be an int, not null — leave it out for a rendezvous: chan()",
+                    ))
+                }
+                ("cap", other) => {
+                    return Ok(self.raise(Exc::TypeError,
+                        format!("chan() cap must be an int, not '{}'", other.type_label()),
+                    ))
+                }
+                (other, _) => {
+                    return Ok(self.raise(Exc::TypeError,
+                        format!("chan() got an unexpected keyword argument '{other}'"),
+                    ))
+                }
+            };
+        }
         self.push(Value::Channel(Rc::new(Channel::new(cap))));
         Ok(Step::Next)
     }

@@ -1170,6 +1170,14 @@ fn regex_method(
     args: Vec<Value>,
 ) -> VResult<Value> {
     use crate::regexutil as rx;
+    let (n, missing) = match name {
+        "search" | "fullmatch" | "findall" | "finditer" => (1, rx::POS),
+        "split" => (1, "CPython's maxsplit is not supported"),
+        "sub" => (2, "CPython's count is not supported"),
+        // Not a method at all: the last arm below says so.
+        _ => (usize::MAX, ""),
+    };
+    rx::no_extra(&args, n, "Pattern", name, missing)?;
     match name {
         "search" => Ok(rx::search(&r.re, &str_arg(&args, 0, "search")?)),
         "fullmatch" => Ok(rx::fullmatch(&r.re, &str_arg(&args, 0, "fullmatch")?)),
@@ -1190,12 +1198,16 @@ fn match_method(
     args: Vec<Value>,
 ) -> VResult<Value> {
     use crate::regexutil as rx;
-    // The group index defaults to 0 (the whole match).
+    // The group index is required: `m.group(0)` is the whole match, said.
     let n = match args.as_slice() {
-        [] => 0usize,
         [Value::Int(i)] if *i >= 0 => *i as usize,
         [Value::Int(_)] => return Err(index_error("group index must be non-negative")),
-        _ => return Err(type_error(format!("{name}() takes an optional group index"))),
+        [] => {
+            return Err(type_error(format!(
+                "{name}() missing its group index — m.{name}(0) is the whole match"
+            )))
+        }
+        _ => return Err(type_error(format!("{name}() takes one group index, an int"))),
     };
     match name {
         "group" => rx::group(m, n),

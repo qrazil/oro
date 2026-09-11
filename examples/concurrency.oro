@@ -5,7 +5,7 @@
 #
 # `spawn(f, args...)` starts a green thread and returns a handle immediately.
 # `t.join()` waits for it and gives back what `f` returned — or re-raises what
-# it raised. `chan(n)` is a channel: `send`/`recv`, `close()`, and `for x in ch`
+# it raised. `chan(cap=n)` is a channel: `send`/`recv`, `close()`, and `for x in ch`
 # which ends when the channel is closed and drained.
 #
 # There is one OS thread and no locks, because there is no parallelism to race:

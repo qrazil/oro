@@ -1,0 +1,27 @@
+# INTENTIONAL DIVERGENCE: CPython's `sys.exit()` means `sys.exit(None)`, a
+# success. In Oro the code has no default, so it is required: every exit
+# states its status. Reviewed by hand; every line is a claim in words.
+import sys
+
+try:
+    sys.exit()
+    print("UNREACHABLE")
+except TypeError as e:
+    print("sys.exit() ->", e)
+
+try:
+    sys.exit(0, 1)
+    print("UNREACHABLE")
+except TypeError as e:
+    print("sys.exit(0, 1) ->", e)
+
+try:
+    sys.exit(code=0)
+    print("UNREACHABLE")
+except TypeError as e:
+    print("sys.exit(code=0) ->", e)
+
+# A code, stated, still raises SystemExit and ends the program with it.
+print("exiting with 0")
+sys.exit(0)
+print("UNREACHABLE")

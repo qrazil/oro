@@ -90,7 +90,7 @@ impl Drop for TaskHandle {
 
 /// The `Channel` value `chan` returns.
 ///
-/// `chan()` and `chan(0)` are the same thing — a rendezvous — and `chan(n)` has
+/// `chan()` and `chan(cap=0)` are the same thing — a rendezvous — and `chan(cap=n)` has
 /// capacity `n`. There is one constructor because there is one concept with a
 /// parameter (§3).
 ///

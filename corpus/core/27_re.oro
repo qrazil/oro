@@ -4,7 +4,7 @@ import re
 m = re.search(r"(\w+)@(\w+)\.(\w+)", "contact: alice@example.com !")
 print(m.group(0))
 print(m.group(1), m.group(2), m.group(3))
-print(m.start(), m.end())
+print(m.start(0), m.end(0))
 print(m.start(1), m.end(1))
 
 print(re.search(r"zzz", "abc"))
@@ -31,4 +31,4 @@ print(p.findall("Hello World foo Bar"))
 text = "the the quick brown brown fox"
 for mm in re.finditer(r"(\w+)\s+(\w+)", text):
     if mm.group(1) == mm.group(2):
-        print("doubled:", mm.group(1), "at", mm.start())
+        print("doubled:", mm.group(1), "at", mm.start(0))

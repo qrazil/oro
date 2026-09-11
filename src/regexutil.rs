@@ -5,10 +5,32 @@
 
 use std::rc::Rc;
 
-use crate::exc::{index_error, value_error, VErr};
+use crate::exc::{index_error, type_error, value_error, VErr};
 use crate::value::{OroList, OroMatch, OroRegex, OroTuple, Value};
 
 pub type RResult<T> = Result<T, VErr>;
+
+/// What `re.search` and its siblings refuse past the pattern and the string.
+pub const FLAGS: &str =
+    "CPython's flags argument is not supported; write flags inline in the pattern, as in (?i)";
+/// What a compiled pattern's `search` and its siblings refuse past the string.
+pub const POS: &str = "CPython's pos and endpos are not supported";
+
+/// Refuse arguments past the `n` that `owner.name()` takes.
+///
+/// CPython's optional `flags`, `count`, `maxsplit`, `pos` and `endpos` are not
+/// implemented. They used to be accepted and ignored, which answered wrongly:
+/// `re.sub(p, r, s, 1)` replaced every match where CPython replaces one. So the
+/// refusal says which of them is missing. Nothing is formatted unless it fires.
+pub fn no_extra(args: &[Value], n: usize, owner: &str, name: &str, missing: &str) -> RResult<()> {
+    if args.len() > n {
+        return Err(type_error(format!(
+            "{owner}.{name}() takes {n} argument(s) but {} were given — {missing}",
+            args.len()
+        )));
+    }
+    Ok(())
+}
 
 /// Compile a pattern. Backreferences and lookaround are unsupported by the
 /// linear-time engine and surface here as a clear error.

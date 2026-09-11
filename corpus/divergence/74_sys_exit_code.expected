@@ -1,0 +1,4 @@
+sys.exit() -> sys.exit() missing its exit code — sys.exit(0) for success
+sys.exit(0, 1) -> sys.exit() takes 1 argument(s) but 2 were given
+sys.exit(code=0) -> sys.exit() takes no keyword arguments
+exiting with 0

@@ -8,3 +8,4 @@ undecodable: bytes could not be decoded as UTF-8: invalid byte 0xff at position 
 raised: command failed: sh -c exit 9 exited with code 9
 missing program raises FileNotFoundError
 cpython-era kwarg rejected
+second positional rejected: proc.run() takes 1 positional argument, the command, but 2 were given — cwd=, env=, timeout=, check= and quiet= are passed by name

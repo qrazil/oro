@@ -188,37 +188,44 @@ fn str_at(args: &[Value], i: usize, who: &str) -> VResult<String> {
 }
 
 fn re_search(args: Vec<Value>) -> VResult<Value> {
+    crate::regexutil::no_extra(&args, 2, "re", "search", crate::regexutil::FLAGS)?;
     let re = crate::regexutil::compile(&str_at(&args, 0, "search")?)?;
     Ok(crate::regexutil::search(&re, &str_at(&args, 1, "search")?))
 }
 
 fn re_findall(args: Vec<Value>) -> VResult<Value> {
+    crate::regexutil::no_extra(&args, 2, "re", "findall", crate::regexutil::FLAGS)?;
     let re = crate::regexutil::compile(&str_at(&args, 0, "findall")?)?;
     Ok(crate::regexutil::findall(&re, &str_at(&args, 1, "findall")?))
 }
 
 fn re_finditer(args: Vec<Value>) -> VResult<Value> {
+    crate::regexutil::no_extra(&args, 2, "re", "finditer", crate::regexutil::FLAGS)?;
     let re = crate::regexutil::compile(&str_at(&args, 0, "finditer")?)?;
     Ok(crate::regexutil::finditer(&re, &str_at(&args, 1, "finditer")?))
 }
 
 fn re_fullmatch(args: Vec<Value>) -> VResult<Value> {
+    crate::regexutil::no_extra(&args, 2, "re", "fullmatch", crate::regexutil::FLAGS)?;
     let re = crate::regexutil::compile(&str_at(&args, 0, "fullmatch")?)?;
     Ok(crate::regexutil::fullmatch(&re, &str_at(&args, 1, "fullmatch")?))
 }
 
 fn re_sub(args: Vec<Value>) -> VResult<Value> {
+    crate::regexutil::no_extra(&args, 3, "re", "sub", "CPython's count and flags are not supported")?;
     let re = crate::regexutil::compile(&str_at(&args, 0, "sub")?)?;
     let repl = str_at(&args, 1, "sub")?;
     Ok(crate::regexutil::sub(&re, &repl, &str_at(&args, 2, "sub")?))
 }
 
 fn re_split(args: Vec<Value>) -> VResult<Value> {
+    crate::regexutil::no_extra(&args, 2, "re", "split", "CPython's maxsplit and flags are not supported")?;
     let re = crate::regexutil::compile(&str_at(&args, 0, "split")?)?;
     Ok(crate::regexutil::split(&re, &str_at(&args, 1, "split")?))
 }
 
 fn re_compile(args: Vec<Value>) -> VResult<Value> {
+    crate::regexutil::no_extra(&args, 1, "re", "compile", crate::regexutil::FLAGS)?;
     crate::regexutil::regex_value(&str_at(&args, 0, "compile")?)
 }
 
@@ -433,12 +440,21 @@ fn proc_run_stub(_args: Vec<Value>) -> VResult<Value> {
 /// as the message: the fourth and last rider on that channel, gone with the
 /// other three. The VM still recognises it specially, because `SystemExit`'s
 /// single argument is an `int` rather than a rendered message.
+///
+/// The code has no default, so every exit states its status: `sys.exit(0)`.
 fn sys_exit(args: Vec<Value>) -> VResult<Value> {
     let code = match args.as_slice() {
-        [] | [Value::None] => 0,
+        [Value::None] => 0,
         [Value::Int(n)] => *n,
         [Value::Bool(b)] => *b as i64,
-        _ => return Err(type_error("sys.exit() code must be an int or None in this build")),
+        [] => return Err(type_error("sys.exit() missing its exit code — sys.exit(0) for success")),
+        [_] => return Err(type_error("sys.exit() code must be an int or None in this build")),
+        _ => {
+            return Err(type_error(format!(
+                "sys.exit() takes 1 argument(s) but {} were given",
+                args.len()
+            )))
+        }
     };
     Err(VErr::new(Exc::SystemExit, code.to_string()))
 }
