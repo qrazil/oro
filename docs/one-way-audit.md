@@ -412,6 +412,29 @@ smell is not the type check. It is that the type check has no spelling.
 **Ergonomics.** `if t == _STR:` becomes `if isinstance(v, str):`. Longer by four
 characters, and it stops being a string comparison against a repr.
 
+### What was actually done, and why it was the other way round
+
+This verdict kept the wrong half. It counted two spellings — `isinstance` and
+the repr string — and did not notice there was a **third**: `str` the value, a
+shadowable global that `type()` never answered with. Three spellings of one
+idea, and the reason the standard library reached for the repr string was not
+that `isinstance` was missing names. It was that `type(x) == str` was *false*.
+
+So the fix was underneath both: make the type names **keywords**, and make
+`type(x)` answer with the very value the keyword denotes. Then `type(x) == str`
+is true, the repr strings have nothing to compare against and are gone from
+`std/http.oro` and `std/io.oro`, and the gap this section identified — `File`
+and `Buffer` having no name — closes as a side effect, because a keyword is a
+name. `isinstance` was then the only spelling left with no job, and it went.
+
+The one thing `isinstance` could do that `==` cannot is a **subclass** test.
+Audited across `std/`, `examples/`, `bench/` and `corpus/`: the tree contains
+thirteen subclasses and *zero* subclass tests outside the file that existed to
+demonstrate `isinstance`. Six of the thirteen are exception classes, matched by
+`except`, which walks the chain in the VM and never went through `isinstance`;
+the other seven are used by overriding a method, which is what inheritance is
+for. See `corpus/divergence/66_type_keywords.oro`.
+
 ---
 
 ## 5. Five exception classes that nothing raises and nothing catches

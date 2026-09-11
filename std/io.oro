@@ -44,14 +44,6 @@ import _io
 # per buffer-full.
 _CHUNK = 65536
 
-# The Rust-backed stream types, which is what `read` routes to its fast path.
-# A type check in a language that avoids them is a small smell; three lines of
-# dispatch is the honest price of the whole-file case being fast and the
-# general case — an Oro class with a `read` method — still being possible.
-_FILE = "<class 'File'>"
-_BUFFER = "<class 'Buffer'>"
-
-
 # Everything until EOF, or exactly `n` bytes.
 #
 # With no count, reads until EOF. *This holds the entire stream in memory*, and
@@ -75,8 +67,9 @@ def read(r, n=null):
         # 1.5-2x the result, which is what actually kills the process on a
         # large file. This is a 2x reduction in peak memory, not immunity from
         # running out of it: a 10 GB file still does not fit in 8 GB.
+        # The Rust-backed stream types take the fast path.
         t = type(r)
-        if t == _FILE or t == _BUFFER:
+        if t == File or t == Buffer:
             return _io.read_all(r)
         # Anything else — an Oro class implementing the protocol — takes the
         # chunk loop, and the transient comes back with it.

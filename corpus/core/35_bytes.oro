@@ -50,7 +50,7 @@ if b"\x00":
     print("a zero octet is still one octet")
 
 # --- Type identity ----------------------------------------------------------
-print(type(b"x"), isinstance(b"x", bytes), isinstance("x", bytes), isinstance(b"x", str))
+print(type(b"x"), type(b"x") == bytes, type("x") == bytes, type(b"x") == str)
 
 # --- Methods ----------------------------------------------------------------
 line = b"  Content-Type: text/html \t\n"

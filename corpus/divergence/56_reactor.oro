@@ -115,7 +115,7 @@ def waiter():
         s_two.read(64)
         return "the read returned, which it must not have"
     except TimeoutError as e:
-        return str(e)
+        return f"{e}"
 
 def ticker():
     i = 0
@@ -145,7 +145,7 @@ def parked_reader():
         s_two.read(64)
         return "the read returned, which it must not have"
     except ValueError as e:
-        return str(e)
+        return f"{e}"
 
 def closer():
     time.sleep(0.02)

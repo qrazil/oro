@@ -2449,19 +2449,24 @@ impl Vm {
                         self.push(r);
                         return Ok(Step::Next);
                     }
-                    "str" if matches!(args.first(), Some(Value::Instance(_))) && args.len() == 1 => {
-                        return self
-                            .stringify_instance(args.into_iter().next().unwrap(), false)
-                            .map(|()| Step::Next);
-                    }
+                    // `repr` of an instance runs its `__repr__`, which lives in
+                    // a frame — so it is driven from here, not natively.
+                    //
+                    // There is no `str` arm beside it any more. `str` is a type
+                    // keyword now, not a builtin, and a type is not callable;
+                    // the spelling for "render this" is `f"{x}"`, which is what
+                    // the tree already used everywhere but one line. Before
+                    // this, `str("x")` raised "not callable" while
+                    // `str(some_instance)` quietly worked — one name, two
+                    // answers, decided by the argument.
                     "repr" if matches!(args.first(), Some(Value::Instance(_))) && args.len() == 1 => {
                         return self
                             .stringify_instance(args.into_iter().next().unwrap(), true)
                             .map(|()| Step::Next);
                     }
-                    // str()/repr() of a container render elements' __repr__ (and
-                    // are cycle-safe), which needs VM dispatch, not native repr.
-                    "str" | "repr" if args.len() == 1 && is_container(&args[0]) => {
+                    // repr() of a container renders elements' __repr__ (and is
+                    // cycle-safe), which needs VM dispatch, not native repr.
+                    "repr" if args.len() == 1 && is_container(&args[0]) => {
                         return self
                             .begin_stringify(args.into_iter().next().unwrap(), StrCont::Push)
                             .map(|()| Step::Next);
@@ -2534,6 +2539,17 @@ impl Vm {
                 Ok(Step::Next)
             }
             Value::Class(class) => self.instantiate(class, args, kwargs).map(|()| Step::Next),
+            // A builtin type. `range(n)` builds one; every other type name
+            // refuses with the reason, which is the same refusal it gave when
+            // these names were builtins.
+            Value::Type(t) => {
+                if !kwargs.is_empty() {
+                    return Err(self.err(format!("{}() takes no keyword arguments", t.name())));
+                }
+                let r = self.wrap(crate::builtins::call_type(t, args))?;
+                self.push(r);
+                Ok(Step::Next)
+            }
             other => Err(self.err(format!("'{}' object is not callable", other.type_label()))),
         }
     }
@@ -5417,6 +5433,11 @@ fn resolve_method(obj: &Value, name: &Rc<str>) -> Result<MethodRef, String> {
         Value::Channel(_) if matches!(key, "send" | "recv" | "close") => {
             Ok(MethodRef::Native(obj.clone()))
         }
+        // A builtin type has no members, and says so the way a user class
+        // does — `str.upper()` and `Square.nope` are the same mistake.
+        Value::Type(t) => {
+            Err(format!("type object '{}' has no attribute '{}'", t.name(), key))
+        }
         _ => {
             if crate::builtins::method_exists(obj, key) {
                 Ok(MethodRef::Native(obj.clone()))
@@ -5460,6 +5481,12 @@ fn get_attr(obj: &Value, name: &Rc<str>) -> Result<Value, String> {
             Some((member, _)) => Ok(member),
             None => Err(format!("type object '{}' has no attribute '{}'", class.name, key)),
         },
+        // A builtin type has no members at all, so every attribute on one is
+        // this — and it is the class message, not the generic one, because a
+        // builtin type is the same kind of thing a user class is.
+        Value::Type(t) => {
+            Err(format!("type object '{}' has no attribute '{}'", t.name(), key))
+        }
         Value::Module(m) => match m.members.borrow().get(key) {
             Some(v) => Ok(v.clone()),
             None => Err(format!("module '{}' has no attribute '{}'", m.name, key)),

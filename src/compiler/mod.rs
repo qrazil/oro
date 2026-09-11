@@ -17,6 +17,7 @@
 //! and the nested-function prototypes).
 
 mod codegen;
+mod reserved;
 mod symbols;
 
 use std::cell::RefCell;
@@ -399,6 +400,9 @@ impl std::fmt::Debug for Value {
 /// method and lambda nested in it. A diagnostic raised anywhere inside them can
 /// then name the right file without the VM tracking anything per instruction.
 pub fn compile(program: &[Stmt], source: Rc<str>) -> Result<Rc<CodeObject>, CompileError> {
+    // Type keywords are not variables, so a binding of one is rejected before
+    // anything is numbered. See `reserved`.
+    reserved::check(program)?;
     let mut table = symbols::SymTable::new();
     table.build_module(program)?;
     table.resolve_module(program);

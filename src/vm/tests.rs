@@ -520,7 +520,7 @@ fn hash_dunder_is_rejected() {
 
 #[test]
 fn exception_caught_by_type() {
-    let src = "def f():\n    try:\n        raise ValueError(\"x\")\n    except ValueError as e:\n        return str(e)\n\
+    let src = "def f():\n    try:\n        raise ValueError(\"x\")\n    except ValueError as e:\n        return f\"{e}\"\n\
                r = f()\n";
     assert_eq!(fstr("def g():\n    return \"x\"\nr=g()\n"), "x"); // sanity
     match eval_last(src) {
@@ -569,7 +569,7 @@ fn uncaught_exception_names_type_and_message() {
 #[test]
 fn user_exception_subclass() {
     let src = "class MyError(Exception):\n    pass\n\
-               def f():\n    try:\n        raise MyError(\"custom\")\n    except Exception as e:\n        return str(e)\n\
+               def f():\n    try:\n        raise MyError(\"custom\")\n    except Exception as e:\n        return f\"{e}\"\n\
                r = f()\n";
     match eval_last(src) {
         Value::Str(s) => assert_eq!(s.s, "custom"),
@@ -682,7 +682,7 @@ fn nested_container_repr() {
 
 #[test]
 fn self_referential_list_repr_terminates() {
-    let src = "a = [1]\na.append(a)\nout = str(a)\n";
+    let src = "a = [1]\na.append(a)\nout = repr(a)\n";
     assert_eq!(fstr(src), "[1, [...]]");
 }
 

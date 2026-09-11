@@ -329,6 +329,147 @@ pub enum Value {
     /// Internal sentinel for a local/cell slot that has not been assigned yet.
     /// Never reachable by user code: reading it raises a clean runtime error.
     Unbound,
+    /// A builtin type, as named by one of the type keywords (`str`, `int`,
+    /// `File`, ...) and as answered by `type(x)`.
+    ///
+    /// A user type is a [`Value::Class`] and a builtin type is this, because a
+    /// builtin type has no members, no base and no identity beyond its name —
+    /// a whole `Rc<Class>` to carry one byte of information would put an
+    /// allocation and a refcount bump on `type(x)`. The two behave alike where
+    /// it is observable: both print `<class 'N'>`, both compare by identity,
+    /// and `type(x)` answers one or the other.
+    Type(TypeTag),
+}
+
+/// One of Oro's builtin types.
+///
+/// Field-less, so [`Value`] stays 16 bytes (`value::tests::value_is_two_words`).
+/// The names live in [`TypeTag::name`], which is the only type-name table in
+/// the tree — [`Value::type_name`] reads it too.
+///
+/// Not every tag is reachable from Oro source: the keywords bind the types a
+/// program can construct and would test (see `KEYWORD_TYPES`), while
+/// `Function`, `Generator`, `Module`, `Method`, `Iterator`, `BuiltinFunction`,
+/// `Object`, `Super`, `Type`, `Null` and `Unbound` exist so `type(x)` can still
+/// *name* those values. They are printed, not written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum TypeTag {
+    Null,
+    Bool,
+    Int,
+    Float,
+    Str,
+    Bytes,
+    List,
+    Tuple,
+    Dict,
+    Range,
+    Iterator,
+    Function,
+    BuiltinFunction,
+    Method,
+    Type,
+    Object,
+    Super,
+    Module,
+    File,
+    Buffer,
+    TcpStream,
+    TcpListener,
+    Generator,
+    Pattern,
+    Match,
+    Task,
+    Channel,
+    Unbound,
+}
+
+impl TypeTag {
+    /// The type's name — the word between the quotes in `<class 'str'>`.
+    ///
+    /// `null`'s type is `null`, not CPython's `NoneType`. That name was a
+    /// leftover: `None` is not a spelling this language has any more, so a type
+    /// named after it pointed at nothing the reader could write. This is a
+    /// deliberate divergence and the only one in the table — every other name
+    /// here is CPython's, so `corpus/core/` still oracles the whole of the rest
+    /// and only the one line moved to `corpus/divergence/`.
+    pub fn name(self) -> &'static str {
+        match self {
+            TypeTag::Null => "null",
+            TypeTag::Bool => "bool",
+            TypeTag::Int => "int",
+            TypeTag::Float => "float",
+            TypeTag::Str => "str",
+            TypeTag::Bytes => "bytes",
+            TypeTag::List => "list",
+            TypeTag::Tuple => "tuple",
+            TypeTag::Dict => "dict",
+            TypeTag::Range => "range",
+            TypeTag::Iterator => "iterator",
+            TypeTag::Function => "function",
+            TypeTag::BuiltinFunction => "builtin_function",
+            TypeTag::Method => "method",
+            TypeTag::Type => "type",
+            TypeTag::Object => "object",
+            TypeTag::Super => "super",
+            TypeTag::Module => "module",
+            TypeTag::File => "File",
+            TypeTag::Buffer => "Buffer",
+            TypeTag::TcpStream => "TcpStream",
+            TypeTag::TcpListener => "TcpListener",
+            TypeTag::Generator => "generator",
+            TypeTag::Pattern => "Pattern",
+            TypeTag::Match => "Match",
+            TypeTag::Task => "Task",
+            TypeTag::Channel => "Channel",
+            TypeTag::Unbound => "unbound",
+        }
+    }
+}
+
+/// The type keywords: the names a program may write to denote a builtin type.
+///
+/// A name in this table is **not a variable**. It cannot be assigned, declared
+/// `global`, bound by `def`/`class`/`for`/`import`/`except ... as`, or taken as
+/// a parameter — the compiler rejects all of those by name, so `dict = {}`
+/// cannot quietly shadow the type the way it used to. What a type keyword
+/// denotes is a [`Value::Type`], which is exactly what `type(x)` answers, so
+/// `type(x) == str` is true and there is one spelling of a type test.
+///
+/// The line this table draws: a keyword exists for every type a program can
+/// *construct* — the nine with literal or constructor syntax, and the eight
+/// runtime handles the stdlib and user code dispatch on. The remaining tags
+/// (`function`, `generator`, `module`, `method`, ...) are lowercase English
+/// words that would break far more programs as reserved names than a type test
+/// against them would ever serve; `type(x)` still prints them.
+pub const KEYWORD_TYPES: &[(&str, TypeTag)] = &[
+    ("bool", TypeTag::Bool),
+    ("int", TypeTag::Int),
+    ("float", TypeTag::Float),
+    ("str", TypeTag::Str),
+    ("bytes", TypeTag::Bytes),
+    ("list", TypeTag::List),
+    ("tuple", TypeTag::Tuple),
+    ("dict", TypeTag::Dict),
+    ("range", TypeTag::Range),
+    ("File", TypeTag::File),
+    ("Buffer", TypeTag::Buffer),
+    ("TcpStream", TypeTag::TcpStream),
+    ("TcpListener", TypeTag::TcpListener),
+    ("Pattern", TypeTag::Pattern),
+    ("Match", TypeTag::Match),
+    ("Task", TypeTag::Task),
+    ("Channel", TypeTag::Channel),
+];
+
+/// The [`TypeTag`] a type keyword denotes, or `None` if `name` is an ordinary
+/// identifier. The compiler asks this at every name it binds and every name it
+/// reads.
+pub fn keyword_type(name: &str) -> Option<TypeTag> {
+    // Linear over 17 entries, and only on the names that reach it: a `&str`
+    // compare fails on the first byte for almost every identifier.
+    KEYWORD_TYPES.iter().find(|(n, _)| *n == name).map(|(_, t)| *t)
 }
 
 /// A UTF-8 string with a precomputed ASCII flag (architecture point 5).
@@ -906,6 +1047,9 @@ enum HKey {
     /// wrapping the same function. The name is what CPython's `len is len`
     /// actually means here, and it is unique per builtin.
     Builtin(&'static str),
+    /// A builtin type, by its tag. Keeps `{type(v): ...}` working, which is
+    /// what `std/json.oro` dispatches on.
+    Type(TypeTag),
     /// A bound method: the receiver's key and the function's. See
     /// [`BoundMethod::hkey`].
     Method(Box<HKey>, Box<HKey>),
@@ -928,6 +1072,7 @@ impl HKey {
             }
             Value::Str(s) => HKey::Str(StrKey(s.clone())),
             Value::Bytes(b) => HKey::Bytes((**b).clone()),
+            Value::Type(t) => HKey::Type(*t),
             Value::Tuple(items) => {
                 let mut parts = Vec::with_capacity(items.len());
                 for it in items.iter() {
@@ -1037,6 +1182,8 @@ impl Value {
             // An instance is truthy unless its class defines a falsy __len__;
             // the VM overrides this when a __len__/__bool__ dunder is present.
             Value::Instance(_) => true,
+            // A type is an object like any other, and objects are truthy.
+            Value::Type(_) => true,
             Value::Unbound => false,
         }
     }
@@ -1050,32 +1197,44 @@ impl Value {
     /// here is CPython's, so `corpus/core/` still oracles the whole of the rest
     /// and only the one line moved to `corpus/divergence/`.
     pub fn type_name(&self) -> &'static str {
+        self.type_tag().name()
+    }
+
+    /// The value's type, as the tag `type(x)` answers with.
+    ///
+    /// This and [`TypeTag::name`] are the single table: there is no second list
+    /// of type names anywhere, so a name and the tag that denotes it cannot
+    /// drift apart.
+    pub fn type_tag(&self) -> TypeTag {
         match self {
-            Value::None => "null",
-            Value::Bool(_) => "bool",
-            Value::Int(_) | Value::Big(_) => "int",
-            Value::Float(_) => "float",
-            Value::Str(_) => "str",
-            Value::Bytes(_) => "bytes",
-            Value::List(_) => "list",
-            Value::Tuple(_) => "tuple",
-            Value::Dict(_) => "dict",
-            Value::Range(_) => "range",
-            Value::Iter(_) => "iterator",
-            Value::Func(_) => "function",
-            Value::Builtin(_) => "builtin_function",
-            Value::Method(_) => "method",
-            Value::Class(_) => "type",
-            Value::Instance(_) => "object",
-            Value::Super(_) => "super",
-            Value::Module(_) => "module",
-            Value::Stream(s) => s.kind.type_name(),
-            Value::Generator(_) => "generator",
-            Value::Regex(_) => "Pattern",
-            Value::Match(_) => "Match",
-            Value::Task(_) => "Task",
-            Value::Channel(_) => "Channel",
-            Value::Unbound => "unbound",
+            Value::None => TypeTag::Null,
+            Value::Bool(_) => TypeTag::Bool,
+            Value::Int(_) | Value::Big(_) => TypeTag::Int,
+            Value::Float(_) => TypeTag::Float,
+            Value::Str(_) => TypeTag::Str,
+            Value::Bytes(_) => TypeTag::Bytes,
+            Value::List(_) => TypeTag::List,
+            Value::Tuple(_) => TypeTag::Tuple,
+            Value::Dict(_) => TypeTag::Dict,
+            Value::Range(_) => TypeTag::Range,
+            Value::Iter(_) => TypeTag::Iterator,
+            Value::Func(_) => TypeTag::Function,
+            Value::Builtin(_) => TypeTag::BuiltinFunction,
+            Value::Method(_) => TypeTag::Method,
+            // A class object's type is `type`, and so is a type tag's: `str`
+            // and `Square` are the same kind of thing now, so they answer the
+            // same thing.
+            Value::Class(_) | Value::Type(_) => TypeTag::Type,
+            Value::Instance(_) => TypeTag::Object,
+            Value::Super(_) => TypeTag::Super,
+            Value::Module(_) => TypeTag::Module,
+            Value::Stream(s) => s.kind.type_tag(),
+            Value::Generator(_) => TypeTag::Generator,
+            Value::Regex(_) => TypeTag::Pattern,
+            Value::Match(_) => TypeTag::Match,
+            Value::Task(_) => TypeTag::Task,
+            Value::Channel(_) => TypeTag::Channel,
+            Value::Unbound => TypeTag::Unbound,
         }
     }
 
@@ -1085,7 +1244,11 @@ impl Value {
     pub fn type_label(&self) -> String {
         match self {
             Value::Instance(i) => i.class.name.to_string(),
+            // A type names itself, whether it is a user class or a builtin
+            // one: `str.upper()` should say `str`, exactly as `Point.nope`
+            // says `Point`.
             Value::Class(c) => c.name.to_string(),
+            Value::Type(t) => t.name().to_string(),
             other => other.type_name().to_string(),
         }
     }
@@ -1162,6 +1325,9 @@ impl Value {
             Value::Builtin(b) => format!("<builtin {}>", b.name),
             Value::Method(_) => "<bound method>".to_string(),
             Value::Class(c) => format!("<class '{}'>", c.name),
+            // The same form a class object takes: `str` and `Square` are both
+            // types, so they print alike.
+            Value::Type(t) => format!("<class '{}'>", t.name()),
             // An exception reprs as `Name(arg, ...)`, matching CPython.
             Value::Instance(i) if i.class.is_exception => exception_repr(i),
             // Default form only; a __repr__/__str__ dunder is applied by the VM
@@ -1283,6 +1449,9 @@ impl Value {
             }
             // A `range` is a sequence, and CPython compares it as one.
             (Value::Range(a), Value::Range(b)) => Some(a.equals(b)),
+            // A builtin type is its tag, so two `str`s are one type however
+            // they were reached — the name and `type(x)` alike.
+            (Value::Type(a), Value::Type(b)) => Some(a == b),
             // The two reference types that are *not* their address.
             (Value::Builtin(a), Value::Builtin(b)) => Some(a.name == b.name),
             (Value::Method(a), Value::Method(b)) => a.try_equals(b, depth),

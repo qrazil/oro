@@ -5,6 +5,7 @@
 #
 # CPython's answers are written beside each line. Reviewed by hand.
 
+
 def f(x):
     return x
 
@@ -17,6 +18,7 @@ class C:
     pass
 
 
+import io
 import re
 
 # 1. `type(null)` is `null`. CPython: <class 'NoneType'>.
@@ -25,8 +27,13 @@ import re
 # literal is `null`, the repr is `null`, and `json` writes `null` — so a type
 # named after `None` pointed at a word the reader cannot write. This is the one
 # name on the list that was changed on purpose rather than never matching.
+#
+# There is no `null` *keyword* for the type, because `null` already names the
+# value and one word cannot be both. So this is the one builtin type with no
+# name to compare against — and the general form still reaches it, here and for
+# every other unnamed type in the table (`function`, `generator`, `module`).
 print(type(null))
-print(type(null) == "<class 'null'>")
+print(type(null) == type(null), type(null) == type(0))
 
 # 2. A user instance is not module-qualified. CPython: <class '__main__.C'>.
 # Oro has no `__main__` and no dotted module path in a type name.
@@ -38,17 +45,29 @@ print(type(len), type(print))
 
 # 4. `Pattern` and `Match`, not `re.Pattern` and `re.Match`. Oro's type names
 # are never module-qualified (see 2), so the prefix would be the only one.
+# Unlike CPython's, these two *are* bound as keywords, so a compiled pattern
+# can be recognised without reaching into `re` for the type.
 print(type(re.compile("a")), type(re.search("a", "a")))
+print(type(re.compile("a")) == Pattern, type(re.search("a", "a")) == Match)
 
-# 5. `type(x)` is a *string*, not a type object. That is why the names above
-# are printable and comparable at all — and it is why `type(v)` keys a dict in
-# std/json.oro, which under CPython would need the type objects themselves.
-by_type = {type(1): "whole", type(1.5): "fractional", type(null): "absent"}
-print(by_type["<class 'int'>"], by_type["<class 'float'>"], by_type["<class 'null'>"])
-print(sorted([type(1.5), type(1), type("s")]))
+# 5. Oro's stream and concurrency types have names, and CPython has nothing to
+# compare them to: `File` and `Buffer` are one `io` protocol here rather than
+# CPython's `_io.*` tower, and `Task`/`Channel` name green threads that CPython
+# spells with a library. `std/io.oro` dispatches on the first two.
+print(type(io.buffer(b"x")), type(io.buffer(b"x")) == Buffer)
+print(type(io.buffer(b"x")) == File, type(spawn(() => 1)) == Task)
 
 # 6. A generator handed to a builtin is drained to a list first, so `type` can
 # never see one. CPython: <class 'generator'>. This is the VM's rule that a
 # native builtin may not re-enter the interpreter, not a naming choice — the
 # name `generator` is in the table and simply unreachable through `type`.
 print(type(g()))
+
+# 7. Type objects do not order. CPython raises here too, so this is not a
+# divergence in behaviour — it is recorded because it *was* one: `type(x)`
+# used to answer a string, which sorted and compared against string literals,
+# and the standard library was built on exactly that. It is not a string now.
+try:
+    print(sorted([type(1.5), type(1)]))
+except TypeError as e:
+    print("types do not order:", f"{e}")

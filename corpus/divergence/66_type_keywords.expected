@@ -1,0 +1,1 @@
+divergence/66_type_keywords.oro:20:1: `dict` is a type name and cannot be used as a variable — type names are keywords in Oro, so that `type(x) == dict` always means the type. Pick another name.

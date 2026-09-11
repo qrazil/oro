@@ -51,7 +51,7 @@ check("query n", req.query["n"], "42")
 check("header lookup is case-insensitive", req.header("HOST"), "example.com")
 check("absent header takes the default", req.header("X-Nope", "-"), "-")
 check("a GET has an empty body, not a missing one", io.read(req.body), b"")
-check("str(request)", f"{req}", "GET /hello HTTP/1.1")
+check("the request in an f-string", f"{req}", "GET /hello HTTP/1.1")
 
 print("--- header names fold, values do not")
 req = parse(b"GET / HTTP/1.1\r\nHOST: Example.COM\r\nX-A: v1\r\nx-a:   v2   \r\n\r\n")

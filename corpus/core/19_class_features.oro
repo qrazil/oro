@@ -1,5 +1,12 @@
-# Classes: inheritance, super(), class attributes, isinstance, type, and the
-# full dunder set (arithmetic, comparison, __len__, __str__, __repr__).
+# Classes: inheritance, super(), class attributes, type, and the full dunder
+# set (arithmetic, comparison, __len__, __str__, __repr__).
+#
+# `type(x)` is the only type test Oro has, and it is exact: `type(sq)` is
+# `Square` and not `Shape`, even though a Square is one. A *subclass* test has
+# one place it matters and one spelling there — `except`, which matches an
+# exception against a base by walking the chain. Everywhere else, the answer to
+# "is this a Shape?" is to call the method Shape defines and let the override
+# decide, which is what the `describe()` below does.
 
 class Shape:
     sides = 0
@@ -30,11 +37,9 @@ print(sq.describe())
 print(sq.name, sq.size, sq.sides)
 print(Shape.sides, Square.sides)
 
-print(isinstance(sq, Square))
-print(isinstance(sq, Shape))
-print(isinstance(Shape("x"), Square))
 print(type(sq) == Square)
 print(type(sq) == Shape)
+print(type(Shape("x")) == Square)
 
 
 class Money:

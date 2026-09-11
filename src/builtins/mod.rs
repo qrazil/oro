@@ -13,7 +13,9 @@ use std::fmt::Write as _;
 use std::rc::Rc;
 
 use crate::bigint::BigInt;
-use crate::value::{Builtin, OroDict, OroList, OroStr, OroTuple, RangeVal, VResult, Value};
+use crate::value::{
+    Builtin, OroDict, OroList, OroStr, OroTuple, RangeVal, TypeTag, VResult, Value,
+};
 
 /// The body of a builtin the VM dispatches itself. Unreachable through the
 /// interpreter, which checks the name first; it exists so every global has the
@@ -27,24 +29,15 @@ pub fn lookup(name: &str) -> Option<Value> {
     let f: fn(Vec<Value>) -> VResult<Value> = match name {
         "print" => bi_print,
         "len" => bi_len,
-        "range" => bi_range,
-        "str" => bi_str,
-        "bytes" => bi_bytes,
-        "int" => bi_int,
-        "float" => bi_float,
-        "bool" => bi_bool,
         "type" => bi_type,
         "abs" => bi_abs,
         "min" => bi_min,
         "max" => bi_max,
         "sum" => bi_sum,
         "sorted" => bi_sorted,
-        "isinstance" => bi_isinstance,
         "repr" => bi_repr,
         "open" => bi_open,
         "set" => bi_set,
-        "list" => bi_list,
-        "dict" => bi_dict,
         "enumerate" => bi_enumerate,
         "zip" => bi_zip,
         "any" => bi_any,
@@ -71,24 +64,15 @@ fn intern(name: &str) -> &'static str {
     match name {
         "print" => "print",
         "len" => "len",
-        "range" => "range",
-        "str" => "str",
-        "bytes" => "bytes",
-        "int" => "int",
-        "float" => "float",
-        "bool" => "bool",
         "type" => "type",
         "abs" => "abs",
         "min" => "min",
         "max" => "max",
         "sum" => "sum",
         "sorted" => "sorted",
-        "isinstance" => "isinstance",
         "repr" => "repr",
         "open" => "open",
         "set" => "set",
-        "list" => "list",
-        "dict" => "dict",
         "enumerate" => "enumerate",
         "zip" => "zip",
         "any" => "any",
@@ -154,28 +138,6 @@ fn bi_len(args: Vec<Value>) -> VResult<Value> {
     Ok(Value::Int(n as i64))
 }
 
-fn bi_range(args: Vec<Value>) -> VResult<Value> {
-    let ints: Vec<i64> = args.iter().map(as_i64).collect::<VResult<_>>()?;
-    let (start, stop, step) = match ints.as_slice() {
-        [stop] => (0, *stop, 1),
-        [start, stop] => (*start, *stop, 1),
-        [start, stop, step] => (*start, *stop, *step),
-        _ => return Err("range() takes 1 to 3 integer arguments".to_string()),
-    };
-    if step == 0 {
-        return Err("range() step argument must not be zero".to_string());
-    }
-    Ok(Value::Range(Rc::new(RangeVal { start, stop, step })))
-}
-
-fn bi_str(_args: Vec<Value>) -> VResult<Value> {
-    Err(type_name_is_not_callable("str", "to_str", "\"\""))
-}
-
-fn bi_bytes(_args: Vec<Value>) -> VResult<Value> {
-    Err(type_name_is_not_callable("bytes", "to_bytes", "b\"\""))
-}
-
 fn bi_repr(args: Vec<Value>) -> VResult<Value> {
     exactly(&args, 1, "repr")?;
     Ok(Value::str(args[0].repr()))
@@ -217,57 +179,15 @@ fn bi_open(args: Vec<Value>) -> VResult<Value> {
     Ok(Value::Stream(Rc::new(stream)))
 }
 
-fn bi_int(_args: Vec<Value>) -> VResult<Value> {
-    Err(type_name_is_not_callable("int", "to_int", "0"))
-}
-
-fn bi_float(_args: Vec<Value>) -> VResult<Value> {
-    Err(type_name_is_not_callable("float", "to_float", "0.0"))
-}
-
-fn bi_bool(_args: Vec<Value>) -> VResult<Value> {
-    Err(type_name_is_not_callable("bool", "to_bool", "false"))
-}
-
 fn bi_type(args: Vec<Value>) -> VResult<Value> {
     exactly(&args, 1, "type")?;
     match &args[0] {
         // The type of a user instance is its class object.
         Value::Instance(i) => Ok(Value::Class(i.class.clone())),
-        other => Ok(Value::str(format!("<class '{}'>", other.type_name()))),
-    }
-}
-
-fn bi_isinstance(args: Vec<Value>) -> VResult<Value> {
-    exactly(&args, 2, "isinstance")?;
-    let obj = &args[0];
-    let ok = match &args[1] {
-        Value::Class(cls) => match obj {
-            Value::Instance(i) => crate::value::Class::is_subclass(&i.class, cls),
-            _ => false,
-        },
-        // A builtin type name (e.g. `int`, `str`) matches by type name.
-        Value::Builtin(b) => builtin_type_matches(b.name, obj),
-        other => {
-            return Err(format!(
-                "isinstance() arg 2 must be a class, not '{}'",
-                other.type_name()
-            ))
-        }
-    };
-    Ok(Value::Bool(ok))
-}
-
-/// Whether `obj` matches a builtin type-constructor name used as `isinstance`'s
-/// second argument (`isinstance(x, int)`).
-fn builtin_type_matches(name: &str, obj: &Value) -> bool {
-    match name {
-        "int" => matches!(obj, Value::Int(_) | Value::Big(_) | Value::Bool(_)),
-        "float" => matches!(obj, Value::Float(_)),
-        "bool" => matches!(obj, Value::Bool(_)),
-        "str" => matches!(obj, Value::Str(_)),
-        "bytes" => matches!(obj, Value::Bytes(_)),
-        _ => false,
+        // ...and of anything else, the tag the type keyword denotes — the same
+        // value, so `type(x) == str` is true for the same reason
+        // `type(p) == Point` is.
+        other => Ok(Value::Type(other.type_tag())),
     }
 }
 
@@ -518,12 +438,50 @@ fn type_name_is_not_callable(who: &str, method: &str, literal: &str) -> String {
     )
 }
 
-fn bi_list(_args: Vec<Value>) -> VResult<Value> {
-    Err(type_name_is_not_callable("list", "to_list", "[]"))
-}
-
-fn bi_dict(_args: Vec<Value>) -> VResult<Value> {
-    Err(type_name_is_not_callable("dict", "to_dict", "{}"))
+/// Calling a type keyword: `range(3)`, and the refusals.
+///
+/// `range` is the one builtin type with a constructor, because a range has no
+/// literal syntax to build it with. Every other type does — `""`, `0`, `[]`,
+/// `{}` — or is a handle something else hands you, so a constructor would be a
+/// second way to write a thing that already has one. The conversions are
+/// methods (`x.to_int()`), which is where a conversion belongs: it reads left
+/// to right and it is one spelling, not two.
+pub fn call_type(t: TypeTag, args: Vec<Value>) -> VResult<Value> {
+    match t {
+        TypeTag::Range => {
+            let ints: Vec<i64> = args.iter().map(as_i64).collect::<VResult<_>>()?;
+            let (start, stop, step) = match ints.as_slice() {
+                [stop] => (0, *stop, 1),
+                [start, stop] => (*start, *stop, 1),
+                [start, stop, step] => (*start, *stop, *step),
+                _ => return Err("range() takes 1 to 3 integer arguments".to_string()),
+            };
+            if step == 0 {
+                return Err("range() step argument must not be zero".to_string());
+            }
+            Ok(Value::Range(Rc::new(RangeVal { start, stop, step })))
+        }
+        TypeTag::Str => Err(type_name_is_not_callable("str", "to_str", "\"\"")),
+        TypeTag::Bytes => Err(type_name_is_not_callable("bytes", "to_bytes", "b\"\"")),
+        TypeTag::Int => Err(type_name_is_not_callable("int", "to_int", "0")),
+        TypeTag::Float => Err(type_name_is_not_callable("float", "to_float", "0.0")),
+        TypeTag::Bool => Err(type_name_is_not_callable("bool", "to_bool", "false")),
+        TypeTag::List => Err(type_name_is_not_callable("list", "to_list", "[]")),
+        TypeTag::Dict => Err(type_name_is_not_callable("dict", "to_dict", "{}")),
+        // No `to_tuple` to point at: a tuple is a literal, and the one
+        // conversion that would want a constructor (`list` to `tuple`) has no
+        // caller in the tree. The message names what does exist.
+        TypeTag::Tuple => Err("tuple() is not callable in Oro — write the literal `()` for an \
+                               empty tuple, or `(x,)` for a one-element one."
+            .to_string()),
+        // The handle types. Each is produced by exactly one thing, and naming
+        // it is the whole point of the keyword; it is not a constructor.
+        other => Err(format!(
+            "{}() is not callable in Oro — it is a type name, which is what `type(x)` \
+             answers with, not a constructor.",
+            other.name()
+        )),
+    }
 }
 
 /// `enumerate(it, start=0)`. Eager: returns a list of `(index, value)` tuples

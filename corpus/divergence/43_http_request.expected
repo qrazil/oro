@@ -7,7 +7,7 @@ query n -> 42
 header lookup is case-insensitive -> example.com
 absent header takes the default -> -
 a GET has an empty body, not a missing one -> b''
-str(request) -> GET /hello HTTP/1.1
+the request in an f-string -> GET /hello HTTP/1.1
 --- header names fold, values do not
 name lowercased -> Example.COM
 repeated field joined with a comma -> v1, v2

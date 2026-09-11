@@ -1,8 +1,10 @@
 <class 'null'>
-true
+true false
 <class 'C'> <class 'type'>
 <class 'builtin_function'> <class 'builtin_function'>
 <class 'Pattern'> <class 'Match'>
-whole fractional absent
-["<class 'float'>", "<class 'int'>", "<class 'str'>"]
+true true
+<class 'Buffer'> true
+false true
 <class 'list'>
+types do not order: '<' not supported between instances of 'type' and 'type'

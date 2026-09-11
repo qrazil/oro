@@ -193,7 +193,7 @@ Implemented and working today:
   site `*`/`**` unpacking that mirrors them. Deep and mutual recursion work
   (the VM never recurses in Rust — see [Architecture](#architecture)).
 - **Classes:** single inheritance, `__init__`/instance attributes/methods,
-  class-level attributes, `super()`, `isinstance()`, and a fixed dunder set —
+  class-level attributes, `super()`, and a fixed dunder set —
   `__str__`, `__repr__`, `__eq__`, `__len__`, the arithmetic dunders
   (`__add__`…`__pow__`), and the comparisons (`__lt__`/`__gt__`/`__le__`/`__ge__`).
 - **Exceptions:** `try`/`except`/`finally`/`raise`, `except E as e`, bare `raise`
@@ -222,17 +222,26 @@ Implemented and working today:
 - **f-strings** with the full format mini-language: `{x:.2f}`, `{n:05d}`,
   `{x:,}`, alignment (`<^>`), sign/`#`/`0` flags, the `!r`/`!s` conversions, and
   nested specs like `{x:.{p}f}`.
-- **Builtins:** `print` (with `sep=`/`end=`), `len`, `range`, `repr`, `type`,
-  `abs`, `min`, `max`, `sum`, `round`, `sorted` (with `key=`/`reverse=`, as has
-  `list.sort`), `any`, `all`, `enumerate`, `zip`, `isinstance`, `open`.
+- **Builtins:** `print` (with `sep=`/`end=`), `len`, `repr`, `type`, `abs`,
+  `min`, `max`, `sum`, `round`, `sorted` (with `key=`/`reverse=`, as has
+  `list.sort`), `any`, `all`, `enumerate`, `zip`, `open`.
   `enumerate` and `zip` return lists rather than lazy iterators — the same eager
   choice `dict.keys()` already makes. Nine of them have a collection-method twin
   (`len sum min max sorted any all enumerate zip`), and where both spellings
   exist they answer the same thing: `zip(a, b, c)` is `a.zip(b, c)` and
   `sorted(x)` keeps `x`'s shape exactly as `x.sorted()` does, so
   `sorted((3, 1, 2))` is `(1, 2, 3)` and not a list. See
-  `corpus/divergence/65_builtin_method_agreement.oro`. Type names (`str`, `int`, `list`, …) are
-  deliberately *not* callable; see the `to_` casts below.
+  `corpus/divergence/65_builtin_method_agreement.oro`.
+- **Type keywords:** `bool`, `int`, `float`, `str`, `bytes`, `list`, `tuple`,
+  `dict`, `range`, and the runtime handles `File`, `Buffer`, `TcpStream`,
+  `TcpListener`, `Pattern`, `Match`, `Task`, `Channel`. Each *is* the type, and
+  `type(x)` answers with that same value — so **`type(x) == str`** is the one
+  way to ask what something is, and it works identically for a user class
+  (`type(p) == Point`). They are keywords: `dict = {}` is a compile error
+  naming the reason, which is what keeps the test from silently becoming a
+  comparison against someone's local variable. A type name is not callable
+  (`range(n)` is the exception — a range has no literal to build it with); to
+  convert, use the `to_` casts below, and to build an empty one, the literal.
 - **Methods:** the `str`/`bytes` surface — sixteen names, the same sixteen on
   both types (`bytes` adds `hex` and `scan`) — plus the `list`/`dict` methods,
   the `to_` conversions on every value, and the collection protocol below.
@@ -490,13 +499,24 @@ Each of these is omitted on purpose. The reason matters more than the list.
   object), immutable, with `Duration` distinct from `Period` — rather than
   Python's single overloaded `datetime`.
 
-- **Type names are not callable.** Conversion is a method on the value:
-  `xs.to_list()`, `"42".to_int()`, `"ff".to_int(16)`, `x.to_str()`,
-  `s.to_float()`, `v.to_bool()`, `pairs.to_dict()`, `s.to_bytes()`.
-  Construction is a literal: `[]`, `{}`, `""`, `b""`, `0`. This is one spelling per thing, it chains in reading
-  order, and it removes a whole error class by construction — a conversion needs
-  something to convert, so there is no zero-argument form to confuse with
-  building an empty value.
+- **Type names are not callable.** A type name *is* the type — it is what
+  `type(x)` answers with — so there is nothing behind it to call. Conversion is
+  a method on the value: `xs.to_list()`, `"42".to_int()`, `"ff".to_int(16)`,
+  `x.to_str()`, `s.to_float()`, `v.to_bool()`, `pairs.to_dict()`,
+  `s.to_bytes()`. Construction is a literal: `[]`, `{}`, `""`, `b""`, `0`. This
+  is one spelling per thing, it chains in reading order, and it removes a whole
+  error class by construction — a conversion needs something to convert, so
+  there is no zero-argument form to confuse with building an empty value.
+  (`range(n)` is the single exception, because a range has no literal.)
+
+- **No `isinstance`.** `type(x) == str` is the type test, and it is the only
+  one: a type name and `type()`'s answer are the same value, for a builtin type
+  and for a user class alike. `isinstance` was a third spelling of that, and the
+  one thing it could do that `==` cannot — test a *subclass* — has its own
+  keyword: `except` matches an exception against a base by walking the chain,
+  which is the one place asking "is this a kind of X?" is the right question.
+  Everywhere else the answer is to call the method the subclass overrides,
+  which is what inheritance is for.
 
 Also cut: bare `except:`, `try/except/else`, `from x import y`, `import *`,
 `del`, `assert`, `__new__`/`__getattr__`/`__setattr__`/`__slots__`, and class
@@ -1078,6 +1098,9 @@ different.
 | `int(s, 16)` | `s.to_int(16)` | as above |
 | `list(xs)`, `dict(pairs)` | `xs.to_list()`, `pairs.to_dict()` | as above |
 | `list()`, `dict()`, `str()`, `int()` | `[]`, `{}`, `""`, `0` | Literals build; type names are not callable |
+| `isinstance(x, str)` | `type(x) == str` | A type name *is* the type, so the comparison is the test; there is no second spelling |
+| `isinstance(e, SomeBase)` | `except SomeBase:`, or a method the subclass overrides | `except` is the one place a subclass test is the right question; elsewhere it is the question inheritance exists to avoid |
+| `str(x)` for an instance | `f"{x}"` | `str` is a type, and a type is not callable; the f-string runs `__str__` |
 | `lambda x: x * 2` | `x => x * 2` | Shorter, and the point of a lambda is brevity |
 | `x is y` / `x is not y` | `x == y` / `x != y` | `==` already compares reference types by identity; `is` differed from CPython on interned strings and could not be fixed |
 | `True` / `False` / `None` | `true` / `false` / `null` | Capitalisation was Python's class-naming convention leaking into syntax |

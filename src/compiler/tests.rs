@@ -114,3 +114,74 @@ fn op_is_one_word() {
     fn assert_copy<T: Copy>() {}
     assert_copy::<Op>();
 }
+
+// --- Type keywords ----------------------------------------------------------
+
+fn compile_err(src: &str) -> CompileError {
+    let tokens = Lexer::new(src).tokenize().expect("lex");
+    let program = Parser::new(tokens).parse().expect("parse");
+    compile(&program, Rc::from("test.oro")).expect_err("expected a compile error")
+}
+
+/// Every form that binds a name refuses a type keyword, and each says which
+/// form it was — a `def` is not an assignment and the message should not
+/// pretend otherwise.
+///
+/// These live here rather than in `corpus/` for a structural reason: a corpus
+/// file stops at its first error, so eight rejections would be eight files;
+/// and `tests/fmt_test.rs` formats every `.oro` in the tree, so a rejection
+/// that happened at *parse* time could not have a corpus file at all. The one
+/// that is oracled is `corpus/divergence/66_type_keywords.oro`.
+#[test]
+fn every_binding_form_refuses_a_type_keyword() {
+    let cases = [
+        ("dict = {}\n", "a variable"),
+        ("str += 1\n", "a variable"),
+        ("a, list = 1, 2\n", "a variable"),
+        ("for str in [1]:\n    pass\n", "a loop variable"),
+        ("def bytes():\n    pass\n", "a function name"),
+        ("class int:\n    pass\n", "a class name"),
+        ("def f(dict):\n    return dict\n", "a parameter name"),
+        ("f = (str) => 1\n", "a parameter name"),
+        ("import re as dict\n", "an imported name"),
+        ("try:\n    pass\nexcept ValueError as bytes:\n    pass\n", "an `except ... as` name"),
+        ("def f():\n    global int\n    int = 2\n", "a `global` declaration"),
+        ("Task = 1\n", "a variable"),
+        ("File = 1\n", "a variable"),
+    ];
+    for (src, phrase) in cases {
+        let e = compile_err(src);
+        assert!(
+            e.message.contains("is a type name") && e.message.contains(phrase),
+            "{src:?} gave {:?}, which does not name {phrase}",
+            e.message
+        );
+    }
+}
+
+/// A type keyword is reserved in the *variable* namespace and nowhere else. A
+/// member is reached through an object and can never be mistaken for the type,
+/// and the tree depends on this: `std/http.oro` alone calls `.bytes()` sixteen
+/// times and defines one.
+#[test]
+fn a_type_keyword_is_still_a_member_name() {
+    compile_src("class W:\n    def bytes(self):\n        return b\"\"\n\nw = W()\nx = w.bytes()\n");
+    compile_src("d = {\"list\": 1}\nx = d[\"list\"]\n");
+    compile_src("w = null\nw.dict = 1\n");
+}
+
+/// A type name is a constant, not a global lookup — which is also what takes
+/// `range(n)` off the `LoadGlobal` path it used to sit on.
+#[test]
+fn a_type_keyword_compiles_to_a_constant() {
+    let code = compile_src("x = type(1) == int\n");
+    assert!(
+        code.consts.iter().any(|c| matches!(c, Value::Type(crate::value::TypeTag::Int))),
+        "`int` should be in the constant pool"
+    );
+    assert!(
+        !code.ops.iter().any(|op| matches!(op, Op::LoadGlobal(n)
+            if code.names[*n as usize].as_ref() == "int")),
+        "`int` must not be looked up as a global"
+    );
+}

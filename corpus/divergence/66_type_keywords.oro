@@ -1,0 +1,20 @@
+# A type name is a keyword, and binding one is a compile error.
+#
+# `str`, `int`, `dict` and the rest name types, and `type(x)` answers with the
+# very thing the name denotes — so `type(x) == dict` is Oro's one type test.
+# That only holds if `dict` cannot also be a variable. It used to be able to:
+# `dict = {}` was an ordinary assignment to an ordinary shadowable global, and
+# after it `type(x) == dict` compared a value against an empty dict and read
+# exactly like the test it was no longer performing. CPython has the same hole
+# and lives with it; Oro is frozen, so it is closed here instead.
+#
+# CPython runs this file happily, which is the whole point: reviewed by hand,
+# and the diagnostic is what wants reviewing if it changes. A compile error
+# stops the program, so this file can hold nothing else. The other seven
+# binding forms — `def`, `class`, a parameter, a `for` target, `import ... as`,
+# `except ... as`, `global` — are refused the same way and are covered by
+# `compiler::tests`.
+
+print("this line never runs")
+
+dict = {}

@@ -1041,6 +1041,16 @@ impl<'a> Codegen<'a> {
                 self.emit(Op::LoadNone, *line, *col);
             }
             Expr::Name { name, line, col } => {
+                // A type keyword is a constant, not a lookup. It cannot be
+                // bound (`compiler::reserved` rejects that), so there is never
+                // a local to shadow it, and the value it denotes is known here
+                // — which also takes `range(n)` off the global-lookup path it
+                // used to sit on.
+                if let Some(t) = crate::value::keyword_type(name) {
+                    let idx = self.add_const(Value::Type(t));
+                    self.emit(Op::LoadConst(idx), *line, *col);
+                    return Ok(());
+                }
                 match self.unthreaded_check(name, *line, *col)? {
                     Resolution::Local(s) => self.emit(Op::LoadFast(s), *line, *col),
                     Resolution::Cell(s) => self.emit(Op::LoadCell(s), *line, *col),

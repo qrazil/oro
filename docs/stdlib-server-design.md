@@ -2448,7 +2448,7 @@ request-smuggling vector and there is no reason to be lenient about it.
 ```python
 def write_response(w, req, resp, keep_alive):
     h = resp.headers
-    streamed = type(resp.body) != "<class 'bytes'>"
+    streamed = type(resp.body) != bytes
     if streamed:
         h["transfer-encoding"] = "chunked"
     else:

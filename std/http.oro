@@ -171,14 +171,6 @@ _MAX_ACCEPT_ERRORS = 32
 # length up front.
 _STREAM_CHUNK = 8192
 
-_BYTES = "<class 'bytes'>"
-_STR = "<class 'str'>"
-_INT = "<class 'int'>"
-_FLOAT = "<class 'float'>"
-_BOOL = "<class 'bool'>"
-_LIST = "<class 'list'>"
-_DICT = "<class 'dict'>"
-
 # --- byte tables ----------------------------------------------------------
 # `in` on bytes takes bytes, not an int, and iterating bytes yields ints, so
 # the character classes RFC 9110 defines are lookup tables keyed by byte
@@ -447,7 +439,7 @@ class Response:
     # `Request` has, for the same reason: a caller should not have to know
     # whether it is holding bytes or a Reader to read it once.
     def bytes(self):
-        if type(self.body) == _BYTES:
+        if type(self.body) == bytes:
             return self.body
         return io.read(self.body)
 
@@ -487,7 +479,7 @@ def json_response(v, status=200):
 
 
 def _is_streamed(body):
-    return type(body) != _BYTES
+    return type(body) != bytes
 
 
 # --- byte helpers ---------------------------------------------------------
@@ -1730,7 +1722,7 @@ def quote_plus(s, safe=""):
 # boundary in Oro, instead of `urllib`'s default of quietly substituting
 # U+FFFD for them.
 def unquote(s, plus=false):
-    if type(plus) != _BOOL:
+    if type(plus) != bool:
         raise TypeError(f"plus= is true or false, not {type(plus)}")
     b = _component_bytes(s, "unquote")
     out = _pct.decode(b, plus)
@@ -1765,7 +1757,7 @@ def unquote(s, plus=false):
 # encoding.
 def encode_query(params):
     pairs = params
-    if type(params) == _DICT:
+    if type(params) == dict:
         pairs = params.items()
     out = []
     for k, v in pairs:
@@ -1773,7 +1765,7 @@ def encode_query(params):
         # it was given, so these are bytes — and `.to_str()` on them cannot
         # fail, because what comes out of a percent-encoder is ASCII.
         key = quote_plus(_query_bytes(k, "key")).to_str()
-        if type(v) == _LIST:
+        if type(v) == list:
             for item in v:
                 out.append(key + "=" + quote_plus(_query_bytes(item, "value")).to_str())
         else:
@@ -1784,7 +1776,7 @@ def encode_query(params):
 # `out`, as the type `s` was: bytes stay bytes, and anything else — which is
 # to say a str — is decoded as UTF-8 and raises if it is not.
 def _like(s, out):
-    if type(s) == _BYTES:
+    if type(s) == bytes:
         return out
     return out.to_str()
 
@@ -1804,7 +1796,7 @@ def _like(s, out):
 # encoded is a real thing to want; it is written down here because a caller
 # who reaches for it has left the property the rest of this section promises.
 def _safe_bytes(safe):
-    if type(safe) != _STR:
+    if type(safe) != str:
         raise TypeError(f"safe= must be str, not {type(safe)}")
     b = safe.to_bytes()
     if len(b) != len(safe):
@@ -1817,9 +1809,9 @@ def _safe_bytes(safe):
 # about a request body, for the same reason.
 def _component_bytes(s, who):
     t = type(s)
-    if t == _STR:
+    if t == str:
         return s.to_bytes()
-    if t == _BYTES:
+    if t == bytes:
         return s
     raise TypeError(f"{who}() takes str or bytes, not {t}")
 
@@ -1836,11 +1828,11 @@ def _component_bytes(s, who):
 # rule exists to avoid.
 def _query_bytes(v, part):
     t = type(v)
-    if t == _STR:
+    if t == str:
         return v.to_bytes()
-    if t == _BYTES:
+    if t == bytes:
         return v
-    if t == _INT or t == _FLOAT or t == _BOOL:
+    if t == int or t == float or t == bool:
         return f"{v}".to_bytes()
     if v == null:
         raise TypeError(f'a query {part} cannot be null — write "" for a parameter with no value')
@@ -2373,7 +2365,7 @@ def _payload(body):
     if body == null:
         return b""
     t = type(body)
-    if t == _STR:
+    if t == str:
         raise TypeError("a request body is bytes or a Reader, not str — call .to_bytes() on it")
     return body
 

@@ -1,11 +1,11 @@
 # `type(x)` over the types CPython and Oro name identically — which is every
-# type either can build except the six in divergence/54_type_names.oro. The
+# type either can build except the five in divergence/54_type_names.oro. The
 # oracle generates this file, so the agreement is checked rather than asserted.
 #
-# `type(x)` answers a *string* in Oro (`"<class 'int'>"`), not a type object;
-# for a user instance it answers the class itself, so `type(sq) == Square` works
-# (core/19_class_features.oro). Everything below prints the same bytes under
-# both runtimes either way.
+# `type(x)` answers the type itself, and a type name is a keyword that denotes
+# that same type — so `type(x) == str` is one comparison and the only type test
+# the language has. For a user instance it answers the class, so
+# `type(sq) == Square` works the same way (core/19_class_features.oro).
 
 def f(x):
     return x
@@ -28,7 +28,15 @@ for v in [1, 1.5, "s", true, [1], {"a": 1}, (1,)]:
     print(type(v))
 
 # Two values of one type answer the same thing, and two of different types do
-# not — which is what makes it usable as a dispatch key at all. (That it is a
-# *string* and therefore also sorts and keys a dict is Oro-only, and is in
-# divergence/54_type_names.oro with the rest of the divergences.)
+# not — which is what makes it usable as a dispatch key at all.
 print(type(1) == type(2), type(1) == type(1.5), type([]) == type(()))
+
+# And the same answer compares equal to the type *name*, which is the point of
+# the names being keywords: there is one way to ask what a value is.
+print(type("s") == str, type(1) == int, type(1.5) == float, type(true) == bool)
+print(type([]) == list, type(()) == tuple, type({}) == dict, type(b"") == bytes)
+print(type(range(3)) == range, type(1) == str, type("s") == int)
+
+# A type name is a value like any other: it can be held, passed and compared
+# without a `type()` call around it.
+print(str == str, str == int, [int, str][1] == str)

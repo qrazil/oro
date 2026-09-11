@@ -102,11 +102,17 @@ pub enum StreamKind {
 
 impl StreamKind {
     pub fn type_name(&self) -> &'static str {
+        self.type_tag().name()
+    }
+
+    /// The stream's type, as `type(s)` answers with.
+    pub fn type_tag(&self) -> crate::value::TypeTag {
+        use crate::value::TypeTag;
         match self {
-            StreamKind::File { .. } => "File",
-            StreamKind::Buffer => "Buffer",
-            StreamKind::TcpStream { .. } => "TcpStream",
-            StreamKind::TcpListener { .. } => "TcpListener",
+            StreamKind::File { .. } => TypeTag::File,
+            StreamKind::Buffer => TypeTag::Buffer,
+            StreamKind::TcpStream { .. } => TypeTag::TcpStream,
+            StreamKind::TcpListener { .. } => TypeTag::TcpListener,
         }
     }
 }
