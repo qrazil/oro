@@ -1,0 +1,23 @@
+# ORO-ONLY: fused collection chains. `fuse.py` is the equivalent-behaviour twin
+# in Python's spelling (comprehensions), because CPython cannot parse `=>`.
+#
+# Four shapes, on purpose:
+#   a  one step   — the control. Fusing must not make a lone step slower.
+#   b  two steps  — the README's own example, `filter` then `map`.
+#   c  four steps — where "one allocation per step" used to cost the most.
+#   d  a barrier  — `sorted` needs the finished intermediate, so the run before
+#                   it fuses, it materialises, and the run after it fuses again.
+def f(x):
+    return x + 1
+
+xs = []
+i = 0
+while i < 120000:
+    xs.append(i)
+    i = i + 1
+
+a = xs.map(f)
+b = xs.filter(x => x % 2 == 0).map(f)
+c = xs.map(f).filter(x => x % 3 != 0).map(f).filter(x => x % 5 != 0)
+d = xs.map(f).filter(x => x % 7 == 0).sorted().map(f).filter(x => x > 10)
+print(len(a), len(b), len(c), len(d))

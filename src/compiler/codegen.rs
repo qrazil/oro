@@ -1098,7 +1098,7 @@ impl<'a> Codegen<'a> {
                 self.emit_compare(first, rest, *line, *col)?;
             }
             Expr::Call { func, args, kwargs, line, col } => {
-                self.emit_call(func, args, kwargs, *line, *col)?;
+                self.emit_call(func, args, kwargs, *line, *col, false)?;
             }
             Expr::Attribute { value, attr, line, col } => {
                 self.emit_expr(value)?;
@@ -1193,6 +1193,10 @@ impl<'a> Codegen<'a> {
         Ok(())
     }
 
+    /// Emit a call. `hint` is set only by the fused-chain recursion below: it
+    /// means this call is a collection step whose result is consumed by the
+    /// very next step of the same chain expression and by nothing else, so the
+    /// VM is free to defer it into a pipeline. See [`crate::compiler::CHAIN_HINT`].
     fn emit_call(
         &mut self,
         func: &Expr,
@@ -1200,6 +1204,7 @@ impl<'a> Codegen<'a> {
         kwargs: &[Kwarg],
         line: usize,
         col: usize,
+        hint: bool,
     ) -> CResult<()> {
         // `super()` — a zero-argument call to the global name `super` — pushes
         // the current method's super proxy directly.
@@ -1225,7 +1230,34 @@ impl<'a> Codegen<'a> {
         // still reports where the attribute is written.
         if simple {
             if let Expr::Attribute { value, attr, line: aline, col: acol } = func {
-                self.emit_expr(value)?;
+                // Chain fusion, decided here because this is the only place the
+                // *shape* of a chain is visible: `xs.filter(p).map(f)` is one
+                // expression, and the intermediate collection it builds has no
+                // name and no other reader. When this step can flush a pipeline
+                // and its receiver is a step that can join one, the receiver is
+                // emitted with its defer hint set and the two run as one pass.
+                //
+                // The receiver's arguments are evaluated *before* its own
+                // `CallMethod`, so they are never in the way; this step's are
+                // evaluated between the two calls, which is why they have to be
+                // inert — a call there could start a second chain over the same
+                // receiver while this one is still pending.
+                let fusable_recv = crate::compiler::chain_flushes(attr)
+                    && args.iter().all(|a| match a {
+                        Arg::Positional(e) => inert(e),
+                        _ => false,
+                    })
+                    && chain_step(value).is_some_and(crate::compiler::chain_defers);
+                if fusable_recv {
+                    match value.as_ref() {
+                        Expr::Call { func: rf, args: ra, kwargs: rk, line: rl, col: rc } => {
+                            self.emit_call(rf, ra, rk, *rl, *rc, true)?;
+                        }
+                        _ => unreachable!("chain_step matched a non-call"),
+                    }
+                } else {
+                    self.emit_expr(value)?;
+                }
                 let n = self.add_name(attr);
                 self.emit(Op::LoadMethod(n), *aline, *acol);
                 for a in args {
@@ -1234,7 +1266,9 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 let pair = self.add_pair();
-                self.pairs[pair as usize] = (n, args.len() as u32);
+                let argc = args.len() as u32
+                    | if hint { crate::compiler::CHAIN_HINT } else { 0 };
+                self.pairs[pair as usize] = (n, argc);
                 self.emit(Op::CallMethod(pair), line, col);
                 return Ok(());
             }
@@ -1781,4 +1815,44 @@ fn parse_float(text: &str) -> Option<f64> {
         return text.replace('_', "").parse().ok();
     }
     text.parse().ok()
+}
+
+/// The method name of `recv.name(args)` when it is written in the simple form
+/// the `LoadMethod`/`CallMethod` pair handles — the only form a chain step can
+/// take. `None` for anything else, which is what stops fusion at the front of a
+/// chain (`xs` itself, a subscript, a parenthesised expression).
+fn chain_step(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::Call { func, args, kwargs, .. }
+            if kwargs.is_empty()
+                && args.iter().all(|a| matches!(a, Arg::Positional(_))) =>
+        {
+            match func.as_ref() {
+                Expr::Attribute { attr, .. } => Some(attr),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Whether an expression evaluates without running a line of Oro code.
+///
+/// A chain step's arguments are emitted *between* the deferred step's
+/// `CallMethod` and the one that flushes it. Restricting them to these five
+/// forms is what makes that gap safe: no user code runs in it, so no second
+/// chain can start over the same receiver, and the only thing that can go wrong
+/// is an unbound name — which raises, and takes the pending pipeline with it.
+fn inert(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::Int { .. }
+            | Expr::Float { .. }
+            | Expr::Str { .. }
+            | Expr::Bytes { .. }
+            | Expr::Bool { .. }
+            | Expr::NoneLit { .. }
+            | Expr::Lambda { .. }
+            | Expr::Name { .. }
+    )
 }

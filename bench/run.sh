@@ -53,6 +53,8 @@ BENCHES=(
   "listbuild"
   "builtins"
   "chain:py=chain.py"
+  "fuse:py=fuse.py"
+  "fusesc:py=fusesc.py"
   "json:py=json_twin.py"
 )
 

@@ -158,9 +158,9 @@ struct Block {
 /// operand stack. See [`Block::jobs`].
 ///
 /// `u32`, not `usize`: this is copied into every [`Block`], so every `try` and
-/// every loop in the program carries one. Seven `usize` would be 56 bytes —
-/// more than the five it replaced — and seven `u32` is 28, which is less. A
-/// job stack cannot reach 2^32 entries: each job owns heap data and the frame
+/// every loop in the program carries one. Eight `usize` would be 64 bytes and
+/// eight `u32` is 32, which is still less than the five `usize` this replaced.
+/// A job stack cannot reach 2^32 entries: each job owns heap data and the frame
 /// stack itself is capped at `MAX_FRAMES`.
 #[derive(Clone, Copy, Default)]
 struct JobDepths {
@@ -171,6 +171,7 @@ struct JobDepths {
     mat_jobs: u32,
     cmp_jobs: u32,
     ord_jobs: u32,
+    chains: u32,
 }
 
 enum BlockKind {
@@ -320,6 +321,11 @@ enum SeqOp {
     /// Thread an accumulator through: `f(acc, item)`. Sequential, so it cannot
     /// batch its callbacks like the others.
     Reduce,
+    /// Not a method: the terminal a fused chain gets when the step that ends it
+    /// is one of the callback-less natives (`first()`, `take(n)`). It has no
+    /// callback of its own, so every element that survives the stages is its
+    /// own result and the collection is rebuilt from them.
+    Collect,
 }
 
 impl SeqOp {
@@ -341,6 +347,7 @@ impl SeqOp {
             SeqOp::TakeWhile => "take_while",
             SeqOp::DropWhile => "drop_while",
             SeqOp::Reduce => "reduce",
+            SeqOp::Collect => "take",
         }
     }
 
@@ -372,9 +379,70 @@ impl SeqOp {
         matches!(
             self,
             SeqOp::Map | SeqOp::Filter | SeqOp::SortBy | SeqOp::UniqueBy
-                | SeqOp::TakeWhile | SeqOp::DropWhile
+                | SeqOp::TakeWhile | SeqOp::DropWhile | SeqOp::Collect
         )
     }
+}
+
+/// One fused upstream step of a collection chain.
+///
+/// `xs.filter(p).map(f).filter(q)` is one [`SeqJob`] whose `stages` are the two
+/// steps before the last; each element walks the whole pipeline before the next
+/// element is read, so the source is read once, the callbacks run in the order
+/// a `for` loop would run them, and exactly one collection is built.
+#[derive(Clone)]
+struct Stage {
+    kind: StageKind,
+    /// Where the step that contributed this stage is written. A diagnostic the
+    /// step itself raises — its callback being a generator function — has to
+    /// name that call, and by the time a fused stage runs, the position the VM
+    /// is holding belongs to whatever callback returned last.
+    line: u32,
+    col: u32,
+    /// The shape the element carries *entering* this stage. It decides whether
+    /// the callback is spread over two parameters (a dict's key and value) or
+    /// handed the element whole, exactly as [`SeqJob::shape`] does for the
+    /// terminal step.
+    shape: SeqShape,
+}
+
+/// What a fused stage does with its callback's answer. Only the steps that
+/// produce their output one element at a time, in order, with no view of the
+/// whole input can be one of these — see [`crate::compiler::chain_defers`] for
+/// the ones that cannot and why.
+#[derive(Clone)]
+enum StageKind {
+    /// Replace the element with the callback's value.
+    Map(Value),
+    /// Keep the element when the callback is truthy, drop it otherwise.
+    Filter(Value),
+}
+
+/// What the callback result now arriving belongs to.
+#[derive(Clone, Copy)]
+enum SeqResume {
+    /// The terminal step's callback: the value is one of `results`.
+    Terminal,
+    /// Stage `n`'s callback, deciding about the element held in [`SeqJob::held`].
+    Stage(usize),
+}
+
+/// A chain step the VM was given permission to defer (by
+/// [`crate::compiler::CHAIN_HINT`]) and did, waiting for the step that will run
+/// it. It lives only across the handful of instructions between one
+/// `CallMethod` and the next — a `LoadMethod` and the inert pushes of the next
+/// step's arguments — which is what makes the bookkeeping below sufficient.
+struct PendingChain {
+    /// The receiver the stages were deferred against, and the value that was
+    /// pushed back in place of the step's result. The flushing step must be
+    /// called on *this* value, checked by identity, or it is not ours.
+    source: Value,
+    stages: Vec<Stage>,
+    /// The shape an element has coming *out* of the last stage.
+    shape: SeqShape,
+    /// How deep the frame stack was. A chain is one expression and never spans
+    /// frames, so a pending chain whose frame is gone is garbage.
+    frame_depth: usize,
 }
 
 /// The collection an adapter was called on, and therefore the collection it
@@ -394,13 +462,56 @@ enum SeqShape {
 struct SeqJob {
     op: SeqOp,
     shape: SeqShape,
-    /// For a dict, each item is the `(key, value)` pair.
+    /// The elements the terminal step sees. For a dict, each is the
+    /// `(key, value)` pair.
+    ///
+    /// With no fused stages this *is* the receiver's snapshot, walked in place
+    /// by `next` — which is what keeps a lone `xs.map(f)` exactly as cheap as
+    /// it was before fusion existed. With stages it starts empty and grows as
+    /// elements fall out of the pipeline.
     items: Vec<Value>,
     results: Vec<Value>,
     next: usize,
-    /// `None` for the predicate-less forms (`any()`, `all()`, `count()`), where
-    /// each element stands in for its own callback result.
+    /// `None` for the predicate-less forms (`any()`, `all()`, `count()`) and
+    /// for [`SeqOp::Collect`], where each element stands in for its own
+    /// callback result.
     func: Option<Value>,
+    /// Fused upstream steps, in order. Empty for an unfused single step.
+    stages: Vec<Stage>,
+    /// The receiver's snapshot when `stages` is non-empty (see `items`).
+    src: Vec<Value>,
+    /// Values still on their way down the stages, as `(stage index, value)`.
+    /// A stack rather than a field because one element can be in flight at a
+    /// stage boundary while the job is suspended in a callback.
+    work: Vec<(usize, Value)>,
+    /// The element a suspended `Filter` stage is deciding about.
+    held: Value,
+    resume: SeqResume,
+    /// Stop once this many elements have reached the terminal. `usize::MAX`
+    /// unless a `take(n)` or `first()` ended the chain — the short circuit that
+    /// makes `xs.map(f).first()` call `f` once instead of once per element.
+    limit: usize,
+    /// `first()`: answer with the single element rather than a collection.
+    pick_first: bool,
+    /// Where the step that ends the chain is written. Only a `first()` on an
+    /// empty result reads it, and only because that diagnostic is raised after
+    /// the last callback has returned, by which time `task.line`/`col` name the
+    /// callback's `return` rather than the call.
+    line: u32,
+    col: u32,
+}
+
+/// Whether two values are the *same* collection — one allocation, not two equal
+/// ones. A deferred pipeline belongs to the receiver it was deferred against
+/// and to no other, and for a chain over a list `==` is far too weak a test.
+fn same_collection(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::List(x), Value::List(y)) => Rc::ptr_eq(x, y),
+        (Value::Tuple(x), Value::Tuple(y)) => Rc::ptr_eq(x, y),
+        (Value::Dict(x), Value::Dict(y)) => Rc::ptr_eq(x, y),
+        (Value::Range(x), Value::Range(y)) => Rc::ptr_eq(x, y),
+        _ => false,
+    }
 }
 
 /// An in-flight `sorted(key=…)` / `list.sort(key=…)`. The key function is Oro
@@ -637,6 +748,10 @@ struct Task {
     str_jobs: Vec<StrJob>,
     sort_jobs: Vec<SortJob>,
     seq_jobs: Vec<SeqJob>,
+    /// Chain steps deferred by [`crate::compiler::CHAIN_HINT`] and not yet run.
+    /// Empty everywhere except inside one chain expression; see
+    /// [`PendingChain`].
+    chains: Vec<PendingChain>,
     mat_jobs: Vec<MatJob>,
     /// Stack of in-flight deep comparisons (see [`CmpJob`]). A `__eq__` that
     /// itself compares containers nests cleanly, which is why it is a stack.
@@ -685,6 +800,7 @@ impl Task {
             str_jobs: Vec::new(),
             sort_jobs: Vec::new(),
             seq_jobs: Vec::new(),
+            chains: Vec::new(),
             mat_jobs: Vec::new(),
             cmp_jobs: Vec::new(),
             ord_jobs: Vec::new(),
@@ -2081,7 +2197,9 @@ impl Vm {
     /// them. See [`Op::LoadMethod`] for what the slots hold.
     fn do_call_method(&mut self, pair: usize) -> Result<Step, VmError> {
         let (name_idx, argc) = self.task.frames.last().expect("no active frame").code.pairs[pair];
-        let n = argc as usize;
+        // Bit 31 is the chain-fusion hint, not part of the count.
+        let chain = argc & crate::compiler::CHAIN_HINT != 0;
+        let n = (argc & !crate::compiler::CHAIN_HINT) as usize;
         let tag_is = {
             let stack = &self.task.frames.last().expect("no active frame").stack;
             let tag = &stack[stack.len() - n - 3];
@@ -2153,7 +2271,7 @@ impl Vm {
                 let name =
                     self.task.frames.last().expect("no active frame").code.names[name_idx as usize]
                         .clone();
-                self.invoke_native_method(recv_or_callee, &name, args, Vec::new())
+                self.invoke_native_method(recv_or_callee, &name, args, Vec::new(), chain)
             }
             _ => self.invoke(recv_or_callee, args, Vec::new()),
         }
@@ -2234,12 +2352,19 @@ impl Vm {
     /// (`join`, `send`, `recv`, `close`, the io protocol), or run an Oro
     /// callback (`map`, `filter`, `sort`, `sorted`, `min`, `max`), or run a
     /// user `__str__` (`to_str`).
+    ///
+    /// `chain` carries [`crate::compiler::CHAIN_HINT`] through from the
+    /// instruction: it is set when codegen could see that this step's result
+    /// feeds the next step of the same chain and nothing else, which is what
+    /// lets a collection step defer itself instead of building a collection
+    /// nobody will look at.
     fn invoke_native_method(
         &mut self,
         receiver: Value,
         name: &Rc<str>,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
+        chain: bool,
     ) -> Result<Step, VmError> {
         // Task and channel methods are dispatched ahead of
         // everything else in this arm for two reasons. They are the
@@ -2303,7 +2428,39 @@ impl Vm {
                     return Ok(step);
                 }
             }
-            return self.do_seq_op(op, &receiver, args, kwargs).map(|()| Step::Next);
+            return self.do_seq_op(op, &receiver, args, kwargs, chain).map(|()| Step::Next);
+        }
+        // `first()` / `take(n)` closing a fused chain. See `Vm::chain_tail`:
+        // they take no callback, so the pipeline runs to `Collect` under a
+        // limit, and the limit is what stops the upstream pass. Anything the
+        // fused form cannot answer (a wrong arity, a non-integer count) leaves
+        // the pipeline pending and falls through to the native method, which
+        // raises the diagnostic it always did.
+        if !self.task.chains.is_empty() {
+            if let Some((limit, pick_first)) = self.chain_tail(&receiver, name, &args) {
+                if let Some(p) = self.take_chain(&receiver) {
+                    let (_, source) = self.seq_receiver(name, &receiver)?;
+                    return self
+                        .begin_seq(SeqJob {
+                            op: SeqOp::Collect,
+                            shape: p.shape,
+                            items: Vec::new(),
+                            results: Vec::new(),
+                            next: 0,
+                            func: None,
+                            stages: p.stages,
+                            src: source,
+                            work: Vec::new(),
+                            held: Value::None,
+                            resume: SeqResume::Terminal,
+                            limit,
+                            pick_first,
+                            line: self.task.line,
+                            col: self.task.col,
+                        })
+                        .map(|()| Step::Next);
+                }
+            }
         }
         // list.sort(key=…, reverse=…) shares sorted()'s frame-driven
         // key machinery; it just writes back in place.
@@ -2499,7 +2656,7 @@ impl Vm {
             }
             Value::Method(m) => match &m.kind {
                 MethodKind::Native(name) => {
-                    self.invoke_native_method(m.receiver.clone(), name, args, kwargs)
+                    self.invoke_native_method(m.receiver.clone(), name, args, kwargs, false)
                 }
                 MethodKind::User { func, defclass } => {
                     if func.code.is_generator {
@@ -2765,12 +2922,16 @@ impl Vm {
     /// A dict's callback is called with two arguments (key and value), so
     /// `d.filter((k, v) => v > 1)` reads naturally instead of forcing the caller
     /// to index a pair.
+    ///
+    /// `chain` is [`crate::compiler::CHAIN_HINT`]: permission to defer this
+    /// step into a [`PendingChain`] for the next step to run in the same pass.
     fn do_seq_op(
         &mut self,
         op: SeqOp,
         receiver: &Value,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
+        chain: bool,
     ) -> Result<(), VmError> {
         let who = op.name();
         if !kwargs.is_empty() {
@@ -2820,17 +2981,122 @@ impl Vm {
             },
         };
 
-        let (shape, items) = self.seq_receiver(who, receiver)?;
-        self.task.seq_jobs.push(SeqJob {
+        // The steps before this one that were deferred into a pipeline, if the
+        // step that deferred them was deferring against *this* receiver. The
+        // identity check is what keeps a pipeline from being flushed into some
+        // other collection that happens to reach a chain method first.
+        let pending = self.take_chain(receiver);
+        let shape = match &pending {
+            Some(p) => p.shape,
+            None => self.seq_shape(who, receiver)?,
+        };
+
+        // Defer in turn, when this step streams and the next one can flush.
+        //
+        // `map` over a **dict** declines. It rebuilds a dict out of whatever
+        // the callback answers, and the check that those answers are
+        // `(key, value)` pairs happens when the dict is built — so a callback
+        // that answers something else must still raise after the whole receiver
+        // has been walked, from the dict rebuild, exactly where it does today.
+        // Deferring would move that check onto the first element. Every other
+        // dict step passes the original pair through untouched and fuses.
+        if chain {
+            let kind = match (op, shape) {
+                (SeqOp::Map, SeqShape::Dict) => None,
+                (SeqOp::Map, _) => func.clone().map(StageKind::Map),
+                (SeqOp::Filter, _) => func.clone().map(StageKind::Filter),
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                let mut p = pending.unwrap_or_else(|| PendingChain {
+                    source: receiver.clone(),
+                    stages: Vec::new(),
+                    shape,
+                    frame_depth: self.task.frames.len(),
+                });
+                // Both deferrable steps are type-preserving, so the shape an
+                // element carries out of the pipeline is the one it carried in.
+                p.stages.push(Stage {
+                    kind,
+                    shape,
+                    line: self.task.line,
+                    col: self.task.col,
+                });
+                self.task.chains.push(p);
+                // The receiver stands in for the collection this step did not
+                // build. Nothing but the next step's `LoadMethod` will see it,
+                // and that resolves the same method on the same type.
+                self.push(receiver.clone());
+                return Ok(());
+            }
+        }
+
+        let stages = pending.map(|p| p.stages).unwrap_or_default();
+        let (_, source) = self.seq_receiver(who, receiver)?;
+        self.begin_seq(SeqJob {
             op,
             shape,
-            items,
+            items: Vec::new(),
             // Reduce seeds its accumulator here; the others accumulate results.
             results: seed.into_iter().collect(),
             next: 0,
             func,
-        });
+            stages,
+            src: source,
+            work: Vec::new(),
+            held: Value::None,
+            resume: SeqResume::Terminal,
+            limit: usize::MAX,
+            pick_first: false,
+            line: self.task.line,
+            col: self.task.col,
+        })
+    }
+
+    /// Start a job whose `src` holds the receiver's snapshot. With no fused
+    /// stages every element reaches the terminal, so the snapshot *is* the
+    /// terminal's input and is moved straight across — an unfused step keeps
+    /// the one vector it has always had.
+    fn begin_seq(&mut self, mut job: SeqJob) -> Result<(), VmError> {
+        if job.stages.is_empty() {
+            job.items = std::mem::take(&mut job.src);
+        }
+        self.task.seq_jobs.push(job);
         self.drive_seq()
+    }
+
+    /// Take the pipeline deferred against `receiver`, if the innermost pending
+    /// one is it. Anything else is left where it is: a pipeline is only ever
+    /// run by the step the compiler emitted to run it.
+    fn take_chain(&mut self, receiver: &Value) -> Option<PendingChain> {
+        match self.task.chains.last() {
+            Some(p) if same_collection(&p.source, receiver) => self.task.chains.pop(),
+            _ => None,
+        }
+    }
+
+    /// `first()` and `take(n)` ending a fused chain.
+    ///
+    /// Neither takes a callback, so the pipeline runs with [`SeqOp::Collect`]
+    /// as its terminal — and with a **limit**, which is the half of fusion
+    /// worth more than the allocation it saves: `xs.map(f).first()` calls `f`
+    /// once instead of four hundred thousand times.
+    ///
+    /// Returns `None` when the call is not one this can answer (a wrong arity,
+    /// a non-integer count). The pipeline is left pending and the native method
+    /// runs on the receiver, where it raises the diagnostic it always did.
+    fn chain_tail(
+        &mut self,
+        receiver: &Value,
+        name: &str,
+        args: &[Value],
+    ) -> Option<(usize, bool)> {
+        match (name, args) {
+            ("first", []) => Some((1, true)),
+            ("take", [Value::Int(n)]) if *n >= 0 => Some((*n as usize, false)),
+            _ => None,
+        }
+        .filter(|_| matches!(receiver, Value::List(_) | Value::Tuple(_) | Value::Dict(_) | Value::Range(_)))
     }
 
     /// The elements a collection operation walks, and the shape to rebuild.
@@ -2839,20 +3105,33 @@ impl Vm {
         who: &str,
         receiver: &Value,
     ) -> Result<(SeqShape, Vec<Value>), VmError> {
-        Ok(match receiver {
-            Value::List(l) => (SeqShape::List, l.borrow().clone()),
-            Value::Tuple(t) => (SeqShape::Tuple, t.as_slice().to_vec()),
-            Value::Dict(d) => {
-                let pairs: Vec<Value> = d
-                    .borrow()
-                    .items()
-                    .iter()
-                    .map(|(k, v)| Value::Tuple(OroTuple::new(vec![k.clone(), v.clone()])))
-                    .collect();
-                (SeqShape::Dict, pairs)
-            }
+        let shape = self.seq_shape(who, receiver)?;
+        let items = match receiver {
+            Value::List(l) => l.borrow().clone(),
+            Value::Tuple(t) => t.as_slice().to_vec(),
+            Value::Dict(d) => d
+                .borrow()
+                .items()
+                .iter()
+                .map(|(k, v)| Value::Tuple(OroTuple::new(vec![k.clone(), v.clone()])))
+                .collect(),
             // A range has no literal to rebuild, so it materialises to a list.
-            Value::Range(_) => (SeqShape::List, self.wrap(iterate_to_vec(receiver))?),
+            _ => self.wrap(iterate_to_vec(receiver))?,
+        };
+        Ok((shape, items))
+    }
+
+    /// The collection a chain step rebuilds, without taking the snapshot that
+    /// running it would need. A step that defers itself still has to know its
+    /// shape — that is what decides whether the *next* stage's callback is
+    /// spread over a key and a value — but it must not copy the receiver, or
+    /// fusing would put back the allocation it exists to remove.
+    fn seq_shape(&self, who: &str, receiver: &Value) -> Result<SeqShape, VmError> {
+        Ok(match receiver {
+            Value::List(_) => SeqShape::List,
+            Value::Tuple(_) => SeqShape::Tuple,
+            Value::Dict(_) => SeqShape::Dict,
+            Value::Range(_) => SeqShape::List,
             other => {
                 return Err(self.err(format!(
                     "'{}' object has no method '{who}'",
@@ -2862,28 +3141,79 @@ impl Vm {
         })
     }
 
+    /// Advance the active job by one callback.
+    ///
+    /// A fused chain is driven element-first rather than step-first: one
+    /// element walks every stage and reaches the terminal before the next
+    /// element is read. That is the whole of fusion — it is why the source is
+    /// read once, why one collection is built instead of one per step, and why
+    /// a `first()` or `take(n)` at the end can stop the upstream pass dead.
     fn drive_seq(&mut self) -> Result<(), VmError> {
         loop {
-            let (item, func, shape, op) = {
-                let job = self.task.seq_jobs.last().expect("active seq job");
+            let (who, at, item, func, shape, op) = {
+                let job = self.task.seq_jobs.last_mut().expect("active seq job");
                 // `find`, `any` and `all` stop as soon as the answer is settled,
-                // so a predicate is never called more often than it must be.
+                // so a predicate is never called more often than it must be;
+                // `limit` is the same idea for a `take(n)`/`first()` terminal,
+                // and it reaches back through the fused stages.
                 let settled = match job.op {
                     SeqOp::Find | SeqOp::Any => job.results.iter().any(|r| r.truthy()),
                     SeqOp::All => job.results.iter().any(|r| !r.truthy()),
-                    _ => false,
+                    _ => job.items.len() >= job.limit,
                 };
-                if settled || job.next >= job.items.len() {
+                // Where the next callback's element comes from: a value part way
+                // down the stages, or a fresh one off the source. With no stages
+                // the source *is* `items`, walked in place exactly as it was
+                // before fusion existed.
+                let next = if settled {
+                    None
+                } else if let Some(w) = job.work.pop() {
+                    Some(w)
+                } else {
+                    let src = if job.stages.is_empty() { &job.items } else { &job.src };
+                    if job.next < src.len() {
+                        let v = src[job.next].clone();
+                        job.next += 1;
+                        Some((0, v))
+                    } else {
+                        None
+                    }
+                };
+                let Some((stage, item)) = next else {
                     let job = self.task.seq_jobs.pop().unwrap();
                     return self.finish_seq(job);
+                };
+                if stage < job.stages.len() {
+                    let st = &job.stages[stage];
+                    let f = match &st.kind {
+                        StageKind::Map(f) | StageKind::Filter(f) => f.clone(),
+                    };
+                    job.resume = SeqResume::Stage(stage);
+                    job.held = item.clone();
+                    let who = match &st.kind {
+                        StageKind::Map(_) => "map",
+                        StageKind::Filter(_) => "filter",
+                    };
+                    (who, (st.line, st.col), item, Some(f), st.shape, job.op)
+                } else {
+                    // Through the pipeline: this one is the terminal's.
+                    if !job.stages.is_empty() {
+                        job.items.push(item.clone());
+                    }
+                    job.resume = SeqResume::Terminal;
+                    (job.op.name(), (job.line, job.col), item, job.func.clone(), job.shape, job.op)
                 }
-                (job.items[job.next].clone(), job.func.clone(), job.shape, job.op)
             };
-            self.task.seq_jobs.last_mut().unwrap().next += 1;
+            let terminal = matches!(
+                self.task.seq_jobs.last().expect("active seq job").resume,
+                SeqResume::Terminal
+            );
 
-            // No predicate (`any()`, `all()`, `count()`): the element is its own
-            // result, so no frame is needed at all.
+            // No predicate (`any()`, `all()`, `count()`, and the `Collect` a
+            // `take(n)` terminal runs): the element is its own result, so no
+            // frame is needed at all.
             let Some(func) = func else {
+                debug_assert!(terminal);
                 self.task.seq_jobs.last_mut().unwrap().results.push(item);
                 continue;
             };
@@ -2897,7 +3227,7 @@ impl Vm {
                 },
                 _ => vec![item.clone()],
             };
-            if op == SeqOp::Reduce {
+            if terminal && op == SeqOp::Reduce {
                 let acc = self
                     .task
                     .seq_jobs
@@ -2913,9 +3243,14 @@ impl Vm {
                         return Err(self.err("maximum recursion depth exceeded"));
                     }
                     if f.code.is_generator {
+                        // This says something about the *call*, not about the
+                        // element it happened to be discovered on, so it is
+                        // reported where the call is written — which is not
+                        // where the VM's position has got to once a fused chain
+                        // has run a callback or two.
+                        (self.task.line, self.task.col) = at;
                         return Err(self.err(format!(
-                            "{}() callback must not be a generator function",
-                            op.name()
+                            "{who}() callback must not be a generator function"
                         )));
                     }
                     let mut frame = self.bind_call(&f, None, call_args, Vec::new())?;
@@ -2952,19 +3287,43 @@ impl Vm {
                     };
                     self.record_seq_result(r);
                 }
-                _ => return Err(self.err(format!("{}() callback is not callable", op.name()))),
+                _ => {
+                    (self.task.line, self.task.col) = at;
+                    return Err(self.err(format!("{who}() callback is not callable")));
+                }
             }
         }
     }
 
-    /// Record one callback result. `reduce` threads a single accumulator rather
-    /// than collecting per-element results, so it replaces instead of appending.
+    /// Record one callback result — the terminal's, or a fused stage's.
+    ///
+    /// A stage's answer decides what happens to the element it was asked
+    /// about: `map` replaces it, `filter` keeps or drops it. Either way the
+    /// survivor moves one stage down and the loop picks it up again, so the
+    /// element reaches the terminal before the source is read a second time.
+    /// `reduce` threads a single accumulator rather than collecting
+    /// per-element results, so it replaces instead of appending.
     fn record_seq_result(&mut self, value: Value) {
         let job = self.task.seq_jobs.last_mut().expect("seq job");
-        if job.op == SeqOp::Reduce {
-            job.results.clear();
+        match job.resume {
+            SeqResume::Terminal => {
+                if job.op == SeqOp::Reduce {
+                    job.results.clear();
+                }
+                job.results.push(value);
+            }
+            SeqResume::Stage(n) => {
+                let held = std::mem::replace(&mut job.held, Value::None);
+                match &job.stages[n].kind {
+                    StageKind::Map(_) => job.work.push((n + 1, value)),
+                    StageKind::Filter(_) => {
+                        if value.truthy() {
+                            job.work.push((n + 1, held));
+                        }
+                    }
+                }
+            }
         }
-        job.results.push(value);
     }
 
     /// Rebuild the result once every callback result is in. Which collection
@@ -2972,6 +3331,24 @@ impl Vm {
     /// select or reorder keep the receiver's type, operations that reshape the
     /// data return a list.
     fn finish_seq(&mut self, job: SeqJob) -> Result<(), VmError> {
+        // `first()` fused onto the end of a chain: the pipeline was run with a
+        // limit of one, so the answer is the one element that got through.
+        if job.pick_first {
+            return match job.items.into_iter().next() {
+                Some(v) => {
+                    self.push(v);
+                    Ok(())
+                }
+                None => {
+                    // Raised after the last callback returned, so the position
+                    // the VM is holding is that callback's `return`. This
+                    // belongs to the `first()` that ended the chain.
+                    self.task.line = job.line;
+                    self.task.col = job.col;
+                    Err(self.err("first() on an empty sequence"))
+                }
+            };
+        }
         let SeqJob { op, shape, items, results, .. } = job;
 
         // Scalar answers first — these do not rebuild a collection at all.
@@ -3054,6 +3431,9 @@ impl Vm {
         // Collection answers.
         let kept: Vec<Value> = match op {
             SeqOp::Map => results,
+            // A `take(n)` closing a chain: the elements that got through are
+            // the answer, and the limit already stopped the pass.
+            SeqOp::Collect => items,
             SeqOp::Filter => items
                 .iter()
                 .zip(results.iter())
@@ -4785,6 +5165,7 @@ impl Vm {
             mat_jobs: self.task.mat_jobs.len() as u32,
             cmp_jobs: self.task.cmp_jobs.len() as u32,
             ord_jobs: self.task.ord_jobs.len() as u32,
+            chains: self.task.chains.len() as u32,
         }
     }
 
@@ -4798,6 +5179,7 @@ impl Vm {
         self.task.mat_jobs.truncate(d.mat_jobs as usize);
         self.task.cmp_jobs.truncate(d.cmp_jobs as usize);
         self.task.ord_jobs.truncate(d.ord_jobs as usize);
+        self.task.chains.truncate(d.chains as usize);
     }
 
     /// Unwind `exc` through the block and frame stacks. On success (a handler or
@@ -4848,6 +5230,10 @@ impl Vm {
                 }
                 None => {
                     // No handler in this frame: discard it and try the caller.
+                    // A chain is one expression, so a pending one belongs to the
+                    // frame being discarded and can never be flushed now.
+                    let depth = self.task.frames.len();
+                    self.task.chains.retain(|c| c.frame_depth < depth);
                     if let Some(frame) = self.task.frames.pop() {
                         // A module body dying has to release its import, or the
                         // path stays in `importing` forever: a *retried* import

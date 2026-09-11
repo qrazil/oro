@@ -1,0 +1,21 @@
+# ORO-ONLY: the short-circuit half of chain fusion. `first()` and `take(n)` end
+# a chain, so a fused chain stops the *whole* upstream pass at the first
+# survivor instead of mapping the collection and throwing the rest away.
+# `fusesc.py` is the CPython twin.
+def f(x):
+    return x * 2 + 1
+
+xs = []
+i = 0
+while i < 20000:
+    xs.append(i)
+    i = i + 1
+
+total = 0
+i = 0
+while i < 50:
+    total = total + xs.map(f).first()
+    total = total + xs.map(f).take(3).last()
+    total = total + xs.filter(x => x > i).map(f).first()
+    i = i + 1
+print(total)

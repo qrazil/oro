@@ -87,6 +87,53 @@ pub struct ClassSpec {
 /// index — strings in [`CodeObject::names`], class descriptions in
 /// [`CodeObject::classes`], the two-operand instructions in
 /// [`CodeObject::pairs`]. `compiler::tests::op_is_one_word` is the tripwire.
+/// Set in the argument-count half of a `CallMethod` pair to mark a collection
+/// step whose result flows straight into the next step of the same chain and
+/// nowhere else — `xs.map(f)` in `xs.map(f).filter(p)`.
+///
+/// It is a *permission*, not an instruction: the VM may defer the step into a
+/// pipeline that the flushing step runs in one pass, and may equally decline
+/// (a dict-shaped `map`, a receiver that turned out to be a user object). A
+/// step that declines simply runs as it always did, so nothing about the
+/// meaning of a program depends on the bit. See `Vm::do_seq_op`.
+///
+/// Bit 31 of the count. An argument count cannot approach it: the parser caps
+/// nothing, but the operand stack and `Vec<Value>` would die long first, and a
+/// chain step takes zero or one argument.
+pub const CHAIN_HINT: u32 = 1 << 31;
+
+/// Collection steps that can *end* a fused run — everything the VM knows how
+/// to flush a pending pipeline into. Codegen may only set [`CHAIN_HINT`] on a
+/// step whose consumer is one of these, because the pipeline is executed by
+/// the consumer and a consumer that does not know about it would lose it.
+pub fn chain_flushes(name: &str) -> bool {
+    matches!(
+        name,
+        "map" | "filter" | "flat_map" | "sort_by" | "group_by" | "partition"
+            | "find" | "any" | "all" | "count" | "min_by" | "max_by" | "unique_by"
+            | "take_while" | "drop_while" | "reduce"
+            // The two native short-circuit terminals. `first` and `take(n)`
+            // are the reason fusing is worth more than the allocation it
+            // saves: fused, they stop the upstream pass instead of mapping a
+            // whole collection to look at its head.
+            | "first" | "take"
+    )
+}
+
+/// Collection steps that can be *deferred* into a pipeline — the ones that
+/// produce a collection one element at a time, with no reordering and no view
+/// of the whole input.
+///
+/// `sorted`, `sort_by`, `unique`, `chunk`, `flatten`, `group_by`, `partition`,
+/// `min_by`/`max_by`, `reversed` and `zip` are barriers: each needs the
+/// finished intermediate. `take_while` is a barrier too, for a subtler reason
+/// — it evaluates its predicate over the *whole* receiver today rather than
+/// stopping at the first false, and fusing it would quietly change how many
+/// times a user predicate runs.
+pub fn chain_defers(name: &str) -> bool {
+    matches!(name, "map" | "filter")
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum Op {
     /// Push a constant from the pool.
@@ -354,10 +401,11 @@ pub struct CodeObject {
     pub builtin_cache: RefCell<Vec<Option<Value>>>,
     /// Class descriptions, indexed by `BuildClass`. See [`ClassSpec`].
     pub classes: Vec<Rc<ClassSpec>>,
-    /// Operand pairs for the two instructions that need two of them —
-    /// `MatchDispatch` and `SetupLoop`. They are executed once per `match` and
-    /// once per loop *entry*, so an extra indirection on them is free, and it
-    /// is what keeps every other instruction one word wide.
+    /// Operand pairs for the three instructions that need two of them —
+    /// `MatchDispatch`, `SetupLoop` and `CallMethod`. The first two are
+    /// executed once per `match` and once per loop *entry*, so an extra
+    /// indirection on them is free, and it is what keeps every other
+    /// instruction one word wide.
     pub pairs: Vec<(u32, u32)>,
     /// Nested function prototypes, indexed by `MakeFunction`.
     pub protos: Vec<Rc<FuncProto>>,

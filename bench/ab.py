@@ -11,7 +11,7 @@ import os, statistics, subprocess, sys, time
 
 PROGS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "progs")
 BENCHES = ["fib","loop","strjoin","strops","dictops","dictstr","oo","genpipe","exc",
-           "listbuild","builtins","chain","json"]
+           "listbuild","builtins","chain","fuse","fusesc","json"]
 
 def run(binary, src, core):
     cmd = ["taskset","-c",str(core),binary,src]
