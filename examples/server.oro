@@ -47,7 +47,7 @@ def slow(req):
 
 
 def echo(req):
-    return http.json_response({"you_sent": req.json()}, 201)
+    return http.json_response({"you_sent": req.json()}, status=201)
 
 
 # A handler that raises answers 500, logs one line on stderr, and takes
@@ -93,4 +93,4 @@ def announce():
     print(f"serving on http://{ln.local}  — ctrl-c to stop")
 
 spawn(announce)
-http.serve(addr, logged(req => routes.dispatch(req)), ready)
+http.serve(addr, logged(req => routes.dispatch(req)), ready=ready)

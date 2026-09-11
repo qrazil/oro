@@ -21,7 +21,7 @@ import sys
 
 def report(label, resp):
     print(f"{label}")
-    print(f"    {resp}    ({len(resp.body)} bytes of {resp.header('content-type', 'nothing in particular')})")
+    print(f"    {resp}    ({len(resp.body)} bytes of {resp.header('content-type', default='nothing in particular')})")
 
 
 # --- the server, for the no-argument case ----------------------------------
@@ -34,13 +34,13 @@ def status(req):
 
 
 def echo(req):
-    return http.json_response({"you_sent": req.json()}, 201)
+    return http.json_response({"you_sent": req.json()}, status=201)
 
 
 def stream_out(req):
     # A Reader body has no length to declare, so this goes out chunked — the
     # framing a client cannot know the size of in advance.
-    return http.Response(200, {"content-type": "text/plain"}, io.buffer(b"a chunk of it\n" * 4096))
+    return http.Response(200, headers={"content-type": "text/plain"}, body=io.buffer(b"a chunk of it\n" * 4096))
 
 
 routes = http.Router()
@@ -61,7 +61,7 @@ if len(sys.argv) > 1:
     sys.exit(0)
 
 ready = chan()
-srv = spawn(http.serve, "127.0.0.1:0", req => routes.dispatch(req), ready)
+srv = spawn(http.serve, "127.0.0.1:0", req => routes.dispatch(req), ready=ready)
 ln = ready.recv()
 base = f"http://{ln.local}"
 print(f"serving on {base}, and dialling it from this same VM\n")
@@ -75,7 +75,7 @@ print(f"    decoded: {resp.json()}")
 # --- a POST with a body ----------------------------------------------------
 # A body is bytes or a Reader, never `str`: Oro takes `.to_bytes()` at every
 # other boundary in the language and this is not the one place that guesses.
-resp = http.fetch("POST", base + "/echo", {"content-type": "application/json"}, json.stringify({"n": 41}).to_bytes())
+resp = http.fetch("POST", base + "/echo", headers={"content-type": "application/json"}, body=json.stringify({"n": 41}).to_bytes())
 report("POST /echo", resp)
 print(f"    the server saw: {resp.json()}")
 

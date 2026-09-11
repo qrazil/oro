@@ -67,7 +67,7 @@ def read_response(c):
 # this, because the fast client's whole request/response lands inside the slow
 # one's `time.sleep`.
 ready = chan()
-srv = spawn(http.serve, "127.0.0.1:0", handler, ready)
+srv = spawn(http.serve, "127.0.0.1:0", handler, ready=ready)
 ln = ready.recv()
 print("serve() handed back the listener it bound:", ln.local.startswith("127.0.0.1:"))
 

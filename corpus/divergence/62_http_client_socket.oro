@@ -38,7 +38,7 @@ def text(req):
 
 
 def echo(req):
-    return http.json_response({"you_sent": req.json()}, 201)
+    return http.json_response({"you_sent": req.json()}, status=201)
 
 
 def chunked(req):
@@ -46,7 +46,7 @@ def chunked(req):
     # chunks. This is the only way to get a chunked response out of this
     # module, and it is the response the client's `_ResponseChunkedReader` is
     # for.
-    return http.Response(200, {"content-type": "text/plain"}, io.buffer(b"chunk " * 5000))
+    return http.Response(200, headers={"content-type": "text/plain"}, body=io.buffer(b"chunk " * 5000))
 
 
 def empty(req):
@@ -70,7 +70,7 @@ routes.add("GET", "/big", big)
 routes.add("GET", "/hello/:name", named)
 
 ready = chan()
-srv = spawn(http.serve, "127.0.0.1:0", req => routes.dispatch(req), ready)
+srv = spawn(http.serve, "127.0.0.1:0", req => routes.dispatch(req), ready=ready)
 ln = ready.recv()
 base = f"http://{ln.local}"
 
@@ -136,7 +136,7 @@ print("a GET with a Content-Length body came back whole:", r.status == 200, r.bo
 print("and the length it declared is the length it sent:", r.header("content-length") == f"{len(r.body)}")
 print("the reason phrase survived the round trip:", f"{r}" == "200 OK")
 
-r = http.fetch("POST", base + "/echo", {"Content-Type": "application/json"}, json.stringify({"n": 1}).to_bytes())
+r = http.fetch("POST", base + "/echo", headers={"Content-Type": "application/json"}, body=json.stringify({"n": 1}).to_bytes())
 print("a POST with a body was echoed:", r.status == 201, f"{r.json()}" == "{'you_sent': {'n': 1}}")
 
 r = http.fetch("GET", base + "/hello/ada?x=1&y=two")
@@ -171,7 +171,7 @@ print("a 204 has no body and no framing header:", r.status == 204, r.body == b""
 r = http.fetch("GET", base + "/missing")
 print("a 404 is an answer, not an exception:", r.status == 404, r.text() == "not found\n")
 
-r = http.fetch("GET", base + "/text", {"x-custom": "sent"}, timeout=_DEADLINE)
+r = http.fetch("GET", base + "/text", headers={"x-custom": "sent"}, timeout=_DEADLINE)
 print("a caller's own header went out:", r.status == 200)
 
 r = http.fetch("GET", base + "/big")

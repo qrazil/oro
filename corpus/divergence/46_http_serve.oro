@@ -67,7 +67,7 @@ def boom(req):
 
 
 def refuse(req):
-    raise http.BadRequest("your JSON is wrong", 422)
+    raise http.BadRequest("your JSON is wrong", status=422)
 
 
 print("--- HTTP/1.1 reuses the connection by default")
@@ -90,7 +90,7 @@ print("--- Connection: close ends it from either side")
 c = Conn(b"GET /first HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\nGET /second HTTP/1.1\r\nHost: h\r\n\r\n")
 check("the client asked to close", http.serve_conn(c, echo_path), 1)
 check("a comma list is read as a list", http.serve_conn(Conn(b"GET / HTTP/1.1\r\nHost: h\r\nConnection: keep-alive, close\r\n\r\nGET / HTTP/1.1\r\nHost: h\r\n\r\n"), echo_path), 1)
-check("the handler asked to close", http.serve_conn(Conn(b"GET / HTTP/1.1\r\nHost: h\r\n\r\nGET / HTTP/1.1\r\nHost: h\r\n\r\n"), req => http.Response(200, {"connection": "close"}, b"")), 1)
+check("the handler asked to close", http.serve_conn(Conn(b"GET / HTTP/1.1\r\nHost: h\r\n\r\nGET / HTTP/1.1\r\nHost: h\r\n\r\n"), req => http.Response(200, headers={"connection": "close"}, body=b"")), 1)
 
 print("--- an unread request body is drained, not left to be parsed as a request")
 c = Conn(b"POST /ignored HTTP/1.1\r\nHost: h\r\nContent-Length: 11\r\n\r\nGET /nope\r\nGET /second HTTP/1.1\r\nHost: h\r\n\r\n")
@@ -110,7 +110,7 @@ capped = []
 for i in range(1200):
     capped.append(b"GET / HTTP/1.1\r\nHost: h\r\n\r\n")
 c = Conn(capped.join(b""))
-check("requests served before the cap", http.serve_conn(c, req => http.Response(200, {}, b"")), 1000)
+check("requests served before the cap", http.serve_conn(c, req => http.Response(200, body=b"")), 1000)
 check("the last response says the connection is ending", scrub(c.sent()).endswith(b"connection: close\r\ndate: <clock>\r\n\r\n"), true)
 
 print("--- a handler that raises is a 500, and says so on stderr")
@@ -120,7 +120,7 @@ show("500 response", c.sent())
 
 print("--- a handler that builds a header out of user input cannot inject one")
 c = Conn(b"GET / HTTP/1.1\r\nHost: h\r\n\r\n")
-http.serve_conn(c, req => http.Response(200, {"x-echo": "a\r\nx-injected: yes"}, b""))
+http.serve_conn(c, req => http.Response(200, headers={"x-echo": "a\r\nx-injected: yes"}, body=b""))
 show("500, not an injected header", c.sent())
 
 print("--- a body that cannot be drained closes the connection rather than escaping")
@@ -140,11 +140,11 @@ check("the second request was never read", c.unread(), b"GET /second HTTP/1.1\r\
 show("400 response", c.sent())
 
 print("--- routing")
-r = http.Router().add("GET", "/health", req => http.text("ok\n")).add("GET", "/users/:id", req => http.text(req.params["id"] + "\n")).add("POST", "/users", req => http.text("created\n", 201))
+r = http.Router().add("GET", "/health", req => http.text("ok\n")).add("GET", "/users/:id", req => http.text(req.params["id"] + "\n")).add("POST", "/users", req => http.text("created\n", status=201))
 
 
 def route(method, path):
-    req = http.Request(method, path, {}, "1.1", {}, io.buffer(b""))
+    req = http.Request(method, path, {})
     resp = r.dispatch(req)
     body = resp.body
     allow = resp.headers.get("allow", default="-")

@@ -1147,7 +1147,7 @@ measurement, and the reason the same argument does not move `http`.
   written, a concurrent one, because `accept`, `read` and `write` park the task
   and not the VM. A handler that raises is a 500 for that request and nothing
   more. Underneath it: `http.read_request(r)` parses one request off any Reader
-  (`null` at a clean EOF); `http.write_response(w, req, resp, keep_alive)`
+  (`null` at a clean EOF); `http.write_response(w, req, resp, keep_alive=false)`
   sends the head and a sized body in **one** `write`;
   `http.serve_conn(conn, handler)` is the keep-alive loop;
   `http.Router().add(method, path, handler)` chains routes and binds
@@ -1161,8 +1161,8 @@ measurement, and the reason the same argument does not move `http`.
   resp = http.fetch("GET", "http://127.0.0.1:8080/health")
   print(resp.status, resp.text())
 
-  http.fetch("POST", url, {"content-type": "application/json"},
-             json.stringify(payload).to_bytes())
+  http.fetch("POST", url, headers={"content-type": "application/json"},
+             body=json.stringify(payload).to_bytes())
   ```
 
   There is no `http.get`/`http.post`/`http.put`: the method is an argument
@@ -1209,7 +1209,7 @@ measurement, and the reason the same argument does not move `http`.
   TLS, and the only alternative to refusing is opening a plaintext connection
   to port 443 and sending whatever the caller put in an `Authorization` header
   in the clear. Underneath `fetch`: `http.write_request(w, method, target,
-  headers, body)` and `http.read_response(r, method)` are the seam, and they
+  headers, body=b"")` and `http.read_response(r, method)` are the seam, and they
   take a Reader and a Writer rather than a socket, exactly as `read_request`
   and `write_response` do. `read_response` takes the method because **a
   response is not self-describing** — the reply to a `HEAD` carries the

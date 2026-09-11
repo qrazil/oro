@@ -34,7 +34,7 @@ class CountingWriter:
 
 
 def request(method, version):
-    return http.Request(method, "/", {}, version, {}, io.buffer(b""))
+    return http.Request(method, "/", {}, version=version)
 
 
 # Every response carries a Date, and a live clock is not reviewable, so the
@@ -59,57 +59,57 @@ def show(label, raw):
 print("--- a bytes body is framed by Content-Length, in one write")
 w = CountingWriter()
 resp = http.text("hello\n")
-http.write_response(w, request("GET", "1.1"), resp, true)
+http.write_response(w, request("GET", "1.1"), resp, keep_alive=true)
 check("writes", w.writes(), 1)
 show("200 with a text body", w.bytes())
 
 print("--- a Reader body is framed by chunked")
 w = CountingWriter()
-resp = http.Response(200, {"content-type": "application/octet-stream"}, io.buffer(b"streamed"))
-http.write_response(w, request("GET", "1.1"), resp, true)
+resp = http.Response(200, headers={"content-type": "application/octet-stream"}, body=io.buffer(b"streamed"))
+http.write_response(w, request("GET", "1.1"), resp, keep_alive=true)
 check("head, one chunk, terminator", w.writes(), 3)
 show("200 with a streamed body", w.bytes())
 
 print("--- HEAD carries the framing and no body")
 w = CountingWriter()
-http.write_response(w, request("HEAD", "1.1"), http.text("hello\n"), true)
+http.write_response(w, request("HEAD", "1.1"), http.text("hello\n"), keep_alive=true)
 check("writes", w.writes(), 1)
 show("HEAD response", w.bytes())
 
 print("--- 204 carries no framing at all")
 w = CountingWriter()
-http.write_response(w, request("GET", "1.1"), http.Response(204), true)
+http.write_response(w, request("GET", "1.1"), http.Response(204), keep_alive=true)
 show("204 response", w.bytes())
 
 print("--- a connection that will not be reused says so")
 w = CountingWriter()
-http.write_response(w, request("GET", "1.1"), http.text("bye\n"), false)
+http.write_response(w, request("GET", "1.1"), http.text("bye\n"), keep_alive=false)
 show("200 with Connection: close", w.bytes())
 
 print("--- json_response")
 w = CountingWriter()
-http.write_response(w, request("GET", "1.1"), http.json_response({"ok": true, "n": 2}), true)
+http.write_response(w, request("GET", "1.1"), http.json_response({"ok": true, "n": 2}), keep_alive=true)
 show("200 with a JSON body", w.bytes())
 
 print("--- a caller-set Date is left alone")
 w = CountingWriter()
 resp = http.text("x")
 resp.headers["date"] = "Sun, 06 Nov 1994 08:49:37 GMT"
-http.write_response(w, request("GET", "1.1"), resp, true)
+http.write_response(w, request("GET", "1.1"), resp, keep_alive=true)
 check("date", resp.headers["date"], "Sun, 06 Nov 1994 08:49:37 GMT")
 
 print("--- HTTP/1.0 has no chunked coding, so an unsized body is delimited by the close")
 w = CountingWriter()
-resp = http.Response(200, {}, io.buffer(b"raw bytes"))
-http.write_response(w, request("GET", "1.0"), resp, false)
+resp = http.Response(200, body=io.buffer(b"raw bytes"))
+http.write_response(w, request("GET", "1.0"), resp, keep_alive=false)
 check("no transfer-encoding header", resp.headers.get("transfer-encoding", default="-"), "-")
 show("1.0 response with an unsized body", w.bytes())
 
 print("--- a header cannot end the header block early")
 w = CountingWriter()
-resp = http.Response(200, {"x-echo": "a\r\nx-injected: yes"}, b"")
+resp = http.Response(200, headers={"x-echo": "a\r\nx-injected: yes"}, body=b"")
 try:
-    http.write_response(w, request("GET", "1.1"), resp, true)
+    http.write_response(w, request("GET", "1.1"), resp, keep_alive=true)
     print("MISMATCH: the injected header was written")
 except ValueError as e:
     print(f"ValueError: {e}")
