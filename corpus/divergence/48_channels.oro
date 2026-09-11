@@ -44,12 +44,10 @@ log = []
 gate = chan()
 
 def producer():
-    i = 0
-    while i < 2:
+    for i in range(2):
         log.append("send " + i.to_str())
         gate.send(i)
         log.append("sent " + i.to_str())
-        i = i + 1
     gate.close()
 
 p = spawn(producer)

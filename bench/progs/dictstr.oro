@@ -2,6 +2,9 @@
 # writes under distinct keys, 200k lookups, then half a million reads and
 # writes of one small record — the shape real code actually uses, where the
 # same three short keys are hashed over and over.
+#
+# The counter here is hand-rolled on purpose: a benchmark's loop is inside its
+# measurement. See bench/RESULTS.md, "Why the benchmarks still count by hand".
 d = {}
 i = 0
 while i < 200000:

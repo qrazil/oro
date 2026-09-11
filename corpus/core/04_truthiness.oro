@@ -1,9 +1,6 @@
 vals = [0, 1, "", "x", [], [1], {}, null]
-i = 0
-while i < len(vals):
-    v = vals[i]
+for v in vals:
     if v:
         print("truthy")
     else:
         print("falsy")
-    i = i + 1

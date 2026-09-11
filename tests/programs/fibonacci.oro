@@ -5,7 +5,5 @@ def fib(n):
         return n
     return fib(n - 1) + fib(n - 2)
 
-i = 0
-while i <= 15:
+for i in range(16):
     print(fib(i))
-    i = i + 1

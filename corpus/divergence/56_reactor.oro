@@ -84,11 +84,9 @@ def receiver():
     received.append(got)
 
 def meanwhile():
-    i = 0
-    while i < 3:
+    for i in range(3):
         progress.append("ran while the write was parked")
         yield_now()
-        i = i + 1
 
 snd = spawn(sender)
 mid = spawn(meanwhile)
@@ -118,11 +116,9 @@ def waiter():
         return f"{e}"
 
 def ticker():
-    i = 0
-    while i < 3:
+    for i in range(3):
         ticks.append(i)
         time.sleep(0.03)
-        i = i + 1
 
 w = spawn(waiter)
 tk = spawn(ticker)

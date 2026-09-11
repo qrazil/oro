@@ -92,10 +92,8 @@ print(n in [n], [n] == [n], (n,) == (n,), {"k": n} == {"k": n})
 # references to a single object settles every element without asking anything,
 # and a Rust frame per element would be a stack overflow rather than an answer.
 wide = []
-i = 0
-while i < 20000:
+for i in range(20000):
     wide.append(n)
-    i = i + 1
 other = wide[0:20000]
 print(len(wide), wide == other, n in wide)
 

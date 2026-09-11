@@ -50,10 +50,8 @@ print(d.count((k, v) => v > 1), d.any((k, v) => v > 2))
 
 # generators can start a chain
 def nums(n):
-    i = 0
-    while i < n:
+    for i in range(n):
         yield i
-        i = i + 1
 
 print(nums(10).filter(x => x % 2 == 0).sum())
 print(nums(5).reduce(1, (acc, x) => acc + x))

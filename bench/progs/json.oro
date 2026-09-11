@@ -8,6 +8,9 @@
 #
 # ORO_ONLY: `json.parse`/`json.stringify` are Oro's spellings; the CPython twin
 # is json.py.
+#
+# The counter here is hand-rolled on purpose: a benchmark's loop is inside its
+# measurement. See bench/RESULTS.md, "Why the benchmarks still count by hand".
 import json
 
 SMALL_ROUNDS = 400

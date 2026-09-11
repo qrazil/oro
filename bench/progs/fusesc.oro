@@ -2,6 +2,9 @@
 # a chain, so a fused chain stops the *whole* upstream pass at the first
 # survivor instead of mapping the collection and throwing the rest away.
 # `fusesc.py` is the CPython twin.
+#
+# The counter here is hand-rolled on purpose: a benchmark's loop is inside its
+# measurement. See bench/RESULTS.md, "Why the benchmarks still count by hand".
 def f(x):
     return x * 2 + 1
 

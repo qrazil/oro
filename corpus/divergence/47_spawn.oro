@@ -13,10 +13,8 @@
 order = []
 
 def worker(name, n):
-    i = 0
-    while i < n:
+    for i in range(n):
         order.append(name)
-        i = i + 1
     return name.upper()
 
 t = spawn(worker, "a", 2)
@@ -37,10 +35,8 @@ print("joining twice gives the same value:", t.join() == "A")
 total = {"n": 0}
 
 def bump(k):
-    i = 0
-    while i < k:
+    for i in range(k):
         total["n"] = total["n"] + 1
-        i = i + 1
 
 ts = []
 for k in [10, 20, 30]:

@@ -107,10 +107,8 @@ check("the response says the connection is ending", scrub(c.sent()).find(b"conne
 
 print("--- a connection cannot be reused forever")
 capped = []
-i = 0
-while i < 1200:
+for i in range(1200):
     capped.append(b"GET / HTTP/1.1\r\nHost: h\r\n\r\n")
-    i = i + 1
 c = Conn(capped.join(b""))
 check("requests served before the cap", http.serve_conn(c, req => http.Response(200, {}, b"")), 1000)
 check("the last response says the connection is ending", scrub(c.sent()).endswith(b"connection: close\r\ndate: <clock>\r\n\r\n"), true)

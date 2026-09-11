@@ -83,10 +83,8 @@ except RuntimeError as e:
     print("RuntimeError:", e)
 
 nest = []
-i = 0
-while i < 12000:
+for i in range(12000):
     nest = [nest]
-    i = i + 1
 try:
     json.stringify(nest)
 except RuntimeError as e:
@@ -94,8 +92,6 @@ except RuntimeError as e:
 
 # A structure just inside the cap still writes.
 shallow = []
-i = 0
-while i < 500:
+for i in range(500):
     shallow = [shallow]
-    i = i + 1
 print(len(json.stringify(shallow)))

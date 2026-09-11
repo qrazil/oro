@@ -705,6 +705,47 @@ placeholder is the tax this rule charges, and it is worth knowing that it can
 hide a failure: if the block does not run, the placeholder flows on instead of
 the `NameError` that would have told you. Choose it so the wrong path is loud.
 
+### The loop rule: `for … in range(n)` counts, `while` waits
+
+> **A loop over a known count is `for i in range(n)`. A loop over a collection
+> is `for x in` the collection, or a chain. `while` is for a condition that is
+> not a count — a poll, an EOF drain, an accept loop.** And a loop whose index
+> exists only to reach into two sequences at once is `a.zip(b)`.
+
+This is written down because nothing in Oro can enforce it. `oro fmt` is a
+formatter, not a linter, and "no options, one output" means it will never grow
+a rule, so the rewrite is the enforcement and the sentence above is the record.
+
+It needed writing because the tree had got it backwards. A bounded count was
+spelled two ways and the worse one had won 67 to 17:
+
+```python
+i = 0                          for i in range(10):
+while i < 10:                      work(i)
+    work(i)
+    i = i + 1
+```
+
+The manual form is three lines instead of two, and it has three failure modes
+the other one cannot have: forget the increment and it never ends; write a
+`continue` above the increment and it never ends; put the increment in the
+wrong place and the loop is off by one. It is also **32% slower** — 0.203s
+against 0.139s over three million iterations — because `range` steps in Rust
+and a hand-written counter steps in the VM, three instructions at a time.
+
+None of that is the main cost. The main cost is that it was in `std/http.oro`,
+in the corpus, and in the examples, and **a newcomer reads the standard library
+to learn what the language looks like.** A dominant idiom nobody chose is still
+a dominant idiom.
+
+`while` keeps its place, and keeps it easily: a condition is not a sequence.
+`while chunk != b"":` drains a stream to EOF, `while len(live) > 0 and
+time.monotonic() < deadline:` waits out a shutdown, and `while true:` accepts
+connections — none of them has a `for` spelling, and all three are in
+`std/` unchanged. The one deliberate exception in the other direction is
+`bench/progs/`, where the loop is inside the measurement; that file's own
+header says so, and the argument is in `bench/RESULTS.md`.
+
 ### No `with` — deterministic cleanup instead
 
 Oro has no `with` statement because it does not need one. Reference counting

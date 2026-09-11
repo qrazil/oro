@@ -48,10 +48,8 @@ class Counter:
         self.n = n
 
     def up(self):
-        i = 0
-        while i < self.n:
+        for i in range(self.n):
             yield i
-            i = i + 1
 
 
 c = Counter(3)
