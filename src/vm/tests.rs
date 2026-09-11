@@ -1249,8 +1249,71 @@ fn the_cut_sorts_name_their_replacement() {
     assert!(e.message.contains("reverse must be a bool"), "got: {}", e.message);
 }
 
+/// `any`, `all` and `count` each need their predicate: truthiness is a
+/// predicate like any other, and `[0, 1, 2, ""].count()` read as a length.
+#[test]
+fn any_all_and_count_require_their_predicate() {
+    for (call, who) in [("[1].any()", "any"), ("[1].all()", "all"), ("[1].count()", "count")] {
+        let e = run_err(&format!("r = {call}\n"));
+        assert!(e.message.contains(&format!("{who}() needs a predicate")), "got: {}", e.message);
+        assert!(e.message.contains(&format!("xs.{who}(x => x)")), "got: {}", e.message);
+    }
+    // `count` also names the call that *is* a length.
+    let e = run_err("r = [1].count()\n");
+    assert!(e.message.contains("xs.len()"), "got: {}", e.message);
+    assert_eq!(eval("r = [1, 0, 2].count(x => x)\n").repr(), "2");
+}
 
+/// `take`, `drop` and `chunk` require their count. It used to be an optional
+/// parameter with a sentinel default, which made a missing count a *ValueError*
+/// and an extra argument nothing at all — and, fused, `take(true)` answered
+/// with the receiver's own elements rather than the chain's.
+#[test]
+fn take_drop_and_chunk_require_an_int_count() {
+    for call in ["[1, 2].take()", "[1, 2].drop()", "[1, 2].chunk()"] {
+        let e = run_err(&format!("r = {call}\n"));
+        assert!(e.message.contains("argument(s) but 0 were given"), "got: {}", e.message);
+    }
+    let e = run_err("r = [1, 2].take(1, 99)\n");
+    assert!(e.message.contains("takes 1 argument(s) but 2 were given"), "got: {}", e.message);
+    for call in ["[1, 2].take(\"two\")", "[1, 2].take(true)", "[1, 2].chunk(null)"] {
+        let e = run_err(&format!("r = {call}\n"));
+        assert!(e.message.contains("argument must be int"), "got: {}", e.message);
+    }
+    // A negative count is still the ValueError it was: the count is there and
+    // is an int, and what is wrong with it is its value.
+    let e = run_err("r = [1, 2].take(-1)\n");
+    assert!(e.message.contains("needs a count >= 0"), "got: {}", e.message);
+    // Fused, the same two shapes now raise instead of answering `[1]` and
+    // `[1, 2]` — the unmapped elements of the receiver.
+    let e = run_err("r = [1, 2, 3].map(x => x * 10).take(true)\n");
+    assert!(e.message.contains("argument must be int"), "got: {}", e.message);
+    let e = run_err("r = [1, 2, 3].map(x => x * 10).take(2, 99)\n");
+    assert!(e.message.contains("takes 1 argument(s) but 2 were given"), "got: {}", e.message);
+    assert_eq!(eval("r = [1, 2, 3].map(x => x * 10).take(2)\n").repr(), "[10, 20]");
+}
 
+/// `sum` and `enumerate` take their start by name. The number in
+/// `xs.enumerate(1)` said nothing about what it was, and `start=null` is not a
+/// second spelling of leaving it out.
+#[test]
+fn sum_and_enumerate_take_their_start_by_name() {
+    assert_eq!(eval("r = [1, 2].sum(start=10)\n").repr(), "13");
+    assert_eq!(eval("r = [7, 8].enumerate(start=1)\n").repr(), "[(1, 7), (2, 8)]");
+    for call in ["[1, 2].sum(10)", "[7, 8].enumerate(1)"] {
+        let e = run_err(&format!("r = {call}\n"));
+        assert!(e.message.contains("takes no positional arguments"), "got: {}", e.message);
+        assert!(e.message.contains("start="), "got: {}", e.message);
+    }
+    for call in ["[1, 2].sum(start=null)", "[7, 8].enumerate(start=null)"] {
+        let e = run_err(&format!("r = {call}\n"));
+        assert!(e.message.contains("must not be null"), "got: {}", e.message);
+    }
+    let e = run_err("r = [7, 8].enumerate(start=\"x\")\n");
+    assert!(e.message.contains("start must be an int"), "got: {}", e.message);
+    let e = run_err("r = [1, 2].sum(base=10)\n");
+    assert!(e.message.contains("unexpected keyword argument 'base'"), "got: {}", e.message);
+}
 
 /// The undecorate step both sorts finish with: every element moves once, by
 /// following the permutation's cycles, and nothing is cloned.

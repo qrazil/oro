@@ -519,9 +519,8 @@ struct SeqJob {
     items: Vec<Value>,
     results: Vec<Value>,
     next: usize,
-    /// `None` for the predicate-less forms (`any()`, `all()`, `count()`) and
-    /// for [`SeqOp::Collect`], where each element stands in for its own
-    /// callback result.
+    /// `None` only for [`SeqOp::Collect`], where each element stands in for its
+    /// own callback result.
     func: Option<Value>,
     /// How `func` takes each element (see [`Spread`]), settled when the job is
     /// made.
@@ -3152,8 +3151,11 @@ impl Vm {
         let callable = |v: &Value| {
             matches!(v, Value::Func(_) | Value::Builtin(_) | Value::Method(_))
         };
-        // Arity: reduce takes (initial, f); any/all/count take an optional
-        // predicate; everything else takes exactly one function.
+        // Arity: reduce takes (initial, f); everything else takes exactly one
+        // function. `any`/`all`/`count` once tested truthiness with none, and
+        // `[0, 1, 2, ""].count()` read as a length and was 2; truthiness is a
+        // predicate like any other now, so their missing one says how to
+        // spell it.
         let (func, seed) = match op {
             SeqOp::Reduce => match args.as_slice() {
                 [init, f] if callable(f) => (Some(f.clone()), Some(init.clone())),
@@ -3170,17 +3172,12 @@ impl Vm {
                     ))
                 }
             },
-            SeqOp::Any | SeqOp::All | SeqOp::Count => match args.as_slice() {
-                [] => (None, None),
-                [f] if callable(f) => (Some(f.clone()), None),
-                [other] => {
-                    return Err(self.err(type_error(format!(
-                        "{who}() needs a function, not '{}'",
-                        other.type_name()
-                    ))))
-                }
-                _ => return Err(self.err(type_error(format!("{who}() takes at most 1 argument")))),
-            },
+            SeqOp::Any | SeqOp::All | SeqOp::Count if args.is_empty() => {
+                let len = if op == SeqOp::Count { "; `xs.len()` is the length" } else { "" };
+                return Err(self.err(type_error(format!(
+                    "{who}() needs a predicate — truthiness is `xs.{who}(x => x)`{len}"
+                ))));
+            }
             _ => match args.as_slice() {
                 [f] if callable(f) => (Some(f.clone()), None),
                 [other] => {
@@ -3486,18 +3483,11 @@ impl Vm {
                     // Out the bottom of the pipeline: this one is the
                     // terminal's.
                     job.resume = SeqResume::Terminal;
-                    // No callback (`any()`, `all()` and `count()` without a
-                    // predicate, and the `Collect` that a fused chain ends in):
-                    // the element settles the step on its own, so no frame is
-                    // needed at all. `Collect`'s answer *is* the elements, so it
-                    // takes this one whole; the others answer with what they
-                    // make of it.
+                    // No callback: the `Collect` that a fused chain ends in,
+                    // the one step without one. Its answer *is* the elements,
+                    // so it takes this one whole and needs no frame at all.
                     let Some(f) = job.func.clone() else {
-                        if matches!(job.op, SeqOp::Collect) {
-                            job.items.push(item);
-                        } else {
-                            job.results.push(item);
-                        }
+                        job.items.push(item);
                         continue;
                     };
                     // With no stages `items` is the walk itself and already

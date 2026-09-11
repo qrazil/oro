@@ -19,7 +19,7 @@ counts = [3, 1, 4, 1]
 print("--- enumerate")
 print(words.enumerate().map((i, w) => f"{i}:{w}"))
 print(words.enumerate().filter((i, w) => i % 2 == 0).map((i, w) => w))
-print(words.enumerate(1).filter((i, w) => w != "bee").map((i, w) => i * 10).filter(n => n > 10))
+print(words.enumerate(start=1).filter((i, w) => w != "bee").map((i, w) => i * 10).filter(n => n > 10))
 
 print("--- zip")
 pairs = words.zip(counts)

@@ -9,10 +9,10 @@
 print([], range(3).to_list(), "abc".to_list())
 print({}, [("a", 1), ("b", 2)].to_dict())
 print(["a", "b"].enumerate())
-print(["a", "b"].enumerate(1))
+print(["a", "b"].enumerate(start=1))
 print([1, 2, 3].zip([4, 5]))
 print([].zip([1]))
-print([false, true].any(), [].any(), [true, true].all(), [true, false].all(), [].all())
+print([false, true].any(x => x), [].any(x => x), [true, true].all(x => x), [true, false].all(x => x), [].all(x => x))
 print("ff".to_int(16), "0x1f".to_int(16), "777".to_int(8), "1010".to_int(2))
 print("-ff".to_int(16), "+10".to_int(10), "1_0".to_int(10), "z".to_int(36))
 for i, x in ["p", "q"].enumerate():

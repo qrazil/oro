@@ -107,16 +107,17 @@ print(range(3).zip(range(2), range(9)))
 for a, b, c in [1, 2].zip([3, 4], [5, 6]):
     print(a, b, c)
 
-# `enumerate` takes a start and nothing else, and refuses a second argument
-# rather than ignoring it.
-print([7, 8].enumerate(), [7, 8].enumerate(1))
+# `enumerate` takes a start and nothing else, and takes it by name: the number
+# in `xs.enumerate(1)` said nothing about what it was, and the call that read
+# neither the 9 nor the reader's mind is refused twice over now.
+print([7, 8].enumerate(), [7, 8].enumerate(start=1))
 try:
     print([7, 8].enumerate(1, 9))
 except TypeError as e:
     print(e)
 
-# `sum` carries the start the builtin's second argument was.
-print([1, 2].sum(), [1, 2].sum(10), [].sum())
+# `sum` carries the start the builtin's second argument was, by name too.
+print([1, 2].sum(), [1, 2].sum(start=10), [].sum())
 
 # `sort_by` preserves the receiver's shape, which is the collection protocol's
 # stated rule for anything that reorders, and it carries the `reverse=` the
@@ -145,7 +146,7 @@ d = {"b": 1, "a": 2}
 print(d.min(), d.max())
 print(d.enumerate())
 print(d.zip([10, 20]))
-print(d.any(), d.all(), d.len())
+print(d.any(p => p), d.all(p => p), d.len())
 print(d.sort_by(p => p), {}.sort_by(p => p), type(d.sort_by(p => p)))
 
 # `sum` over a dict is an attempt to add a tuple to an int, and says so.

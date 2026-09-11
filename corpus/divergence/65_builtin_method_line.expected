@@ -1,8 +1,8 @@
 `sum` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `xs.sum()`
 `sorted` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `xs.sort_by(x => x)`, or `xs.sort_by(f, reverse=true)` with a key
-`any` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `xs.any()`, or `xs.any(p)` with a predicate
-`all` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `xs.all()`, or `xs.all(p)` with a predicate
-`enumerate` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `xs.enumerate()`, or `xs.enumerate(1)` to start elsewhere
+`any` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `xs.any(p)`, or `xs.any(x => x)` for truthiness
+`all` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `xs.all(p)`, or `xs.all(x => x)` for truthiness
+`enumerate` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `xs.enumerate()`, or `xs.enumerate(start=1)` to start elsewhere
 `zip` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `a.zip(b)`, which takes any number of further sequences
 ---
 1 3 0.5 b
@@ -23,7 +23,7 @@ max() takes two or more values in Oro — a builtin takes scalars and a collecti
 1 3 5
 2 4 6
 [(0, 7), (1, 8)] [(1, 7), (2, 8)]
-enumerate() takes at most 1 argument(s) but 2 were given
+enumerate() takes no positional arguments — the start is named: `xs.enumerate(start=n)`
 3 13 0
 [1, 2, 3] (1, 2, 3) ()
 [1, 2, 3]

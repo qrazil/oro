@@ -682,15 +682,15 @@ pub fn cut_global_message(name: &str) -> Option<&'static str> {
         }
         "any" => {
             "`any` is not defined in Oro — a builtin takes scalars and a collection method \
-             takes a collection: use `xs.any()`, or `xs.any(p)` with a predicate"
+             takes a collection: use `xs.any(p)`, or `xs.any(x => x)` for truthiness"
         }
         "all" => {
             "`all` is not defined in Oro — a builtin takes scalars and a collection method \
-             takes a collection: use `xs.all()`, or `xs.all(p)` with a predicate"
+             takes a collection: use `xs.all(p)`, or `xs.all(x => x)` for truthiness"
         }
         "enumerate" => {
             "`enumerate` is not defined in Oro — a builtin takes scalars and a collection \
-             method takes a collection: use `xs.enumerate()`, or `xs.enumerate(1)` \
+             method takes a collection: use `xs.enumerate()`, or `xs.enumerate(start=1)` \
              to start elsewhere"
         }
         "zip" => {
@@ -885,6 +885,7 @@ pub fn method_exists(recv: &Value, name: &str) -> bool {
 /// a silently discarded argument.
 fn takes_kwargs(recv: &Value, name: &str) -> bool {
     matches!(recv, Value::Str(_) | Value::Bytes(_)) && matches!(name, "strip" | "split" | "find")
+        || (is_collection(recv) && matches!(name, "sum" | "enumerate"))
 }
 
 /// Dispatch a bound method call.
@@ -899,7 +900,7 @@ pub fn call_method(
     }
     match recv {
         _ if is_cast_method(name) => cast_method(recv, name, args),
-        _ if is_collection(recv) && is_seq_native(name) => seq_native_method(recv, name, args),
+        _ if is_collection(recv) && is_seq_native(name) => seq_native_method(recv, name, args, &kwargs),
         Value::Str(_) => str_method(recv, name, args, &kwargs),
         Value::Bytes(b) => bytes_method(b, name, args, &kwargs),
         Value::List(l) => list_method(l, name, args),
@@ -1676,7 +1677,61 @@ fn rebuild(shape: Shape, items: Vec<Value>) -> VResult<Value> {
     })
 }
 
-fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Value> {
+/// `start=`, the one option `sum` and `enumerate` take. It is keyword-only: a
+/// positional argument is the old spelling, and `xs.enumerate(1)` read like a
+/// count. `start=null` is refused rather than read as "leave it out", because
+/// leaving it out is how that is said.
+fn start_kwarg<'a>(
+    args: &[Value],
+    kwargs: &'a [(String, Value)],
+    who: &str,
+) -> VResult<Option<&'a Value>> {
+    if !args.is_empty() {
+        return Err(type_error(format!(
+            "{who}() takes no positional arguments — the start is named: `xs.{who}(start=n)`"
+        )));
+    }
+    let mut start = None;
+    for (k, v) in kwargs {
+        match (k.as_str(), v) {
+            ("start", Value::None) => {
+                return Err(type_error(format!(
+                    "{who}() start must not be null — leave `start=` out for the default of 0"
+                )))
+            }
+            ("start", v) => start = Some(v),
+            (other, _) => {
+                return Err(type_error(format!(
+                    "{who}() got an unexpected keyword argument '{other}'"
+                )))
+            }
+        }
+    }
+    Ok(start)
+}
+
+/// The count `take`, `drop` and `chunk` require: exactly one argument, and an
+/// int. There is no default to fall back on, so a missing count is an arity
+/// error rather than a bad value, and a second argument is refused rather than
+/// ignored. A `bool` is not a count; it is refused here, as it always was by
+/// the fused `take(n)` that ends a chain, so the two paths cannot disagree.
+fn count_arg(args: &[Value], who: &str) -> VResult<i64> {
+    exactly(args, 1, who)?;
+    match &args[0] {
+        Value::Int(n) => Ok(*n),
+        other => Err(type_error(format!(
+            "{who}() argument must be int, not '{}'",
+            other.type_name()
+        ))),
+    }
+}
+
+fn seq_native_method(
+    recv: &Value,
+    name: &str,
+    args: Vec<Value>,
+    kwargs: &[(String, Value)],
+) -> VResult<Value> {
     let (shape, items) = seq_parts(recv, name)?;
     match name {
         "len" => {
@@ -1696,8 +1751,8 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
             // builtin is cut: a fold with `+`, starting at 0, so an empty
             // sequence sums to 0 and a list of strings is a TypeError rather
             // than a concatenation.
-            at_most(&args, 1, "sum")?;
-            let mut acc = args.first().cloned().unwrap_or(Value::Int(0));
+            let start = start_kwarg(&args, kwargs, "sum")?;
+            let mut acc = start.cloned().unwrap_or(Value::Int(0));
             for v in items {
                 acc = crate::vm::add_values(&acc, &v)?;
             }
@@ -1741,7 +1796,7 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
             rebuild(shape, out)
         }
         "take" | "drop" => {
-            let n = opt_int_arg(&args, 0, name, -1)?;
+            let n = count_arg(&args, name)?;
             if n < 0 {
                 return Err(value_error(format!("{name}() needs a count >= 0")));
             }
@@ -1762,7 +1817,7 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
             Ok(Value::List(OroList::new(out)))
         }
         "chunk" => {
-            let n = opt_int_arg(&args, 0, "chunk", 0)?;
+            let n = count_arg(&args, "chunk")?;
             if n <= 0 {
                 return Err(value_error("chunk() needs a size >= 1"));
             }
@@ -1783,11 +1838,19 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
             Ok(zip_cols(cols))
         }
         "enumerate" => {
-            // `enumerate` takes a start and nothing else. Without this an
-            // `xs.enumerate(1, 9)` answered confidently, having read neither
-            // the 9 nor the reader's mind.
-            at_most(&args, 1, "enumerate")?;
-            let start = opt_int_arg(&args, 0, "enumerate", 0)?;
+            // `enumerate` takes a start and nothing else, and takes it by
+            // name. Before the start was named, `xs.enumerate(1, 9)` answered
+            // confidently, having read neither the 9 nor the reader's mind.
+            let start = match start_kwarg(&args, kwargs, "enumerate")? {
+                None => 0,
+                Some(Value::Int(n)) => *n,
+                Some(other) => {
+                    return Err(type_error(format!(
+                        "enumerate() start must be an int, not '{}'",
+                        other.type_name()
+                    )))
+                }
+            };
             let out: Vec<Value> = items
                 .into_iter()
                 .enumerate()

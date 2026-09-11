@@ -1,0 +1,236 @@
+# What the collection protocol refuses, now that every optional argument in it
+# has been decided: a parameter with no default is positional, one with a
+# default is named, and nothing is silently ignored.
+#
+# DIVERGENCE: these are Oro's own messages, and most of the spellings are Oro's
+# own too, so CPython cannot check any of it. Reviewed by hand.
+#
+# Four groups:
+#
+#   the predicate  `any`/`all`/`count` used to test each element's truthiness
+#                  when called with nothing. `[0, 1, 2, ""].count()` was 2,
+#                  which reads as a length and is not one, so the predicate is
+#                  required and truthiness is spelled `xs.any(x => x)`.
+#   the count      `take`/`drop`/`chunk` ignored a second argument and answered
+#                  a *ValueError* when given none, because the count was an
+#                  optional parameter with a sentinel default. It is required.
+#   the start      `sum` and `enumerate` take theirs by name, so `xs.sum(10)`
+#                  and `xs.enumerate(1)` — where the number said nothing about
+#                  what it was — are refused, and so is `start=null`, which
+#                  would be a second spelling of leaving it out.
+#   the sorts      `xs.sorted()` and `list.sort()` are gone; each says which of
+#                  `sort_by` and `sort_in_place` replaced it.
+def positive(x):
+    return x > 0
+
+
+print("--- any/all/count need their predicate")
+for name in ["any", "all", "count"]:
+    try:
+        if name == "any":
+            print([1, 0].any())
+        elif name == "all":
+            print([1, 0].all())
+        else:
+            print([1, 0].count())
+    except TypeError as e:
+        print(e)
+
+# With one, they answer what they always did.
+print([1, 0].any(x => x), [1, 0].all(x => x), [1, 0].count(x => x))
+print([1, 0].any(positive), [0, 0].any(positive), [].all(x => x))
+
+print("--- take/drop/chunk need their count, and refuse a second argument")
+for call in ["take", "take2", "takestr", "takebool", "drop", "chunk", "chunk0", "takeneg"]:
+    try:
+        if call == "take":
+            print([1, 2].take())
+        elif call == "take2":
+            print([1, 2].take(1, 99))
+        elif call == "takestr":
+            print([1, 2].take("two"))
+        elif call == "takebool":
+            print([1, 2].take(true))
+        elif call == "drop":
+            print([1, 2].drop())
+        elif call == "chunk":
+            print([1, 2].chunk())
+        elif call == "chunk0":
+            print([1, 2].chunk(0))
+        else:
+            print([1, 2].take(-1))
+    except TypeError as e:
+        print("TypeError:", e)
+    except ValueError as e:
+        print("ValueError:", e)
+
+# A fused chain reads the count the same way. Before it was required, the
+# fused `take` declined these two shapes and the native one then ran on the
+# *unmapped* receiver: `[1, 2, 3].map(x => x * 10).take(true)` answered `[1]`.
+for call in ["bool", "extra"]:
+    try:
+        if call == "bool":
+            print([1, 2, 3].map(x => x * 10).take(true))
+        else:
+            print([1, 2, 3].map(x => x * 10).take(2, 99))
+    except TypeError as e:
+        print("TypeError:", e)
+print([1, 2, 3].map(x => x * 10).take(2))
+
+print("--- sum and enumerate take their start by name")
+for call in ["sumpos", "sumnull", "sumbogus", "enumpos", "enumnull", "enumstr"]:
+    try:
+        if call == "sumpos":
+            print([1, 2].sum(10))
+        elif call == "sumnull":
+            print([1, 2].sum(start=null))
+        elif call == "sumbogus":
+            print([1, 2].sum(base=10))
+        elif call == "enumpos":
+            print([7, 8].enumerate(1))
+        elif call == "enumnull":
+            print([7, 8].enumerate(start=null))
+        else:
+            print([7, 8].enumerate(start="x"))
+    except TypeError as e:
+        print(e)
+
+print([1, 2].sum(start=10), [7, 8].enumerate(start=1))
+
+print("--- sort_by takes the function, and takes `reverse=` by name")
+for call in ["none", "notfn", "revint", "revnull", "bogus"]:
+    try:
+        if call == "none":
+            print([1, 2].sort_by())
+        elif call == "notfn":
+            print([1, 2].sort_by(1))
+        elif call == "revint":
+            print([1, 2].sort_by(x => x, reverse=1))
+        elif call == "revnull":
+            print([1, 2].sort_by(x => x, reverse=null))
+        else:
+            print([1, 2].sort_by(x => x, key=positive))
+    except TypeError as e:
+        print(e)
+
+print("--- sort_in_place is the same shape, on a list only")
+for call in ["none", "two", "notfn", "revint", "tuple", "dict", "gen"]:
+    try:
+        if call == "none":
+            print([1, 2].sort_in_place())
+        elif call == "two":
+            print([1, 2].sort_in_place(x => x, x => x))
+        elif call == "notfn":
+            print([1, 2].sort_in_place("x"))
+        elif call == "revint":
+            print([1, 2].sort_in_place(x => x, reverse=1))
+        elif call == "tuple":
+            print((2, 1).sort_in_place(x => x))
+        elif call == "dict":
+            print({"b": 1}.sort_in_place(p => p))
+        else:
+            print(range(3).sort_in_place(x => x))
+    except TypeError as e:
+        print(e)
+    except AttributeError as e:
+        print(e)
+
+print("--- the two cut sorts name their replacement")
+for call in ["sorted", "sortedkw", "sort", "sortkw", "strsorted"]:
+    try:
+        if call == "sorted":
+            print([1, 2].sorted())
+        elif call == "sortedkw":
+            print([1, 2].sorted(key=positive, reverse=true))
+        elif call == "sort":
+            print([1, 2].sort())
+        elif call == "sortkw":
+            print([1, 2].sort(reverse=true))
+        else:
+            print("ba".sort_by(x => x))
+    except AttributeError as e:
+        print(e)
+
+print("--- a key function that writes to the list it is sorting")
+# CPython empties the list for the length of the sort, so a key function sees
+# it empty and any write to it is caught at the end: `list modified during
+# sort`. Oro does the same, for the same reason — the elements are the list's
+# own storage, lent out for the sort — and says so with the method's name.
+seen = []
+appender = [3, 1, 2]
+
+
+def append_key(x):
+    seen.append(len(appender))
+    appender.append(99)
+    return x
+
+
+try:
+    appender.sort_in_place(append_key)
+except ValueError as e:
+    print(e)
+# The key function saw an empty list, and the list kept its own elements,
+# sorted, with the write discarded — CPython's answer too.
+print(seen, appender)
+
+# A key function that puts the list back the way it found it is still a write.
+popper = [3, 1, 2]
+
+
+def pop_key(x):
+    popper.append(1)
+    popper.pop()
+    return x
+
+
+try:
+    popper.sort_in_place(pop_key)
+except ValueError as e:
+    print(e)
+print(popper)
+
+print("--- a key function that raises leaves the list as it was")
+raiser = [3, 1, 2]
+
+
+def boom_key(x):
+    raiser.append(99)
+    raise ValueError("boom")
+
+
+try:
+    raiser.sort_in_place(boom_key)
+except ValueError as e:
+    print(e)
+print(raiser)
+print(raiser.sort_by(x => x))
+raiser.sort_in_place(x => x)
+print(raiser)
+
+print("--- and so does a __lt__ that raises, mid-sort")
+class Boom:
+    def __init__(self, n):
+        self.n = n
+
+    def __lt__(self, other):
+        raise ValueError("boom-lt")
+
+    def __repr__(self):
+        return f"Boom({self.n})"
+
+
+booms = [Boom(2), Boom(1)]
+try:
+    booms.sort_in_place(b => b)
+except ValueError as e:
+    print(e)
+print(booms)
+
+print("--- a key that is not orderable against the others")
+mixed = [1, "a", 2]
+try:
+    mixed.sort_in_place(x => x)
+except TypeError as e:
+    print(e)
+print(mixed)

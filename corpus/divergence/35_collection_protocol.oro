@@ -27,7 +27,7 @@ print(xs.flat_map(x => [x, x]))
 print([1, 1, 2, 2, 3].unique_by(x => x))
 
 # predicate-less any/all/count use the element's own truthiness
-print([1, 0, 2].any(), [1, 2].all(), [0, 0].any(), [1, 0].count())
+print([1, 0, 2].any(x => x), [1, 2].all(x => x), [0, 0].any(x => x), [1, 0].count(x => x))
 
 # group_by replaces the loop-and-dict pattern outright, and its (key, rows)
 # pairs feed the next step: a callback with two parameters destructures each
