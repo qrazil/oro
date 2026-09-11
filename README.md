@@ -289,9 +289,25 @@ Implemented and working today:
   the receiver's type** (a tuple stays a tuple, a dict stays a dict); operations
   that reshape the data return a list. `sorted` reorders, so `t.sorted()` is a
   tuple and `d.sorted()` is a dict. It is only a list where there is no other
-  shape to keep — a range or a generator. And **a dict's element is its `(key, value)` pair**, everywhere: the
-  callback takes two arguments, so `d.filter((k, v) => v > 1)` reads directly,
-  and `for k, v in d` yields the same pair the callback is handed.
+  shape to keep — a range or a generator. And **a callback with two or more
+  parameters destructures its element exactly as `for` does**, while a callback
+  with one takes it whole. A dict's element is its `(key, value)` pair, so
+  `d.filter((k, v) => v > 1)` reads the pair `for k, v in d` does, and the pairs
+  the protocol makes itself feed the next step the same way:
+
+  ```python
+  xs.enumerate().filter((i, x) => i % 2 == 0).map((i, x) => x)
+  names.zip(ages).filter((name, age) => age >= 18).map((name, age) => name)
+  orders.group_by(o => o.region).to_list().map((region, rows) => (region, rows.len()))
+  ```
+
+  What counts is the positional parameters without a default: `def f(x, n=2)`
+  takes the element whole, `*args`/`**kwargs` never count, a bound method's
+  `self` does not, and `reduce` counts those after the accumulator —
+  `d.reduce(0, (acc, k, v) => acc + v)`. Any element `for` can unpack will do,
+  and a length mismatch is `for`'s `ValueError`. A native callable (`len`,
+  `s.startswith`) declares nothing to count; it is handed a dict's pair as two
+  arguments and any other element whole.
   Type preservation has a consequence worth stating on its own: because
   `d.map(f)` answers with a dict, `f` must answer with a `(key, value)` pair.
   `d.map((k, v) => (k, v * 2))` is the shape; `d.map((k, v) => v)` raises
@@ -442,7 +458,8 @@ Each of these is omitted on purpose. The reason matters more than the list.
 
   `map`/`filter` are **type-preserving**: a list gives a list, a tuple a tuple,
   a dict a dict, so a chain never silently changes the shape of the data. A
-  dict's callback takes two arguments — `d.filter((k, v) => v > 1)` — and `map`
+  callback with several parameters destructures its element as `for` does —
+  `d.filter((k, v) => v > 1)`, `xs.enumerate().map((i, x) => i * x)` — and `map`
   over a dict returns the `(key, value)` pair. `range` and generators have no
   literal to rebuild, so they yield a list.
 - **No type annotations.** `def f(a: int) -> int` and `x: int = 5` are rejected
