@@ -43,7 +43,7 @@ print(pairs().to_dict())
 # The no-callback protocol, all sixteen.
 print(nums().sum(), nums().min(), nums().max(), nums().len())
 print(nums().first(), nums().last())
-print(nums().sorted(), nums().reversed(), nums().sorted(reverse=true))
+print(nums().sort_by(x => x), nums().reversed(), nums().sort_by(x => x, reverse=true))
 print(words().unique())
 print(nums().take(2), nums().drop(3))
 print(nums().chunk(2))
@@ -54,7 +54,7 @@ print(nums().map(x => [x]).flatten())
 
 # The callback half still works, and the two halves compose in one chain.
 print(nums().filter(x => x % 2 == 0).sum())
-print(nums().map(x => x * 2).sorted().take(3))
+print(nums().map(x => x * 2).sort_by(x => x).take(3))
 
 # A generator is single-use: draining it once leaves it empty, as in CPython.
 g = nums()

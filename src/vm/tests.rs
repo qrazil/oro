@@ -833,7 +833,8 @@ fn collection_protocol_natives() {
 xs = [5, 3, 8, 1]
 letters = ["a", "b"]
 joined = letters.join("-")
-out = f"{xs.sum()} {xs.min()} {xs.max()} {xs.len()} {xs.first()} {xs.last()} {xs.sorted()} {xs.take(2)} {joined}"
+ordered = xs.sort_by(x => x)
+out = f"{xs.sum()} {xs.min()} {xs.max()} {xs.len()} {xs.first()} {xs.last()} {ordered} {xs.take(2)} {joined}"
 "#;
     assert_eq!(fstr(src), "17 1 8 4 5 1 [1, 3, 5, 8] [5, 3] a-b");
 }
@@ -869,7 +870,8 @@ t = (3, 1, 2)
 d = {"a": 2, "b": 1}
 sorted_d = d.sort_by((k, v) => v)
 flat = t.flat_map(x => [x])
-out = f"{t.sorted()} {t.take(2)} {sorted_d} {flat}"
+sorted_t = t.sort_by(x => x)
+out = f"{sorted_t} {t.take(2)} {sorted_d} {flat}"
 "#;
     assert_eq!(fstr(src), "(1, 2, 3) (3, 1) {'b': 1, 'a': 2} [3, 1, 2]");
 }
@@ -1149,13 +1151,13 @@ fn len_survives_on_both_sides_of_the_line() {
     assert!(e.message.contains("write `len(s)`"), "got: {}", e.message);
 }
 
-/// The keywords moved with `sorted`, and they had to: `xs.sorted(reverse=true)`
-/// is a *stable* descending sort and `xs.sorted().reversed()` is not.
+/// `reverse=` rides with the key on `sort_by`, and it had to: it is a *stable*
+/// descending sort and `xs.sort_by(f).reversed()` is not.
 #[test]
-fn sorted_keeps_key_and_reverse_on_the_method() {
-    assert_eq!(eval("r = [3, 1, 2].sorted(reverse=true)\n").repr(), "[3, 2, 1]");
-    assert_eq!(eval("r = (3, 1, 2).sorted(reverse=true)\n").repr(), "(3, 2, 1)");
-    let src = "def snd(p):\n    return p[1]\n\nties = [(\"a\", 2), (\"b\", 1), (\"c\", 2), (\"d\", 1)]\nr = ties.sorted(key=snd, reverse=true)\n";
+fn sort_by_keeps_reverse_stable() {
+    assert_eq!(eval("r = [3, 1, 2].sort_by(x => x, reverse=true)\n").repr(), "[3, 2, 1]");
+    assert_eq!(eval("r = (3, 1, 2).sort_by(x => x, reverse=true)\n").repr(), "(3, 2, 1)");
+    let src = "def snd(p):\n    return p[1]\n\nties = [(\"a\", 2), (\"b\", 1), (\"c\", 2), (\"d\", 1)]\nr = ties.sort_by(snd, reverse=true)\n";
     assert_eq!(
         eval_var(src, "r").repr(),
         "[('a', 2), ('c', 2), ('b', 1), ('d', 1)]",
@@ -1169,17 +1171,124 @@ fn sorted_keeps_key_and_reverse_on_the_method() {
     );
 }
 
+/// `sort_in_place` reorders the list's own storage, so every other name for
+/// that list sees the new order — and it answers `null`, as `append` does.
+#[test]
+fn sort_in_place_reorders_the_list_itself() {
+    let src = "xs = [3, 1, 2]\nalias = xs\nnested = [xs]\nanswer = xs.sort_in_place(x => x)\nr = f\"{answer} {xs} {alias} {nested}\"\n";
+    assert_eq!(eval_var(src, "r").repr(), "'null [1, 2, 3] [1, 2, 3] [[1, 2, 3]]'");
+    // A key over a shape the callback destructures, exactly as `sort_by` takes it.
+    let pairs = "pairs = [(\"x\", 3), (\"y\", 1)]\npairs.sort_in_place((k, v) => v)\nr = pairs\n";
+    assert_eq!(eval(pairs).repr(), "[('y', 1), ('x', 3)]");
+}
+
+/// `reverse=true` is a stable descending sort here too: it inverts the
+/// comparator, so ties keep the order they arrived in.
+#[test]
+fn sort_in_place_reverse_is_stable() {
+    let src = "def snd(p):\n    return p[1]\n\nties = [(\"a\", 2), (\"b\", 1), (\"c\", 2), (\"d\", 1)]\nties.sort_in_place(snd, reverse=true)\nr = ties\n";
+    assert_eq!(
+        eval_var(src, "r").repr(),
+        "[('a', 2), ('c', 2), ('b', 1), ('d', 1)]",
+        "reverse= must not disturb ties"
+    );
+    // Instance keys take the resumable merge, which sorts by the same
+    // permutation and must be stable in the same way.
+    let insts = "class G:\n    def __init__(self, k, tag):\n        self.k = k\n        self.tag = tag\n\n    def __lt__(self, other):\n        return self.k < other.k\n\nxs = [G(1, \"a\"), G(0, \"b\"), G(1, \"c\")]\nxs.sort_in_place(g => g, reverse=true)\nr = xs.map(g => g.tag)\n";
+    assert_eq!(eval_var(insts, "r").repr(), "['a', 'c', 'b']");
+}
+
+/// The list's storage is lent to the sort, so a key function that writes to
+/// the list is caught — CPython's `ValueError`, and CPython's outcome: the
+/// write is discarded and the list keeps its own elements, sorted.
+#[test]
+fn sort_in_place_refuses_a_key_that_writes_to_the_list() {
+    let src = "xs = [3, 1, 2]\nseen = []\n\ndef k(x):\n    seen.append(len(xs))\n    xs.append(9)\n    return x\n\nmsg = \"\"\ntry:\n    xs.sort_in_place(k)\nexcept ValueError as e:\n    msg = f\"{e}\"\nr = f\"{msg} | {xs} | {seen}\"\n";
+    let out = eval_var(src, "r").repr();
+    assert!(out.contains("list modified during sort_in_place()"), "got: {out}");
+    // The key saw the list empty when the sort began, then only what it had
+    // appended itself — CPython answers the same.
+    assert!(out.contains("| [1, 2, 3] | [0, 1, 2]"), "got: {out}");
+    // Putting it back the way it was found is still a write.
+    let popped = "xs = [3, 1, 2]\n\ndef k(x):\n    xs.append(1)\n    xs.pop()\n    return x\n\nmsg = \"\"\ntry:\n    xs.sort_in_place(k)\nexcept ValueError as e:\n    msg = \"caught\"\nr = f\"{msg} {xs}\"\n";
+    assert_eq!(eval_var(popped, "r").repr(), "'caught [1, 2, 3]'");
+}
+
+/// An abandoned sort still gives the list its elements back, in the order they
+/// were in — from a key function that raises, and from a `__lt__` that does.
+#[test]
+fn sort_in_place_restores_the_list_when_the_sort_is_abandoned() {
+    let key = "xs = [3, 1, 2]\n\ndef boom(x):\n    xs.append(9)\n    raise ValueError(\"boom\")\n\nmsg = \"\"\ntry:\n    xs.sort_in_place(boom)\nexcept ValueError as e:\n    msg = f\"{e}\"\nr = f\"{msg} {xs}\"\n";
+    assert_eq!(eval_var(key, "r").repr(), "'boom [3, 1, 2]'");
+    let lt = "class B:\n    def __init__(self, n):\n        self.n = n\n\n    def __lt__(self, other):\n        raise ValueError(\"boom-lt\")\n\n    def __repr__(self):\n        return f\"B({self.n})\"\n\nxs = [B(2), B(1)]\nmsg = \"\"\ntry:\n    xs.sort_in_place(b => b)\nexcept ValueError as e:\n    msg = f\"{e}\"\nr = f\"{msg} {xs}\"\n";
+    assert_eq!(eval_var(lt, "r").repr(), "'boom-lt [B(2), B(1)]'");
+    // And an unorderable pair, which fails natively rather than through frames.
+    let mixed = "xs = [1, \"a\", 2]\nmsg = \"\"\ntry:\n    xs.sort_in_place(x => x)\nexcept TypeError as e:\n    msg = \"caught\"\nr = f\"{msg} {xs}\"\n";
+    assert_eq!(eval_var(mixed, "r").repr(), "\"caught [1, 'a', 2]\"");
+}
+
+/// The two cut sorts, each naming the one that replaced it — and the in-place
+/// one is a list's alone.
+#[test]
+fn the_cut_sorts_name_their_replacement() {
+    let e = run_err("r = [3, 1, 2].sorted()\n");
+    assert!(e.message.contains("`sorted` is not in Oro"), "got: {}", e.message);
+    assert!(e.message.contains("xs.sort_by(x => x)"), "got: {}", e.message);
+    let e = run_err("r = [3, 1, 2].sort()\n");
+    assert!(e.message.contains("`list.sort` is not in Oro"), "got: {}", e.message);
+    assert!(e.message.contains("sort_in_place"), "got: {}", e.message);
+    let e = run_err("r = (3, 1, 2).sort_in_place(x => x)\n");
+    assert!(e.message.contains("only a list"), "got: {}", e.message);
+    assert!(e.message.contains("sort_by"), "got: {}", e.message);
+    // The arity and the keyword, on the surviving pair.
+    let e = run_err("r = [1].sort_by()\n");
+    assert!(e.message.contains("sort_by() takes exactly 1 argument"), "got: {}", e.message);
+    let e = run_err("r = [1].sort_by(x => x, reverse=1)\n");
+    assert!(e.message.contains("reverse must be a bool"), "got: {}", e.message);
+    let e = run_err("r = [1].sort_in_place(x => x, reverse=null)\n");
+    assert!(e.message.contains("reverse must be a bool"), "got: {}", e.message);
+}
+
+
+
+
+/// The undecorate step both sorts finish with: every element moves once, by
+/// following the permutation's cycles, and nothing is cloned.
+#[test]
+fn apply_permutation_reorders_in_place() {
+    let cases: [&[usize]; 7] = [
+        &[],
+        &[0],
+        &[1, 0],
+        &[0, 1, 2],
+        &[2, 0, 1],
+        &[1, 0, 3, 2],
+        &[4, 2, 0, 5, 3, 1],
+    ];
+    for perm in cases {
+        let items: Vec<Value> = (0..perm.len()).map(|i| Value::Int(i as i64 * 10)).collect();
+        let want: Vec<Value> = perm.iter().map(|&i| items[i].clone()).collect();
+        let mut got = items.clone();
+        crate::builtins::apply_permutation(&mut got, perm.to_vec());
+        assert_eq!(
+            got.iter().map(|v| v.repr()).collect::<Vec<_>>(),
+            want.iter().map(|v| v.repr()).collect::<Vec<_>>(),
+            "permutation {perm:?}"
+        );
+    }
+}
+
 /// `str` and `bytes` are outside the collection protocol, and the cut makes
 /// that reachable from a call that used to work as a builtin.
 #[test]
 fn a_str_is_not_a_collection_and_the_message_names_the_bridge() {
-    let e = run_err("r = \"ba\".sorted()\n");
+    let e = run_err("r = \"ba\".sort_by(x => x)\n");
     assert!(e.message.contains("not a collection in Oro"), "got: {}", e.message);
     assert!(e.message.contains("to_list()"), "got: {}", e.message);
     let e = run_err("r = b\"ba\".min()\n");
     assert!(e.message.contains("not a collection in Oro"), "got: {}", e.message);
     // And the bridge works.
-    assert_eq!(eval("r = \"ba\".to_list().sorted()\n").repr(), "['a', 'b']");
+    assert_eq!(eval("r = \"ba\".to_list().sort_by(x => x)\n").repr(), "['a', 'b']");
 }
 
 /// `str.join`/`bytes.join` are cut, and say so. Both halves were byte-for-byte

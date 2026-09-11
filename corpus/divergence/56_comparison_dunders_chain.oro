@@ -76,16 +76,16 @@ class V:
 vs = [V(3), V(1), V(2)]
 
 print("--- the chain's orderings run __lt__ too")
-print(vs.sorted())
+print(vs.sort_by(v => v, reverse=true))
 print(vs.min(), vs.max())
 print(vs.sort_by(v => v))
 print(vs.min_by(v => v), vs.max_by(v => v))
-print((V(3), V(1), V(2)).sorted())
+print((V(3), V(1), V(2)).sort_by(v => v))
 print((V(3), V(1), V(2)).min())
-print(vs.sorted().map(v => v.n))
+print(vs.sort_by(v => v).map(v => v.n))
 
 print("--- and they are shape-preserving, as the protocol promises")
-print([V(2), V(1)].sorted(), (V(2), V(1)).sorted())
+print([V(2), V(1)].sort_by(v => v, reverse=true), (V(2), V(1)).sort_by(v => v, reverse=true))
 print([V(2), V(1)].sort_by(v => v), (V(2), V(1)).sort_by(v => v))
 
 print("--- an ordering with nothing to order by")
@@ -95,7 +95,7 @@ class Plain:
 
 
 try:
-    print([Plain(), Plain()].sorted())
+    print([Plain(), Plain()].sort_by(p => p))
 except TypeError as e:
     print(e)
 try:
@@ -120,7 +120,7 @@ try:
 except ValueError as e:
     print(e)
 try:
-    print([Boom(), Boom()].sorted())
+    print([Boom(), Boom()].sort_by(b => b))
 except ValueError as e:
     print(e)
 try:
@@ -129,4 +129,4 @@ except ValueError as e:
     print(e)
 # The chain still works afterwards, from inside a chain callback too.
 print(cells.map(y => a in [y]))
-print(vs.sorted().map(v => [V(1), v].sorted()))
+print(vs.sort_by(v => v).map(v => [V(1), v].sort_by(w => w)))

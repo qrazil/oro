@@ -14,7 +14,7 @@
 #   d.keys() / d.values()    ->  list(...) — Oro's answer a list, which is its
 #                                own divergence, recorded in 59_dict_views.oro
 #   d.to_list()              ->  list(d.items())
-#   d.sorted()               ->  dict(sorted(d.items())) — `sorted` rebuilds the
+#   d.sort_by(p => p)        ->  dict(sorted(d.items())) — `sort_by` rebuilds the
 #                                shape it was handed, and a sorted sequence of
 #                                entries is a dict
 #   d.enumerate()            ->  list(enumerate(d.items())) — Oro's enumerate is

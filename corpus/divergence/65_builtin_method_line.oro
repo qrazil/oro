@@ -10,7 +10,7 @@
 # of the pairs quietly *disagree*:
 #
 #   [1, 2].zip([3, 4], [5, 6])   answered a two-way zip, discarding [5, 6]
-#   sorted((3, 1, 2))            answered a list where (3, 1, 2).sorted() answered a tuple
+#   sorted((3, 1, 2))            answered a list where the method answered a tuple
 #   enumerate(xs, 1, 9)          accepted the 9 and ignored it
 #
 # All three were fixed by making the two halves share one body. This file is
@@ -118,18 +118,20 @@ except TypeError as e:
 # `sum` carries the start the builtin's second argument was.
 print([1, 2].sum(), [1, 2].sum(10), [].sum())
 
-# `sorted` preserves the receiver's shape, which is the collection protocol's
-# stated rule for anything that reorders, and it carries the two keywords the
-# builtin had. `xs.sorted().reversed()` is *not* `xs.sorted(reverse=true)`:
-# reversing a sorted sequence flips the ties too.
-print([3, 1, 2].sorted(), (3, 1, 2).sorted(), ().sorted())
-print(range(3, 0, -1).sorted())
-print(type((3, 1, 2).sorted()))
+# `sort_by` preserves the receiver's shape, which is the collection protocol's
+# stated rule for anything that reorders, and it carries the `reverse=` the
+# builtin had. `xs.sort_by(f).reversed()` is *not* `xs.sort_by(f, reverse=true)`:
+# reversing a sorted sequence flips the ties too. The elements' own order is
+# `xs.sort_by(x => x)` — the key is the operand, so there is no keyword whose
+# absence means "the elements themselves".
+print([3, 1, 2].sort_by(x => x), (3, 1, 2).sort_by(x => x), ().sort_by(x => x))
+print(range(3, 0, -1).sort_by(x => x))
+print(type((3, 1, 2).sort_by(x => x)))
 ties = [("a", 2), ("b", 1), ("c", 2), ("d", 1)]
-print(ties.sorted(key=p => p[1], reverse=true))
+print(ties.sort_by(p => p[1], reverse=true))
 print(ties.sort_by(p => p[1]).reversed())
 try:
-    [1].sorted(1)
+    [1].sort_by()
 except TypeError as e:
     print(e)
 
@@ -144,7 +146,7 @@ print(d.min(), d.max())
 print(d.enumerate())
 print(d.zip([10, 20]))
 print(d.any(), d.all(), d.len())
-print(d.sorted(), {}.sorted(), type(d.sorted()))
+print(d.sort_by(p => p), {}.sort_by(p => p), type(d.sort_by(p => p)))
 
 # `sum` over a dict is an attempt to add a tuple to an int, and says so.
 # `d.values().sum()` is how you add up a dict.
@@ -164,7 +166,7 @@ print("---")
 # a worse inconsistency than the loss. `to_list()` is the documented bridge, and
 # it is what the capability costs — one call, at the point it is needed.
 try:
-    "ba".sorted()
+    "ba".sort_by(x => x)
 except AttributeError as e:
     print(e)
 
@@ -180,4 +182,4 @@ try:
 except AttributeError as e:
     print(e)
 
-print("ba".to_list().sorted(), b"ba".to_list().min(), "ab".to_list().enumerate())
+print("ba".to_list().sort_by(x => x), b"ba".to_list().min(), "ab".to_list().enumerate())

@@ -9,9 +9,9 @@
 # The translations, and nothing else differs:
 #
 #   xs.sum() / xs.min() / xs.max()   ->  sum(xs) / min(xs) / max(xs)
-#   xs.sorted(reverse=True)          ->  sorted(xs, reverse=True)
-#   d.keys().sorted()                ->  sorted(d.keys())
-#   b.to_list().sorted()             ->  sorted(b) — a bytes is not a collection
+#   xs.sort_by(x => x, reverse=True) ->  sorted(xs, reverse=True)
+#   d.keys().sort_by(k => k)         ->  sorted(d.keys())
+#   b.to_list().sort_by(b => b)      ->  sorted(b) — a bytes is not a collection
 #                                        in Oro, so the bridge is explicit
 
 print(sum([1, 2, 3]))

@@ -23,22 +23,22 @@ print(xs.min(), xs.max())
 
 # --- from core/09_dicts.oro -------------------------------------------------
 d = {"a": 1, "b": 2, "c": 3}
-print(d.keys().sorted())
-print(d.values().sorted())
+print(d.keys().sort_by(k => k))
+print(d.values().sort_by(v => v))
 counts = {"x": 3, "y": 1, "z": 1}
-print(counts.keys().sorted())
+print(counts.keys().sort_by(k => k))
 
 # --- from core/15_textproc.oro ----------------------------------------------
 cities = ["dallas", "austin", "houston"]
-print(cities.sorted())
+print(cities.sort_by(c => c))
 
 # --- from core/35_bytes.oro -------------------------------------------------
 # The last line is the str/bytes case the cut costs a call: a `bytes` is not a
-# collection, so it has no `.sorted()`, and `.to_list()` is the bridge.
-print([b"pear", b"Apple", b"apple", b"\xff", b""].sorted())
+# collection, so it has no `.sort_by()`, and `.to_list()` is the bridge.
+print([b"pear", b"Apple", b"apple", b"\xff", b""].sort_by(b => b))
 bd = {b"alpha": 1, b"beta": 2, b"gamma": 3}
-print(bd.keys().sorted())
-print(b"\x00\xc8\xff".to_list().sorted())
+print(bd.keys().sort_by(k => k))
+print(b"\x00\xc8\xff".to_list().sort_by(b => b))
 
 # --- from core/47_generator_method.oro --------------------------------------
 # A generator drives the eager half of the protocol. The wider coverage is in
@@ -53,4 +53,4 @@ class Counter:
 
 
 c = Counter(3)
-print(c.up().sum(), c.up().max(), c.up().sorted(reverse=true))
+print(c.up().sum(), c.up().max(), c.up().sort_by(x => x, reverse=true))

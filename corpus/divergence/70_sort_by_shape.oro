@@ -1,20 +1,20 @@
-# `xs.sorted()` answers a list for every receiver that has no other shape to
+# `xs.sort_by(f)` answers a list for every receiver that has no other shape to
 # keep: a list is already one, and a str, a range and a generator have no
 # literal to rebuild. All of that is CPython's answer too, so a twin pins it.
 #
 # DIVERGENCE IN SPELLING, NOT IN BEHAVIOUR. This was core/48_sorted_shape until
 # the `sorted` builtin was cut — a builtin takes scalars and a collection method
-# takes a collection — so the file now carries a twin (70_sorted_shape.twin.py),
+# takes a collection — so the file now carries a twin (70_sort_by_shape.twin.py),
 # and the .expected below is that twin's output:
 #
-#   python3 corpus/divergence/70_sorted_shape.twin.py \
+#   python3 corpus/divergence/70_sort_by_shape.twin.py \
 #     | sed -E 's/\bTrue\b/true/g; s/\bFalse\b/false/g; s/\bNone\b/null/g' \
-#     | diff - corpus/divergence/70_sorted_shape.expected
+#     | diff - corpus/divergence/70_sort_by_shape.expected
 #
 # An empty diff is the review.
 #
-#   sorted(xs) / sorted(xs, key=, reverse=)  ->  xs.sorted(...)
-#   sorted(s) for a str                      ->  s.to_list().sorted()
+#   sorted(xs) / sorted(xs, key=f)           ->  xs.sort_by(x => x) / xs.sort_by(f)
+#   sorted(s) for a str                      ->  s.to_list().sort_by(x => x)
 #
 # That last line is the one place the cut costs a capability rather than a
 # spelling, and it is deliberate. `sorted("cab")` worked because the builtin
@@ -27,26 +27,26 @@
 #
 # Two receivers Oro treats differently, and neither can live in this file:
 #
-#   a tuple  `(3, 1, 2).sorted()` is `(1, 2, 3)` here, because sorting reorders
+#   a tuple  `(3, 1, 2).sort_by(x => x)` is `(1, 2, 3)` here, because sorting reorders
 #            and reordering preserves the receiver's type;
 #   a dict   the same rule, now that walking a dict yields its `(key, value)`
-#            pairs: `{"b": 1, "a": 2}.sorted()` is `{'a': 2, 'b': 1}`, a dict —
-#            and `{}.sorted()` is `{}`, so even the empty case has left.
+#            pairs: `{"b": 1, "a": 2}.sort_by(p => p)` is `{'a': 2, 'b': 1}`, a dict —
+#            and `{}.sort_by(p => p)` is `{}`, so even the empty case has left.
 #
 # Both are in corpus/divergence/65_builtin_method_line.oro.
 
-print([3, 1, 2].sorted())
-print([].sorted())
-print("cab".to_list().sorted())
-print(range(3, 0, -1).sorted())
-print([3, 1, 2].sorted(reverse=true))
+print([3, 1, 2].sort_by(x => x))
+print([].sort_by(x => x))
+print("cab".to_list().sort_by(x => x))
+print(range(3, 0, -1).sort_by(x => x))
+print([3, 1, 2].sort_by(x => x, reverse=true))
 
 
 def neg(x):
     return -x
 
 
-print([3, 1, 2].sorted(key=neg))
+print([3, 1, 2].sort_by(neg))
 
 
 def gen():
@@ -54,4 +54,4 @@ def gen():
     yield 1
 
 
-print(gen().sorted())
+print(gen().sort_by(x => x))

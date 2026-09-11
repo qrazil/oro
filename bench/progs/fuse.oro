@@ -5,8 +5,12 @@
 #   a  one step   — the control. Fusing must not make a lone step slower.
 #   b  two steps  — the README's own example, `filter` then `map`.
 #   c  four steps — where "one allocation per step" used to cost the most.
-#   d  a barrier  — `sorted` needs the finished intermediate, so the run before
+#   d  a barrier  — `sort_by` needs the finished intermediate, so the run before
 #                   it fuses, it materialises, and the run after it fuses again.
+#                   The barrier was the native `sorted()` until that was cut;
+#                   `sort_by(x => x)` is the same sort with a callback per
+#                   element, so d's number is not comparable with runs taken
+#                   before the cut. See bench/RESULTS.md.
 #
 # The counter here is hand-rolled on purpose: a benchmark's loop is inside its
 # measurement. See bench/RESULTS.md, "Why the benchmarks still count by hand".
@@ -22,5 +26,5 @@ while i < 120000:
 a = xs.map(f)
 b = xs.filter(x => x % 2 == 0).map(f)
 c = xs.map(f).filter(x => x % 3 != 0).map(f).filter(x => x % 5 != 0)
-d = xs.map(f).filter(x => x % 7 == 0).sorted().map(f).filter(x => x > 10)
+d = xs.map(f).filter(x => x % 7 == 0).sort_by(x => x).map(f).filter(x => x > 10)
 print(len(a), len(b), len(c), len(d))

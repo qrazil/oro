@@ -1544,7 +1544,7 @@ class Router:
                 out.append(m)
         if "GET" in out and "HEAD" not in out:
             out.append("HEAD")
-        return out.sorted()
+        return out.sort_by(m => m)
 
 
 # Match a route's segments against a path's. `:name` binds one segment and

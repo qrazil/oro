@@ -78,4 +78,4 @@ print(code.is_digit(), limit + 1, limit.to_str().count("9"))
 
 # One last join, the other way round from Python's: the separator is the
 # argument, not the receiver.
-print(record.keys().sorted().join(", "))
+print(record.keys().sort_by(k => k).join(", "))

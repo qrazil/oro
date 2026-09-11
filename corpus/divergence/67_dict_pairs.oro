@@ -71,7 +71,7 @@ except AttributeError as e:
 # unchanged — the six builtins read the iterator, which is what made them
 # follow the pair shape in the first place.
 print(d.to_list())
-print(d.sorted())
+print(d.sort_by(p => p))
 print(d.enumerate())
 print(d.min(), d.max())
 print(d.map((k, v) => (k, v * 10)))

@@ -1,14 +1,17 @@
-# The manual oracle for 68_sorted_key_reverse.oro: that file with the one
+# The manual oracle for 68_sort_by_key_reverse.oro: that file with the one
 # spelling CPython does not have written back into CPython's. Run it and diff
 # against the reviewed .expected; an empty diff is the review.
 #
-#   python3 corpus/divergence/68_sorted_key_reverse.twin.py \
+#   python3 corpus/divergence/68_sort_by_key_reverse.twin.py \
 #     | sed -E 's/\bTrue\b/true/g; s/\bFalse\b/false/g; s/\bNone\b/null/g' \
-#     | diff - corpus/divergence/68_sorted_key_reverse.expected
+#     | diff - corpus/divergence/68_sort_by_key_reverse.expected
 #
-# The one translation, plus the three literals:
+# The translations, plus the three literals:
 #
-#   xs.sorted(key=f, reverse=True)  ->  sorted(xs, key=f, reverse=True)
+#   xs.sort_by(f, reverse=True)        ->  sorted(xs, key=f, reverse=True)
+#   xs.sort_by(x => x)                 ->  sorted(xs)
+#   xs.sort_in_place(f, reverse=True)  ->  xs.sort(key=f, reverse=True)
+#   xs.sort_in_place(x => x)           ->  xs.sort()
 #
 def neg(x):
     return -x

@@ -1,5 +1,5 @@
 `sum` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `xs.sum()`
-`sorted` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `xs.sorted()`, with the same `key=`/`reverse=` keywords the builtin took
+`sorted` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `xs.sort_by(x => x)`, or `xs.sort_by(f, reverse=true)` with a key
 `any` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `xs.any()`, or `xs.any(p)` with a predicate
 `all` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `xs.all()`, or `xs.all(p)` with a predicate
 `enumerate` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `xs.enumerate()`, or `xs.enumerate(1)` to start elsewhere
@@ -30,7 +30,7 @@ enumerate() takes at most 1 argument(s) but 2 were given
 <class 'tuple'>
 [('a', 2), ('c', 2), ('b', 1), ('d', 1)]
 [('c', 2), ('a', 2), ('d', 1), ('b', 1)]
-sorted() takes 0 argument(s) but 1 were given
+sort_by() takes exactly 1 argument
 ---
 ('a', 2) ('b', 1)
 [(0, ('b', 1)), (1, ('a', 2))]
@@ -40,7 +40,7 @@ true true 2
 d.sum() -> unsupported operand type(s) for +: 'int' and 'tuple'
 3
 ---
-a `str` is not a collection in Oro — `s.to_list()` is the bridge into the collection protocol, so write `s.to_list().sorted()`
-a `bytes` is not a collection in Oro — `b.to_list()` is the bridge into the collection protocol, so write `b.to_list().sorted()`
+a `str` is not a collection in Oro — `s.to_list()` is the bridge into the collection protocol, so write `s.to_list().sort_by(x => x)`
+a `bytes` is not a collection in Oro — `b.to_list()` is the bridge into the collection protocol, so write `b.to_list().sort_by(x => x)`
 `len` is a builtin in Oro and not a method on `str`/`bytes` — write `len(s)`
 ['a', 'b'] 97 [(0, 'a'), (1, 'b')]

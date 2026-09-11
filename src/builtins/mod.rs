@@ -284,7 +284,7 @@ pub fn sorted_shape_of(v: &Value) -> SortedShape {
 /// ordering only a user `__lt__` can decide.
 ///
 /// It is a backstop, not a path: the VM checks every ordering entry point
-/// (`sorted`, `sort`, `min`, `max`, and their chain spellings) for such an
+/// (`sort_by`, `sort_in_place`, `min`, `max`, and their chain spellings) for such an
 /// operand *before* calling native code, and runs the resumable comparison
 /// itself instead. Seeing this message means an entry point was missed — which
 /// is worth a loud internal error, because the alternative for a `__lt__` that
@@ -303,7 +303,17 @@ pub fn ord_or_defer(a: &Value, b: &Value, sym: &'static str) -> VResult<std::cmp
 /// order in both directions — which is what CPython guarantees. Reversing the
 /// sorted output instead would flip ties and break that.
 pub fn sort_by_keys(items: Vec<Value>, keys: &[Value], reverse: bool) -> VResult<Vec<Value>> {
-    let mut idx: Vec<usize> = (0..items.len()).collect();
+    let perm = sort_permutation(keys, reverse)?;
+    let mut items = items;
+    apply_permutation(&mut items, perm);
+    Ok(items)
+}
+
+/// The stable order of `keys`, as a permutation: entry `k` is the index of the
+/// key that belongs at position `k`. `reverse` inverts the comparator, as in
+/// [`sort_by_keys`], so ties keep their input order in both directions.
+pub fn sort_permutation(keys: &[Value], reverse: bool) -> VResult<Vec<usize>> {
+    let mut idx: Vec<usize> = (0..keys.len()).collect();
     let mut err: Option<VErr> = None;
     idx.sort_by(|&a, &b| {
         if err.is_some() {
@@ -318,34 +328,36 @@ pub fn sort_by_keys(items: Vec<Value>, keys: &[Value], reverse: bool) -> VResult
             }
         }
     });
-    if let Some(e) = err {
-        return Err(e);
-    }
-    let mut slots: Vec<Option<Value>> = items.into_iter().map(Some).collect();
-    Ok(idx.into_iter().map(|i| slots[i].take().expect("index used once")).collect())
-}
-
-/// Stable sort by Oro's `<` ordering. Because [`Value::compare`] is fallible
-/// (unorderable pairs are a `TypeError`), we capture the first error and, once
-/// tripped, treat every remaining comparison as `Equal` so the sort finishes
-/// quickly before we surface the error.
-fn sort_values(items: &mut [Value]) -> VResult<()> {
-    let mut err: Option<VErr> = None;
-    items.sort_by(|a, b| {
-        if err.is_some() {
-            return std::cmp::Ordering::Equal;
-        }
-        match ord_or_defer(a, b, "<") {
-            Ok(ord) => ord,
-            Err(e) => {
-                err = Some(e);
-                std::cmp::Ordering::Equal
-            }
-        }
-    });
     match err {
         Some(e) => Err(e),
-        None => Ok(()),
+        None => Ok(idx),
+    }
+}
+
+/// Reorder `items` where they are, so that position `k` ends up holding what
+/// was at `perm[k]` — the undecorate half of a decorate-sort-undecorate, done
+/// without a second vector of values. It follows each cycle of the permutation
+/// with swaps, so every element moves once and nothing is cloned; `perm` is
+/// consumed as the record of which positions are already settled.
+///
+/// `perm` must be a permutation of `0..items.len()`, which is what
+/// [`sort_permutation`] and the VM's merge sort both produce.
+pub fn apply_permutation(items: &mut [Value], mut perm: Vec<usize>) {
+    debug_assert_eq!(items.len(), perm.len());
+    for start in 0..perm.len() {
+        let mut k = start;
+        loop {
+            let from = perm[k];
+            // A settled position points at itself. The cycle through `start`
+            // is closed once it leads back there: the value `start` held has
+            // been carried along by the swaps and is already in place.
+            perm[k] = k;
+            if from == start || from == k {
+                break;
+            }
+            items.swap(k, from);
+            k = from;
+        }
     }
 }
 
@@ -665,8 +677,8 @@ pub fn cut_global_message(name: &str) -> Option<&'static str> {
         }
         "sorted" => {
             "`sorted` is not defined in Oro — a builtin takes scalars and a collection \
-             method takes a collection: use `xs.sorted()`, with the same \
-             `key=`/`reverse=` keywords the builtin took"
+             method takes a collection: use `xs.sort_by(x => x)`, or \
+             `xs.sort_by(f, reverse=true)` with a key"
         }
         "any" => {
             "`any` is not defined in Oro — a builtin takes scalars and a collection method \
@@ -694,6 +706,9 @@ pub fn cut_global_message(name: &str) -> Option<&'static str> {
 /// their replacement — silently answering "no such attribute" would leave the
 /// reader to guess what happened to it.
 pub fn cut_method_message(recv: &Value, name: &str) -> Option<&'static str> {
+    if let Some(msg) = cut_sort_message(recv, name) {
+        return Some(msg);
+    }
     // `.items()` went when iterating a dict started yielding the pair itself:
     // the method's whole job was to undo a choice — iterate keys — that the
     // language no longer makes. It is the one Python habit likely to be typed
@@ -723,16 +738,47 @@ pub fn cut_method_message(recv: &Value, name: &str) -> Option<&'static str> {
             "`len` is a builtin in Oro and not a method on `str`/`bytes` — write `len(s)`",
         );
     }
-    if is_seq_native(name) || crate::vm::is_seq_op(name) {
+    if is_seq_native(name) || crate::vm::is_seq_op(name) || name == "sorted" {
         return Some(if matches!(recv, Value::Str(_)) {
             "a `str` is not a collection in Oro — `s.to_list()` is the bridge into the \
-             collection protocol, so write `s.to_list().sorted()`"
+             collection protocol, so write `s.to_list().sort_by(x => x)`"
         } else {
             "a `bytes` is not a collection in Oro — `b.to_list()` is the bridge into the \
-             collection protocol, so write `b.to_list().sorted()`"
+             collection protocol, so write `b.to_list().sort_by(x => x)`"
         });
     }
     None
+}
+
+/// The two sorts that went when keyed sorting became one spelling. Sorting is
+/// `xs.sort_by(f, reverse=)`, which returns a new collection, and the elements'
+/// own order is `xs.sort_by(x => x)`; sorting a list where it is, is
+/// `xs.sort_in_place(f, reverse=)`. `sorted(key=)` and `sort_by(f)` had given
+/// identical answers under two names, and the function is the operand, so it is
+/// the positional argument, as it is for `min_by` and `group_by`.
+fn cut_sort_message(recv: &Value, name: &str) -> Option<&'static str> {
+    if !is_collection(recv) {
+        return None;
+    }
+    Some(match name {
+        "sorted" => {
+            "`sorted` is not in Oro — sort with `xs.sort_by(f)`: `xs.sort_by(x => x)` for \
+             the elements' own order, `xs.sort_by(f, reverse=true)` for a stable \
+             descending one"
+        }
+        "sort" if matches!(recv, Value::List(_)) => {
+            "`list.sort` is not in Oro — sort a list where it is with \
+             `xs.sort_in_place(f)`: `xs.sort_in_place(x => x)` for the elements' own \
+             order, `xs.sort_in_place(f, reverse=true)` for a stable descending one"
+        }
+        // Only a list can be reordered where it is; everything else in the
+        // protocol is sorted into a new collection.
+        "sort" | "sort_in_place" => {
+            "`sort_in_place` sorts a list where it is, and only a list can be changed \
+             that way — `xs.sort_by(f)` returns a sorted copy"
+        }
+        _ => return None,
+    })
 }
 
 /// The `str`/`bytes` names that were removed by name, each pointing at the one
@@ -789,7 +835,7 @@ pub fn method_exists(recv: &Value, name: &str) -> bool {
         // only bytes needs.
         Value::Bytes(_) => is_str_method(name) || matches!(name, "hex" | "scan"),
         Value::List(_) => {
-            matches!(name, "append" | "pop" | "extend" | "sort" | "reverse" | "map" | "filter")
+            matches!(name, "append" | "pop" | "extend" | "sort_in_place" | "reverse" | "map" | "filter")
         }
         // map/filter are type-preserving, so every collection carries them.
         Value::Tuple(_) | Value::Range(_) | Value::Generator(_) => {
@@ -1546,7 +1592,7 @@ pub fn is_seq_native(name: &str) -> bool {
     matches!(
         name,
         "sum" | "min" | "max" | "unique" | "take" | "drop" | "first" | "last"
-            | "flatten" | "chunk" | "zip" | "join" | "reversed" | "sorted" | "enumerate" | "len"
+            | "flatten" | "chunk" | "zip" | "join" | "reversed" | "enumerate" | "len"
     )
 }
 
@@ -1675,12 +1721,6 @@ fn seq_native_method(recv: &Value, name: &str, args: Vec<Value>) -> VResult<Valu
                 }
             }
             Ok(best)
-        }
-        "sorted" => {
-            exactly(&args, 0, "sorted")?;
-            let mut out = items;
-            sort_values(&mut out)?;
-            rebuild(shape, out)
         }
         "reversed" => {
             exactly(&args, 0, "reversed")?;
@@ -2366,16 +2406,6 @@ fn list_method(l: &Rc<OroList>, name: &str, args: Vec<Value>) -> VResult<Value> 
                 _ => return Err(type_error("pop() takes at most 1 argument")),
             };
             Ok(b.remove(idx))
-        }
-        "sort" => {
-            exactly(&args, 0, "sort")?;
-            // Sort a temporary snapshot so the list is never observed in a
-            // half-ordered state (and to avoid holding the borrow across the
-            // fallible comparisons).
-            let mut items = l.borrow().clone();
-            sort_values(&mut items)?;
-            *l.borrow_mut() = items;
-            Ok(Value::None)
         }
         "reverse" => {
             exactly(&args, 0, "reverse")?;

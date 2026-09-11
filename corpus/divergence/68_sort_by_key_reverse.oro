@@ -1,0 +1,62 @@
+# `xs.sort_by(f, reverse=…)` and `xs.sort_in_place(f, reverse=…)`. `reverse`
+# must stay stable: equal keys keep their original relative order.
+#
+# DIVERGENCE IN SPELLING, NOT IN BEHAVIOUR. This was core/33_sorted_key_reverse
+# until the `sorted` builtin was cut — a builtin takes scalars and a collection
+# method takes a collection — and it is now written in the one spelling keyed
+# sorting has. `xs.sorted(key=f)` and `xs.sort_by(f)` had been two names for
+# one answer; the function is the operand, so it is the positional argument, as
+# it is for `min_by` and `group_by`, and `reverse=` is the flag that rides with
+# it. The elements' own order is `xs.sort_by(x => x)`.
+#
+# `reverse=true` is not `.sort_by(f).reversed()`: reversing a sorted sequence
+# flips the *ties* too, and the third and fourth lines below are the case that
+# shows it.
+#
+# So the file carries a twin (68_sort_by_key_reverse.twin.py) — this program in
+# CPython's spelling — and the .expected below is that twin's output:
+#
+#   python3 corpus/divergence/68_sort_by_key_reverse.twin.py \
+#     | sed -E 's/\bTrue\b/true/g; s/\bFalse\b/false/g; s/\bNone\b/null/g' \
+#     | diff - corpus/divergence/68_sort_by_key_reverse.expected
+#
+# An empty diff is the review, so the baseline is still CPython's own answer.
+#
+#   sorted(xs, key=f, reverse=true)  ->  xs.sort_by(f, reverse=true)
+#   sorted(xs)                       ->  xs.sort_by(x => x)
+#   xs.sort(key=f, reverse=true)     ->  xs.sort_in_place(f, reverse=true)
+#
+# The in-place half is here because the two share one body — the keys are
+# computed the same way and ordered by the same machine — and a file that pins
+# only half of a shared body pins nothing. What only `sort_in_place` can do,
+# and what it does when its key function writes to the list, is in
+# 74_sort_in_place.oro and 75_collection_arity.oro.
+def neg(x):
+    return -x
+
+def second(p):
+    return p[1]
+
+print([1, 3, 2].sort_by(neg))
+print([1, 3, 2].sort_by(x => x, reverse=true))
+print([1, 3, 2].sort_by(neg, reverse=true))
+print(["bbb", "a", "cc"].sort_by(len))
+rows = [("carol", 3), ("alice", 1), ("bob", 2)]
+print(rows.sort_by(second))
+print(rows.sort_by(p => p))
+print([].sort_by(x => x), [].sort_by(neg))
+ties = [("a", 1), ("b", 1), ("c", 0)]
+print(ties.sort_by(second))
+print(ties.sort_by(second, reverse=true))
+a = [3, 1, 2]
+a.sort_in_place(x => x)
+print(a)
+b = [3, 1, 2]
+b.sort_in_place(x => x, reverse=true)
+print(b)
+c = ["bbb", "a", "cc"]
+c.sort_in_place(len)
+print(c)
+d = [("y", 2), ("x", 1)]
+d.sort_in_place(second, reverse=true)
+print(d)

@@ -48,7 +48,7 @@ print(k, d.keys())
 
 # And being a list is the point: the whole collection protocol is available on
 # one, with no second type to learn and no conversion to remember.
-print(d.keys().sorted(), d.values().sum(), d.keys().join("-"))
+print(d.keys().sort_by(k => k), d.values().sum(), d.keys().join("-"))
 
 # The half that used to be `.items()` is the dict itself, and `to_list()` is the
 # list form of it — one list, with the same protocol on it as the other two.

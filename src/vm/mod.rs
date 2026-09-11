@@ -543,6 +543,9 @@ struct SeqJob {
     limit: usize,
     /// `first()`: answer with the single element rather than a collection.
     pick_first: bool,
+    /// `sort_by(f, reverse=true)`: a stable descending sort. Read by no other
+    /// step.
+    reverse: bool,
     /// Where the step that ends the chain is written. Only a `first()` on an
     /// empty result reads it, and only because that diagnostic is raised after
     /// the last callback has returned, by which time `task.line`/`col` name the
@@ -632,23 +635,87 @@ fn seq_spread(func: &Value, shape: SeqShape, leading: usize) -> Spread {
     })
 }
 
-/// An in-flight `sorted(key=…)` / `list.sort(key=…)`. The key function is Oro
+/// An in-flight `xs.sort_in_place(f, reverse=…)`. The key function is Oro
 /// code, which must run in a frame rather than by re-entering the interpreter,
 /// so keys are computed one element at a time and collected here; when the last
-/// one lands the sort runs natively over the finished key vector.
+/// one lands the ordering machine sorts by them.
+///
+/// The elements are not a copy: they are the list's own storage, lent out of it
+/// for the length of the sort (see [`LentList`]).
 struct SortJob {
-    items: Vec<Value>,
+    lent: LentList,
     keys: Vec<Value>,
     next: usize,
     keyfn: Value,
+    /// How `keyfn` takes each element — exactly as a collection step's
+    /// callback does (see [`Spread`]), so `pairs.sort_in_place((k, v) => v)`
+    /// reads the pair the way `pairs.sort_by((k, v) => v)` does.
+    spread: Spread,
     reverse: bool,
-    /// `Some(list)` for `list.sort()`, which sorts in place and yields None;
-    /// `None` for `sorted()`, which pushes a new collection of `shape`.
-    in_place: Option<Rc<OroList>>,
-    /// The collection `sorted()` rebuilds. Sorting reorders, and reordering
-    /// preserves the receiver's type, so `sorted(t, key=f)` is a tuple for the
-    /// same reason `t.sorted()` is. Ignored when `in_place` is `Some`.
-    shape: SeqShape,
+}
+
+/// A list's element storage, taken out of the list for the length of an
+/// in-place sort and put back when the sort ends.
+///
+/// This is how `sort_in_place` sorts the list's own storage rather than a copy
+/// of it: the vector is *moved* out and back, and in between it is reordered
+/// where it lies. It is also how a key function that writes to the list is
+/// caught. While the storage is out, the list holds an empty, unallocated
+/// vector, so a key function that looks at the list sees it empty — as
+/// CPython's does — and any write to it either leaves something in it or
+/// allocates. Either one is found when the storage comes back, and is CPython's
+/// `ValueError`; the write is discarded and the list keeps its own elements,
+/// sorted, which is CPython's rule too.
+///
+/// If the sort never finishes — a key function raises, or a `__lt__` does, or
+/// the task is torn down — whatever job holds this is dropped, and the drop
+/// puts the elements back in their original order. That is the one exit that
+/// cannot be written as a return, which is why it is a `Drop`.
+struct LentList {
+    list: Rc<OroList>,
+    items: Vec<Value>,
+    /// Where the sort is written, for the diagnostics raised after its last
+    /// callback has returned, when the VM's position names that callback.
+    at: (u32, u32),
+    /// Set once the storage has gone back, so the drop does not return it a
+    /// second time over the answer.
+    returned: bool,
+}
+
+impl LentList {
+    fn lend(list: Rc<OroList>, at: (u32, u32)) -> LentList {
+        let items = std::mem::take(&mut *list.borrow_mut());
+        LentList { list, items, at, returned: false }
+    }
+
+    /// Put the storage back. `false` if the list was written to while it was
+    /// out, in which case what was written is dropped.
+    fn give_back(mut self) -> bool {
+        self.returned = true;
+        let items = std::mem::take(&mut self.items);
+        let discarded = {
+            let mut slot = self.list.borrow_mut();
+            std::mem::replace(&mut *slot, items)
+        };
+        // Released outside the borrow: what a key function wrote may hold
+        // the list itself.
+        discarded.is_empty() && discarded.capacity() == 0
+    }
+}
+
+impl Drop for LentList {
+    fn drop(&mut self) {
+        if self.returned {
+            return;
+        }
+        // Never a panic from a drop: if the list is somehow borrowed at this
+        // moment its elements are lost, which is the lesser failure.
+        let discarded = match self.list.try_borrow_mut() {
+            Ok(mut slot) => std::mem::replace(&mut *slot, std::mem::take(&mut self.items)),
+            Err(_) => return,
+        };
+        drop(discarded);
+    }
 }
 
 /// Rendering a container to a string, where some elements are instances whose
@@ -773,7 +840,8 @@ struct OrdJob {
     /// Where the answer goes once it has that shape.
     cont: OrdCont,
     /// The values being ordered. For a keyed sort these are the *keys*; `items`
-    /// carries what they decorate.
+    /// carries what they decorate — except for an in-place sort, whose elements
+    /// stay in the storage [`OrdKind::SortInPlace`] holds, leaving `items` empty.
     keys: Vec<Value>,
     items: Vec<Value>,
     reverse: bool,
@@ -796,10 +864,12 @@ enum OrdCont {
 
 /// Which ordering an [`OrdJob`] is carrying out, and where its answer goes.
 enum OrdKind {
-    /// `sorted(...)` / `xs.sorted()`: push a new collection of this shape.
+    /// `xs.sort_by(f)`: push a new collection of this shape.
     Sort(SeqShape),
-    /// `xs.sort(...)`: write back in place and push `None`.
-    SortInPlace(Rc<OroList>),
+    /// `xs.sort_in_place(f)`: reorder the list's own storage, which is lent out
+    /// of it here rather than carried in the job's `items`, hand it back, and
+    /// answer `null`.
+    SortInPlace(LentList),
     /// `min` / `max` / `min_by` / `max_by`: push the winning element. `who`
     /// is the spelling the program used, so the empty-sequence message names
     /// the call that was actually written.
@@ -2490,7 +2560,7 @@ impl Vm {
     /// unchanged, including the order of its tests: several of these methods
     /// must run *in the VM* rather than as native code, because they can park
     /// (`join`, `send`, `recv`, `close`, the io protocol), or run an Oro
-    /// callback (`map`, `filter`, `sort`, `sorted`, `min`, `max`), or run a
+    /// callback (`map`, `filter`, `sort_by`, `sort_in_place`, `min`, `max`), or run a
     /// user `__str__` (`to_str`).
     ///
     /// `hint` and `flush` carry [`crate::compiler::CHAIN_HINT`] and
@@ -2585,62 +2655,27 @@ impl Vm {
                 return Ok(step);
             }
         }
-        // list.sort(key=…, reverse=…) shares sorted()'s frame-driven
-        // key machinery; it just writes back in place.
-        if &**name == "sort" {
+        // `xs.sort_in_place(f, reverse=…)` runs its key function through
+        // frames, so it is driven from here. Only a list has the method;
+        // anything else never resolves it, and `cut_sort_message` says why.
+        if &**name == "sort_in_place" {
             if let Value::List(l) = &receiver {
-                if !args.is_empty() {
-                    return Err(self.err(type_error("sort() takes no positional arguments")));
-                }
-                let (keyfn, reverse) = self.sort_kwargs("sort", kwargs)?;
-                let items = l.borrow().clone();
-                return self
-                    .begin_sort(items, keyfn, reverse, Some(l.clone()), SeqShape::List)
-                    .map(|()| Step::Next);
+                return self.do_sort_in_place(l.clone(), args, kwargs).map(|()| Step::Next);
             }
         }
-        // `xs.sorted(key=…, reverse=…)` — the two keywords the `sorted`
-        // builtin carried, on the receiver the builtin/method rule keeps.
-        // They moved rather than being replaced by a second chain step,
-        // because `reverse=true` is a *stable* descending sort and
-        // `xs.sorted().reversed()` is not: reversing a sorted sequence flips
-        // the ties too. Measured on `[("a", 2), ("b", 1), ("c", 2), ("d", 1)]`
-        // keyed on the second field, the two answers differ.
-        if &**name == "sorted"
-            && !matches!(receiver, Value::Generator(_))
-            && crate::builtins::is_collection(&receiver)
-            && !kwargs.is_empty()
-        {
-            if !args.is_empty() {
-                return Err(self.err(type_error(
-                    "sorted() takes no positional arguments — the key is \
-                     `key=f`, or write `xs.sort_by(f)`",
-                )));
-            }
-            let (shape, items) = self.seq_receiver(name, &receiver)?;
-            let (keyfn, reverse) = self.sort_kwargs("sorted", kwargs)?;
-            return self
-                .begin_sort(items, keyfn, reverse, None, shape)
-                .map(|()| Step::Next);
-        }
-        // The chain's three orderings. Like their builtin twins
+        // The chain's two orderings. Like their builtin twins
         // they compare with `<`, so a receiver of instances needs
         // frames; anything else falls straight through to native.
-        if matches!(&**name, "sorted" | "min" | "max")
+        if matches!(&**name, "min" | "max")
             && !matches!(receiver, Value::Generator(_))
             && crate::builtins::is_collection(&receiver)
             && args.is_empty()
             && kwargs.is_empty()
         {
-            let (shape, items) = self.seq_receiver(name, &receiver)?;
+            let (_, items) = self.seq_receiver(name, &receiver)?;
             let keys = items.clone();
-            let kind = match &**name {
-                "sorted" => OrdKind::Sort(shape),
-                other => OrdKind::Extreme {
-                    want_min: other == "min",
-                    who: if other == "min" { "min" } else { "max" },
-                },
-            };
+            let want_min = &**name == "min";
+            let kind = OrdKind::Extreme { want_min, who: if want_min { "min" } else { "max" } };
             return self.begin_order(kind, items, keys, false).map(|()| Step::Next);
         }
         // A generator *receiver* is drained the same way a generator argument
@@ -3105,9 +3140,15 @@ impl Vm {
         flush: bool,
     ) -> Result<(), VmError> {
         let who = op.name();
-        if !kwargs.is_empty() {
-            return Err(self.err(type_error(format!("{who}() takes no keyword arguments"))));
-        }
+        // `sort_by` takes one option, `reverse=`, by name; no other step takes
+        // any.
+        let reverse = match op {
+            SeqOp::SortBy => self.reverse_kwarg(who, kwargs)?,
+            _ if !kwargs.is_empty() => {
+                return Err(self.err(type_error(format!("{who}() takes no keyword arguments"))))
+            }
+            _ => false,
+        };
         let callable = |v: &Value| {
             matches!(v, Value::Func(_) | Value::Builtin(_) | Value::Method(_))
         };
@@ -3245,6 +3286,7 @@ impl Vm {
             resume: SeqResume::Terminal,
             limit: usize::MAX,
             pick_first: false,
+            reverse,
             line: self.task.line,
             col: self.task.col,
         })
@@ -3327,6 +3369,7 @@ impl Vm {
             resume: SeqResume::Terminal,
             limit,
             pick_first,
+            reverse: false,
             line: self.task.line,
             col: self.task.col,
         })
@@ -3592,7 +3635,7 @@ impl Vm {
                 }
             };
         }
-        let SeqJob { op, shape, items, results, .. } = job;
+        let SeqJob { op, shape, items, results, reverse, .. } = job;
 
         // Scalar answers first — these do not rebuild a collection at all.
         match op {
@@ -3692,7 +3735,7 @@ impl Vm {
             }
             // `sort_by` is finished by the ordering machine rather than
             // rebuilt here, because its keys may need `__lt__`.
-            SeqOp::SortBy => return self.begin_order(OrdKind::Sort(shape), items, results, false),
+            SeqOp::SortBy => return self.begin_order(OrdKind::Sort(shape), items, results, reverse),
             SeqOp::UniqueBy => {
                 let mut seen = crate::value::OroDict::new();
                 let mut out = Vec::new();
@@ -3945,88 +3988,99 @@ impl Vm {
             .map(|()| Step::Next)
     }
 
-    /// Shared parsing of the `key=`/`reverse=` pair for `sorted` and `list.sort`.
-    fn sort_kwargs(
-        &mut self,
-        who: &str,
-        kwargs: Vec<(String, Value)>,
-    ) -> Result<(Option<Value>, bool), VmError> {
-        let mut keyfn: Option<Value> = None;
+    /// The `reverse=` option `sort_by` and `sort_in_place` take: a flag, so it
+    /// is named, and a bool, so `reverse=null` is not a second spelling of
+    /// leaving it out. It is a *stable* descending sort — the comparator is
+    /// inverted, so equal keys keep their input order — which
+    /// `xs.sort_by(f).reversed()` is not: reversing a sorted sequence flips the
+    /// ties too.
+    fn reverse_kwarg(&mut self, who: &str, kwargs: Vec<(String, Value)>) -> Result<bool, VmError> {
         let mut reverse = false;
         for (k, v) in kwargs {
-            match k.as_str() {
-                "key" => match v {
-                    Value::None => {}
-                    f @ (Value::Func(_) | Value::Builtin(_) | Value::Method(_)) => keyfn = Some(f),
-                    other => {
-                        return Err(self.err(type_error(format!(
-                            "{who}() key must be callable or None, not '{}'",
-                            other.type_name()
-                        ))))
-                    }
-                },
-                "reverse" => reverse = v.truthy(),
-                other => {
-                    return Err(
-                        self.err(type_error(format!(
-                            "{who}() got an unexpected keyword argument '{other}'"
-                        )))
-                    )
+            match (k.as_str(), v) {
+                ("reverse", Value::Bool(b)) => reverse = b,
+                ("reverse", other) => {
+                    return Err(self.err(type_error(format!(
+                        "{who}() reverse must be a bool, not '{}'",
+                        other.type_name()
+                    ))))
+                }
+                (other, _) => {
+                    return Err(self.err(type_error(format!(
+                        "{who}() got an unexpected keyword argument '{other}'"
+                    ))))
                 }
             }
         }
-        Ok((keyfn, reverse))
+        Ok(reverse)
     }
 
-    /// Start a sort. With no key function the whole thing is native; otherwise a
-    /// [`SortJob`] computes the keys one frame at a time.
-    fn begin_sort(
+    /// `xs.sort_in_place(f, reverse=false)`: sort a list where it is, by the
+    /// keys `f` gives, and answer `null` as `append` and `extend` do.
+    ///
+    /// The keys come first — they are Oro calls, a frame each — and only then
+    /// is the storage reordered, in place, by the permutation the ordering
+    /// machine finds. [`LentList`] is how the storage is lent out for that, and
+    /// what a key function that writes to the list gets.
+    fn do_sort_in_place(
         &mut self,
-        items: Vec<Value>,
-        keyfn: Option<Value>,
-        reverse: bool,
-        in_place: Option<Rc<OroList>>,
-        shape: SeqShape,
+        list: Rc<OroList>,
+        args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
     ) -> Result<(), VmError> {
-        let keyfn = match keyfn {
-            Some(f) => f,
-            None => {
-                // No key: the elements are their own keys.
-                let keys = items.clone();
-                return self.begin_order(sort_kind(in_place, shape), items, keys, reverse);
+        let keyfn = match args.as_slice() {
+            [f @ (Value::Func(_) | Value::Builtin(_) | Value::Method(_))] => f.clone(),
+            [other] => {
+                return Err(self.err(type_error(format!(
+                    "sort_in_place() needs a key function, not '{}' — \
+                     `xs.sort_in_place(x => x)` sorts by the elements themselves",
+                    other.type_name()
+                ))))
+            }
+            _ => {
+                return Err(self.err(type_error(format!(
+                    "sort_in_place() takes exactly 1 argument, the key function ({} given) — \
+                     `xs.sort_in_place(x => x)` sorts by the elements themselves",
+                    args.len()
+                ))))
             }
         };
-        let n = items.len();
+        let reverse = self.reverse_kwarg("sort_in_place", kwargs)?;
+        let spread = seq_spread(&keyfn, SeqShape::List, 0);
+        let lent = LentList::lend(list, (self.task.line, self.task.col));
+        let n = lent.items.len();
         self.task.sort_jobs.push(SortJob {
-            items,
+            lent,
             keys: Vec::with_capacity(n),
             next: 0,
             keyfn,
+            spread,
             reverse,
-            in_place,
-            shape,
         });
         self.drive_sort()
     }
 
     fn drive_sort(&mut self) -> Result<(), VmError> {
         loop {
-            let (item, keyfn) = {
-                let job = self.task.sort_jobs.last().expect("active sort job");
-                if job.next >= job.items.len() {
+            let (keyfn, call_args, at) = {
+                let job = self.task.sort_jobs.last_mut().expect("active sort job");
+                if job.next >= job.lent.items.len() {
                     let job = self.task.sort_jobs.pop().unwrap();
                     // The keys are user values and may be instances, so the
                     // sort itself can need frames too — `begin_order` decides.
+                    // The elements travel in the lent storage, not as `items`.
                     return self.begin_order(
-                        sort_kind(job.in_place, job.shape),
-                        job.items,
+                        OrdKind::SortInPlace(job.lent),
+                        Vec::new(),
                         job.keys,
                         job.reverse,
                     );
                 }
-                (job.items[job.next].clone(), job.keyfn.clone())
+                let item = job.lent.items[job.next].clone();
+                job.next += 1;
+                (job.keyfn.clone(), Self::seq_args(job.spread, item, None), job.lent.at)
             };
-            self.task.sort_jobs.last_mut().unwrap().next += 1;
+            let call_args = self.seq_unpacked(call_args, at)?;
 
             match keyfn {
                 Value::Func(f) => {
@@ -4036,11 +4090,12 @@ impl Vm {
                         return Err(self.err(recursion_error("maximum recursion depth exceeded")));
                     }
                     if f.code.is_generator {
+                        (self.task.line, self.task.col) = at;
                         return Err(self.err(type_error(
-                            "sort key must not be a generator function",
+                            "sort_in_place() key must not be a generator function",
                         )));
                     }
-                    let mut frame = self.bind_call(&f, None, vec![item], Vec::new())?;
+                    let mut frame = self.bind_call(&f, None, call_args, Vec::new())?;
                     frame.ret_action = ReturnAction::DriveSort;
                     self.task.frames.push(frame);
                     return Ok(());
@@ -4048,23 +4103,38 @@ impl Vm {
                 // A native key (len, str, …) cannot re-enter Oro, so it can be
                 // called inline and the loop continues without a frame.
                 Value::Builtin(b) => {
-                    let Some(args) = self.ord_callback(b.name, vec![item], OrdCont::Sort)? else {
+                    let Some(args) = self.ord_callback(b.name, call_args, OrdCont::Sort)? else {
                         return Ok(());
                     };
                     let key = self.wrap((b.func)(args))?;
                     self.task.sort_jobs.last_mut().unwrap().keys.push(key);
                 }
-                Value::Method(m) => {
-                    let key = match &m.kind {
-                        MethodKind::Native(name) => self
-                            .wrap(crate::builtins::call_method(&m.receiver, name, vec![item], Vec::new()))?,
-                        _ => {
-                            return Err(self.err(type_error("sort key must be a plain function")))
+                Value::Method(m) => match &m.kind {
+                    MethodKind::Native(name) => {
+                        let key = self.wrap(crate::builtins::call_method(
+                            &m.receiver,
+                            name,
+                            call_args,
+                            Vec::new(),
+                        ))?;
+                        self.task.sort_jobs.last_mut().unwrap().keys.push(key);
+                    }
+                    // A bound Oro method, as `sort_by` takes one.
+                    MethodKind::User { func, defclass } => {
+                        if self.task.frames.len() >= MAX_FRAMES {
+                            return Err(self.err(recursion_error("maximum recursion depth exceeded")));
                         }
-                    };
-                    self.task.sort_jobs.last_mut().unwrap().keys.push(key);
-                }
-                _ => return Err(self.err(type_error("sort key is not callable"))),
+                        return self.invoke_user(
+                            func.clone(),
+                            m.receiver.clone(),
+                            defclass.clone(),
+                            call_args,
+                            Vec::new(),
+                            ReturnAction::DriveSort,
+                        );
+                    }
+                },
+                _ => return Err(self.err(type_error("sort_in_place() key is not callable"))),
             }
         }
     }
@@ -4551,7 +4621,9 @@ impl Vm {
         if !keys.iter().any(ord_defers) {
             return self.finish_order_native(kind, items, keys, reverse, cont);
         }
-        let n = items.len();
+        // `keys`, not `items`: an in-place sort carries its elements in the
+        // lent storage and has no `items` at all.
+        let n = keys.len();
         let state = match kind {
             OrdKind::Extreme { .. } => {
                 if n == 0 {
@@ -4604,29 +4676,46 @@ impl Vm {
                 let best = items[best].clone();
                 self.deliver_order(cont, best)
             }
-            kind => {
+            OrdKind::SortInPlace(mut lent) => {
+                // An error here is an unorderable pair; `lent` is dropped on
+                // the way out and the list gets its elements back unsorted.
+                let perm = self.wrap(crate::builtins::sort_permutation(&keys, reverse))?;
+                crate::builtins::apply_permutation(&mut lent.items, perm);
+                self.give_back(lent, cont)
+            }
+            OrdKind::Sort(shape) => {
                 let sorted = self.wrap(crate::builtins::sort_by_keys(items, &keys, reverse))?;
-                self.finish_order(kind, sorted, cont)
+                self.finish_order(shape, sorted, cont)
             }
         }
     }
 
-    /// Turn a finished ordering into the value it produces.
+    /// Turn a finished `sort_by` into the collection it produces.
     fn finish_order(
         &mut self,
-        kind: OrdKind,
+        shape: SeqShape,
         out: Vec<Value>,
         cont: OrdCont,
     ) -> Result<(), VmError> {
-        let v = match kind {
-            OrdKind::SortInPlace(list) => {
-                *list.borrow_mut() = out;
-                Value::None
-            }
-            OrdKind::Sort(shape) => self.wrap(Self::rebuild_shape(shape, out))?,
-            OrdKind::Extreme { .. } => unreachable!("an extreme produces its winner directly"),
-        };
+        let v = self.wrap(Self::rebuild_shape(shape, out))?;
         self.deliver_order(cont, v)
+    }
+
+    /// Hand a sorted list's storage back to it and answer `null` — or, when a
+    /// key function or a `__lt__` wrote to the list while the storage was out,
+    /// CPython's `ValueError`. See [`LentList`].
+    fn give_back(&mut self, lent: LentList, cont: OrdCont) -> Result<(), VmError> {
+        let at = lent.at;
+        if !lent.give_back() {
+            // Raised after the last callback returned, so the position the VM
+            // holds is that callback's; the error belongs to the call.
+            (self.task.line, self.task.col) = at;
+            return Err(self.err(value_error(
+                "list modified during sort_in_place() — a key function or `__lt__` \
+                 changed the list while it was being sorted",
+            )));
+        }
+        self.deliver_order(cont, Value::None)
     }
 
     /// Hand a finished ordering to whatever asked for it.
@@ -4744,7 +4833,7 @@ impl Vm {
     /// stack to make explicit as well.
     fn step_merge(job: &mut OrdJob, answer: Option<bool>) -> Option<(usize, usize)> {
         let reverse = job.reverse;
-        let n = job.items.len();
+        let n = job.keys.len();
         let OrdState::Merge { src, dst, width, lo, mid, hi, i, j } = &mut job.state else {
             unreachable!("step_merge on a fold")
         };
@@ -4813,12 +4902,20 @@ impl Vm {
                 let v = job.items[best].clone();
                 self.deliver_order(job.cont, v)
             }
-            OrdState::Merge { src, .. } => {
-                let mut slots: Vec<Option<Value>> = job.items.into_iter().map(Some).collect();
-                let out =
-                    src.into_iter().map(|i| slots[i].take().expect("index used once")).collect();
-                self.finish_order(job.kind, out, job.cont)
-            }
+            OrdState::Merge { src, .. } => match job.kind {
+                // Reordered where it lies: the permutation is applied to the
+                // list's own storage, and the storage handed back.
+                OrdKind::SortInPlace(mut lent) => {
+                    crate::builtins::apply_permutation(&mut lent.items, src);
+                    self.give_back(lent, job.cont)
+                }
+                OrdKind::Sort(shape) => {
+                    let mut out = job.items;
+                    crate::builtins::apply_permutation(&mut out, src);
+                    self.finish_order(shape, out, job.cont)
+                }
+                OrdKind::Extreme { .. } => unreachable!("an extreme is a fold, not a merge"),
+            },
         }
     }
 
@@ -6585,15 +6682,6 @@ fn ord_defers(v: &Value) -> bool {
         }
     }
     go(v, 0)
-}
-
-/// `xs.sorted()` builds a new collection of the receiver's shape;
-/// `list.sort()` writes back where it was.
-fn sort_kind(in_place: Option<Rc<OroList>>, shape: SeqShape) -> OrdKind {
-    match in_place {
-        Some(l) => OrdKind::SortInPlace(l),
-        None => OrdKind::Sort(shape),
-    }
 }
 
 /// Does an ordering hold, given the ordering of the two operands?

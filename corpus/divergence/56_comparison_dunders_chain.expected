@@ -12,7 +12,7 @@ unhashable type: 'Cell' — it defines __eq__, so its identity is not what equal
 unhashable type: 'Cell' — it defines __eq__, so its identity is not what equality means for it; key by the value it compares by, e.g. counts[("a", 1)]
 a
 --- the chain's orderings run __lt__ too
-[V(1), V(2), V(3)]
+[V(3), V(2), V(1)]
 V(1) V(3)
 [V(1), V(2), V(3)]
 V(1) V(3)
@@ -20,7 +20,7 @@ V(1) V(3)
 V(1)
 [1, 2, 3]
 --- and they are shape-preserving, as the protocol promises
-[V(1), V(2)] (V(1), V(2))
+[V(2), V(1)] (V(2), V(1))
 [V(1), V(2)] (V(1), V(2))
 --- an ordering with nothing to order by
 '<' not supported between instances of 'Plain' and 'Plain'
