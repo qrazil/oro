@@ -97,10 +97,23 @@ pub struct ClassSpec {
 /// step that declines simply runs as it always did, so nothing about the
 /// meaning of a program depends on the bit. See `Vm::do_seq_op`.
 ///
-/// Bit 31 of the count. An argument count cannot approach it: the parser caps
-/// nothing, but the operand stack and `Vec<Value>` would die long first, and a
-/// chain step takes zero or one argument.
+/// Bit 31 of the count (and [`CHAIN_FLUSH`] is bit 30). An argument count
+/// cannot approach either: the parser caps nothing, but the operand stack and
+/// `Vec<Value>` would die long first, and a chain step takes zero or one
+/// argument.
 pub const CHAIN_HINT: u32 = 1 << 31;
+
+/// Set in the same half to mark the step that *runs* a deferred pipeline —
+/// the one whose receiver was emitted with [`CHAIN_HINT`].
+///
+/// Without it, every native method call in every program would have to ask
+/// whether a pipeline happens to be waiting for it. With it the question is a
+/// bit the instruction already carries, so a program with no chains in it pays
+/// nothing at all for the machinery.
+pub const CHAIN_FLUSH: u32 = 1 << 30;
+
+/// The two hint bits, for masking them back off the argument count.
+pub const CHAIN_BITS: u32 = CHAIN_HINT | CHAIN_FLUSH;
 
 /// Collection steps that can *end* a fused run — everything the VM knows how
 /// to flush a pending pipeline into. Codegen may only set [`CHAIN_HINT`] on a

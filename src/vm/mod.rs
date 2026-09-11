@@ -158,9 +158,9 @@ struct Block {
 /// operand stack. See [`Block::jobs`].
 ///
 /// `u32`, not `usize`: this is copied into every [`Block`], so every `try` and
-/// every loop in the program carries one. Eight `usize` would be 64 bytes and
-/// eight `u32` is 32, which is still less than the five `usize` this replaced.
-/// A job stack cannot reach 2^32 entries: each job owns heap data and the frame
+/// every loop in the program carries one. Seven `usize` would be 56 bytes —
+/// more than the five it replaced — and seven `u32` is 28, which is less. A
+/// job stack cannot reach 2^32 entries: each job owns heap data and the frame
 /// stack itself is capped at `MAX_FRAMES`.
 #[derive(Clone, Copy, Default)]
 struct JobDepths {
@@ -171,7 +171,6 @@ struct JobDepths {
     mat_jobs: u32,
     cmp_jobs: u32,
     ord_jobs: u32,
-    chains: u32,
 }
 
 enum BlockKind {
@@ -766,10 +765,6 @@ struct Task {
     str_jobs: Vec<StrJob>,
     sort_jobs: Vec<SortJob>,
     seq_jobs: Vec<SeqJob>,
-    /// Chain steps deferred by [`crate::compiler::CHAIN_HINT`] and not yet run.
-    /// Empty everywhere except inside one chain expression; see
-    /// [`PendingChain`].
-    chains: Vec<PendingChain>,
     mat_jobs: Vec<MatJob>,
     /// Stack of in-flight deep comparisons (see [`CmpJob`]). A `__eq__` that
     /// itself compares containers nests cleanly, which is why it is a stack.
@@ -818,7 +813,6 @@ impl Task {
             str_jobs: Vec::new(),
             sort_jobs: Vec::new(),
             seq_jobs: Vec::new(),
-            chains: Vec::new(),
             mat_jobs: Vec::new(),
             cmp_jobs: Vec::new(),
             ord_jobs: Vec::new(),
@@ -837,6 +831,15 @@ impl Task {
 pub struct Vm {
     /// The execution currently in flight. See [`Task`].
     task: Task,
+    /// Chain steps deferred by [`crate::compiler::CHAIN_HINT`] and not yet run.
+    ///
+    /// On the VM rather than on the [`Task`], because a pending chain lives
+    /// only between one `CallMethod` and the next — a `LoadMethod` and the
+    /// inert pushes of the next step's arguments — and nothing in that gap can
+    /// yield. It is therefore empty at every point a task can be switched at,
+    /// and putting it here keeps `Task`'s layout, which the dispatch loop reads
+    /// on every instruction, exactly as it was.
+    chains: Vec<PendingChain>,
     /// Retired frames, kept for their buffer capacity. See [`Vm::take_frame`].
     ///
     /// Process-wide on purpose: buffers a finished task hands back are exactly
@@ -961,6 +964,7 @@ impl Vm {
     fn new(argv: Vec<String>) -> Vm {
         Vm {
             task: Task::new(),
+            chains: Vec::new(),
             frame_pool: Vec::new(),
             excs: exceptions::build_registry(),
             argv,
@@ -2215,9 +2219,10 @@ impl Vm {
     /// them. See [`Op::LoadMethod`] for what the slots hold.
     fn do_call_method(&mut self, pair: usize) -> Result<Step, VmError> {
         let (name_idx, argc) = self.task.frames.last().expect("no active frame").code.pairs[pair];
-        // Bit 31 is the chain-fusion hint, not part of the count.
-        let chain = argc & crate::compiler::CHAIN_HINT != 0;
-        let n = (argc & !crate::compiler::CHAIN_HINT) as usize;
+        // The top two bits are the chain-fusion hints, not part of the count.
+        let hint = argc & crate::compiler::CHAIN_HINT != 0;
+        let flush = argc & crate::compiler::CHAIN_FLUSH != 0;
+        let n = (argc & !crate::compiler::CHAIN_BITS) as usize;
         let tag_is = {
             let stack = &self.task.frames.last().expect("no active frame").stack;
             let tag = &stack[stack.len() - n - 3];
@@ -2289,7 +2294,7 @@ impl Vm {
                 let name =
                     self.task.frames.last().expect("no active frame").code.names[name_idx as usize]
                         .clone();
-                self.invoke_native_method(recv_or_callee, &name, args, Vec::new(), chain)
+                self.invoke_native_method(recv_or_callee, &name, args, Vec::new(), hint, flush)
             }
             _ => self.invoke(recv_or_callee, args, Vec::new()),
         }
@@ -2371,18 +2376,22 @@ impl Vm {
     /// callback (`map`, `filter`, `sort`, `sorted`, `min`, `max`), or run a
     /// user `__str__` (`to_str`).
     ///
-    /// `chain` carries [`crate::compiler::CHAIN_HINT`] through from the
-    /// instruction: it is set when codegen could see that this step's result
-    /// feeds the next step of the same chain and nothing else, which is what
-    /// lets a collection step defer itself instead of building a collection
-    /// nobody will look at.
+    /// `hint` and `flush` carry [`crate::compiler::CHAIN_HINT`] and
+    /// [`crate::compiler::CHAIN_FLUSH`] through from the instruction: the first
+    /// says this step's result feeds the next step of the same chain and
+    /// nothing else, so it may defer itself rather than build a collection
+    /// nobody will look at; the second says this is the step that runs what an
+    /// earlier one deferred. They are bits on the instruction rather than
+    /// questions about VM state so that a program with no chains in it pays
+    /// nothing for the machinery.
     fn invoke_native_method(
         &mut self,
         receiver: Value,
         name: &Rc<str>,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
-        chain: bool,
+        hint: bool,
+        flush: bool,
     ) -> Result<Step, VmError> {
         // Task and channel methods are dispatched ahead of
         // everything else in this arm for two reasons. They are the
@@ -2446,7 +2455,7 @@ impl Vm {
                     return Ok(step);
                 }
             }
-            return self.do_seq_op(op, &receiver, args, kwargs, chain).map(|()| Step::Next);
+            return self.do_seq_op(op, &receiver, args, kwargs, hint, flush).map(|()| Step::Next);
         }
         // `first()` / `take(n)` closing a fused chain. See `Vm::chain_tail`:
         // they take no callback, so the pipeline runs to `Collect` under a
@@ -2454,7 +2463,7 @@ impl Vm {
         // fused form cannot answer (a wrong arity, a non-integer count) leaves
         // the pipeline pending and falls through to the native method, which
         // raises the diagnostic it always did.
-        if !self.task.chains.is_empty() {
+        if flush {
             if let Some((limit, pick_first)) = self.chain_tail(&receiver, name, &args) {
                 if let Some(p) = self.take_chain(&receiver) {
                     let (_, source) = self.seq_receiver(name, &receiver)?;
@@ -2674,7 +2683,7 @@ impl Vm {
             }
             Value::Method(m) => match &m.kind {
                 MethodKind::Native(name) => {
-                    self.invoke_native_method(m.receiver.clone(), name, args, kwargs, false)
+                    self.invoke_native_method(m.receiver.clone(), name, args, kwargs, false, false)
                 }
                 MethodKind::User { func, defclass } => {
                     if func.code.is_generator {
@@ -2941,15 +2950,17 @@ impl Vm {
     /// `d.filter((k, v) => v > 1)` reads naturally instead of forcing the caller
     /// to index a pair.
     ///
-    /// `chain` is [`crate::compiler::CHAIN_HINT`]: permission to defer this
-    /// step into a [`PendingChain`] for the next step to run in the same pass.
+    /// `hint` is permission to defer this step into a [`PendingChain`] for the
+    /// next step to run in the same pass; `flush` says an earlier step took
+    /// that permission and this is the step that runs what it left.
     fn do_seq_op(
         &mut self,
         op: SeqOp,
         receiver: &Value,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
-        chain: bool,
+        hint: bool,
+        flush: bool,
     ) -> Result<(), VmError> {
         let who = op.name();
         if !kwargs.is_empty() {
@@ -3003,7 +3014,7 @@ impl Vm {
         // step that deferred them was deferring against *this* receiver. The
         // identity check is what keeps a pipeline from being flushed into some
         // other collection that happens to reach a chain method first.
-        let pending = self.take_chain(receiver);
+        let pending = if flush { self.take_chain(receiver) } else { None };
         let shape = match &pending {
             Some(p) => p.shape,
             None => self.seq_shape(who, receiver)?,
@@ -3018,7 +3029,7 @@ impl Vm {
         // has been walked, from the dict rebuild, exactly where it does today.
         // Deferring would move that check onto the first element. Every other
         // dict step passes the original pair through untouched and fuses.
-        if chain {
+        if hint {
             let kind = match (op, shape) {
                 (SeqOp::Map, SeqShape::Dict) => None,
                 (SeqOp::Map, _) => func.clone().map(StageKind::Map),
@@ -3040,7 +3051,7 @@ impl Vm {
                     line: self.task.line,
                     col: self.task.col,
                 });
-                self.task.chains.push(p);
+                self.chains.push(p);
                 // The receiver stands in for the collection this step did not
                 // build. Nothing but the next step's `LoadMethod` will see it,
                 // and that resolves the same method on the same type.
@@ -3105,8 +3116,8 @@ impl Vm {
     /// one is it. Anything else is left where it is: a pipeline is only ever
     /// run by the step the compiler emitted to run it.
     fn take_chain(&mut self, receiver: &Value) -> Option<PendingChain> {
-        match self.task.chains.last() {
-            Some(p) if same_collection(&p.source, receiver) => self.task.chains.pop(),
+        match self.chains.last() {
+            Some(p) if same_collection(&p.source, receiver) => self.chains.pop(),
             _ => None,
         }
     }
@@ -5223,7 +5234,6 @@ impl Vm {
             mat_jobs: self.task.mat_jobs.len() as u32,
             cmp_jobs: self.task.cmp_jobs.len() as u32,
             ord_jobs: self.task.ord_jobs.len() as u32,
-            chains: self.task.chains.len() as u32,
         }
     }
 
@@ -5237,7 +5247,6 @@ impl Vm {
         self.task.mat_jobs.truncate(d.mat_jobs as usize);
         self.task.cmp_jobs.truncate(d.cmp_jobs as usize);
         self.task.ord_jobs.truncate(d.ord_jobs as usize);
-        self.task.chains.truncate(d.chains as usize);
     }
 
     /// Unwind `exc` through the block and frame stacks. On success (a handler or
@@ -5260,6 +5269,11 @@ impl Vm {
     /// is re-entered from that frame, so all three come from the same place.
     fn unwind(&mut self, exc: Value) -> Option<(Value, Rc<str>)> {
         let source = self.err_source();
+        // A chain pending in the frame the exception came from will never reach
+        // the step that was going to run it — a handler resumes at its own
+        // target, not at the middle of the expression that raised.
+        let depth = self.task.frames.len();
+        self.chains.retain(|c| c.frame_depth < depth);
         loop {
             let block = self.task.frames.last_mut().and_then(|f| f.blocks.pop());
             match block {
@@ -5291,7 +5305,7 @@ impl Vm {
                     // A chain is one expression, so a pending one belongs to the
                     // frame being discarded and can never be flushed now.
                     let depth = self.task.frames.len();
-                    self.task.chains.retain(|c| c.frame_depth < depth);
+                    self.chains.retain(|c| c.frame_depth < depth);
                     if let Some(frame) = self.task.frames.pop() {
                         // A module body dying has to release its import, or the
                         // path stays in `importing` forever: a *retried* import

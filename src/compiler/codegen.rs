@@ -1267,7 +1267,8 @@ impl<'a> Codegen<'a> {
                 }
                 let pair = self.add_pair();
                 let argc = args.len() as u32
-                    | if hint { crate::compiler::CHAIN_HINT } else { 0 };
+                    | if hint { crate::compiler::CHAIN_HINT } else { 0 }
+                    | if fusable_recv { crate::compiler::CHAIN_FLUSH } else { 0 };
                 self.pairs[pair as usize] = (n, argc);
                 self.emit(Op::CallMethod(pair), line, col);
                 return Ok(());

@@ -294,10 +294,46 @@ Implemented and working today:
   `str`. And **a dict's element is its `(key, value)` pair**, everywhere: the
   callback takes two arguments, so `d.filter((k, v) => v > 1)` reads directly,
   and `for k, v in d` yields the same pair the callback is handed.
+  Type preservation has a consequence worth stating on its own: because
+  `d.map(f)` answers with a dict, `f` must answer with a `(key, value)` pair.
+  `d.map((k, v) => (k, v * 2))` is the shape; `d.map((k, v) => v)` raises
+  `rebuilding a dict needs (key, value) pairs, not 'int'` — a `RuntimeError`
+  today, where `TypeError` is what it is describing. `d.filter(...)` has no
+  such rule: it passes the dict's own pairs through.
 
   ```python
   orders.filter(o => o.paid).group_by(o => o.region)
   ```
+
+  **A chain runs in one pass.** `xs.filter(p).map(f).filter(q)` walks `xs`
+  once, applies the three operations to each element in turn, and builds one
+  collection: the intermediates a reader might imagine between the steps are
+  not built. The compiler recognises the chain (the intermediate has no name
+  and no second reader, which is a property of the expression) and the VM runs
+  it as one job. Two things follow that are worth knowing about.
+
+  *Some steps are barriers.* `sorted` `sort_by` `reversed` `unique`
+  `unique_by` `chunk` `flatten` `zip` `enumerate` `group_by` `partition`
+  `min_by` `max_by` and `take_while` each need the finished intermediate before
+  they can answer, so a chain fuses the runs of `map`/`filter` between them and
+  materialises at each barrier. `xs.map(f).filter(p).sorted().map(g)` is two
+  passes and one sort, not four passes. `take_while` is on that list for a
+  reason worth knowing on its own: it calls its predicate on **every** element,
+  not just the ones up to the first false, and fusing it would have quietly
+  changed how many times a user predicate runs.
+
+  *Short-circuiting reaches back through the chain.* `xs.map(f).first()` calls
+  `f` once, not once per element, and `take(n)`, `find`, `any` and `all` stop
+  the whole upstream pass the same way. Before chains were fused, `find`, `any`
+  and `all` short-circuited only their *own* step, which was the least useful
+  place for the saving to be.
+
+  The one thing a program can tell the difference by is **the order two
+  callbacks in different steps run in**. `xs.map(f).map(g)` runs
+  `f(x0), g(y0), f(x1), g(y1)` — the order a `for` loop would run them — and
+  not every `f` followed by every `g`. Mutating the receiver from inside a
+  callback is unaffected, fused or not: the receiver is copied before the first
+  callback runs, so a chain never sees its own source change under it.
 
   Note `xs.join(", ")` rather than `", ".join(xs)`: the sequence is the subject
   and the separator the detail, and this way it ends a chain instead of sending
@@ -1193,9 +1229,16 @@ Stated plainly:
   state is per-worker, so counters, caches, in-memory sessions and rate limits
   are all N-way split. Cross-process state needs a database or a file. See
   [Scaling past one core](#scaling-past-one-core-n-processes-one-port).
-- **`map`/`filter` are eager.** Each step allocates a new collection, so a long
-  chain over a large list allocates once per step. Generators remain the lazy
-  escape hatch.
+- **A chain is one eager pass, not a lazy pipeline.** Runs of `map`/`filter`
+  are fused, so a chain walks its receiver once and builds one collection
+  rather than one per step, and a `first()`/`take(n)`/`find`/`any`/`all` at the
+  end stops that pass early. But the pass still happens: the receiver is
+  materialised up front, a barrier step (`sorted`, `unique`, `chunk`,
+  `flatten`, …) materialises again, and nothing is computed on demand. So
+  `g().map(f).first()` still drains `g` in full before the chain starts —
+  starting a chain on a generator materialises it, and an infinite one hangs.
+  Generators remain the lazy escape hatch, and they are lazy in a `for` loop
+  and nowhere else.
 - **A lambda cannot appear inside an f-string field.** `f"{xs.map(x => x)}"` is
   rejected with a message telling you to bind it to a name first. f-string
   fields are parsed at code-generation time rather than by the parser, so the
