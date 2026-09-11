@@ -382,6 +382,24 @@ impl SeqOp {
                 | SeqOp::TakeWhile | SeqOp::DropWhile | SeqOp::Collect
         )
     }
+
+    /// Whether the answer is built out of the elements the operation was called
+    /// on, or only out of what its callback said about them.
+    ///
+    /// It matters to a fused chain and to nothing else. Unfused, the elements
+    /// are the receiver's snapshot and are there whether anyone reads them; a
+    /// fused terminal has to be *handed* each element that survives the stages,
+    /// and for `map`, `flat_map`, `any`, `all`, `count` and `reduce` that would
+    /// be a second full-length vector built only to be thrown away.
+    ///
+    /// A `limit` is only ever set on a `Collect`, which is on this side of the
+    /// line, so counting elements as they arrive is still the right stop test.
+    fn keeps_items(self) -> bool {
+        !matches!(
+            self,
+            SeqOp::Map | SeqOp::FlatMap | SeqOp::Any | SeqOp::All | SeqOp::Count | SeqOp::Reduce
+        )
+    }
 }
 
 /// One fused upstream step of a collection chain.
@@ -3031,7 +3049,25 @@ impl Vm {
             }
         }
 
-        let stages = pending.map(|p| p.stages).unwrap_or_default();
+        let mut stages = pending.map(|p| p.stages).unwrap_or_default();
+        let mut op = op;
+        let mut func = func;
+        // A `filter` that *ends* a fused run is cheaper as one more stage than
+        // as the terminal. As the terminal it would be handed every element the
+        // stages produced, and would answer with a parallel vector of booleans
+        // about them — two full-length vectors to build one short one. As a
+        // stage it simply does not pass the elements it rejects on, and the
+        // terminal collects what arrives.
+        if !stages.is_empty() && op == SeqOp::Filter {
+            let f = func.take().expect("filter has a callback");
+            stages.push(Stage {
+                kind: StageKind::Filter(f),
+                shape,
+                line: self.task.line,
+                col: self.task.col,
+            });
+            op = SeqOp::Collect;
+        }
         let (_, source) = self.seq_receiver(who, receiver)?;
         self.begin_seq(SeqJob {
             op,
@@ -3150,7 +3186,13 @@ impl Vm {
     /// a `first()` or `take(n)` at the end can stop the upstream pass dead.
     fn drive_seq(&mut self) -> Result<(), VmError> {
         loop {
-            let (who, at, item, func, shape, op) = {
+            // One borrow of the job for the whole decision: which element is
+            // next, which callback it goes to, and the argument vector that
+            // callback is called with. Building the arguments in here is what
+            // lets the element *move* into them instead of being cloned — the
+            // element is handled once per stage, so a clone per stage is a
+            // clone per element per step of the chain.
+            let (who, at, func, call_args) = {
                 let job = self.task.seq_jobs.last_mut().expect("active seq job");
                 // `find`, `any` and `all` stop as soon as the answer is settled,
                 // so a predicate is never called more often than it must be;
@@ -3161,10 +3203,9 @@ impl Vm {
                     SeqOp::All => job.results.iter().any(|r| !r.truthy()),
                     _ => job.items.len() >= job.limit,
                 };
-                // Where the next callback's element comes from: a value part way
-                // down the stages, or a fresh one off the source. With no stages
-                // the source *is* `items`, walked in place exactly as it was
-                // before fusion existed.
+                // Where the next element comes from: part way down the stages,
+                // or fresh off the source. With no stages the source *is*
+                // `items`, walked in place exactly as it was before fusion.
                 let next = if settled {
                     None
                 } else if let Some(w) = job.work.pop() {
@@ -3183,60 +3224,61 @@ impl Vm {
                     let job = self.task.seq_jobs.pop().unwrap();
                     return self.finish_seq(job);
                 };
+
                 if stage < job.stages.len() {
                     let st = &job.stages[stage];
-                    let f = match &st.kind {
-                        StageKind::Map(f) | StageKind::Filter(f) => f.clone(),
+                    let at = (st.line, st.col);
+                    let shape = st.shape;
+                    let (f, who, hold) = match &st.kind {
+                        StageKind::Map(f) => (f.clone(), "map", false),
+                        StageKind::Filter(f) => (f.clone(), "filter", true),
                     };
                     job.resume = SeqResume::Stage(stage);
-                    job.held = item.clone();
-                    let who = match &st.kind {
-                        StageKind::Map(_) => "map",
-                        StageKind::Filter(_) => "filter",
-                    };
-                    (who, (st.line, st.col), item, Some(f), st.shape, job.op)
+                    // `filter` answers about an element it does not replace, so
+                    // that element has to outlive the call; `map` replaces it
+                    // and keeps nothing, which is why only one of the two pays
+                    // for a clone.
+                    job.held = if hold { item.clone() } else { Value::None };
+                    (who, at, Some(f), Self::seq_args(shape, item))
                 } else {
-                    // Through the pipeline: this one is the terminal's.
-                    if !job.stages.is_empty() {
+                    // Out the bottom of the pipeline: this one is the
+                    // terminal's.
+                    job.resume = SeqResume::Terminal;
+                    // No callback (`any()`, `all()` and `count()` without a
+                    // predicate, and the `Collect` that a fused chain ends in):
+                    // the element settles the step on its own, so no frame is
+                    // needed at all. `Collect`'s answer *is* the elements, so it
+                    // takes this one whole; the others answer with what they
+                    // make of it.
+                    let Some(f) = job.func.clone() else {
+                        if matches!(job.op, SeqOp::Collect) {
+                            job.items.push(item);
+                        } else {
+                            job.results.push(item);
+                        }
+                        continue;
+                    };
+                    // With no stages `items` is the walk itself and already
+                    // holds this element; with stages it has just arrived, and
+                    // is kept only by the terminals whose answer is made of
+                    // elements rather than of callback results.
+                    if !job.stages.is_empty() && job.op.keeps_items() {
                         job.items.push(item.clone());
                     }
-                    job.resume = SeqResume::Terminal;
-                    (job.op.name(), (job.line, job.col), item, job.func.clone(), job.shape, job.op)
+                    let shape = job.shape;
+                    let mut args = Self::seq_args(shape, item);
+                    // Reduce prepends the accumulator it is threading.
+                    if job.op == SeqOp::Reduce {
+                        let acc = job.results.last().cloned().unwrap_or(Value::None);
+                        args.insert(0, acc);
+                    }
+                    (job.op.name(), (job.line, job.col), Some(f), args)
                 }
             };
-            let terminal = matches!(
-                self.task.seq_jobs.last().expect("active seq job").resume,
-                SeqResume::Terminal
-            );
 
-            // No predicate (`any()`, `all()`, `count()`, and the `Collect` a
-            // `take(n)` terminal runs): the element is its own result, so no
-            // frame is needed at all.
             let Some(func) = func else {
-                debug_assert!(terminal);
-                self.task.seq_jobs.last_mut().unwrap().results.push(item);
-                continue;
+                unreachable!("a callback-less step records its element in place")
             };
-
-            // A dict callback is spread over two parameters; reduce prepends the
-            // accumulator.
-            let mut call_args = match shape {
-                SeqShape::Dict => match &item {
-                    Value::Tuple(t) => vec![t[0].clone(), t[1].clone()],
-                    _ => vec![item.clone()],
-                },
-                _ => vec![item.clone()],
-            };
-            if terminal && op == SeqOp::Reduce {
-                let acc = self
-                    .task
-                    .seq_jobs
-                    .last()
-                    .and_then(|j| j.results.last().cloned())
-                    .unwrap_or(Value::None);
-                call_args.insert(0, acc);
-            }
-
             match func {
                 Value::Func(f) => {
                     if self.task.frames.len() >= MAX_FRAMES {
@@ -3480,6 +3522,22 @@ impl Vm {
         let out = self.wrap(Self::rebuild_shape(shape, kept))?;
         self.push(out);
         Ok(())
+    }
+
+    /// The argument vector one callback is called with. A dict's callback takes
+    /// the key and the value as two parameters, so `d.filter((k, v) => v > 1)`
+    /// reads directly instead of indexing a pair; everything else is handed the
+    /// element whole.
+    /// It takes the element **by value**: every callback but a dict's is handed
+    /// the element itself, and a fused chain touches one element once per stage,
+    /// so a clone here is a clone per element per step of the chain.
+    fn seq_args(shape: SeqShape, item: Value) -> Vec<Value> {
+        if matches!(shape, SeqShape::Dict) {
+            if let Value::Tuple(t) = &item {
+                return vec![t[0].clone(), t[1].clone()];
+            }
+        }
+        vec![item]
     }
 
     /// Turn a vector of elements back into the collection type `shape`. For a
