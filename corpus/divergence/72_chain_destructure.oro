@@ -1,0 +1,91 @@
+# INTENTIONAL DIVERGENCE IN SPELLING, NOT IN BEHAVIOUR. A chain callback is a
+# `=>` lambda, which CPython cannot parse, so `oracle.sh` cannot generate this
+# baseline. The file has a twin (72_chain_destructure.twin.py) that writes
+# every destructuring callback as the `for` target list it is defined to
+# match, and the .expected below is *that twin's output*:
+#
+#   python3 corpus/divergence/72_chain_destructure.twin.py \
+#     | sed -E 's/\bTrue\b/true/g; s/\bFalse\b/false/g; s/\bNone\b/null/g' \
+#     | diff - corpus/divergence/72_chain_destructure.expected
+#
+# The rule: a callback with two or more parameters destructures its element
+# exactly as `for a, b in xs` does, and a callback with one takes the element
+# whole. So the protocol's own pair-making steps — `enumerate`, `zip`, a dict's
+# `to_list()`, `group_by` — feed its own callbacks.
+
+words = ["ant", "bee", "cat", "dog"]
+counts = [3, 1, 4, 1]
+
+print("--- enumerate")
+print(words.enumerate().map((i, w) => f"{i}:{w}"))
+print(words.enumerate().filter((i, w) => i % 2 == 0).map((i, w) => w))
+print(words.enumerate(1).filter((i, w) => w != "bee").map((i, w) => i * 10).filter(n => n > 10))
+
+print("--- zip")
+pairs = words.zip(counts)
+print(pairs.filter((w, n) => n > 1).map((w, n) => w * n))
+print(pairs.any((w, n) => n == 4), pairs.all((w, n) => n > 0), pairs.count((w, n) => n == 1))
+print(pairs.map((w, n) => (n, w)).sort_by((n, w) => (n, w)))
+print(pairs.flat_map((w, n) => [w] * n))
+print(pairs.reduce(0, (acc, w, n) => acc + len(w) * n))
+print(pairs.find((w, n) => n > 3))
+print(words.zip(counts, range(4)).map((w, n, i) => f"{i}{w}{n}"))
+
+print("--- a dict's pairs, as a list")
+stock = {"apples": 3, "pears": 0, "plums": 7}
+print(stock.to_list().filter((k, v) => v > 0).map((k, v) => f"{k}={v}"))
+print(stock.to_list().min_by((k, v) => v), stock.to_list().max_by((k, v) => v))
+
+print("--- group_by")
+orders = [
+    {"region": "eu", "total": 30},
+    {"region": "us", "total": 50},
+    {"region": "eu", "total": 20},
+]
+by_region = orders.group_by(o => o["region"])
+print(by_region.to_list().map((region, rows) => (region, rows.map(r => r["total"]).sum())))
+print(by_region.map((region, rows) => (region, len(rows))))
+
+print("--- one parameter: the element whole, on every shape")
+print([(1, 2), (3, 4)].map(p => p[0] + p[1]))
+print(((1, 2), (3, 4)).filter(p => p[0] > 1))
+print(stock.filter(p => p[1] > 0))
+print(stock.map(p => (p[0], p[1] * 2)))
+print(stock.reduce(0, (acc, p) => acc + p[1]))
+print(range(4).filter(x => x % 2 == 1))
+
+print("--- which parameters count")
+def label(k, v, sep="="):
+    return k + sep + v.to_str()
+
+def scaled(x, by=10):
+    return x * by
+
+def arity(*args):
+    return len(args)
+
+class Shelf:
+    def __init__(self, name):
+        self.name = name
+
+    def line(self, k, v):
+        return self.name + ":" + k
+
+shelf = Shelf("s")
+print(stock.to_list().map(label))
+print(counts.map(scaled))
+print(stock.to_list().map(arity))
+print(stock.to_list().map(shelf.line))
+
+print("--- the unpacking is for's")
+print(["xy", "ab"].map((a, b) => b + a))
+print([[1, 2], [3, 4]].map((a, b) => a * b))
+
+def attempt(thunk):
+    try:
+        thunk()
+    except ValueError as e:
+        print(type(e), e)
+
+attempt(() => [(1, 2)].map((a, b, c) => a))
+attempt(() => [(1, 2, 3)].filter(t => true).map((a, b) => a))

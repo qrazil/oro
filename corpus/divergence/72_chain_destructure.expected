@@ -1,0 +1,35 @@
+--- enumerate
+['0:ant', '1:bee', '2:cat', '3:dog']
+['ant', 'cat']
+[30, 40]
+--- zip
+['antantant', 'catcatcatcat']
+true true 2
+[(1, 'bee'), (1, 'dog'), (3, 'ant'), (4, 'cat')]
+['ant', 'ant', 'ant', 'bee', 'cat', 'cat', 'cat', 'cat', 'dog']
+27
+('cat', 4)
+['0ant3', '1bee1', '2cat4', '3dog1']
+--- a dict's pairs, as a list
+['apples=3', 'plums=7']
+('pears', 0) ('plums', 7)
+--- group_by
+[('eu', 50), ('us', 50)]
+{'eu': 2, 'us': 1}
+--- one parameter: the element whole, on every shape
+[3, 7]
+((3, 4),)
+{'apples': 3, 'plums': 7}
+{'apples': 6, 'pears': 0, 'plums': 14}
+10
+[1, 3]
+--- which parameters count
+['apples=3', 'pears=0', 'plums=7']
+[30, 10, 40, 10]
+[1, 1, 1]
+['s:apples', 's:pears', 's:plums']
+--- the unpacking is for's
+['yx', 'ba']
+[2, 12]
+<class 'ValueError'> not enough values to unpack (expected 3, got 2)
+<class 'ValueError'> too many values to unpack (expected 2)

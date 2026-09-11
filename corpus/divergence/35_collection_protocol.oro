@@ -29,15 +29,17 @@ print([1, 1, 2, 2, 3].unique_by(x => x))
 # predicate-less any/all/count use the element's own truthiness
 print([1, 0, 2].any(), [1, 2].all(), [0, 0].any(), [1, 0].count())
 
-# group_by replaces the loop-and-dict pattern outright
+# group_by replaces the loop-and-dict pattern outright, and its (key, rows)
+# pairs feed the next step: a callback with two parameters destructures each
+# element the way `for region, rows in ...` would
 orders = [
     {"region": "eu", "total": 30},
     {"region": "us", "total": 50},
     {"region": "eu", "total": 20},
 ]
-by_region = orders.group_by(o => o["region"])
-for region, rows in by_region:
-    print(region, rows.map(r => r["total"]).sum())
+totals = orders.group_by(o => o["region"]).map((region, rows) => (region, rows.map(r => r["total"]).sum()))
+print(totals)
+print(totals.to_list().map((region, total) => f"{region} {total}"))
 print(orders.max_by(o => o["total"])["region"])
 
 # type preservation: a tuple stays a tuple, a dict stays a dict
