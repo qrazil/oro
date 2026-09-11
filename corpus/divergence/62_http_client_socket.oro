@@ -82,7 +82,7 @@ base = f"http://{ln.local}"
 def raw_conn(conn):
     conn.set_timeout(_DEADLINE)
     head = conn.read_until(b"\r\n\r\n", 65536)
-    target = head.split(b"\r\n")[0].split(b" ")[1]
+    target = head.split(sep=b"\r\n")[0].split(sep=b" ")[1]
     if target == b"/close-delimited":
         # No Content-Length and no Transfer-Encoding. On a *request* that means
         # no body at all; on a response it means the body is everything up to

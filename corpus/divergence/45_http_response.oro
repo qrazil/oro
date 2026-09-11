@@ -41,7 +41,7 @@ def request(method, version):
 # value is replaced before it is printed. The header itself is still asserted
 # to be there.
 def scrub(raw):
-    return raw.split(b"\r\n").map(line => _scrub_line(line)).join(b"\r\n")
+    return raw.split(sep=b"\r\n").map(line => _scrub_line(line)).join(b"\r\n")
 
 
 def _scrub_line(line):
@@ -52,7 +52,7 @@ def _scrub_line(line):
 
 def show(label, raw):
     print(f"--- {label}")
-    for line in scrub(raw).split(b"\r\n"):
+    for line in scrub(raw).split(sep=b"\r\n"):
         print(f"    {line}")
 
 
@@ -102,7 +102,7 @@ print("--- HTTP/1.0 has no chunked coding, so an unsized body is delimited by th
 w = CountingWriter()
 resp = http.Response(200, {}, io.buffer(b"raw bytes"))
 http.write_response(w, request("GET", "1.0"), resp, false)
-check("no transfer-encoding header", resp.headers.get("transfer-encoding", "-"), "-")
+check("no transfer-encoding header", resp.headers.get("transfer-encoding", default="-"), "-")
 show("1.0 response with an unsized body", w.bytes())
 
 print("--- a header cannot end the header block early")

@@ -6,8 +6,8 @@
 # the working directory it is run from.
 import os
 
-path = os.path.join(os.environ.get("TMPDIR", "/tmp"), "oro_file_scope_sample.bin")
-w = open(path, "w")
+path = os.path.join(os.environ.get("TMPDIR", default="/tmp"), "oro_file_scope_sample.bin")
+w = open(path, mode="w")
 w.write(b"hello\nworld\n")
 w.close()
 

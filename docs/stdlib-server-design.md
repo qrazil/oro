@@ -189,7 +189,7 @@ per index on an interpreter that is already 1.7×–5.7× slower than CPython.
 
 ```
 b.find(sub)              -> int, -1 if absent
-b.split(sep, maxsplit=?, side=?) -> list of bytes
+b.split(sep=?, maxsplit=?, side=?) -> list of bytes
 b.strip(side=...)               -> bytes   (ASCII whitespace only)
 b.startswith(p) .endswith(s)    -> bool
 b.replace(old, new)             -> bytes
@@ -508,7 +508,7 @@ Three Rust-backed types, and that is all of them:
 
 | Type | Made by | Reader | Writer | Extra |
 |---|---|---|---|---|
-| `File` | `open(path, mode)` | yes (`"r"`) | yes (`"w"`/`"a"`) | `read_until`, `close()` |
+| `File` | `open(path, mode="r")` | yes (`"r"`) | yes (`"w"`/`"a"`) | `read_until`, `close()` |
 | `TcpStream` | `net.dial`, `listener.accept()` | yes | yes | `read_until`, `close()`, and §4 |
 | `Buffer` | `io.buffer(b=b"")` | yes | yes | `read_until`, `bytes()` |
 
@@ -676,7 +676,7 @@ Writing everything is already guaranteed by the protocol.
 **`io.lines` — cut.** It is a compose of primitives that already exist:
 
 ```python
-lines = io.read(f).to_str().strip("\n", side="right").split("\n")
+lines = io.read(f).to_str().strip(chars="\n", side="right").split(sep="\n")
 ```
 
 The trailing-empty papercut is real (`"a\nb\n".split("\n")` is
@@ -788,7 +788,7 @@ consequence, and the migration note should carry all of them at once.
 
 - **`File.readline`, `File.readlines`, and line iteration over a file.** All
   three are the text file object, which no longer exists. The replacement is
-  `io.read(f).to_str().strip("\n", side="right").split("\n")`, per `io.lines` above.
+  `io.read(f).to_str().strip(chars="\n", side="right").split(sep="\n")`, per `io.lines` above.
   `corpus/core/22_files.oro` is rewritten in byte mode, and moves to
   `corpus/divergence/` with it (§2).
 - **`sys.stdout` / `sys.stderr` / `sys.stdin` as string placeholders.** They
@@ -1838,7 +1838,7 @@ their place independently:
 
 ```python
 head = conn.read_until(b"\r\n\r\n", 65536) # Rust: per-byte scan
-lines = head.split(b"\r\n")                # Rust: per-byte scan
+lines = head.split(sep=b"\r\n")                # Rust: per-byte scan
 # then, per line, in Oro:
 i = line.find(b":")                        # Rust: per-byte scan
 name = line[0:i].to_str().lower()
@@ -1847,7 +1847,7 @@ value = line[i + 1:].strip().to_str()
 
 Three Rust calls that are all justified as `bytes`/`io` building blocks, and
 everything else in Oro. Chunked encoding is the same story: `read_until(b"\r\n")`
-for the size line, `to_int(16)` to parse it, `io.read(conn, n)` for the chunk —
+for the size line, `to_int(base=16)` to parse it, `io.read(conn, n)` for the chunk —
 per chunk, not per byte.
 
 So the boundary holds without a single protocol-aware primitive, and that is the
@@ -2332,14 +2332,14 @@ _MAX_HEADERS = 100
 
 class _HeadParser:
     def __init__(self, raw):
-        self.lines = raw.split(b"\r\n")
+        self.lines = raw.split(sep=b"\r\n")
         self.n = len(self.lines)
 
     def fail(self, msg):
         raise BadRequest(msg)
 
     def request_line(self):
-        parts = self.lines[0].split(b" ")
+        parts = self.lines[0].split(sep=b" ")
         if len(parts) != 3:
             self.fail("malformed request line")
         method = parts[0].to_str()
@@ -2436,7 +2436,7 @@ class _LimitReader:
 
 `_ChunkedReader` is the same shape with a small state machine: when its current
 chunk is exhausted it calls `read_until(b"\r\n", 32)`, takes everything before
-any `;` extension, `to_int(16)`, and then `io.read(self.r, n)` for exactly that
+any `;` extension, `to_int(base=16)`, and then `io.read(self.r, n)` for exactly that
 many bytes — the count form, because a chunk that spans two packets is the
 normal case and not an edge case; size `0` reads and discards the trailer and
 switches to EOF. **A `Transfer-Encoding` and a
@@ -2538,14 +2538,14 @@ class Router:
         if path.find(":") < 0:
             self.exact[method + " " + path] = handler
         else:
-            self.patterns.append((method, path.split("/"), handler))
+            self.patterns.append((method, path.split(sep="/"), handler))
         return self
 
     def dispatch(self, req):
         h = self.exact.get(req.method + " " + req.path)
         if h != null:
             return h(req)
-        segs = req.path.split("/")
+        segs = req.path.split(sep="/")
         for m, pat, fn in self.patterns:
             if m == req.method:
                 params = _match(pat, segs)
@@ -2623,7 +2623,7 @@ These are the load-bearing spellings. Getting one wrong is expensive forever.
 - **The three names in `io`**: `io.read(r, n=null)`, `io.copy(dst, src)`,
   `io.buffer(b=b"")`. A module this small is only defensible if it stays this
   small; every addition after 1.0 is permanent.
-- **`open(path, mode)`** with `"r"` / `"w"` / `"a"`, all three returning byte
+- **`open(path, mode="r")`** with `"r"` / `"w"` / `"a"`, all three returning byte
   streams, and no `b` suffix. A later `"rw"` has to fit alongside these three
   spellings rather than replace them (§2).
 - **`spawn`, `Task.join`, `chan`, `send`, `recv`, `close`**, channel iteration,
@@ -3020,7 +3020,7 @@ scheduler:
 
 Everything this document proposes to add to the frozen language:
 
-**Builtins:** `spawn(f, *args, **kwargs)`, `chan(n=0)`. `open(path, mode)` keeps its
+**Builtins:** `spawn(f, *args, **kwargs)`, `chan(n=0)`. `open(path, mode="r")` keeps its
 three mode letters and returns a byte stream from all of them.
 
 **Types:** `bytes`. And, not user-constructible: `File`, `TcpStream`,

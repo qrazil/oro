@@ -126,7 +126,7 @@ print([1, 2].sum(), [1, 2].sum(start=10), [].sum())
 # `xs.sort_by(x => x)` — the key is the operand, so there is no keyword whose
 # absence means "the elements themselves".
 print([3, 1, 2].sort_by(x => x), (3, 1, 2).sort_by(x => x), ().sort_by(x => x))
-print(range(3, 0, -1).sort_by(x => x))
+print(range(0, start=3, step=-1).sort_by(x => x))
 print(type((3, 1, 2).sort_by(x => x)))
 ties = [("a", 2), ("b", 1), ("c", 2), ("d", 1)]
 print(ties.sort_by(p => p[1], reverse=true))

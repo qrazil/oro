@@ -244,7 +244,7 @@ r = fib(12)
 fn varargs_and_kwargs_binding() {
     let src = "\
 def f(a, *rest, **opts):
-    return a + rest.sum() + opts.get(\"bonus\", 0)
+    return a + rest.sum() + opts.get(\"bonus\", default=0)
 r = f(1, 2, 3, bonus=100)
 ";
     assert_eq!(int(&eval_last(src)), 106);
@@ -1518,8 +1518,8 @@ fn bytes_methods_mirror_the_str_set() {
     assert_eq!(eval("r = b\" \\x0b a b \\t\\n\".strip()\n").repr(), "b'a b'");
     assert_eq!(eval("r = b\"  ab  \".strip(side=\"left\")\n").repr(), "b'ab  '");
     assert_eq!(eval("r = b\"  ab  \".strip(side=\"right\")\n").repr(), "b'  ab'");
-    assert_eq!(eval("r = b\"a,b,,c\".split(b\",\")\n").repr(), "[b'a', b'b', b'', b'c']");
-    assert_eq!(eval("r = b\"a,b,c\".split(b\",\", 1)\n").repr(), "[b'a', b'b,c']");
+    assert_eq!(eval("r = b\"a,b,,c\".split(sep=b\",\")\n").repr(), "[b'a', b'b', b'', b'c']");
+    assert_eq!(eval("r = b\"a,b,c\".split(sep=b\",\", maxsplit=1)\n").repr(), "[b'a', b'b,c']");
     assert_eq!(eval("r = b\"a b\\x0bc\".split()\n").repr(), "[b'a', b'b', b'c']");
     assert_eq!(eval("r = [b\"a\", b\"b\"].join(b\"-\")\n").repr(), "b'a-b'");
     assert_eq!(int(&eval("r = b\"abc\".find(b\"b\")\n")), 1);
@@ -1578,9 +1578,9 @@ fn str_strip_takes_a_side_and_find_takes_a_reverse() {
     assert_eq!(eval("r = \"  ab  \".strip(side=\"right\")\n").repr(), "'  ab'");
     assert_eq!(eval("r = \"  ab  \".strip(side=\"both\")\n").repr(), "'ab'");
     // `chars` is a cut set, and it composes with `side` rather than replacing it.
-    assert_eq!(eval("r = \"xyaxy\".strip(\"xy\")\n").repr(), "'a'");
-    assert_eq!(eval("r = \"xyaxy\".strip(\"xy\", side=\"left\")\n").repr(), "'axy'");
-    assert_eq!(eval("r = \"xyaxy\".strip(\"xy\", side=\"right\")\n").repr(), "'xya'");
+    assert_eq!(eval("r = \"xyaxy\".strip(chars=\"xy\")\n").repr(), "'a'");
+    assert_eq!(eval("r = \"xyaxy\".strip(chars=\"xy\", side=\"left\")\n").repr(), "'axy'");
+    assert_eq!(eval("r = \"xyaxy\".strip(chars=\"xy\", side=\"right\")\n").repr(), "'xya'");
     // Anything but the three is a ValueError that names the three.
     let e = run_err("r = \"x\".strip(side=\"middle\")\n");
     assert!(e.message.contains("ValueError"), "got: {}", e.message);
@@ -1589,7 +1589,7 @@ fn str_strip_takes_a_side_and_find_takes_a_reverse() {
     assert_eq!(int(&eval("r = \"abcabc\".find(\"bc\")\n")), 1);
     assert_eq!(int(&eval("r = \"abcabc\".find(\"bc\", reverse=true)\n")), 4);
     // The positional window still applies, from whichever end.
-    assert_eq!(int(&eval("r = \"abcabc\".find(\"bc\", 0, 4, reverse=true)\n")), 1);
+    assert_eq!(int(&eval("r = \"abcabc\".find(\"bc\", start=0, end=4, reverse=true)\n")), 1);
     assert_eq!(int(&eval("r = \"abcabc\".find(\"zz\", reverse=true)\n")), -1);
     assert_eq!(int(&eval("r = \"abc\".find(\"\", reverse=true)\n")), 3);
 }
@@ -1600,33 +1600,33 @@ fn str_strip_takes_a_side_and_find_takes_a_reverse() {
 /// and these pin the shape of the call.
 #[test]
 fn split_takes_a_side() {
-    assert_eq!(eval("r = \"a.b.c\".split(\".\", 1)\n").repr(), "['a', 'b.c']");
-    assert_eq!(eval("r = \"a.b.c\".split(\".\", 1, side=\"left\")\n").repr(), "['a', 'b.c']");
-    assert_eq!(eval("r = \"a.b.c\".split(\".\", 1, side=\"right\")\n").repr(), "['a.b', 'c']");
+    assert_eq!(eval("r = \"a.b.c\".split(sep=\".\", maxsplit=1)\n").repr(), "['a', 'b.c']");
+    assert_eq!(eval("r = \"a.b.c\".split(sep=\".\", maxsplit=1, side=\"left\")\n").repr(), "['a', 'b.c']");
+    assert_eq!(eval("r = \"a.b.c\".split(sep=\".\", maxsplit=1, side=\"right\")\n").repr(), "['a.b', 'c']");
     // Unlimited splits: the two ends agree, and `side` is a no-op rather than
     // an error. See `split_side` for why an error could not be honest here.
-    assert_eq!(eval("r = \"a.b.c\".split(\".\", side=\"right\")\n").repr(), "['a', 'b', 'c']");
+    assert_eq!(eval("r = \"a.b.c\".split(sep=\".\", side=\"right\")\n").repr(), "['a', 'b', 'c']");
     // Whitespace splitting keeps the remainder verbatim at the far end.
-    assert_eq!(eval("r = \" a  b  c \".split(null, 1, side=\"right\")\n").repr(), "[' a  b', 'c']");
-    assert_eq!(eval("r = \" a  b \".split(null, 0, side=\"right\")\n").repr(), "[' a  b']");
-    assert_eq!(eval("r = \"   \".split(null, 1, side=\"right\")\n").repr(), "[]");
+    assert_eq!(eval("r = \" a  b  c \".split(maxsplit=1, side=\"right\")\n").repr(), "[' a  b', 'c']");
+    assert_eq!(eval("r = \" a  b \".split(maxsplit=0, side=\"right\")\n").repr(), "[' a  b']");
+    assert_eq!(eval("r = \"   \".split(maxsplit=1, side=\"right\")\n").repr(), "[]");
     // Empty fields survive from either end.
-    assert_eq!(eval("r = \"a..b\".split(\".\", 1, side=\"right\")\n").repr(), "['a.', 'b']");
-    assert_eq!(eval("r = \".a.\".split(\".\", 1, side=\"right\")\n").repr(), "['.a', '']");
+    assert_eq!(eval("r = \"a..b\".split(sep=\".\", maxsplit=1, side=\"right\")\n").repr(), "['a.', 'b']");
+    assert_eq!(eval("r = \".a.\".split(sep=\".\", maxsplit=1, side=\"right\")\n").repr(), "['.a', '']");
     // And on bytes, the same sixteen names meaning the same sixteen things.
-    assert_eq!(eval("r = b\"a.b.c\".split(b\".\", 1, side=\"right\")\n").repr(), "[b'a.b', b'c']");
+    assert_eq!(eval("r = b\"a.b.c\".split(sep=b\".\", maxsplit=1, side=\"right\")\n").repr(), "[b'a.b', b'c']");
     assert_eq!(
-        eval("r = b\" a  b  c \".split(null, 1, side=\"right\")\n").repr(),
+        eval("r = b\" a  b  c \".split(maxsplit=1, side=\"right\")\n").repr(),
         "[b' a  b', b'c']"
     );
 
     // A split has no "both" end, so the error names two values, not three.
-    let e = run_err("r = \"x\".split(\".\", 1, side=\"both\")\n");
+    let e = run_err("r = \"x\".split(sep=\".\", maxsplit=1, side=\"both\")\n");
     assert!(e.message.contains("ValueError"), "got: {}", e.message);
     assert!(e.message.contains("\"left\" or \"right\""), "got: {}", e.message);
-    let e = run_err("r = \"x\".split(\".\", 1, side=1)\n");
+    let e = run_err("r = \"x\".split(sep=\".\", maxsplit=1, side=1)\n");
     assert!(e.message.contains("TypeError"), "got: {}", e.message);
-    let e = run_err("r = \"x\".split(\".\", bogus=1)\n");
+    let e = run_err("r = \"x\".split(sep=\".\", bogus=1)\n");
     assert!(e.message.contains("unexpected keyword argument"), "got: {}", e.message);
 }
 
@@ -1635,7 +1635,7 @@ fn split_takes_a_side() {
 /// its answer, side by side.
 #[test]
 fn rm_prefix_and_rm_suffix_are_literal() {
-    assert_eq!(eval("r = \"ping.png\".strip(\".png\", side=\"right\")\n").repr(), "'pi'");
+    assert_eq!(eval("r = \"ping.png\".strip(chars=\".png\", side=\"right\")\n").repr(), "'pi'");
     assert_eq!(eval("r = \"ping.png\".rm_suffix(\".png\")\n").repr(), "'ping'");
     assert_eq!(eval("r = \"ping.png\".rm_suffix(\".gif\")\n").repr(), "'ping.png'");
     assert_eq!(eval("r = \"ping.png\".rm_prefix(\"ping\")\n").repr(), "'.png'");
@@ -1655,16 +1655,16 @@ fn count_and_the_is_predicates() {
     assert_eq!(int(&eval("r = \"abcabc\".count(\"bc\")\n")), 2);
     assert_eq!(int(&eval("r = \"aaa\".count(\"aa\")\n")), 1);
     assert_eq!(int(&eval("r = \"abc\".count(\"\")\n")), 4);
-    assert_eq!(int(&eval("r = \"abcabc\".count(\"bc\", 2)\n")), 1);
-    assert_eq!(int(&eval("r = \"abcabc\".count(\"bc\", 0, 4)\n")), 1);
-    assert_eq!(int(&eval("r = \"abcabc\".count(\"bc\", -3)\n")), 1);
-    assert_eq!(int(&eval("r = \"abc\".count(\"\", 1, 2)\n")), 2);
-    assert_eq!(int(&eval("r = \"abc\".count(\"\", 3)\n")), 1);
-    assert_eq!(int(&eval("r = \"abc\".count(\"\", 99)\n")), 0);
+    assert_eq!(int(&eval("r = \"abcabc\".count(\"bc\", start=2)\n")), 1);
+    assert_eq!(int(&eval("r = \"abcabc\".count(\"bc\", start=0, end=4)\n")), 1);
+    assert_eq!(int(&eval("r = \"abcabc\".count(\"bc\", start=-3)\n")), 1);
+    assert_eq!(int(&eval("r = \"abc\".count(\"\", start=1, end=2)\n")), 2);
+    assert_eq!(int(&eval("r = \"abc\".count(\"\", start=3)\n")), 1);
+    assert_eq!(int(&eval("r = \"abc\".count(\"\", start=99)\n")), 0);
     // Character indices, not byte offsets — the same rule `find` follows.
-    assert_eq!(int(&eval("r = \"ha\u{e9}\u{e9}ha\".count(\"\u{e9}\", 3)\n")), 1);
-    assert_eq!(int(&eval("r = b\"abcabc\".count(b\"bc\", 2)\n")), 1);
-    assert_eq!(int(&eval("r = b\"abc\".count(b\"\", 99)\n")), 0);
+    assert_eq!(int(&eval("r = \"ha\u{e9}\u{e9}ha\".count(\"\u{e9}\", start=3)\n")), 1);
+    assert_eq!(int(&eval("r = b\"abcabc\".count(b\"bc\", start=2)\n")), 1);
+    assert_eq!(int(&eval("r = b\"abc\".count(b\"\", start=99)\n")), 0);
     assert!(eval("r = \"123\".is_digit()\n").truthy());
     assert!(!eval("r = \"12a\".is_digit()\n").truthy());
     assert!(eval("r = \"caf\u{e9}\".is_alpha()\n").truthy());
@@ -1683,7 +1683,7 @@ fn removed_string_methods_name_their_replacement() {
     let cases = [
         ("\"x\".lstrip()", "strip(side=\"left\")"),
         ("\"x\".rstrip()", "strip(side=\"right\")"),
-        ("\"x\".rsplit(\",\")", "split(sep, maxsplit, side=\"right\")"),
+        ("\"x\".rsplit(\",\")", "split(sep=…, maxsplit=…, side=\"right\")"),
         ("\"x\".rfind(\"a\")", "find(sub, reverse=true)"),
         ("\"x\".zfill(3)", "f\"{n:05d}\""),
         ("\"x\".index(\"a\")", "find(sub)"),
@@ -1710,6 +1710,145 @@ fn other_methods_refuse_keywords() {
     assert!(e.message.contains("unexpected keyword argument 'bogus'"), "got: {}", e.message);
     let e = run_err("r = \"x\".find(\"x\", bogus=1)\n");
     assert!(e.message.contains("unexpected keyword argument 'bogus'"), "got: {}", e.message);
+}
+
+/// The argument rule on the native builtins: a parameter with a default is
+/// keyword-only, so every old positional spelling is refused — and the refusal
+/// *names the new spelling*, because the old one was valid Oro until now and a
+/// bare arity error would leave the reader to guess where the argument went.
+/// `corpus/divergence/73_argument_rule_natives.oro` runs the whole set end to
+/// end; these pin the part that matters, which is what the message says.
+#[test]
+fn old_positional_spellings_name_the_keyword_that_replaced_them() {
+    let cases = [
+        ("\"abcabc\".find(\"bc\", 2)", "find('bc', start=2)"),
+        ("\"abcabc\".count(\"bc\", 2)", "count('bc', start=2)"),
+        ("\"abc\".startswith(\"b\", 1)", "startswith('b', start=1)"),
+        ("\"abc\".endswith(\"b\", 0, 2)", "endswith('b', start=0, end=2)"),
+        ("\"aaa\".replace(\"a\", \"b\", 2)", "replace('a', 'b', count=2)"),
+        ("\"xyaxy\".strip(\"xy\")", "strip(chars='xy')"),
+        ("\"a,b\".split(\",\")", "split(sep=',')"),
+        ("\"a b\".split(null)", "split()"),
+        ("\"a b\".split(null, 1)", "split(maxsplit=1)"),
+        ("b\"a,b\".split(b\",\")", "split(sep=b',')"),
+        ("\"ff\".to_int(16)", "to_int(base=16)"),
+        ("range(2, 10)", "range(10, start=2)"),
+        ("range(0, 10)", "range(10)"),
+        ("range(2, 10, 3)", "range(10, start=2, step=3)"),
+        ("round(2.5, 2)", "round(2.5, ndigits=2)"),
+        ("open(\"/tmp/x\", \"w\")", "open('/tmp/x', mode='w')"),
+        ("{\"a\": 1}.get(\"zz\", 0)", "get('zz', default=0)"),
+        ("{\"a\": 1}.pop(\"zz\", 0)", "pop('zz', default=0)"),
+        ("[1, 2].pop(0)", "pop(index=0)"),
+    ];
+    for (src, want) in cases {
+        let e = run_err(&format!("r = {src}\n"));
+        assert!(e.message.contains("TypeError"), "{src}: {}", e.message);
+        assert!(e.message.contains(want), "{src} should name {want}, got: {}", e.message);
+    }
+}
+
+/// An explicit `null` used to mean "omitted" for these parameters, which made
+/// `f(x=null)` a second spelling of `f()`. It is refused now — except on
+/// `get`/`pop`'s `default=`, where `null` *is* the default and so is a value.
+#[test]
+fn null_is_not_a_second_spelling_of_omitted() {
+    for src in [
+        "\"abc\".find(\"b\", start=null)",
+        "\"abc\".find(\"b\", end=null)",
+        "\"abc\".find(\"b\", reverse=null)",
+        "\"abc\".count(\"b\", start=null)",
+        "\"abc\".startswith(\"b\", start=null)",
+        "\"abc\".replace(\"a\", \"b\", count=null)",
+        "\"abc\".strip(chars=null)",
+        "b\"abc\".strip(chars=null)",
+        "\"a,b\".split(sep=null)",
+        "\"a,b\".split(maxsplit=null)",
+        "\"10\".to_int(base=null)",
+        "range(5, start=null)",
+        "range(5, step=null)",
+        "round(1.5, ndigits=null)",
+        "[1].pop(index=null)",
+    ] {
+        let e = run_err(&format!("r = {src}\n"));
+        assert!(e.message.contains("null does not mean"), "{src}: {}", e.message);
+    }
+    assert!(matches!(eval("r = {\"a\": 1}.get(\"zz\", default=null)\n"), Value::None));
+    assert!(matches!(eval("r = {\"a\": 1}.pop(\"zz\", default=null)\n"), Value::None));
+}
+
+/// `range(end, start=0, step=1)`: the one positional argument is always the
+/// end, so `range(5)` reads as it always has, and the bounds the two- and
+/// three-argument forms used to tell apart by arity are named instead.
+#[test]
+fn range_is_end_first_with_named_bounds() {
+    assert_eq!(eval("r = range(5).to_list()\n").repr(), "[0, 1, 2, 3, 4]");
+    assert_eq!(eval("r = range(10, start=2, step=3).to_list()\n").repr(), "[2, 5, 8]");
+    assert_eq!(eval("r = range(0, start=3, step=-1).to_list()\n").repr(), "[3, 2, 1]");
+    assert_eq!(int(&eval("r = len(range(10, start=2))\n")), 8);
+    let e = run_err("r = range(5, step=0)\n");
+    assert!(e.message.contains("must not be zero"), "got: {}", e.message);
+}
+
+/// `split()` and `split(sep=…)` are two algorithms, and the keyword is what
+/// picks one. No value of `sep` means "whitespace", which is why `split(null)`
+/// is gone rather than renamed.
+#[test]
+fn split_picks_its_algorithm_by_keyword() {
+    assert_eq!(eval("r = \"  a  b  \".split()\n").repr(), "['a', 'b']");
+    assert_eq!(eval("r = \"a,,b\".split(sep=\",\")\n").repr(), "['a', '', 'b']");
+    assert_eq!(eval("r = \" a  b  c \".split(maxsplit=1)\n").repr(), "['a', 'b  c ']");
+    assert_eq!(eval("r = b\"  a b \".split()\n").repr(), "[b'a', b'b']");
+}
+
+/// `find(reverse=)` takes a bool and nothing else: any truthy value used to
+/// count, so `reverse="no"` searched from the end.
+#[test]
+fn find_reverse_requires_a_bool() {
+    assert_eq!(int(&eval("r = \"abcabc\".find(\"bc\", reverse=true)\n")), 4);
+    for src in ["\"abcabc\".find(\"bc\", reverse=1)", "\"abcabc\".find(\"bc\", reverse=\"yes\")"] {
+        let e = run_err(&format!("r = {src}\n"));
+        assert!(e.message.contains("reverse= must be bool"), "{src}: {}", e.message);
+    }
+}
+
+/// `to_int(base=)` reads a base off a `str` and nothing else. Both refusals
+/// here used to be silent: the extra argument was read past, and a base on a
+/// number was ignored, so `(5).to_int(16)` answered 5.
+#[test]
+fn to_int_takes_a_named_base_only_on_a_str() {
+    assert_eq!(int(&eval("r = \"ff\".to_int(base=16)\n")), 255);
+    assert_eq!(int(&eval("r = \"777\".to_int(base=8)\n")), 511);
+    let e = run_err("r = \"10\".to_int(16, 2)\n");
+    assert!(e.message.contains("takes no positional arguments"), "got: {}", e.message);
+    let e = run_err("r = (5).to_int(base=16)\n");
+    assert!(e.message.contains("only applies to a str"), "got: {}", e.message);
+}
+
+/// `d.pop(k)` raises and `d.pop(k, default=v)` does not, so the keyword's
+/// *presence* is the switch — and `xs.pop(index=)` keeps a positional argument
+/// to `pop` meaning one thing: a dict key.
+#[test]
+fn pop_takes_its_default_and_its_index_by_name() {
+    assert_eq!(eval("r = {\"a\": 1}.pop(\"zz\", default=\"fallback\")\n").repr(), "'fallback'");
+    let e = run_err("r = {\"a\": 1}.pop(\"zz\")\n");
+    assert!(e.message.contains("KeyError"), "got: {}", e.message);
+    assert_eq!(int(&eval("r = [1, 2, 3].pop(index=0)\n")), 1);
+    assert_eq!(int(&eval("r = [1, 2, 3].pop()\n")), 3);
+    let e = run_err("r = [].pop(index=0)\n");
+    assert!(e.message.contains("pop from empty list"), "got: {}", e.message);
+}
+
+/// `round(x)` answers an int and `round(x, ndigits=0)` a float, so omitting
+/// the keyword is a third case that no value can spell — CPython draws the
+/// same line. `open`'s mode is a code word, which is the kind that is named.
+#[test]
+fn round_and_open_take_their_keyword() {
+    assert_eq!(eval("r = round(2.5)\n").repr(), "2");
+    assert_eq!(eval("r = round(2.5, ndigits=0)\n").repr(), "2.0");
+    assert_eq!(eval("r = round(2.675, ndigits=2)\n").repr(), "2.67");
+    let e = run_err("r = open(\"/tmp/oro_no_such_file\", mode=\"q\")\n");
+    assert!(e.message.contains("invalid file mode"), "got: {}", e.message);
 }
 
 /// The two conversions at the wire/program boundary. `to_bytes` cannot fail

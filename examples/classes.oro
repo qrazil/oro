@@ -63,10 +63,10 @@ class Release(Version):
 
 
 def parse(text):
-    numbers, channel = text.split("-", 1), null
+    numbers, channel = text.split(sep="-", maxsplit=1), null
     if len(numbers) == 2:
         channel = numbers[1]
-    fields = numbers[0].rm_prefix("v").split(".")
+    fields = numbers[0].rm_prefix("v").split(sep=".")
     if len(fields) != 3:
         raise ValueError(f"not a version: {text!r}")
     major, minor, patch = fields.map(f => f.to_int())

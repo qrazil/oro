@@ -187,19 +187,19 @@ print("---")
 # "had no effect" is a property of the data, not of the call.
 for side in ["left", "right", "both", "middle", ""]:
     try:
-        print(repr(side), "a.b.c".split(".", 1, side=side))
+        print(repr(side), "a.b.c".split(sep=".", maxsplit=1, side=side))
     except ValueError as e:
         print(repr(side), "ValueError:", e)
 
-print("a.b.c".split(".", side="right"), "a.b.c".split(".", -1, side="right"))
+print("a.b.c".split(sep=".", side="right"), "a.b.c".split(sep=".", maxsplit=-1, side="right"))
 
 try:
-    "hi".split(".", side=1)
+    "hi".split(sep=".", side=1)
 except TypeError as e:
     print("TypeError:", e)
 
 try:
-    "hi".split(".", bogus=1)
+    "hi".split(sep=".", bogus=1)
 except TypeError as e:
     print("TypeError:", e)
 

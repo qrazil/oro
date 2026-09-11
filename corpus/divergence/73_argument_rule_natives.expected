@@ -1,0 +1,74 @@
+--- range(end, start=0, step=1)
+[0, 1, 2, 3, 4]
+[2, 3, 4, 5, 6, 7, 8, 9] [2, 5, 8]
+[3, 2, 1] [0, 2, 4]
+8 true
+range(2, 10) -> TypeError: range() takes 1 positional argument but 2 were given — write `range(10, start=2)`: the one positional argument is the end, and the start and step are keyword-only
+range(0, 10) -> TypeError: range() takes 1 positional argument but 2 were given — write `range(10)`: the one positional argument is the end, and the start and step are keyword-only
+range(2, 10, 3) -> TypeError: range() takes 1 positional argument but 3 were given — write `range(10, start=2, step=3)`: the one positional argument is the end, and the start and step are keyword-only
+range() -> TypeError: range() missing its required argument: the end — `range(end, start=0, step=1)`
+range(5, start=null) -> TypeError: range(): start= must be int, not null — null does not mean "omitted"; leave start= out for the default
+range(5, step=null) -> TypeError: range(): step= must be int, not null — null does not mean "omitted"; leave step= out for the default
+range(5, step=0) -> ValueError: range() step argument must not be zero
+range(end=5) -> TypeError: range() missing its required argument: the end — `range(end, start=0, step=1)`
+--- split() collapses whitespace; split(sep=) splits on a literal
+['a', 'b'] ['a', '', 'b']
+['a', 'b  c '] ['a', 'b,c']
+['a,b', 'c']
+[b'a', b'b'] [b'a', b'b']
+"a,b".split(",") -> TypeError: split() takes no positional arguments but 1 was given — write `split(sep=',')`: the separator is keyword-only, and `split()` with none splits on runs of whitespace
+"a b".split(null) -> TypeError: split() takes no positional arguments but 1 was given — write `split()`: the separator is keyword-only, and `split()` with none splits on runs of whitespace
+"a b".split(null, 1) -> TypeError: split() takes no positional arguments but 2 were given — write `split(maxsplit=1)`: the separator is keyword-only, and `split()` with none splits on runs of whitespace
+"a,b".split(sep=null) -> TypeError: split(): sep= must be str, not null — null does not mean "omitted"; leave sep= out for the default
+"a,b".split(maxsplit=null) -> TypeError: split(): maxsplit= must be int, not null — null does not mean "omitted"; leave maxsplit= out for the default
+b"a,b".split(b",") -> TypeError: split() takes no positional arguments but 1 was given — write `split(sep=b',')`: the separator is keyword-only, and `split()` with none splits on runs of whitespace
+--- pop, with and without default=
+1 {'b': 2}
+fallback
+null
+{}.pop("zz") -> KeyError: 'zz'
+d.pop("zz", 0) -> TypeError: pop() takes 1 positional argument but 2 were given — write `pop('zz', default=0)`: the fallback is keyword-only, and without it a missing key raises KeyError
+3 1 [2]
+[1, 2].pop(0) -> TypeError: pop() takes no positional arguments but 1 was given — write `pop(index=0)`: on a list the index is keyword-only, so that a positional argument to `pop` only ever means a dict key
+[1, 2].pop(index=null) -> TypeError: pop(): index= must be int, not null — null does not mean "omitted"; leave index= out for the default
+[].pop(index=0) -> IndexError: pop from empty list
+--- get(default=), the one keyword where null is a value
+0 null null
+d.get("zz", 0) -> TypeError: get() takes 1 positional argument but 2 were given — write `get('zz', default=0)`: the fallback is keyword-only
+--- an explicit null is not "omitted"
+find(start=null) -> TypeError: find(): start= must be int, not null — null does not mean "omitted"; leave start= out for the default
+find(end=null) -> TypeError: find(): end= must be int, not null — null does not mean "omitted"; leave end= out for the default
+find(reverse=null) -> TypeError: find(): reverse= must be bool, not null — null does not mean "omitted"; leave reverse= out for the default
+count(start=null) -> TypeError: count(): start= must be int, not null — null does not mean "omitted"; leave start= out for the default
+startswith(start=null) -> TypeError: startswith(): start= must be int, not null — null does not mean "omitted"; leave start= out for the default
+endswith(end=null) -> TypeError: endswith(): end= must be int, not null — null does not mean "omitted"; leave end= out for the default
+replace(count=null) -> TypeError: replace(): count= must be int, not null — null does not mean "omitted"; leave count= out for the default
+strip(chars=null) -> TypeError: strip(): chars= must be str, not null — null does not mean "omitted"; leave chars= out for the default
+bytes.strip(chars=null) -> TypeError: strip(): chars= must be bytes, not null — null does not mean "omitted"; leave chars= out for the default
+to_int(base=null) -> TypeError: to_int(): base= must be int, not null — null does not mean "omitted"; leave base= out for the default
+round(ndigits=null) -> TypeError: round(): ndigits= must be int, not null — null does not mean "omitted"; leave ndigits= out for the default
+open(mode=null) -> TypeError: open(): mode= must be str, not null — null does not mean "omitted"; leave mode= out for the default
+--- find(reverse=) takes a bool, not anything truthy
+4 1
+find(reverse="yes") -> TypeError: find(): reverse= must be bool, not 'str'
+find(reverse=1) -> TypeError: find(): reverse= must be bool, not 'int'
+--- the window, the count and the character set are named
+4 1
+true true
+bba a
+find("bc", 2) -> TypeError: find() takes 1 positional argument but 2 were given — write `find('bc', start=2)`: the window is keyword-only
+count("bc", 2) -> TypeError: count() takes 1 positional argument but 2 were given — write `count('bc', start=2)`: the window is keyword-only
+startswith("b", 1) -> TypeError: startswith() takes 1 positional argument but 2 were given — write `startswith('b', start=1)`: the window is keyword-only
+replace("a", "b", 2) -> TypeError: replace() takes 2 positional arguments but 3 were given — write `replace('a', 'b', count=2)`: the count is keyword-only
+strip("xy") -> TypeError: strip() takes no positional arguments but 1 was given — write `strip(chars='xy')`: the character set is keyword-only
+--- to_int(base=), and the arguments it used to ignore
+255 31 511 10
+"10".to_int(16) -> TypeError: to_int() takes no positional arguments but 1 was given — write `to_int(base=16)`: the base is keyword-only
+"10".to_int(16, 2) -> TypeError: to_int() takes no positional arguments but 2 were given — write `to_int(base=…)`
+(5).to_int(base=16) -> TypeError: to_int(): base= only applies to a str — a 'int' has no digits to read in a base
+(5.5).to_int(base=16) -> TypeError: to_int(): base= only applies to a str — a 'float' has no digits to read in a base
+--- round(x) is an int; round(x, ndigits=0) is a float
+2 2.0 2.67 1200
+round(2.5, 2) -> TypeError: round() takes 1 positional argument but 2 were given — write `round(2.5, ndigits=2)`: the precision is keyword-only
+--- open(path, mode=)
+open(p, "w") -> TypeError: open() takes 1 positional argument but 2 were given — write `open('/tmp/oro_args_probe.txt', mode='w')`: the mode is keyword-only

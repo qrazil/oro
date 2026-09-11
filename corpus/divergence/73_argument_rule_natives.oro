@@ -1,0 +1,108 @@
+# The argument rule, on the native builtins: a parameter with no default is
+# positional, one with a default is keyword-only, and an explicit `null` is not
+# a second spelling of "omitted".
+#
+# CPython cannot run this file, so it has no twin: `range(end, start=)`,
+# `split(sep=)`, `d.pop(default=)` and `xs.pop(index=)` are all spellings it
+# rejects, and the whole of the second half is Oro's own diagnostics. The
+# *values* are still oracled — by the twinned 38_str_bytes_optional_args,
+# 43_identity_equality and 45_dict_pop — so what is reviewed here is the shape
+# of each call and the message each old spelling answers with.
+
+def err(label, f):
+    try:
+        print(label, "-> no error:", repr(f()))
+    except TypeError as e:
+        print(label, "-> TypeError:", f"{e}")
+    except ValueError as e:
+        print(label, "-> ValueError:", f"{e}")
+    except KeyError as e:
+        print(label, "-> KeyError:", f"{e}")
+    except IndexError as e:
+        print(label, "-> IndexError:", f"{e}")
+
+print("--- range(end, start=0, step=1)")
+print(range(5).to_list())
+print(range(10, start=2).to_list(), range(10, start=2, step=3).to_list())
+print(range(0, start=3, step=-1).to_list(), range(5, step=2).to_list())
+print(len(range(10, start=2)), range(10, start=2) == range(10, start=2))
+err("range(2, 10)", () => range(2, 10))
+err("range(0, 10)", () => range(0, 10))
+err("range(2, 10, 3)", () => range(2, 10, 3))
+err("range()", () => range())
+err("range(5, start=null)", () => range(5, start=null))
+err("range(5, step=null)", () => range(5, step=null))
+err("range(5, step=0)", () => range(5, step=0))
+err("range(end=5)", () => range(end=5))
+
+print("--- split() collapses whitespace; split(sep=) splits on a literal")
+print("  a  b  ".split(), "a,,b".split(sep=","))
+print(" a  b  c ".split(maxsplit=1), "a,b,c".split(sep=",", maxsplit=1))
+print("a,b,c".split(sep=",", maxsplit=1, side="right"))
+print(b"  a b ".split(), b"a,b".split(sep=b","))
+err('"a,b".split(",")', () => "a,b".split(","))
+err('"a b".split(null)', () => "a b".split(null))
+err('"a b".split(null, 1)', () => "a b".split(null, 1))
+err('"a,b".split(sep=null)', () => "a,b".split(sep=null))
+err('"a,b".split(maxsplit=null)', () => "a,b".split(maxsplit=null))
+err('b"a,b".split(b",")', () => b"a,b".split(b","))
+
+print("--- pop, with and without default=")
+d = {"a": 1, "b": 2}
+print(d.pop("a"), d)
+print({"a": 1}.pop("zz", default="fallback"))
+print({"a": 1}.pop("zz", default=null))
+err('{}.pop("zz")', () => {}.pop("zz"))
+err('d.pop("zz", 0)', () => {"a": 1}.pop("zz", 0))
+xs = [1, 2, 3]
+print(xs.pop(), xs.pop(index=0), xs)
+err("[1, 2].pop(0)", () => [1, 2].pop(0))
+err("[1, 2].pop(index=null)", () => [1, 2].pop(index=null))
+err("[].pop(index=0)", () => [].pop(index=0))
+
+print("--- get(default=), the one keyword where null is a value")
+print({"a": 1}.get("zz", default=0), {"a": 1}.get("zz", default=null), {"a": 1}.get("zz"))
+err('d.get("zz", 0)', () => {"a": 1}.get("zz", 0))
+
+print('--- an explicit null is not "omitted"')
+err("find(start=null)", () => "abc".find("b", start=null))
+err("find(end=null)", () => "abc".find("b", end=null))
+err("find(reverse=null)", () => "abc".find("b", reverse=null))
+err("count(start=null)", () => "abc".count("b", start=null))
+err("startswith(start=null)", () => "abc".startswith("b", start=null))
+err("endswith(end=null)", () => "abc".endswith("b", end=null))
+err("replace(count=null)", () => "abc".replace("a", "b", count=null))
+err("strip(chars=null)", () => "abc".strip(chars=null))
+err("bytes.strip(chars=null)", () => b"abc".strip(chars=null))
+err("to_int(base=null)", () => "10".to_int(base=null))
+err("round(ndigits=null)", () => round(1.5, ndigits=null))
+err("open(mode=null)", () => open("/nonexistent", mode=null))
+
+print("--- find(reverse=) takes a bool, not anything truthy")
+print("abcabc".find("bc", reverse=true), "abcabc".find("bc", reverse=false))
+err('find(reverse="yes")', () => "abcabc".find("bc", reverse="yes"))
+err("find(reverse=1)", () => "abcabc".find("bc", reverse=1))
+
+print("--- the window, the count and the character set are named")
+print("abcabc".find("bc", start=2), "abcabc".count("bc", start=2))
+print("abc".startswith("b", start=1), "abc".endswith("b", end=2))
+print("aaa".replace("a", "b", count=2), "xyaxy".strip(chars="xy"))
+err('find("bc", 2)', () => "abcabc".find("bc", 2))
+err('count("bc", 2)', () => "abcabc".count("bc", 2))
+err('startswith("b", 1)', () => "abc".startswith("b", 1))
+err('replace("a", "b", 2)', () => "aaa".replace("a", "b", 2))
+err('strip("xy")', () => "xyaxy".strip("xy"))
+
+print("--- to_int(base=), and the arguments it used to ignore")
+print("ff".to_int(base=16), "0x1f".to_int(base=16), "777".to_int(base=8), "10".to_int())
+err('"10".to_int(16)', () => "10".to_int(16))
+err('"10".to_int(16, 2)', () => "10".to_int(16, 2))
+err("(5).to_int(base=16)", () => 5.to_int(base=16))
+err("(5.5).to_int(base=16)", () => 5.5.to_int(base=16))
+
+print("--- round(x) is an int; round(x, ndigits=0) is a float")
+print(round(2.5), round(2.5, ndigits=0), round(2.675, ndigits=2), round(1250, ndigits=-2))
+err("round(2.5, 2)", () => round(2.5, 2))
+
+print("--- open(path, mode=)")
+err('open(p, "w")', () => open("/tmp/oro_args_probe.txt", "w"))

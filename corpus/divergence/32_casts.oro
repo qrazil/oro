@@ -7,7 +7,7 @@
 lines = ["alice,30,dallas", "bob,25,austin", "carol,35,houston"]
 rows = []
 for line in lines:
-    rows.append(line.split(","))
+    rows.append(line.split(sep=","))
 
 total = 0
 for r in rows:
@@ -24,7 +24,7 @@ for r in rows:
 print(oldest, best)
 
 print(42.to_str(), "17".to_int(), "1.5".to_float(), 1.to_bool())
-print("ff".to_int(16), "0x1f".to_int(16), "777".to_int(8), "-ff".to_int(16))
+print("ff".to_int(base=16), "0x1f".to_int(base=16), "777".to_int(base=8), "-ff".to_int(base=16))
 print(range(3).to_list(), "abc".to_list(), (1, 2).to_list())
 print([("a", 1), ("b", 2)].to_dict())
 print([1, 2, 3].to_str(), {"a": 1}.to_str())

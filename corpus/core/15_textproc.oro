@@ -1,7 +1,7 @@
 lines = ["alice,30,dallas", "bob,25,austin", "carol,35,houston"]
 rows = []
 for line in lines:
-    rows.append(line.split(","))
+    rows.append(line.split(sep=","))
 
 names = []
 for r in rows:

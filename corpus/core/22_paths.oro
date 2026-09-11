@@ -20,7 +20,7 @@ print(os.path.exists("oro_no_such_file.txt"))
 # A missing path raises before any mode or encoding question arises, so this
 # one line of `open` still behaves identically under both runtimes.
 try:
-    open("oro_no_such_file.txt", "r")
+    open("oro_no_such_file.txt")
     print("no error")
 except FileNotFoundError:
     print("FileNotFoundError caught")

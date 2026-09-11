@@ -177,7 +177,7 @@ Every place a program value gets hashed would need that treatment:
 | `k in d` / `not in` | `Op::Compare` → `contains` |
 | `{a: 1, **rest}` | `Op::BuildDict`, both arms |
 | `match` dispatch | `Op::MatchDispatch`, an O(1) jump table keyed by `HKey` |
-| `d.get(k, default)` | `dict_method` |
+| `d.get(k, default=v)` | `dict_method` |
 | `xs.unique()` | `builtins`, one hash per element |
 | `xs.unique_by(f)` | `SeqOp::UniqueBy`, inside a job that is *already* re-entrant |
 | `xs.group_by(f)` | `SeqOp::GroupBy`, likewise |

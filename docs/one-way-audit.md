@@ -672,13 +672,13 @@ Those two:
 def _has_token(value, token):
     if value == null:
         return false
-    for part in value.split(","):
+    for part in value.split(sep=","):
         if part.strip().lower() == token:
             return true
     return false
 
 # after
-    return value.split(",").any(p => p.strip().lower() == token)
+    return value.split(sep=",").any(p => p.strip().lower() == token)
 ```
 
 Chains are a headline feature, they replaced comprehensions, and the standard

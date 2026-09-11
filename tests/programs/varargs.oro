@@ -6,7 +6,7 @@ def describe(label, *args, **kwargs):
     for a in args:
         total = total + a
     print(total)
-    print(kwargs.get("scale", 1))
+    print(kwargs.get("scale", default=1))
 
 def forward(*args, **kwargs):
     return describe(*args, **kwargs)

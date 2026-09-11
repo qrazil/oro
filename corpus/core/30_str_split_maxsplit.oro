@@ -6,33 +6,33 @@
 # so the oracle generates it. The right arm runs the same table with
 # `side="right"` and lives in divergence/51_string_surface.oro, whose twin
 # spells it `rsplit` and is where those answers come from.
-print("a=b=c".split("=", 1))
-print("a=b=c".split("="))
-print("a b c".split(" ", 2))
-print("x:y".split(":", 0))
-print(" a  b  c ".split(null, 1))
-print(" a  b  c ".split(null))
-print("one".split(",", 5))
+print("a=b=c".split(sep="=", maxsplit=1))
+print("a=b=c".split(sep="="))
+print("a b c".split(sep=" ", maxsplit=2))
+print("x:y".split(sep=":", maxsplit=0))
+print(" a  b  c ".split(maxsplit=1))
+print(" a  b  c ".split())
+print("one".split(sep=",", maxsplit=5))
 
 # The table. Same inputs as the right arm, so the two files read as one matrix.
 SPLITS = [("a.b.c", "."), ("a..b", "."), (".a.", "."), ("", "."), ("aXXbXXc", "XX")]
-print("--- split(sep, maxsplit)")
+print("--- split(sep=, maxsplit=)")
 for s, sep in SPLITS:
     for m in [-1, 0, 1, 2, 5]:
-        print(repr(s), repr(sep), m, s.split(sep, m))
+        print(repr(s), repr(sep), m, s.split(sep=sep, maxsplit=m))
 
-print("--- split(null, maxsplit)")
+print("--- split(maxsplit=)")
 for s in [" a  b  c ", "  a b  ", "   ", "", "a"]:
     for m in [-1, 0, 1, 2, 5]:
-        print(repr(s), m, s.split(null, m))
+        print(repr(s), m, s.split(maxsplit=m))
 
-print("--- bytes.split(sep, maxsplit)")
+print("--- bytes.split(sep=, maxsplit=)")
 for m in [-1, 0, 1, 2, 5]:
-    print(m, b"a.b.c".split(b".", m), b"a..b".split(b".", m))
+    print(m, b"a.b.c".split(sep=b".", maxsplit=m), b"a..b".split(sep=b".", maxsplit=m))
 
-print("--- bytes.split(null, maxsplit)")
+print("--- bytes.split(maxsplit=)")
 for m in [-1, 0, 1, 2, 5]:
-    print(m, b" a  b  c ".split(null, m), b"  a b  ".split(null, m))
+    print(m, b" a  b  c ".split(maxsplit=m), b"  a b  ".split(maxsplit=m))
 
 # What `zfill` used to spell. `{:05d}` pads a number, `{:0>5}` pads a string,
 # and `{:0>{w}}` takes the width at run time — none of which `zfill` could do.

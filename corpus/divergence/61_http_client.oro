@@ -26,7 +26,7 @@ def check(label, got, want):
 
 def show(label, raw):
     print(f"--- {label}")
-    for line in raw.split(b"\r\n"):
+    for line in raw.split(sep=b"\r\n"):
         print(f"    {line}")
 
 
@@ -268,4 +268,4 @@ relayed = io.buffer()
 upstream = http.read_response(io.buffer(b"HTTP/1.1 418 I am a teapot\r\nContent-Length: 3\r\n\r\nbrb"), "GET")
 upstream.body = upstream.bytes()
 http.write_response(relayed, http.Request("GET", "/", {}, "1.1", {}, io.buffer(b"")), upstream, false)
-show("relayed verbatim, peer's reason phrase intact", relayed.bytes().split(b"\r\ndate:")[0])
+show("relayed verbatim, peer's reason phrase intact", relayed.bytes().split(sep=b"\r\ndate:")[0])

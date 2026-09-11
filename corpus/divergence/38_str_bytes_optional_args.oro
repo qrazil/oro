@@ -24,43 +24,43 @@ STRS = ["abcabc", "abc", "", "haééha", "😀x😀"]
 SUBS = ["b", "", "abc", "é", "😀"]
 
 
-print("--- str.find(sub[, start[, end]])")
+print("--- str.find(sub, start=, end=)")
 for s in STRS:
     for sub in SUBS:
         row = [s.find(sub)]
         for start in BOUNDS:
-            row.append(s.find(sub, start))
+            row.append(s.find(sub, start=start))
             for end in BOUNDS:
-                row.append(s.find(sub, start, end))
+                row.append(s.find(sub, start=start, end=end))
         print(repr(s), repr(sub), row)
 
-print("--- str.startswith(prefix[, start[, end]])")
+print("--- str.startswith(prefix, start=, end=)")
 for s in STRS:
     for sub in SUBS:
         row = [s.startswith(sub)]
         for start in BOUNDS:
-            row.append(s.startswith(sub, start))
+            row.append(s.startswith(sub, start=start))
             for end in BOUNDS:
-                row.append(s.startswith(sub, start, end))
+                row.append(s.startswith(sub, start=start, end=end))
         print(repr(s), repr(sub), row)
 
-print("--- str.endswith(suffix[, start[, end]])")
+print("--- str.endswith(suffix, start=, end=)")
 for s in STRS:
     for sub in SUBS:
         row = [s.endswith(sub)]
         for start in BOUNDS:
-            row.append(s.endswith(sub, start))
+            row.append(s.endswith(sub, start=start))
             for end in BOUNDS:
-                row.append(s.endswith(sub, start, end))
+                row.append(s.endswith(sub, start=start, end=end))
         print(repr(s), repr(sub), row)
 
-print("--- str.replace(old, new[, count])")
+print("--- str.replace(old, new, count=)")
 for s in STRS:
     for old in ["a", "", "ab", "é", "α"]:
         for new in ["X", "", "yy", "éé"]:
             row = [s.replace(old, new)]
             for count in COUNTS:
-                row.append(s.replace(old, new, count))
+                row.append(s.replace(old, new, count=count))
             print(repr(s), repr(old), repr(new), row)
 
 # `chars` is a *set* of characters to remove from the end(s), not a prefix or a
@@ -68,11 +68,11 @@ for s in STRS:
 # `"xxhixx"`. The no-argument form has its own trap — CPython counts
 # U+001C..U+001F as whitespace and Rust's `char::is_whitespace` does not, which
 # `split()` shared.
-print("--- str.strip([chars])")
+print("--- str.strip(chars=)")
 for s in ["  hi  ", "xxhixx", "xyxhixyx", "", "xxx", "\thi\n ", "ααhiα", "a\x1cb\x1d", "\x1c\x1e hi \x1f"]:
     row = [s.strip()]
-    for chars in ["x", "xy", "", "α", "abc", null]:
-        row.append(s.strip(chars))
+    for chars in ["x", "xy", "", "α", "abc"]:
+        row.append(s.strip(chars=chars))
     print(repr(s), row, s.split())
 
 # `count` is the same non-overlapping count CPython does, including the empty
@@ -80,66 +80,66 @@ for s in ["  hi  ", "xxhixx", "xyxhixyx", "", "xxx", "\thi\n ", "ααhiα", "a\x
 # searches the same `[start, end)` window `find` does, by the same rules. The
 # empty needle is where the window is visible: it is found once per position
 # *in the window*, so the bounds change the answer even when nothing matches.
-print("--- str.count(sub[, start[, end]])")
+print("--- str.count(sub, start=, end=)")
 for s in STRS:
     for sub in SUBS:
         row = [s.count(sub)]
         for start in BOUNDS:
-            row.append(s.count(sub, start))
+            row.append(s.count(sub, start=start))
             for end in BOUNDS:
-                row.append(s.count(sub, start, end))
+                row.append(s.count(sub, start=start, end=end))
         print(repr(s), repr(sub), row)
 
 # The same table on bytes, where an index counts octets rather than characters.
 BYTES = [b"abcabc", b"abc", b"", b"\xc3\xa9x\xc3\xa9", b"\x00a\xff"]
 BSUBS = [b"b", b"", b"abc", b"\xc3\xa9", b"\xff"]
 
-print("--- bytes.find(sub[, start[, end]])")
+print("--- bytes.find(sub, start=, end=)")
 for s in BYTES:
     for sub in BSUBS:
         row = [s.find(sub)]
         for start in BOUNDS:
-            row.append(s.find(sub, start))
+            row.append(s.find(sub, start=start))
             for end in BOUNDS:
-                row.append(s.find(sub, start, end))
+                row.append(s.find(sub, start=start, end=end))
         print(repr(s), repr(sub), row)
 
-print("--- bytes.count(sub[, start[, end]])")
+print("--- bytes.count(sub, start=, end=)")
 for s in BYTES:
     for sub in BSUBS:
         row = [s.count(sub)]
         for start in BOUNDS:
-            row.append(s.count(sub, start))
+            row.append(s.count(sub, start=start))
             for end in BOUNDS:
-                row.append(s.count(sub, start, end))
+                row.append(s.count(sub, start=start, end=end))
         print(repr(s), repr(sub), row)
 
-print("--- bytes.startswith / endswith(affix[, start[, end]])")
+print("--- bytes.startswith / endswith(affix, start=, end=)")
 for s in BYTES:
     for sub in BSUBS:
         row = [s.startswith(sub), s.endswith(sub)]
         for start in BOUNDS:
-            row.append(s.startswith(sub, start))
-            row.append(s.endswith(sub, start))
+            row.append(s.startswith(sub, start=start))
+            row.append(s.endswith(sub, start=start))
             for end in BOUNDS:
-                row.append(s.startswith(sub, start, end))
-                row.append(s.endswith(sub, start, end))
+                row.append(s.startswith(sub, start=start, end=end))
+                row.append(s.endswith(sub, start=start, end=end))
         print(repr(s), repr(sub), row)
 
-print("--- bytes.replace(old, new[, count])")
+print("--- bytes.replace(old, new, count=)")
 for s in BYTES:
     for old in [b"a", b"", b"ab", b"\xc3\xa9"]:
         for new in [b"X", b"", b"yy"]:
             row = [s.replace(old, new)]
             for count in COUNTS:
-                row.append(s.replace(old, new, count))
+                row.append(s.replace(old, new, count=count))
             print(repr(s), repr(old), repr(new), row)
 
-print("--- bytes.strip([chars])")
+print("--- bytes.strip(chars=)")
 for s in BYTES:
     row = [s.strip()]
-    for chars in [b"a", b"ab", b"", b"\xff\x00", null]:
-        row.append(s.strip(chars))
+    for chars in [b"a", b"ab", b"", b"\xff\x00"]:
+        row.append(s.strip(chars=chars))
     print(repr(s), row)
 
 print("--- bytes.count(sub)")
@@ -155,7 +155,7 @@ print("--- scanning with a moving start")
 head = b"a: 1\r\nb: 2\r\nc: 3\r\n\r\n"
 at = 0
 while at < len(head):
-    nl = head.find(b"\r\n", at)
+    nl = head.find(b"\r\n", start=at)
     if nl < 0:
         break
     print(at, nl, head[at:nl])

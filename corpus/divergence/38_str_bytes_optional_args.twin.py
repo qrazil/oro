@@ -1,0 +1,175 @@
+# The manual oracle for 38_str_bytes_optional_args.oro: that file with Oro's spellings
+# translated one for one into CPython's. The Oro program uses the argument
+# rule's keyword-only spellings (`start=`/`end=`/`count=`/`chars=` on the str and bytes methods), which CPython rejects,
+# so the oracle cannot run the program itself; this twin is what its
+# .expected is still generated from, and diffing the two is the review.
+#
+# This file prints Python's `True`/`False`/`None`, so its output goes through
+# the same outbound rename `oracle.sh` applies before it is the expectation.
+#
+#   python3 corpus/divergence/38_str_bytes_optional_args.twin.py \
+#     | sed -E 's/\bTrue\b/true/g; s/\bFalse\b/false/g; s/\bNone\b/null/g' \
+#     | diff - corpus/divergence/38_str_bytes_optional_args.expected
+
+# `find`, `startswith`, `endswith` and `replace` used to parse their optional
+# arguments, accept them, and then throw them away — so `"abcabc".find("b", 2)`
+# answered 1, confidently and wrongly, and nothing signalled the loss. That is
+# the one thing the rule forbids: where the syntax is identical, the behaviour
+# must be identical.
+#
+# The fiddly parts are the point of this table. Negative bounds count from the
+# end and floor at 0; `end` is capped at the length but `start` is not, so a
+# start past the end leaves a negative-width window where even the empty needle
+# fails ("abc".find("", 3) is 3, "abc".find("", 99) is -1); `startswith` shrinks
+# the window by the affix length *before* an empty affix is considered; a
+# negative `replace` count means "all"; and every one of those runs again over
+# non-ASCII text, where the indices count characters and not bytes.
+#
+# `count` is here for a different reason: it never took a window at all,
+# while `find` did. Two searches over one surface, disagreeing about what
+# they can be asked, is the kind of asymmetry that is cheap to fix once and
+# permanent to leave. It takes CPython's `start`/`end`, off the same helper.
+
+BOUNDS = [-100, -4, -1, 0, 2, 99]
+COUNTS = [-9, -1, 0, 1, 2, 5, 99]
+
+STRS = ["abcabc", "abc", "", "haééha", "😀x😀"]
+SUBS = ["b", "", "abc", "é", "😀"]
+
+
+print("--- str.find(sub, start=, end=)")
+for s in STRS:
+    for sub in SUBS:
+        row = [s.find(sub)]
+        for start in BOUNDS:
+            row.append(s.find(sub, start))
+            for end in BOUNDS:
+                row.append(s.find(sub, start, end))
+        print(repr(s), repr(sub), row)
+
+print("--- str.startswith(prefix, start=, end=)")
+for s in STRS:
+    for sub in SUBS:
+        row = [s.startswith(sub)]
+        for start in BOUNDS:
+            row.append(s.startswith(sub, start))
+            for end in BOUNDS:
+                row.append(s.startswith(sub, start, end))
+        print(repr(s), repr(sub), row)
+
+print("--- str.endswith(suffix, start=, end=)")
+for s in STRS:
+    for sub in SUBS:
+        row = [s.endswith(sub)]
+        for start in BOUNDS:
+            row.append(s.endswith(sub, start))
+            for end in BOUNDS:
+                row.append(s.endswith(sub, start, end))
+        print(repr(s), repr(sub), row)
+
+print("--- str.replace(old, new, count=)")
+for s in STRS:
+    for old in ["a", "", "ab", "é", "α"]:
+        for new in ["X", "", "yy", "éé"]:
+            row = [s.replace(old, new)]
+            for count in COUNTS:
+                row.append(s.replace(old, new, count))
+            print(repr(s), repr(old), repr(new), row)
+
+# `chars` is a *set* of characters to remove from the end(s), not a prefix or a
+# suffix, and it was accepted and ignored too: `"xxhixx".strip("x")` answered
+# `"xxhixx"`. The no-argument form has its own trap — CPython counts
+# U+001C..U+001F as whitespace and Rust's `char::is_whitespace` does not, which
+# `split()` shared.
+print("--- str.strip(chars=)")
+for s in ["  hi  ", "xxhixx", "xyxhixyx", "", "xxx", "\thi\n ", "ααhiα", "a\x1cb\x1d", "\x1c\x1e hi \x1f"]:
+    row = [s.strip()]
+    for chars in ["x", "xy", "", "α", "abc"]:
+        row.append(s.strip(chars))
+    print(repr(s), row, s.split())
+
+# `count` is the same non-overlapping count CPython does, including the empty
+# needle sitting between every pair of characters and at both ends — and it
+# searches the same `[start, end)` window `find` does, by the same rules. The
+# empty needle is where the window is visible: it is found once per position
+# *in the window*, so the bounds change the answer even when nothing matches.
+print("--- str.count(sub, start=, end=)")
+for s in STRS:
+    for sub in SUBS:
+        row = [s.count(sub)]
+        for start in BOUNDS:
+            row.append(s.count(sub, start))
+            for end in BOUNDS:
+                row.append(s.count(sub, start, end))
+        print(repr(s), repr(sub), row)
+
+# The same table on bytes, where an index counts octets rather than characters.
+BYTES = [b"abcabc", b"abc", b"", b"\xc3\xa9x\xc3\xa9", b"\x00a\xff"]
+BSUBS = [b"b", b"", b"abc", b"\xc3\xa9", b"\xff"]
+
+print("--- bytes.find(sub, start=, end=)")
+for s in BYTES:
+    for sub in BSUBS:
+        row = [s.find(sub)]
+        for start in BOUNDS:
+            row.append(s.find(sub, start))
+            for end in BOUNDS:
+                row.append(s.find(sub, start, end))
+        print(repr(s), repr(sub), row)
+
+print("--- bytes.count(sub, start=, end=)")
+for s in BYTES:
+    for sub in BSUBS:
+        row = [s.count(sub)]
+        for start in BOUNDS:
+            row.append(s.count(sub, start))
+            for end in BOUNDS:
+                row.append(s.count(sub, start, end))
+        print(repr(s), repr(sub), row)
+
+print("--- bytes.startswith / endswith(affix, start=, end=)")
+for s in BYTES:
+    for sub in BSUBS:
+        row = [s.startswith(sub), s.endswith(sub)]
+        for start in BOUNDS:
+            row.append(s.startswith(sub, start))
+            row.append(s.endswith(sub, start))
+            for end in BOUNDS:
+                row.append(s.startswith(sub, start, end))
+                row.append(s.endswith(sub, start, end))
+        print(repr(s), repr(sub), row)
+
+print("--- bytes.replace(old, new, count=)")
+for s in BYTES:
+    for old in [b"a", b"", b"ab", b"\xc3\xa9"]:
+        for new in [b"X", b"", b"yy"]:
+            row = [s.replace(old, new)]
+            for count in COUNTS:
+                row.append(s.replace(old, new, count))
+            print(repr(s), repr(old), repr(new), row)
+
+print("--- bytes.strip(chars=)")
+for s in BYTES:
+    row = [s.strip()]
+    for chars in [b"a", b"ab", b"", b"\xff\x00"]:
+        row.append(s.strip(chars))
+    print(repr(s), row)
+
+print("--- bytes.count(sub)")
+for s in BYTES:
+    row = []
+    for sub in BSUBS:
+        row.append(s.count(sub))
+    print(repr(s), row)
+
+# The workaround `std/http.oro` no longer needs: scanning a header block with
+# `find(sub, start)` instead of re-slicing a fresh `bytes` at every step.
+print("--- scanning with a moving start")
+head = b"a: 1\r\nb: 2\r\nc: 3\r\n\r\n"
+at = 0
+while at < len(head):
+    nl = head.find(b"\r\n", at)
+    if nl < 0:
+        break
+    print(at, nl, head[at:nl])
+    at = nl + 2

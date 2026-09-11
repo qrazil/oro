@@ -1,3 +1,16 @@
+# The manual oracle for 35_bytes.oro: that file with Oro's spellings
+# translated one for one into CPython's. The Oro program uses the argument
+# rule's keyword-only spellings (`d.get(default=)`), which CPython rejects,
+# so the oracle cannot run the program itself; this twin is what its
+# .expected is still generated from, and diffing the two is the review.
+#
+# This file prints Python's `True`/`False`/`None`, so its output goes through
+# the same outbound rename `oracle.sh` applies before it is the expectation.
+#
+#   python3 corpus/divergence/35_bytes.twin.py \
+#     | sed -E 's/\bTrue\b/true/g; s/\bFalse\b/false/g; s/\bNone\b/null/g' \
+#     | diff - corpus/divergence/35_bytes.expected
+
 # bytes: literals, the sequence protocol, the method set, repr and hashing.
 # Every line here runs identically under CPython, which is the point of making
 # `bytes` a second type rather than redefining `str`: the whole new surface
@@ -59,7 +72,7 @@ print(line.strip().upper(), line.strip().lower())
 # Case folding is ASCII-only: an octet is not a character.
 print(b"AbC\xff".lower(), b"AbC\xff".upper())
 print(b"a,b,,c".split(b","), b"a,b,c".split(b",", 1))
-print(b"a b\x0bc  d".split(), b" a b c ".split(null, 1))
+print(b"a b\x0bc  d".split(), b" a b c ".split(None, 1))
 print(b"".split(b","), b"x".split(b","))
 print(b"abc".find(b"b"), b"abc".find(b"z"), b"abc".find(b""), b"abc".find(b"abcd"))
 print(b"aXbXc".replace(b"X", b"-"), b"abc".replace(b"", b"."), b"abc".replace(b"z", b"!"))

@@ -29,11 +29,11 @@ print("chan(0) and chan(0) are two channels:", chan(0) == chan(0))
 # CPython agrees (file objects hash by identity); it is here rather than in
 # core/ because `open(path, "w")` is Oro's spelling and the whole file surface
 # lives in divergence for that reason (§2).
-w = open("/tmp/oro_identity_probe.txt", "w")
+w = open("/tmp/oro_identity_probe.txt", mode="w")
 w.write(b"x")
 w.close()
-r1 = open("/tmp/oro_identity_probe.txt", "r")
-r2 = open("/tmp/oro_identity_probe.txt", "r")
+r1 = open("/tmp/oro_identity_probe.txt")
+r2 = open("/tmp/oro_identity_probe.txt")
 print("a stream equals itself:", r1 == r1, r1 == r2)
 print("two readers of one path are two streams:", r1 == r2)
 

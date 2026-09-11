@@ -38,7 +38,7 @@
 print([3, 1, 2].sort_by(x => x))
 print([].sort_by(x => x))
 print("cab".to_list().sort_by(x => x))
-print(range(3, 0, -1).sort_by(x => x))
+print(range(0, start=3, step=-1).sort_by(x => x))
 print([3, 1, 2].sort_by(x => x, reverse=true))
 
 

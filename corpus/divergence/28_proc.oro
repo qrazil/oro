@@ -15,7 +15,7 @@ r = proc.run(["echo", "hello world"], quiet=true)
 print("rc", r.returncode, "ok", r.ok, "truncated", r.truncated)
 print("captured", repr(r.stdout))
 print("decoded", repr(r.stdout.strip().to_str()))
-print("split", r.stdout.strip().split(b" "))
+print("split", r.stdout.strip().split(sep=b" "))
 
 f = proc.run(["sh", "-c", "echo oops >&2; exit 3"], check=false, quiet=true)
 print("rc", f.returncode, "ok", f.ok, "stderr", repr(f.stderr))
