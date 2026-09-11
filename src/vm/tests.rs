@@ -2702,6 +2702,86 @@ fn the_file_and_the_line_always_come_from_the_same_frame() {
     assert_eq!(err.line, 2, "the try statement's EndFinally, in the script's own frame");
 }
 
+/// `apply(f, args=[…], kwargs={…})` calls `f` with the list bound by position
+/// and the dict bound by name.
+///
+/// It is the whole replacement for `f(*xs)` and `f(**d)`, so the properties
+/// that matter are that it reaches every callable shape a written call reaches
+/// — a plain `def`, a method, a class, a builtin — and that it binds through
+/// the same binder, which is what makes its refusals the written call's.
+#[test]
+fn apply_forwards_a_list_by_position_and_a_dict_by_name() {
+    let v = eval_var(
+        "\
+def f(a, b, c=3):
+    return f\"{a} {b} {c}\"
+class K:
+    def m(self, x, y=0):
+        return x + y
+class P:
+    def __init__(self, n):
+        self.n = n
+kw = {\"y\": 41}
+r = [
+    apply(f, args=[1, 2]),
+    apply(f, args=[1, 2], kwargs={\"c\": 9}),
+    apply(f, args=[1, 2], kwargs={}),
+    apply(K().m, args=[1], kwargs=kw),
+    apply(P, args=[7]).n,
+    apply(len, args=[[1, 2, 3]]),
+]
+",
+        "r",
+    );
+    assert_eq!(v.repr(), "['1 2 3', '1 2 9', '1 2 3', 42, 7, 3]");
+
+    // No arguments at all is `f()`, and `apply` of `apply` is one call.
+    let v = eval_var(
+        "\
+def g():
+    return \"none\"
+def f(a, b=1):
+    return f\"{a} {b}\"
+r = [apply(g), apply(apply, args=[f], kwargs={\"args\": [4], \"kwargs\": {\"b\": 5}})]
+",
+        "r",
+    );
+    assert_eq!(v.repr(), "['none', '4 5']");
+}
+
+/// A forwarded argument binds exactly as a written one, so a binding refusal is
+/// the written call's refusal — same class, same words. `apply`'s own three
+/// parameters follow the rule too: `f` is positional, `args=` and `kwargs=` are
+/// named, and neither accepts `null` as a spelling of "omitted".
+#[test]
+fn apply_refuses_what_the_written_call_refuses() {
+    let def = "def f(a, b, c=3):\n    return a\n";
+    for (written, applied) in [
+        ("f(1)", "apply(f, args=[1])"),
+        ("f(1, 2, 3, 4)", "apply(f, args=[1, 2, 3, 4])"),
+        ("f(1, 2, d=4)", "apply(f, args=[1, 2], kwargs={\"d\": 4})"),
+    ] {
+        let w = run_err(&format!("{def}{written}\n"));
+        let a = run_err(&format!("{def}{applied}\n"));
+        assert_eq!((&w.message, w.class), (&a.message, a.class), "{applied}");
+    }
+
+    for (src, want) in [
+        ("apply()", "missing required argument: 'f'"),
+        ("apply(f, [1])", "takes 1 positional argument but 2 were given"),
+        ("apply(f, bogus=1)", "unexpected keyword argument 'bogus'"),
+        ("apply(f, args=null)", "null does not mean \"omitted\""),
+        ("apply(f, kwargs=null)", "null does not mean \"omitted\""),
+        ("apply(f, args=(1, 2))", "args= must be a list, not 'tuple'"),
+        ("apply(f, kwargs=[])", "kwargs= must be a dict, not 'list'"),
+        ("apply(f, kwargs={1: 2})", "kwargs= keys must be str"),
+        ("apply(42, args=[])", "not callable"),
+    ] {
+        let e = run_err(&format!("{def}{src}\n"));
+        assert!(e.message.contains(want), "{src}: got {}", e.message);
+    }
+}
+
 /// Every [`Exc`] names a class the registry actually has.
 ///
 /// `error_to_exception` indexes the registry by `Exc::name()`, so a variant

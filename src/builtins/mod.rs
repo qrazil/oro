@@ -51,6 +51,11 @@ pub fn lookup(name: &str) -> Option<Value> {
         "spawn" => bi_vm_dispatched,
         "chan" => bi_vm_dispatched,
         "yield_now" => bi_vm_dispatched,
+        // `apply(f, args=…, kwargs=…)` is the whole of what `f(*xs)` and
+        // `f(**d)` used to spell, and it calls `f` — which only the VM can do,
+        // since a call is a frame and a native answers with a value. So it is
+        // named here and intercepted there, like the three above.
+        "apply" => bi_vm_dispatched,
         _ => return None,
     };
     Some(Value::Builtin(Rc::new(Builtin { name: intern(name), func: f })))
@@ -74,6 +79,7 @@ fn intern(name: &str) -> &'static str {
         "spawn" => "spawn",
         "chan" => "chan",
         "yield_now" => "yield_now",
+        "apply" => "apply",
         _ => "builtin",
     }
 }
@@ -115,7 +121,7 @@ fn bind_kwargs<'a, const N: usize>(
 /// An explicit `null` for a keyword whose default is not `null`. It used to
 /// mean "omitted", which made `f(x=null)` a second spelling of `f()`; the
 /// refusal names the one spelling that is left.
-fn null_is_not_omitted(who: &str, name: &str, want: &str) -> VErr {
+pub(crate) fn null_is_not_omitted(who: &str, name: &str, want: &str) -> VErr {
     type_error(format!(
         "{who}(): {name}= must be {want}, not null — null does not mean \"omitted\"; \
          leave {name}= out for the default"

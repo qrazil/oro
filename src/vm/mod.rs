@@ -126,6 +126,10 @@ const FRAME_POOL_MAX: usize = 128;
 
 /// A single activation record. Everything a running function needs lives here,
 /// on the heap, in the `frames` vector — never on the Rust call stack.
+/// What `apply(f, args=…, kwargs=…)` forwards, once checked: the callee, the
+/// list bound by position, and the dict bound by name.
+type ApplyOperands = (Value, Vec<Value>, Vec<(String, Value)>);
+
 struct Frame {
     code: Rc<CodeObject>,
     pc: usize,
@@ -2551,6 +2555,129 @@ impl Vm {
         self.invoke(callee, args, kwargs)
     }
 
+    /// `apply(f, args=[], kwargs={})` — call `f` with a list bound by position
+    /// and a dict bound by name.
+    ///
+    /// This is what replaced `f(*xs)` and `f(**d)`: the same two shapes, but as
+    /// an ordinary call to an ordinary builtin, so there is no second argument
+    /// syntax in the grammar and the argument rule governs the forwarded
+    /// arguments exactly as it governs written ones. The binding is
+    /// [`Vm::bind_call`]'s, the binder a written call uses, so a refusal here
+    /// is the written call's refusal in the written call's words.
+    ///
+    /// It cannot be a plain native builtin: a native answers with a `Value`,
+    /// and this one has to answer with a *call*, which is a frame the VM
+    /// pushes — the same reason `spawn` is dispatched here.
+    fn do_apply(
+        &mut self,
+        args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
+    ) -> Result<Step, VmError> {
+        let (mut args, mut kwargs) = (args, kwargs);
+        // `apply(apply, args=[f])` is legal, and means `f()`. Unwrapping it in
+        // a loop rather than by re-entering `do_apply` keeps a nest of them off
+        // the Rust stack, whose depth is not ours to bound.
+        loop {
+            let (callee, a, k) = self.apply_operands(args, kwargs)?;
+            match &callee {
+                Value::Builtin(b) if b.name == "apply" => {
+                    args = a;
+                    kwargs = k;
+                }
+                _ => return self.invoke(callee, a, k),
+            }
+        }
+    }
+
+    /// `apply`'s own arguments, checked and taken apart into the callee, the
+    /// positional list and the keyword pairs.
+    ///
+    /// `apply` follows the rule it exists to serve: `f` has no default and is
+    /// positional, `args=` and `kwargs=` have defaults and are named.
+    fn apply_operands(
+        &mut self,
+        mut args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
+    ) -> Result<ApplyOperands, VmError> {
+        if args.len() != 1 {
+            let msg = if args.is_empty() {
+                "apply() missing required argument: 'f'".to_string()
+            } else {
+                format!(
+                    "apply() takes 1 positional argument but {} were given — the arguments \
+                     to forward are passed by name: `apply(f, args=[…], kwargs={{…}})`",
+                    args.len()
+                )
+            };
+            return Err(self.err(type_error(msg)));
+        }
+        let callee = args.pop().expect("exactly one");
+
+        let (mut forward_args, mut forward_kwargs) = (None, None);
+        for (name, value) in kwargs {
+            let slot = match name.as_str() {
+                "args" => &mut forward_args,
+                "kwargs" => &mut forward_kwargs,
+                other => {
+                    return Err(self.err(type_error(format!(
+                        "apply() got an unexpected keyword argument '{other}'"
+                    ))))
+                }
+            };
+            if slot.is_some() {
+                return Err(self.err(type_error(format!(
+                    "apply() got multiple values for keyword argument '{name}'"
+                ))));
+            }
+            *slot = Some(value);
+        }
+
+        let forwarded = match forward_args {
+            None => Vec::new(),
+            Some(Value::List(l)) => l.borrow().clone(),
+            Some(Value::None) => {
+                return Err(self.err(crate::builtins::null_is_not_omitted("apply", "args", "a list")))
+            }
+            Some(other) => {
+                return Err(self.err(type_error(format!(
+                    "apply(): args= must be a list, not '{}'",
+                    other.type_label()
+                ))))
+            }
+        };
+        let forwarded_kw = match forward_kwargs {
+            None => Vec::new(),
+            Some(Value::Dict(d)) => {
+                let d = d.borrow();
+                let mut out = Vec::with_capacity(d.len());
+                for (k, v) in d.items() {
+                    match k {
+                        Value::Str(s) => out.push((s.s.to_string(), v.clone())),
+                        other => {
+                            return Err(self.err(type_error(format!(
+                                "apply(): kwargs= keys must be str, not '{}' — they are \
+                                 parameter names",
+                                other.type_label()
+                            ))))
+                        }
+                    }
+                }
+                out
+            }
+            Some(Value::None) => {
+                return Err(self
+                    .err(crate::builtins::null_is_not_omitted("apply", "kwargs", "a dict")))
+            }
+            Some(other) => {
+                return Err(self.err(type_error(format!(
+                    "apply(): kwargs= must be a dict, not '{}'",
+                    other.type_label()
+                ))))
+            }
+        };
+        Ok((callee, forwarded, forwarded_kw))
+    }
+
     /// Call a native (builtin) method on `receiver`.
     ///
     /// Lifted out of [`Vm::invoke`]'s `MethodKind::Native` arm so that
@@ -2749,6 +2876,10 @@ impl Vm {
                     // `len` are (§3) — but neither can be a plain native
                     // function: `spawn` has to build a stack segment the VM
                     // owns, and both must be able to answer with a `Step`.
+                    // `apply(f, …)` calls `f`, and a call is a frame — which is
+                    // the VM's to push, not a native's to return. See
+                    // `Vm::do_apply`.
+                    "apply" => return self.do_apply(args, kwargs),
                     "spawn" => return self.do_spawn(args, kwargs),
                     "chan" => return self.do_chan(args, kwargs),
                     "yield_now" => return self.do_yield_now(args, kwargs),
