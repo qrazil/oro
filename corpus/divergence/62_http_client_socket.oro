@@ -171,7 +171,7 @@ print("a 204 has no body and no framing header:", r.status == 204, r.body == b""
 r = http.fetch("GET", base + "/missing")
 print("a 404 is an answer, not an exception:", r.status == 404, r.text() == "not found\n")
 
-r = http.fetch("GET", base + "/text", {"x-custom": "sent"}, null, _DEADLINE)
+r = http.fetch("GET", base + "/text", {"x-custom": "sent"}, timeout=_DEADLINE)
 print("a caller's own header went out:", r.status == 200)
 
 r = http.fetch("GET", base + "/big")
@@ -204,10 +204,10 @@ def failure(f):
         return "ConnectionError"
 
 
-print("a peer that never answers hits the deadline:", failure(() => http.fetch("GET", rawbase + "/silent", null, null, 0.2)) == "TimeoutError: timed out")
+print("a peer that never answers hits the deadline:", failure(() => http.fetch("GET", rawbase + "/silent", timeout=0.2)) == "TimeoutError: timed out")
 print("a peer that hangs up without answering says so:", failure(() => http.fetch("GET", rawbase + "/no-answer")) == "BadResponse: the connection closed before any response arrived")
 print("a body shorter than its Content-Length is not quietly truncated:", failure(() => http.fetch("GET", rawbase + "/truncated")) == "BadResponse: the response body ended 86 bytes short of its Content-Length")
-print("a body larger than max_body is refused before it is held:", failure(() => http.fetch("GET", base + "/big", null, null, _DEADLINE, 1024)).startswith("BadResponse: the response body is larger than max_body"))
+print("a body larger than max_body is refused before it is held:", failure(() => http.fetch("GET", base + "/big", timeout=_DEADLINE, max_body=1024)).startswith("BadResponse: the response body is larger than max_body"))
 print("nothing is listening:", failure(() => http.fetch("GET", "http://127.0.0.1:1/x")) == "ConnectionError")
 
 # The one that matters most, and the one a client gets wrong silently.

@@ -1434,7 +1434,7 @@ def serve(addr, handler, ready=null, max_conns=_MAX_CONNS, max_requests=_MAX_REQ
 # bug. Anything else is a bug, and gets exactly one line naming the peer.
 def _conn_task(handler, live, entry, max_requests):
     try:
-        serve_conn(entry.conn, handler, max_requests, entry)
+        serve_conn(entry.conn, handler, max_requests, watch=entry)
     except OSError as e:
         pass
     except ValueError as e:
@@ -2033,7 +2033,7 @@ def _request_headers(headers):
             raise ValueError(f"header '{name}' was given twice, in two spellings")
         if key == "content-length" or key == "transfer-encoding":
             raise ValueError(f"'{key}' is set by the body argument, not by a header")
-        _check_header(key, value, "request")
+        _check_header(key, value, kind="request")
         h[key] = value
     return h
 
@@ -2180,7 +2180,7 @@ def _response_body_reader(r, status, method, headers):
             raise BadResponse(f"unsupported Transfer-Encoding '{te}' in the response")
         return _ResponseChunkedReader(r)
     if n != null:
-        return _ResponseLimitReader(r, _content_length(n, _fail_response))
+        return _ResponseLimitReader(r, _content_length(n, fail=_fail_response))
     return r
 
 

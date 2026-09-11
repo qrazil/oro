@@ -1,0 +1,75 @@
+# Keyword arguments at a call site, oracled against CPython.
+#
+# This is the reference `spawn(f, *args, **kwargs)` is held to: spawn binds
+# through the same binder as a direct call, so what a direct call accepts,
+# refuses and says here is what `spawn` accepts, refuses and says
+# (divergence/47_spawn.oro checks the spawn half, which CPython cannot run).
+#
+# Two messages are printed in full because Oro's wording is CPython's to the
+# character. The other refusals print their class only: Oro says "missing
+# required argument" and "takes 3 positional arguments" where CPython says
+# "missing 1 required positional argument" and "takes from 1 to 3", and a
+# method's name is not qualified with its class.
+
+
+def f(a, b=1, c=2):
+    return f"{a} {b} {c}"
+
+
+# --- a keyword names a parameter, in any order --------------------------------
+print(f(1, c=9))
+print(f(a=5))
+print(f(c=3, a=4))
+print(f(1, 2, c=3))
+
+# --- unpacking at the call site binds the same way ----------------------------
+print(f(*[1, 2], **{"c": 3}))
+print(f(**{"a": 7, "b": 8}))
+
+
+def g(*args, **kwargs):
+    return f"{args} {kwargs}"
+
+
+print(g(1, 2, x=3))
+print(g(x=1, y=2))
+
+
+class K:
+    def m(self, x, y=0):
+        return x + y
+
+
+print(K().m(1, y=41))
+print(K().m(y=1, x=2))
+
+# --- the refusals --------------------------------------------------------------
+try:
+    f(1, x=1)
+except TypeError as e:
+    print("TypeError:", e)
+
+try:
+    f(1, a=2)
+except TypeError as e:
+    print("TypeError:", e)
+
+try:
+    f(1, **{"a": 2})
+except TypeError as e:
+    print("TypeError:", e)
+
+try:
+    f(b=2)
+except TypeError as e:
+    print("TypeError (missing a)")
+
+try:
+    f(1, 2, 3, 4)
+except TypeError as e:
+    print("TypeError (too many positionals)")
+
+try:
+    K().m(1, z=1)
+except TypeError as e:
+    print("TypeError (a method's unexpected keyword)")

@@ -359,7 +359,7 @@ Implemented and working today:
   never re-enter the interpreter, so the generator is drained a frame at a time
   and the call is retried — the native stack never grows with it.
 - **Green threads: `spawn`, `chan` and `yield_now`, seven names in total.**
-  `spawn(f, *args)` starts `f(*args)` as a task and returns a handle;
+  `spawn(f, *args, **kwargs)` starts `f(*args, **kwargs)` as a task and returns a handle;
   `t.join()` waits and returns the function's value. `chan()` is a rendezvous
   and `chan(n)` a buffer of `n`, with `send`, `recv`, `close`, and
   `for msg in ch` iterating until the channel is closed and drained.

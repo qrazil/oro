@@ -2081,6 +2081,60 @@ fn spawn_rejects_what_cannot_park() {
     }
 }
 
+/// `spawn(f, *args, **kwargs)` binds exactly as `f(*args, **kwargs)` would:
+/// the same binder, in the spawner, before a task exists. So keywords reach the
+/// task, and every binding error is the direct call's — same class, same
+/// message, same line — raised at the `spawn` call, where a positional arity
+/// error has always surfaced.
+#[test]
+fn spawn_binds_keywords_like_a_direct_call() {
+    let v = eval_var(
+        "\
+def f(a, b=1, c=2):
+    return f\"{a} {b} {c}\"
+class K:
+    def m(self, x, y=0):
+        return x + y
+kw = {\"b\": 7}
+r = [spawn(f, 1, c=9).join(), spawn(f, a=5).join(), spawn(f, *[3], **kw).join(), spawn(K().m, 1, y=41).join()]
+",
+        "r",
+    );
+    assert_eq!(v.repr(), "['1 1 9', '5 1 2', '3 7 2', 42]");
+
+    let def = "def f(a, b=1, c=2):\n    return a\n";
+    for (direct, spawned) in [
+        ("f(1, x=1)", "spawn(f, 1, x=1)"),
+        ("f(1, a=2)", "spawn(f, 1, a=2)"),
+        ("f(b=2)", "spawn(f, b=2)"),
+        ("f()", "spawn(f)"),
+        ("f(1, 2, 3, 4)", "spawn(f, 1, 2, 3, 4)"),
+    ] {
+        let d = run_err(&format!("{def}{direct}\n"));
+        let s = run_err(&format!("{def}{spawned}\n"));
+        // Uncaught, both arrive rendered as `Class: message`.
+        assert!(d.message.starts_with("TypeError: "), "{direct}: {}", d.message);
+        assert_eq!((&d.message, d.line), (&s.message, s.line), "{spawned}");
+    }
+
+    // Synchronous: the error is catchable around the `spawn` line, and no task
+    // was created to run later — the implicit join-all at exit finds nothing.
+    let v = eval_var(
+        "\
+out = []
+def f(a):
+    out.append(\"ran\")
+try:
+    spawn(f, bogus=1)
+except TypeError as e:
+    out.append(\"caught at spawn\")
+r = out
+",
+        "r",
+    );
+    assert_eq!(v.repr(), "['caught at spawn']");
+}
+
 /// `yield_now()` hands the CPU over and answers `null`.
 ///
 /// The two properties worth pinning: with a peer ready the tasks alternate,

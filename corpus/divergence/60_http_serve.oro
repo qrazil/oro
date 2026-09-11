@@ -105,7 +105,7 @@ print("and the same connection still serves the next request:", get(keep, "/fast
 # question. At the cap the server says `Connection: close` and hangs up, which
 # is a client's cue to reconnect rather than an error.
 one = chan()
-capped = spawn(http.serve, "127.0.0.1:0", handler, one, 8, 2)
+capped = spawn(http.serve, "127.0.0.1:0", handler, ready=one, max_conns=8, max_requests=2)
 capln = one.recv()
 c = dial(capln)
 print("request 1 of a 2-request connection:", get(c, "/fast", ""))
@@ -118,7 +118,7 @@ c.close()
 # A 503 would be friendlier and would need a task to be safe, and a task is
 # exactly what the cap exists to refuse.
 full = chan()
-one_at_a_time = spawn(http.serve, "127.0.0.1:0", handler, full, 1)
+one_at_a_time = spawn(http.serve, "127.0.0.1:0", handler, ready=full, max_conns=1)
 fullln = full.recv()
 held = dial(fullln)
 held.write(b"GET /slow HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n")
