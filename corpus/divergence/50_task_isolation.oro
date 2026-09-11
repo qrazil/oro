@@ -53,11 +53,9 @@ print("a generator survived the trip down a channel:", c.join() == [10, 20, 30])
 gate = chan()
 
 def blocking():
-    n = 0
-    while n < 3:
+    for n in range(3):
         gate.recv()
         yield n
-        n = n + 1
 
 shared = blocking()
 

@@ -4,6 +4,9 @@
 # its (key, value) pairs. CPython cannot run that line, so this program has a
 # twin (dictops.py) that spells the same scan `d.items()` — the harness runs the
 # twin for the CPython column and checks both print the same total.
+#
+# The counter here is hand-rolled on purpose: a benchmark's loop is inside its
+# measurement. See bench/RESULTS.md, "Why the benchmarks still count by hand".
 d = {}
 i = 0
 while i < 500000:

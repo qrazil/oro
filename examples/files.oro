@@ -1,0 +1,69 @@
+# Word frequencies: read a file, work through it a line at a time, write the
+# answer out. The first program most people write in a new language.
+#
+#     oro examples/files.oro                    # counts its own source
+#     oro examples/files.oro README.md          # counts that, prints the table
+#     oro examples/files.oro README.md out.txt  # ... and writes it there
+#
+# Two things worth noticing. Files are **bytes** in both directions — there is
+# no text mode, so `io.read(f).to_str()` on the way in and `.to_bytes()` on the
+# way out are where the encoding is decided, and they are visible. And nothing
+# closes the file: `f` is the only reference to it, so the file closes when
+# `f` goes out of scope at the end of the function. There is no `with`.
+import io
+import sys
+
+# Shaved off either end of a word. `strip` takes a *set* of characters, not a
+# suffix — `rm_suffix` is the one that takes a suffix (see text.oro).
+_EDGES = ".,:;!?\"'()[]{}<>#*`-_=|/\\"
+
+# How many rows the report shows.
+_TOP = 12
+
+
+def read_lines(path):
+    f = open(path, "r")
+    text = io.read(f).to_str()
+    # One trailing newline would otherwise become one empty last line.
+    return text.strip("\n", side="right").split("\n")
+
+
+def words(line):
+    return line.lower().split(null).map(w => w.strip(_EDGES)).filter(w => w != "")
+
+
+def count_words(lines):
+    counts = {}
+    for line in lines:
+        for word in words(line):
+            counts[word] = counts.get(word, 0) + 1
+    return counts
+
+
+# A dict's element is its `(key, value)` pair, so a dict goes through the
+# chain like any other collection — and because selecting and reordering
+# preserve the receiver's type, what comes back out is still a dict.
+def report(counts, n):
+    out = []
+    for word, count in counts.sort_by((w, c) => -c).take(n):
+        out.append(f"{count:>7}  {word}")
+    return out.join("\n") + "\n"
+
+
+source, dest = sys.argv[0], null
+if len(sys.argv) > 1:
+    source = sys.argv[1]
+if len(sys.argv) > 2:
+    dest = sys.argv[2]
+
+lines = read_lines(source)
+counts = count_words(lines)
+text = report(counts, _TOP)
+
+print(f"{source}: {len(lines)} lines, {len(counts)} distinct words")
+print(text.strip("\n", side="right"))
+
+if dest != null:
+    out = open(dest, "w")
+    out.write(text.to_bytes())
+    print(f"wrote {len(text)} bytes to {dest}")

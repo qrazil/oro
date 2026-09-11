@@ -1,5 +1,8 @@
 # Exception-heavy: a raise/catch on most iterations, plus a finally that always
 # runs. Exercises block setup, unwinding, and handler dispatch.
+#
+# The counter here is hand-rolled on purpose: a benchmark's loop is inside its
+# measurement. See bench/RESULTS.md, "Why the benchmarks still count by hand".
 class Boom(Exception):
     pass
 

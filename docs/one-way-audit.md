@@ -30,13 +30,13 @@ Everything below was checked by running it, not by reading the parser.
 
 | # | Candidate | Verdict | Confidence |
 |---|---|---|---|
-| 1 | `sep.join(xs)` alongside `xs.join(sep)` | **cut `str.join`/`bytes.join`** | high |
-| 2 | Nine builtins that duplicate collection methods | **cut six, narrow two, keep `len`** — all three disagreements are fixed | high |
+| 1 | `sep.join(xs)` alongside `xs.join(sep)` | **cut `str.join`/`bytes.join`** — **done** | high |
+| 2 | Nine builtins that duplicate collection methods | **cut six, narrow two, keep `len`** — **done**; `key=`/`reverse=` moved onto `xs.sorted()` | high |
 | 3 | Six spellings of "sort this" | **cut `sorted()`, `list.sort`, `list.reverse`** | high |
 | 4 | `type(x) == "<class 'bytes'>"` alongside `isinstance` | **cut the string form; close the gap that forces it** | high |
 | 5 | Five exception classes nothing raises or catches | **cut `LookupError`, `ArithmeticError`, `NotImplementedError`, `StopIteration`** | high |
 | 6 | Bare `raise` alongside `raise e` | **cut bare `raise`** | high |
-| 7 | `while i < n: … i = i + 1` alongside `for i in range(n)` | **not a cut — a rule, and the stdlib is the offender** | high |
+| 7 | `while i < n: … i = i + 1` alongside `for i in range(n)` | **not a cut — a rule, and the stdlib is the offender** — **done** | high |
 | 8 | Three spellings of "iterate a dict" | **done — cut `.items()` instead**, and bare iteration yields the pair | high |
 | 9 | Three spellings of "loop with an index" | **settle on `.enumerate()`** | medium |
 | 10 | `ModuleNotFoundError` under `ImportError` | **merge, weakly** | low |
@@ -122,6 +122,25 @@ argument. `_parse_query` could then finish
 `xs.join(sep)`, alongside `lstrip`, `rfind`, `index`, `rsplit` and `zfill` in
 `cut_method_message` (`src/builtins/mod.rs:706`). The str/bytes surface goes from
 sixteen names to fifteen, and the README's own sentence becomes true.
+
+### What was done
+
+Exactly this. The oracle cost, measured rather than estimated: **21 lines left
+`corpus/core/`** — one line each from `03_strings`, `15_textproc` and
+`35_bytes`, and the three `join` arity blocks (18 lines) from
+`39_method_arity`. All 21 are re-covered in
+`corpus/divergence/51_string_surface.oro`, which carries a `.twin.py`, so the
+baseline is still byte-for-byte CPython's output. `07_varargs.oro` kept its
+oracle outright: its `" ".join(parts)` became `+` accumulation and the
+`.expected` did not change at all.
+
+Two bugs fell out of doing it, both on the surviving side and both fixed:
+
+* **`xs.join(sep, 2)` ignored the second argument** and answered confidently —
+  the same drift `enumerate` had. It was invisible until `str.join`'s arity
+  probes moved over and the collection form turned out to have none of its own.
+* **`join() requires str elements, found 'int'` classified as `RuntimeError`**
+  where CPython raises `TypeError`.
 
 ---
 
@@ -225,7 +244,7 @@ to an int — a `TypeError`, on *both* sides. That is the one case where the
 consistent answer is worse than what the builtin did rather than merely
 different; `d.values().sum()` is what such a call meant. All nine pairs now
 agree on a dict argument, pinned line by line in
-`corpus/divergence/65_builtin_method_agreement.oro`.
+`corpus/divergence/65_builtin_method_line.oro`.
 
 ### The rule to draw
 
@@ -276,6 +295,55 @@ concentrated in `corpus/divergence/33_seq_builtins.oro` (five of five for
 `enumerate`/`zip`) and a handful of core programs. `min`/`max`/`sorted` are
 wider. Every one has a mechanical rewrite. Nothing in `std/http.oro` uses any of
 the nine builtins except `min` (which stays), `len`, and `sorted` (§3).
+
+### What was done, and the hole this section did not see
+
+The cut landed as described — six builtins gone, `min`/`max` narrowed to two or
+more values, `len` kept as the one named exception with its reason in the
+README. Three things this section got wrong or missed are worth recording.
+
+**1. Cutting `sorted` would have taken `key=` and `reverse=` with it.**
+`xs.sorted()` accepted no keyword arguments, so the builtin was the *only*
+spelling of a keyed or descending sort. §3's proposed replacement does not
+close the gap:
+
+```python
+ties = [("a", 2), ("b", 1), ("c", 2), ("d", 1)]
+ties.sorted(key=snd, reverse=true)   # [('a', 2), ('c', 2), ('b', 1), ('d', 1)]
+ties.sort_by(snd).reversed()         # [('c', 2), ('a', 2), ('d', 1), ('b', 1)]
+```
+
+`reverse=true` is a **stable** descending sort; reversing a sorted sequence
+flips the ties as well. So `sort_by(f).reversed()` is not `sorted(key=f,
+reverse=true)` and never was — which is a correction §3 needs before it can be
+executed, because §3 states the substitution as an equivalence. The two
+keywords therefore *moved* onto `xs.sorted(...)` unchanged: a pure receiver
+relocation with nothing new to verify, leaving `.sorted(key=f)` and
+`.sort_by(f)` exactly the pair §3 is about.
+
+**2. `enumerate` on a generator survives the cut.** Checked before cutting, as
+the removal rule requires: `g().enumerate()` works. The substitute this section
+did not propose but a reader might — `range(len(g)).zip(g)` — answers `[]`,
+because `len` drains the generator first.
+
+**3. `str` and `bytes` lose a capability, not a spelling.** `sorted("ba")`,
+`min(b"ba")`, `enumerate("ab")` and `any(b"ab")` all worked, because a builtin
+read its argument through the **iteration** protocol and that reaches both
+types. The collection protocol deliberately does not — `"abc".map(f)` has
+always been an `AttributeError` — so the method forms do not exist and cannot
+stand in. Documented as a loss rather than closed: putting one collection
+method out of twenty onto `str` is a worse inconsistency than the loss, and
+`"ba".to_list().sorted()` is the bridge the README already names. The error
+message says so at the call site, and `"abc".len()` gets its own line pointing
+at `len(s)`.
+
+**The oracle cost: 375 lines left `corpus/core/`.** Three programs moved whole —
+`33_sorted_key_reverse` (31), `44_comparison_dunders` (297), `48_sorted_shape`
+(35) — because each is *written in* the cut names; splitting `44` would have
+meant defining its six classes twice, in two directories, free to drift. Each
+took a `.twin.py` along, so each `.expected` is still CPython's own output. The
+other 12 lines are one-line relocations into
+`corpus/divergence/71_collection_methods.oro`, which also carries a twin.
 
 ---
 
@@ -663,6 +731,36 @@ Write it in the README next to the block-scope note, and rewrite the 67 sites.
 The 10 EOF-sentinel `while` loops (`while chunk != b"":`) and the four `while
 true:` loops are correct as they stand.
 
+### What was done
+
+The rule is in the README, next to the block-scope note, with one clause this
+section did not have: *a loop whose index exists only to reach into two
+sequences at once is `a.zip(b)`.* 42 sites were rewritten — 6 in
+`std/http.oro`, 7 in `corpus/core/`, 28 in `corpus/divergence/`, 1 in
+`tests/programs/`.
+
+Two corrections to the census:
+
+* **`std/io.oro` has no manual counters at all**, where this section says three
+  of three. Two are EOF drains and the third, `while got < n:`, steps by
+  however many bytes the stream returned — a condition, not a count.
+* **`std/http.oro:1567` was not a counter either.** It walked a route pattern
+  and a path in lockstep, so the mechanical `for i in range(len(pat))` would
+  have been the wrong fix and would have become the tree's only example of an
+  idiom nobody wants. It is `for p, s in pat.zip(segs)`, three lines shorter
+  with no index at all.
+
+**The benchmarks kept the manual form, deliberately.** A benchmark's loop is
+inside its measurement: re-measured here, `loop` runs in 0.203s hand-rolled and
+0.139s as `for i in range(n)` — and CPython's own gain is smaller (22% against
+31%), so rewriting them would have moved the vs-CPython ratio by 13% in the
+direction that reads as an Oro improvement, permanently, for nothing. It would
+also have made every number from four optimization passes incomparable. Each of
+the thirteen programs says so at the top and `bench/RESULTS.md` carries the
+argument.
+
+`examples/` needed nothing: it contains no `while` at all.
+
 The line above matters more than a style guide usually would, because there is
 nothing in Oro that can enforce it. `oro fmt` is a formatter, not a linter, and
 "no options, one output" means it will never grow a rule. The rewrite is the
@@ -724,7 +822,7 @@ the six dict-walking builtins read the iterator, so they moved with it.
 `corpus/core/` program iterates a dict at all (`48_sorted_shape.oro`, two lines),
 and one more calls `.items()` without iterating (`39_method_arity.oro`, one
 case). No program moved whole; three lines left `core/` for
-`corpus/divergence/65_builtin_method_agreement.oro` and
+`corpus/divergence/65_builtin_method_line.oro` and
 `corpus/divergence/67_dict_pairs.oro`, and the latter carries a `.twin.py`, so
 even its baseline is still CPython's output.
 
@@ -1069,6 +1167,9 @@ shape. Consistent.
 ---
 
 ## 14. If only three things happen
+
+*All three of these are now done; each section above carries a "What was done"
+note with the measured cost and the corrections the analysis needed.*
 
 1. **Cut `str.join`/`bytes.join`** (§1). One name, one file of corpus churn, and
    it makes a sentence the README already prints become true.

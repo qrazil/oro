@@ -34,13 +34,11 @@ print({"a": 1, "b": 2}.map((k, v) => (k.upper(), v * 10)))
 print(range(5).map(x => x * x))
 
 def nums(n):
-    i = 0
-    while i < n:
+    for i in range(n):
         yield i
-        i = i + 1
 
 print(nums(10).filter(x => x % 3 == 0))
-print(sum(nums(100)))
+print(nums(100).sum())
 
 # a named function works as a callback too
 def triple(n):

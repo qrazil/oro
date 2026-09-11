@@ -14,11 +14,14 @@
 #   d.keys() / d.values()    ->  list(...) — Oro's answer a list, which is its
 #                                own divergence, recorded in 59_dict_views.oro
 #   d.to_list()              ->  list(d.items())
-#   sorted(d)                ->  dict(sorted(d.items())) — `sorted` rebuilds the
+#   d.sorted()               ->  dict(sorted(d.items())) — `sorted` rebuilds the
 #                                shape it was handed, and a sorted sequence of
 #                                entries is a dict
-#   enumerate(d)             ->  list(enumerate(d.items())) — Oro's enumerate is
+#   d.enumerate()            ->  list(enumerate(d.items())) — Oro's enumerate is
 #                                eager, also recorded in 59_dict_views.oro
+#   d.min() / d.max()        ->  min(...) / max(...) — the builtins are cut; a
+#                                builtin takes scalars, a collection method
+#                                takes a collection
 #   d.map / d.filter         ->  the dict comprehension each one is
 #   true / false             ->  `b()` below. Oro spells the two literals
 #                                lowercase; this is the same rename the corpus

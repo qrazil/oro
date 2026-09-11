@@ -60,6 +60,12 @@ def with_except():
 print(with_except())
 
 # continue in a while loop with finally.
+#
+# The counter is hand-rolled here on purpose, against the language's own rule
+# that a bounded count is `for n in range(4)`. This is the case the rule exists
+# to prevent: the increment is at the *top* of the body precisely because a
+# `continue` below it would skip it and the loop would never end. That hazard
+# is what is being tested, so the loop that has it has to stay.
 def while_continue():
     log = []
     n = 0

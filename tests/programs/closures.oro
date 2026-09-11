@@ -7,7 +7,7 @@ def make_adders(base):
         log.append(x)
         return base + x
     def total_logged():
-        return sum(log)
+        return log.sum()
     return add, total_logged
 
 add5, logged = make_adders(5)

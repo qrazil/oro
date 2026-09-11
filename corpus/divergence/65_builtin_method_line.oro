@@ -1,0 +1,183 @@
+# The line between a builtin and a collection method, and the six names that
+# were on the wrong side of it.
+#
+#     A builtin takes scalars. A collection method takes a collection.
+#
+# Nine builtins used to duplicate nine collection methods — `len sum min max
+# sorted any all enumerate zip` — with usage across the tree split roughly down
+# the middle, which settled nothing and left every reader and every model to
+# guess which half the codebase wanted. Worse, the split had already let three
+# of the pairs quietly *disagree*:
+#
+#   [1, 2].zip([3, 4], [5, 6])   answered a two-way zip, discarding [5, 6]
+#   sorted((3, 1, 2))            answered a list where (3, 1, 2).sorted() answered a tuple
+#   enumerate(xs, 1, 9)          accepted the 9 and ignored it
+#
+# All three were fixed by making the two halves share one body. This file is
+# what happened next: six of the nine builtins are gone, `min`/`max` keep only
+# the form that has no chain spelling, and `len` stays as the one named
+# exception. Two bodies for one operation is how a disagreement happens; one
+# spelling is how it stays fixed.
+#
+# CPython cannot check any of this: the surviving spellings are Oro's collection
+# protocol, and the messages below are Oro's own. Reviewed by hand.
+
+# --- the six cuts, each naming its replacement -------------------------------
+try:
+    sum([1, 2])
+except NameError as e:
+    print(e)
+
+try:
+    sorted([2, 1])
+except NameError as e:
+    print(e)
+
+try:
+    any([true])
+except NameError as e:
+    print(e)
+
+try:
+    all([true])
+except NameError as e:
+    print(e)
+
+try:
+    enumerate(["a"])
+except NameError as e:
+    print(e)
+
+try:
+    zip([1], [2])
+except NameError as e:
+    print(e)
+
+print("---")
+
+# --- min/max: narrowed, not cut ----------------------------------------------
+# The variadic scalar form is load-bearing and has no chain spelling.
+# `std/http.oro` clamps a backoff with it — `min(backoff * 2, _MAX)` — and
+# `[backoff * 2, _MAX].min()` allocates a list to compare two floats and reads
+# worse. That is the ergonomics test, so `min(a, b)` stays and `min(xs)` goes.
+print(min(3, 1), max(3, 1), min(1.5, 2, 0.5), max("a", "b"))
+
+try:
+    min([3, 1])
+except TypeError as e:
+    print(e)
+
+try:
+    max([3, 1])
+except TypeError as e:
+    print(e)
+
+print("---")
+
+# --- len: the one exception, and why -----------------------------------------
+# It is the only one of the nine that reaches `str` and `bytes`, which are
+# deliberately outside the collection protocol, and the only one that dispatches
+# a dunder on a user class. Cutting `len(x)` would reserve `.len()` on every
+# user object; cutting `.len()` would break `xs.filter(p).len()` back to
+# `len(xs.filter(p))` and send the reader to the front of the line. One
+# exception with a stated reason is not nine unexplained pairs.
+print(len("abc"), len(b"abc"), len([1, 2]), len({"a": 1}), len((1, 2)))
+print([1, 2, 3].filter(x => x > 1).len())
+
+
+class Box:
+    def __len__(self):
+        return 7
+
+
+print(len(Box()))
+
+print("---")
+
+# --- what the survivors do ---------------------------------------------------
+# `zip` is variadic on the method too, so `a.zip(b, c)` is what `zip(a, b, c)`
+# was — and not a two-way zip with `c` thrown away.
+print([1, 2].zip([3, 4], [5, 6]))
+print([1, 2].zip([3, 4]))
+print([1, 2].zip())
+print([1, 2, 3].zip([4, 5], [6, 7, 8, 9]))
+print([].zip([1], [2]))
+print((1, 2).zip((3, 4), (5, 6)))
+print(range(3).zip(range(2), range(9)))
+for a, b, c in [1, 2].zip([3, 4], [5, 6]):
+    print(a, b, c)
+
+# `enumerate` takes a start and nothing else, and refuses a second argument
+# rather than ignoring it.
+print([7, 8].enumerate(), [7, 8].enumerate(1))
+try:
+    print([7, 8].enumerate(1, 9))
+except TypeError as e:
+    print(e)
+
+# `sum` carries the start the builtin's second argument was.
+print([1, 2].sum(), [1, 2].sum(10), [].sum())
+
+# `sorted` preserves the receiver's shape, which is the collection protocol's
+# stated rule for anything that reorders, and it carries the two keywords the
+# builtin had. `xs.sorted().reversed()` is *not* `xs.sorted(reverse=true)`:
+# reversing a sorted sequence flips the ties too.
+print([3, 1, 2].sorted(), (3, 1, 2).sorted(), ().sorted())
+print(range(3, 0, -1).sorted())
+print(type((3, 1, 2).sorted()))
+ties = [("a", 2), ("b", 1), ("c", 2), ("d", 1)]
+print(ties.sorted(key=p => p[1], reverse=true))
+print(ties.sort_by(p => p[1]).reversed())
+try:
+    [1].sorted(1)
+except TypeError as e:
+    print(e)
+
+print("---")
+
+# --- a dict: one answer to "what is a dict's element?" -----------------------
+# The six cut builtins all read their argument through the iterator, which is
+# why they followed `for k, v in d` onto the pair. The methods answer the same,
+# and now they are the only spelling.
+d = {"b": 1, "a": 2}
+print(d.min(), d.max())
+print(d.enumerate())
+print(d.zip([10, 20]))
+print(d.any(), d.all(), d.len())
+print(d.sorted(), {}.sorted(), type(d.sorted()))
+
+# `sum` over a dict is an attempt to add a tuple to an int, and says so.
+# `d.values().sum()` is how you add up a dict.
+try:
+    print(d.sum())
+except TypeError as e:
+    print("d.sum() ->", e)
+print(d.values().sum())
+
+print("---")
+
+# --- what the cut costs: str and bytes are not collections -------------------
+# `sorted("ba")` and `min(b"ba")` worked, because a builtin read its argument
+# through the *iteration* protocol and that reaches both types. The collection
+# protocol deliberately does not: `"abc".map(f)` has always been an
+# AttributeError, and giving `str` one collection method out of twenty would be
+# a worse inconsistency than the loss. `to_list()` is the documented bridge, and
+# it is what the capability costs — one call, at the point it is needed.
+try:
+    "ba".sorted()
+except AttributeError as e:
+    print(e)
+
+try:
+    b"ba".min()
+except AttributeError as e:
+    print(e)
+
+# `len` is the exception in this direction too: it stayed a builtin, so the
+# message points at `len(s)` and not at the bridge.
+try:
+    "abc".len()
+except AttributeError as e:
+    print(e)
+
+print("ba".to_list().sorted(), b"ba".to_list().min(), "ab".to_list().enumerate())

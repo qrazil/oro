@@ -4,6 +4,7 @@
 `rfind` is not in Oro — use `find(sub, reverse=true)`
 `zfill` is not in Oro — a format spec pads: f"{n:05d}", f"{s:0>5}", or f"{s:0>{width}}" for a width computed at run time
 `index` is not in Oro — use `find(sub)`, which answers -1 rather than raising
+`str.join` is not in Oro — the separator is the argument and the sequence the receiver: use `xs.join(sep)`
 `removeprefix` is spelled `rm_prefix` in Oro
 `removesuffix` is spelled `rm_suffix` in Oro
 `isdigit` is spelled `is_digit` in Oro
@@ -17,6 +18,7 @@
 `rfind` is not in Oro — use `find(sub, reverse=true)`
 `zfill` is not in Oro — a format spec pads: f"{n:05d}", f"{s:0>5}", or f"{s:0>{width}}" for a width computed at run time
 `index` is not in Oro — use `find(sub)`, which answers -1 rather than raising
+`bytes.join` is not in Oro — the separator is the argument and the sequence the receiver: use `xs.join(sep)`
 `removeprefix` is spelled `rm_prefix` in Oro
 `removesuffix` is spelled `rm_suffix` in Oro
 `isdigit` is spelled `is_digit` in Oro

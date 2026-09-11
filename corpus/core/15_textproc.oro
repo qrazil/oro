@@ -6,10 +6,9 @@ for line in lines:
 names = []
 for r in rows:
     names.append(r[0].upper())
-print(", ".join(names))
 
 cities = []
 for r in rows:
     cities.append(r[2])
-print(sorted(cities))
+# `sorted(cities)` moved to corpus/divergence/71_collection_methods.oro.
 print(rows[0], len(rows), rows[1][0].startswith("b"))

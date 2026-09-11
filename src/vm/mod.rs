@@ -1613,11 +1613,17 @@ impl Vm {
                                     self.push(v);
                                 }
                                 None => {
-                                    return Err(
-                                        self.err(name_error(format!(
-                                            "name '{name}' is not defined"
-                                        )))
-                                    )
+                                    // A global that used to exist says what
+                                    // replaced it. The rule the whole language
+                                    // runs on: reject with an error that names
+                                    // the replacement, never leave the reader
+                                    // to guess where a name went.
+                                    let msg = crate::builtins::cut_global_message(&name)
+                                        .map(str::to_string)
+                                        .unwrap_or_else(|| {
+                                            format!("name '{name}' is not defined")
+                                        });
+                                    return Err(self.err(name_error(msg)));
                                 }
                             }
                         }
@@ -2512,6 +2518,30 @@ impl Vm {
                     .map(|()| Step::Next);
             }
         }
+        // `xs.sorted(key=…, reverse=…)` — the two keywords the `sorted`
+        // builtin carried, on the receiver the builtin/method rule keeps.
+        // They moved rather than being replaced by a second chain step,
+        // because `reverse=true` is a *stable* descending sort and
+        // `xs.sorted().reversed()` is not: reversing a sorted sequence flips
+        // the ties too. Measured on `[("a", 2), ("b", 1), ("c", 2), ("d", 1)]`
+        // keyed on the second field, the two answers differ.
+        if &**name == "sorted"
+            && !matches!(receiver, Value::Generator(_))
+            && crate::builtins::is_collection(&receiver)
+            && !kwargs.is_empty()
+        {
+            if !args.is_empty() {
+                return Err(self.err(type_error(
+                    "sorted() takes no positional arguments — the key is \
+                     `key=f`, or write `xs.sort_by(f)`",
+                )));
+            }
+            let (shape, items) = self.seq_receiver(name, &receiver)?;
+            let (keyfn, reverse) = self.sort_kwargs("sorted", kwargs)?;
+            return self
+                .begin_sort(items, keyfn, reverse, None, shape)
+                .map(|()| Step::Next);
+        }
         // The chain's three orderings. Like their builtin twins
         // they compare with `<`, so a receiver of instances needs
         // frames; anything else falls straight through to native.
@@ -2619,13 +2649,10 @@ impl Vm {
                     // "wait". See `sched::Vm::do_dial`.
                     "net.dial" => return self.do_dial(args, kwargs),
                     "print" => return self.do_print(args, kwargs).map(|()| Step::Next),
-                    // `sorted` and `min`/`max` decide with `<`, which may be
-                    // a user `__lt__` — so they are driven from the VM, which
-                    // is the only layer that can run one. Elements with no
-                    // dunder still take the native path, one branch further in.
-                    "sorted" if !kwargs.is_empty() || ord_needs_vm(&args) => {
-                        return self.do_sorted(args, kwargs)
-                    }
+                    // `min`/`max` decide with `<`, which may be a user
+                    // `__lt__` — so they are driven from the VM, which is the
+                    // only layer that can run one. Elements with no dunder
+                    // still take the native path, one branch further in.
                     "min" | "max" if ord_needs_vm(&args) => {
                         return self.do_extreme(b.name, args, kwargs)
                     }
@@ -3767,31 +3794,6 @@ impl Vm {
         }
     }
 
-    /// `sorted(iterable, key=…, reverse=…)`. Without a key this is the plain
-    /// native sort; with one, every element's key is computed through a frame
-    /// first (see [`SortJob`]).
-    fn do_sorted(
-        &mut self,
-        args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
-    ) -> Result<Step, VmError> {
-        // sorted() is intercepted before the generic builtin path, so the
-        // generator drain has to be requested explicitly here too.
-        if let Some(callee) = crate::builtins::lookup("sorted") {
-            if let Some(step) = self.materialize_generator_args(&callee, &args, &kwargs)? {
-                return Ok(step);
-            }
-        }
-        let iterable = match args.as_slice() {
-            [it] => it.clone(),
-            _ => return Err(self.err(type_error("sorted() takes exactly 1 positional argument"))),
-        };
-        let (keyfn, reverse) = self.sort_kwargs("sorted", kwargs)?;
-        let shape = sorted_shape(&iterable);
-        let items = self.wrap(crate::vm::iterate_to_vec(&iterable))?;
-        self.begin_sort(items, keyfn, reverse, None, shape).map(|()| Step::Next)
-    }
-
     /// `min(...)` / `max(...)`. With one argument it ranges over an iterable,
     /// with several over the arguments themselves — and either way the `<` it
     /// decides with may be a user `__lt__`.
@@ -3811,7 +3813,10 @@ impl Vm {
         }
         let items = match args.len() {
             0 => return Err(self.err(value_error(format!("{who}() expected at least 1 argument")))),
-            1 => self.wrap(iterate_to_vec(&args[0]))?,
+            // Narrowed with the native path, and it has to be: this arm is the
+            // one a receiver of instances takes, and two arities of one name
+            // that disagree about what they accept is worse than either.
+            1 => return Err(self.err(type_error(crate::builtins::extreme_arity_message(who)))),
             _ => args,
         };
         let keys = items.clone();
@@ -4534,24 +4539,20 @@ impl Vm {
         args: Vec<Value>,
         cont: OrdCont,
     ) -> Result<Option<Vec<Value>>, VmError> {
-        if !matches!(name, "sorted" | "min" | "max") || !ord_needs_vm(&args) {
+        if !matches!(name, "min" | "max") || !ord_needs_vm(&args) {
             return Ok(Some(args));
         }
-        let shape = match args.as_slice() {
-            [it] => sorted_shape(it),
-            _ => SeqShape::List,
-        };
-        let items = match args.as_slice() {
-            [it] => self.wrap(iterate_to_vec(it))?,
-            _ => args,
-        };
-        let keys = items.clone();
+        // Only the scalar form is left, so a single argument is the narrowed
+        // arity's error rather than an iterable to range over.
+        if args.len() < 2 {
+            return Err(self.err(type_error(crate::builtins::extreme_arity_message(name))));
+        }
+        let keys = args.clone();
         let kind = match name {
-            "sorted" => OrdKind::Sort(shape),
             "min" => OrdKind::Extreme { want_min: true, who: "min" },
             _ => OrdKind::Extreme { want_min: false, who: "max" },
         };
-        self.begin_order_to(kind, items, keys, false, cont).map(|()| None)
+        self.begin_order_to(kind, args, keys, false, cont).map(|()| None)
     }
 
     /// The ordering machine's loop: run until the ordering is finished, or
@@ -6465,24 +6466,12 @@ fn ord_defers(v: &Value) -> bool {
     go(v, 0)
 }
 
-/// `sorted()` builds a new collection of the argument's shape; `list.sort()`
-/// writes back where it was.
+/// `xs.sorted()` builds a new collection of the receiver's shape;
+/// `list.sort()` writes back where it was.
 fn sort_kind(in_place: Option<Rc<OroList>>, shape: SeqShape) -> OrdKind {
     match in_place {
         Some(l) => OrdKind::SortInPlace(l),
         None => OrdKind::Sort(shape),
-    }
-}
-
-/// The shape `sorted(x)` rebuilds, for the VM-driven spellings (`key=`,
-/// `reverse=`, a user `__lt__`). One rule, stated once, in
-/// [`crate::builtins::sorted_shape_of`], so the native and frame-driven
-/// paths cannot answer different types for the same call.
-fn sorted_shape(v: &Value) -> SeqShape {
-    match crate::builtins::sorted_shape_of(v) {
-        crate::builtins::SortedShape::Tuple => SeqShape::Tuple,
-        crate::builtins::SortedShape::Dict => SeqShape::Dict,
-        crate::builtins::SortedShape::List => SeqShape::List,
     }
 }
 

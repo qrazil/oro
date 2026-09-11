@@ -19,7 +19,7 @@ harness checks oro and CPython agree before reporting a time.
 |---|---|
 | `fib` | the call path: `fib(27)`, ~400k frame push/bind/return cycles |
 | `loop` | raw dispatch: a 3M-iteration `while` with integer arithmetic |
-| `strjoin` | 200k f-string formats into a list, then `join` |
+| `strjoin` | 200k f-string formats into a list, then `join` — oro-only since `sep.join(xs)` was cut, CPython twin in `strjoin.py` |
 | `dictops` | 500k integer-keyed dict writes, then a full iteration + lookup scan |
 | `dictstr` | string-keyed dicts: 200k distinct keys, then 500k hits on one small record |
 | `oo` | attribute load/store, method calls, construction, `super()` |
@@ -29,6 +29,42 @@ harness checks oro and CPython agree before reporting a time.
 | `builtins` | 4 global lookups + 4 native calls per iteration, 300k iterations |
 | `chain` | the collection protocol (`.filter`/`.map`/`.reduce` with `=>`) — oro-only, CPython twin in `chain.py` |
 | `json` | `json.parse` + `json.stringify` over five payload shapes — oro-only, CPython twin in `json_twin.py` |
+
+## Why the benchmarks still count by hand
+
+Every program here spells a bounded count the long way:
+
+```python
+i = 0
+while i < 200000:
+    ...
+    i = i + 1
+```
+
+Oro's rule is the other one — **`for i in range(n)` for a bounded count,
+`while` for a condition** — and the standard library, the corpus and the
+examples were all rewritten to it. The benchmarks were deliberately not, and
+the reason is the same measurement that makes the rule worth having.
+
+Measured on one core, best of nine, `loop` at 3M iterations:
+
+| form | oro | cpython | ratio |
+|---|---|---|---|
+| `i = 0; while i < n: …; i = i + 1` | 0.203s | 0.445s | 0.46x |
+| `for i in range(n): …` | 0.139s | 0.345s | 0.40x |
+
+**A benchmark's loop is inside its measurement.** `range` steps in Rust, so the
+`for` form is 31% faster here without a single instruction of the VM having
+changed — and CPython's own gain is smaller (22%), so even the *ratio* column
+moves, by 13%, in the direction that reads as an Oro improvement. Rewriting the
+counters would have made all thirteen rows better at once, permanently, for
+nothing, and would have made every number above incomparable with the four
+optimization passes that produced them.
+
+So the manual counter stays here and only here, each file says so at the top,
+and `loop.oro` — where the counter genuinely *is* the subject — says it at
+length. If the suite is ever rebaselined for another reason, this is the first
+thing to change, and both columns must be retaken together.
 
 ## Where things stand
 

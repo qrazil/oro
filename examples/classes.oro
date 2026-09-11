@@ -1,0 +1,93 @@
+# A small value type, and the methods that make one behave like a value:
+# `__str__` for how it prints, `__repr__` for how it prints inside a container,
+# `__eq__` for what equal means, `__lt__` for sorting and `<`.
+#
+#     oro examples/classes.oro
+#
+# No decorators, so no `@classmethod` and no `@staticmethod`: a function that
+# builds an instance is an ordinary function next to the class. No `__hash__`
+# either — a class instance is not a dict key, by decision rather than by
+# omission (docs/hash-and-equality.md).
+
+
+class Version:
+    def __init__(self, major, minor, patch):
+        self.major, self.minor, self.patch = major, minor, patch
+
+    # The tuple every comparison is really about, named once. The formatter
+    # drops the parentheses — a bare tuple is the canonical spelling.
+    def parts(self):
+        return self.major, self.minor, self.patch
+
+    def __str__(self):
+        return f"{self.major}.{self.minor}.{self.patch}"
+
+    def __repr__(self):
+        return f"Version({self.major}, {self.minor}, {self.patch})"
+
+    # `type(other) != type(self)` is the guard, because there is no
+    # `isinstance` and a type name *is* the type. A `Release` is therefore not
+    # equal to the bare `Version` with the same numbers.
+    def __eq__(self, other):
+        if type(other) != type(self):
+            return false
+        return self.parts() == other.parts()
+
+    def __lt__(self, other):
+        return self.parts() < other.parts()
+
+    def stable(self):
+        return true
+
+
+class Release(Version):
+    def __init__(self, major, minor, patch, channel):
+        super().__init__(major, minor, patch)
+        self.channel = channel
+
+    def __str__(self):
+        return f"{super().__str__()}-{self.channel}"
+
+    def __repr__(self):
+        return f"Release({self.parts()}, {self.channel!r})"
+
+    # A pre-release sorts *before* the release it leads to. Overriding the one
+    # comparison is enough; the base class still answers everything else.
+    def __lt__(self, other):
+        if self.parts() == other.parts():
+            return other.stable()
+        return self.parts() < other.parts()
+
+    def stable(self):
+        return false
+
+
+def parse(text):
+    numbers, channel = text.split("-", 1), null
+    if len(numbers) == 2:
+        channel = numbers[1]
+    fields = numbers[0].rm_prefix("v").split(".")
+    if len(fields) != 3:
+        raise ValueError(f"not a version: {text!r}")
+    major, minor, patch = fields.map(f => f.to_int())
+    if channel == null:
+        return Version(major, minor, patch)
+    return Release(major, minor, patch, channel)
+
+
+versions = ["v1.4.2", "v2.0.0-rc1", "v0.9.11", "v2.0.0", "v1.10.0"].map(t => parse(t))
+print(versions)
+print(versions.sorted().map(v => v.to_str()).join("  <  "))
+
+# Ask the object, do not ask its type: `stable()` is the question, and the
+# subclass answering it differently is the reason the subclass exists.
+newest = versions.filter(v => v.stable()).max_by(v => v.parts())
+print(f"newest shipped: {newest}")
+print(Version(1, 4, 2) == parse("v1.4.2"), Version(2, 0, 0) == parse("v2.0.0-rc1"))
+print(parse("v2.0.0-rc1") < Version(2, 0, 0), Version(1, 4, 2) < Version(1, 10, 0))
+
+try:
+    parse("nightly")
+    print("unreachable")
+except ValueError as e:
+    print(e)

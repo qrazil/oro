@@ -112,3 +112,37 @@ for s in ["123", "12a", "abc", "café", "a1", "", " ", " \t\n", "\x1c", "３", "
     print(repr(s), s.is_digit(), s.is_alpha(), s.is_alnum(), s.is_space())
 for b in [b"123", b"12a", b"abc", b"a1", b"", b" ", b" \t\x0b", b"\xff"]:
     print(b, b.is_digit(), b.is_alpha(), b.is_alnum(), b.is_space())
+
+# `join` left the string surface entirely. The separator is the argument and
+# the sequence the receiver — `", ".join(xs)` is `xs.join(", ")` — so this is
+# the same operation with the same type rules and the same answers, reached
+# from the other end. The message the old spelling answers with is in
+# 52_removed_string_methods.oro; the arity probes below moved here out of
+# core/39_method_arity.oro, where the call is now an AttributeError.
+print("--- join")
+print(repr(["a", "b", "c"].join("-")), repr(["a"].join("-")), repr([].join("-")))
+print(repr(["a", "b"].join("")), repr(["alice", "bob"].join(", ")))
+print(repr(("a", "b").join("-")))
+print([b"a", b"b", b"c"].join(b","), [b"a", b"b"].join(b""), [].join(b","))
+
+try:
+    ["a"].join("-", 2)
+    print('["a"].join("-", 2)', "-> no error")
+except TypeError:
+    print('["a"].join("-", 2)', "-> TypeError")
+
+try:
+    ["a"].join()
+    print('["a"].join()', "-> no error")
+except TypeError:
+    print('["a"].join()', "-> TypeError")
+
+# An element of the wrong type is a TypeError on both sides: CPython says
+# `sequence item 1: expected str instance, int found`, Oro says
+# `join() requires str elements, found 'int'`. Only the class is printed, so
+# the twin still answers for it.
+try:
+    ["a", 1].join("-")
+    print('["a", 1].join("-")', "-> no error")
+except TypeError:
+    print('["a", 1].join("-")', "-> TypeError")

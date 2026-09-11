@@ -19,28 +19,22 @@ DEPTH = 200000
 
 def nest_lists(n):
     v = []
-    i = 0
-    while i < n:
+    for i in range(n):
         v = [v]
-        i = i + 1
     return v
 
 
 def nest_dicts(n):
     v = 0
-    i = 0
-    while i < n:
+    for i in range(n):
         v = {"n": v}
-        i = i + 1
     return v
 
 
 def nest_tuples(n):
     v = ()
-    i = 0
-    while i < n:
+    for i in range(n):
         v = (v,)
-        i = i + 1
     return v
 
 
@@ -51,10 +45,8 @@ class Node:
 
 def nest_instances(n):
     v = null
-    i = 0
-    while i < n:
+    for i in range(n):
         v = Node(v)
-        i = i + 1
     return v
 
 
@@ -80,13 +72,11 @@ print("instances freed")
 # A mixed chain: no one container kind appears twice in a row, so a fix that
 # only broke one kind of chain would still recurse.
 v = null
-i = 0
-while i < DEPTH / 4:
+for i in range(DEPTH // 4):
     v = [v]
     v = (v,)
     v = {"n": v}
     v = [v]
-    i = i + 1
 v = 0
 print("mixed chain freed")
 

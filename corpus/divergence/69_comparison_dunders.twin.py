@@ -1,12 +1,20 @@
-# `__eq__` and `__lt__` are the class's answer everywhere equality and ordering
-# are decided, not only at the `==` and `<` that name them.
+# The manual oracle for 69_comparison_dunders.oro: that file with Oro's
+# collection-method spellings translated back into CPython's builtins. Run it
+# and diff against the reviewed .expected; an empty diff is the review.
 #
-# Before this, `__eq__` was dispatched by the comparison operator and by nothing
-# else: `a == b` was true while `a in [b]` was false, and `sorted` of a class
-# with `__lt__` raised a TypeError. The two spellings of one question — `a in xs`
-# and `xs.any(y => y == a)` — gave different answers one line apart.
+#   python3 corpus/divergence/69_comparison_dunders.twin.py \
+#     | sed -E 's/\bTrue\b/true/g; s/\bFalse\b/false/g; s/\bNone\b/null/g' \
+#     | diff - corpus/divergence/69_comparison_dunders.expected
 #
-# All of this is CPython's behaviour, so the oracle generates the expectation.
+# The translations, and nothing else differs:
+#
+#   xs.sorted()                       ->  sorted(xs)
+#   xs.sorted(key=f, reverse=True)    ->  sorted(xs, key=f, reverse=True)
+#   xs.min() / xs.max()               ->  min(xs) / max(xs)
+#   true / false / null               ->  True / False / None
+#
+# `min(V(2), V(1), V(3))` is the same on both sides: the variadic scalar form is
+# the half of `min` Oro keeps.
 
 
 class Cell:
@@ -70,7 +78,7 @@ print("--- identity is a shortcut inside a container, and never at `==`")
 # hangs on a self-referential list or contradicts itself.
 class Never:
     def __eq__(self, other):
-        return false
+        return False
 
     def __repr__(self):
         return "Never()"
@@ -84,10 +92,8 @@ print(n in [n], [n] == [n], (n,) == (n,), {"k": n} == {"k": n})
 # references to a single object settles every element without asking anything,
 # and a Rust frame per element would be a stack overflow rather than an answer.
 wide = []
-i = 0
-while i < 20000:
+for i in range(20000):
     wide.append(n)
-    i = i + 1
 other = wide[0:20000]
 print(len(wide), wide == other, n in wide)
 
@@ -156,13 +162,13 @@ class V:
 vs = [V(3), V(1), V(4), V(1), V(5)]
 print(V(1) < V(2), V(2) < V(1), V(2) > V(1))
 print(sorted(vs))
-print(sorted(vs, reverse=true))
+print(sorted(vs, reverse=True))
 print(min(vs), max(vs))
 print(min(V(2), V(1), V(3)), max(V(2), V(1), V(3)))
 mutable = [V(3), V(1), V(2)]
 mutable.sort()
 print(mutable)
-mutable.sort(reverse=true)
+mutable.sort(reverse=True)
 print(mutable)
 
 
@@ -171,7 +177,7 @@ def itself(v):
 
 
 print(sorted(vs, key=itself))
-print(sorted(vs, key=itself, reverse=true))
+print(sorted(vs, key=itself, reverse=True))
 print(min([[V(2)], [V(1)]]), max([[V(2)], [V(1)]]))
 
 print("--- a sort that needs __lt__ is still stable")
@@ -189,7 +195,7 @@ class Grade:
 
 ties = [Grade(1, "a"), Grade(0, "b"), Grade(1, "c"), Grade(0, "d"), Grade(1, "e")]
 print(sorted(ties))
-print(sorted(ties, reverse=true))
+print(sorted(ties, reverse=True))
 
 print("--- ordering nested in containers")
 class W:

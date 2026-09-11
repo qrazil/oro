@@ -1,15 +1,21 @@
-# DIVERGENCE: `list(x)`/`dict(x)` are spelled `x.to_list()`/`x.to_dict()`, so
+# DIVERGENCE: `list(x)`/`dict(x)` are spelled `x.to_list()`/`x.to_dict()`, and
+# `enumerate`/`zip`/`any`/`all` are collection methods rather than builtins, so
 # this cannot be oracled against CPython. Reviewed by hand.
+#
+# The rule the second half of that records: **a builtin takes scalars, a
+# collection method takes a collection.** `enumerate`, `zip`, `any` and `all`
+# each had both spellings and they answered the same thing — until they did
+# not, which is what settled it (see 65_builtin_method_line.oro).
 print([], range(3).to_list(), "abc".to_list())
 print({}, [("a", 1), ("b", 2)].to_dict())
-print(enumerate(["a", "b"]))
-print(enumerate(["a", "b"], 1))
-print(zip([1, 2, 3], [4, 5]))
-print(zip([], [1]))
-print(any([false, true]), any([]), all([true, true]), all([true, false]), all([]))
+print(["a", "b"].enumerate())
+print(["a", "b"].enumerate(1))
+print([1, 2, 3].zip([4, 5]))
+print([].zip([1]))
+print([false, true].any(), [].any(), [true, true].all(), [true, false].all(), [].all())
 print("ff".to_int(16), "0x1f".to_int(16), "777".to_int(8), "1010".to_int(2))
 print("-ff".to_int(16), "+10".to_int(10), "1_0".to_int(10), "z".to_int(36))
-for i, x in enumerate(["p", "q"]):
+for i, x in ["p", "q"].enumerate():
     print(i, x)
-for a, b in zip([1, 2], ["x", "y"]):
+for a, b in [1, 2].zip(["x", "y"]):
     print(a, b)

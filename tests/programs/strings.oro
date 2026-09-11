@@ -11,7 +11,7 @@ print(s.startswith("Hello"), s.endswith("World"))
 print(s.find("World"))
 
 parts = ["a", "b", "c"]
-print("-".join(parts))
+print(parts.join("-"))
 
 name = "Oro"
 version = 8

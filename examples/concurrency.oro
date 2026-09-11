@@ -1,0 +1,88 @@
+# A worker pool: three tasks pulling jobs off one channel and pushing results
+# onto another. This is the part of Oro that Python does not have.
+#
+#     oro examples/concurrency.oro
+#
+# `spawn(f, args...)` starts a green thread and returns a handle immediately.
+# `t.join()` waits for it and gives back what `f` returned — or re-raises what
+# it raised. `chan(n)` is a channel: `send`/`recv`, `close()`, and `for x in ch`
+# which ends when the channel is closed and drained.
+#
+# There is one OS thread and no locks, because there is no parallelism to race:
+# a task runs until it parks, and `time.sleep`, a socket read and a channel
+# operation all park rather than block. `yield_now()` parks a task that has no
+# other reason to. That is why `tally` below is an ordinary dict that four
+# tasks write to, with nothing guarding it.
+import time
+
+_WORKERS = 3
+_JOBS = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta"]
+
+
+# Stands in for the real thing — a fetch, a query, a disk read. It parks, which
+# is the only property the pool cares about.
+def handle(job):
+    time.sleep(0.02)
+    return len(job)
+
+
+def feeder(jobs):
+    for job in _JOBS:
+        jobs.send(job)
+    # Closing is how the workers are told there is no more work. Nothing else
+    # in the program has to say so, and nobody has to count.
+    jobs.close()
+
+
+def worker(name, jobs, results):
+    done = 0
+    for job in jobs:
+        results.send((name, job, handle(job)))
+        done = done + 1
+    return done
+
+
+# The results channel has to close once, after the last worker — so one task
+# owns that, and it is the one that joined them all.
+def closer(workers, results):
+    for w in workers:
+        w.join()
+    results.close()
+
+
+jobs, results = chan(), chan()
+workers = []
+for i in range(_WORKERS):
+    workers.append(spawn(worker, f"w{i}", jobs, results))
+
+spawn(feeder, jobs)
+spawn(closer, workers, results)
+
+# Main is a consumer like any other. The loop ends when `closer` closes the
+# channel, which happens when the last worker has returned.
+tally = {}
+for name, job, size in results:
+    tally[name] = tally.get(name, 0) + 1
+    print(f"{name} finished {job} ({size})")
+
+# `join` is idempotent and still has the value, even though `closer` already
+# joined every one of these. A lambda cannot live inside an f-string field, so
+# the chain gets a name — which reads better here anyway.
+completed = workers.map(w => w.join()).sum()
+print(f"\n{len(_JOBS)} jobs, {completed} completions")
+for name, count in tally.sort_by((n, c) => n):
+    print(f"  {name} took {count}")
+
+# A task that raises does not take the program with it. The exception is held
+# until somebody joins, and then it is raised there, in the joiner.
+def explode():
+    raise ValueError("the third packet was garbage")
+
+
+doomed = spawn(explode)
+time.sleep(0.05)
+try:
+    doomed.join()
+    print("unreachable")
+except ValueError as e:
+    print(f"\njoin re-raised it here: {e}")

@@ -31,15 +31,11 @@ def row(items):
 
 def table(label, f):
     print(f"--- {label}")
-    i = 0
-    while i < 256:
+    for i in range(0, 256, 16):
         cells = []
-        j = 0
-        while j < 16:
+        for j in range(16):
             cells.append(f(bytes([i + j])))
-            j = j + 1
         row(cells)
-        i = i + 16
 
 
 table("quote(b, safe='')", lambda b: quote(b, safe=""))
@@ -103,37 +99,27 @@ def roundtrips(b):
 
 print("--- round trip")
 bad = 0
-i = 0
-while i < 256:
+for i in range(256):
     if not roundtrips(bytes([i])):
         bad = bad + 1
-    i = i + 1
 print("every single octet:", bad)
 
 bad = 0
-i = 0
-while i < 256:
-    j = 0
-    while j < 256:
+for i in range(256):
+    for j in range(256):
         if not roundtrips(bytes([i, j])):
             bad = bad + 1
-        j = j + 1
-    i = i + 1
 print("every pair of octets:", bad)
 
 bad = 0
 seed = 12345
-n = 0
-while n < 2000:
+for n in range(2000):
     length = seed % 40
     parts = []
-    k = 0
-    while k < length:
+    for k in range(length):
         seed = (seed * 1103515245 + 12345) % 2147483648
         parts.append(seed % 256)
-        k = k + 1
     seed = (seed * 1103515245 + 12345) % 2147483648
     if not roundtrips(bytes(parts)):
         bad = bad + 1
-    n = n + 1
 print("2000 pseudo-random strings:", bad)

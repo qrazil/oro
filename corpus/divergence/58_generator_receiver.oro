@@ -3,7 +3,7 @@
 # A native method runs in Rust and can never re-enter the interpreter, so it
 # cannot resume a generator. The VM's answer is to drain one a frame at a time
 # and retry the call, which it already did for a generator handed to a builtin
-# (`sum(g())`) and for the callback-driven half of the protocol (`g().map(f)`).
+# and for the callback-driven half of the protocol (`g().map(f)`).
 # The native half was never wired to it: `g().to_list()` surfaced an internal
 # invariant message — `ForIter target is not an iterator` — and every no-callback
 # method claimed a generator had no such method, though the README lists all
@@ -12,7 +12,9 @@
 # CPython cannot run this file: the methods are Oro's own spelling. Every answer
 # below is the one CPython gives for the equivalent free function — `list(g)`,
 # `sum(g)`, `sorted(g)`, `max(g)` — which is what this baseline was reviewed
-# against.
+# against. Those free functions are cut in Oro now (a builtin takes scalars, a
+# collection method takes a collection), which leaves the methods below as the
+# one spelling rather than one of two.
 #
 # A generator is consumed by this, exactly as it is under CPython, so each line
 # below builds a fresh one.
@@ -41,7 +43,7 @@ print(pairs().to_dict())
 # The no-callback protocol, all sixteen.
 print(nums().sum(), nums().min(), nums().max(), nums().len())
 print(nums().first(), nums().last())
-print(nums().sorted(), nums().reversed())
+print(nums().sorted(), nums().reversed(), nums().sorted(reverse=true))
 print(words().unique())
 print(nums().take(2), nums().drop(3))
 print(nums().chunk(2))

@@ -21,10 +21,8 @@ class Counter:
         self.n = n
 
     def up(self):
-        i = 0
-        while i < self.n:
+        for i in range(self.n):
             yield i
-            i = i + 1
 
 
 c = Counter(3)
@@ -33,9 +31,10 @@ for x in c.up():
     out.append(x)
 print(out)
 
-# It is a generator object, so every generator rule applies to it: it drives a
-# builtin, it is single-use, and it is lazy in a `for`.
-print(sum(c.up()), max(c.up()), sorted(c.up(), reverse=true))
+# It is a generator object, so every generator rule applies to it: it is
+# single-use, and it is lazy in a `for`. That it also drives the eager half of
+# the collection protocol is in corpus/divergence/71_collection_methods.oro,
+# because `g.sum()` is not Python and this file is oracled.
 
 g = c.up()
 first = []
@@ -50,7 +49,7 @@ print(first, rest)
 # `self` is bound in it, and reads the instance as it is when the generator
 # *runs*, not when it was created.
 c.n = 5
-print(sum(c.up()))
+print(collect(c.up()))
 
 # `super()` resolves inside one, which is the part that needs the defining class
 # carried onto the parked frame rather than onto a frame that is running.
@@ -62,7 +61,7 @@ class Tens(Counter):
             yield x * 10
 
 
-print(sum(Tens(4).up()))
+print(collect(Tens(4).up()))
 t = Tens(3)
 seen = []
 for x in t.up():
@@ -104,4 +103,4 @@ class Nothing:
             yield 1
 
 
-print(collect(Nothing().none()), sum(Nothing().none()))
+print(collect(Nothing().none()), collect(Nothing().none()))

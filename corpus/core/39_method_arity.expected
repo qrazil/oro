@@ -17,8 +17,6 @@
 "abc".count() -> TypeError
 "abc".count("a", "b") -> TypeError
 b"abc".count() -> TypeError
-"-".join(["a"], 2) -> TypeError
-"-".join() -> TypeError
 b"abc".upper(1) -> TypeError
 b"abc".lower(1) -> TypeError
 b"abc".strip(b"x", b"y") -> TypeError
@@ -29,7 +27,6 @@ b"abc".replace(b"a", b"b", 1, 2) -> TypeError
 b"abc".startswith(b"a", 0, 1, 2) -> TypeError
 b"abc".endswith(b"a", 0, 1, 2) -> TypeError
 b"a b".split(b"b", 1, 2) -> TypeError
-b"-".join([b"a"], 2) -> TypeError
 b"abc".hex(1) -> TypeError
 {"a": 1}.keys(1) -> TypeError
 {"a": 1}.values(1) -> TypeError

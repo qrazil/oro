@@ -188,31 +188,25 @@ _STREAM_CHUNK = 8192
 # tchar: the characters a method or a header field name may contain.
 _TOKEN_DELIMS = '"(),/:;<=>?@[\\]{}'
 _tchars = []
-_tb = 33
-while _tb < 127:
+for _tb in range(33, 127):
     if f"{_tb:c}" not in _TOKEN_DELIMS:
         _tchars.append(_tb)
-    _tb = _tb + 1
 _TOKEN_OK = _tchars.to_bytes()
 
 # A field value: HTAB, and every octet from 0x20 up except DEL. Bytes above
 # 127 are allowed here and answered for at the strict decode below.
 _vchars = [9]
-_vb = 32
-while _vb < 256:
+for _vb in range(32, 256):
     if _vb != 127:
         _vchars.append(_vb)
-    _vb = _vb + 1
 _FIELD_VALUE_OK = _vchars.to_bytes()
 
 # A request target: visible ASCII or above. Control characters are rejected;
 # bytes above 127 are not, because clients do send raw UTF-8 in a path.
 _gchars = []
-_gb = 33
-while _gb < 256:
+for _gb in range(33, 256):
     if _gb != 127:
         _gchars.append(_gb)
-    _gb = _gb + 1
 _TARGET_OK = _gchars.to_bytes()
 
 # RFC 3986 §2.3's *unreserved* set, and the one rule a percent-encoder has
@@ -238,15 +232,11 @@ _DIGIT_OK = b"0123456789"
 # "is this a hex digit" test, so a malformed escape is one lookup rather than
 # a decode that might itself raise.
 _HEX_VALUE = {}
-_hd = 0
-while _hd < 10:
+for _hd in range(10):
     _HEX_VALUE[48 + _hd] = _hd
-    _hd = _hd + 1
-_hd = 0
-while _hd < 6:
+for _hd in range(6):
     _HEX_VALUE[65 + _hd] = 10 + _hd
     _HEX_VALUE[97 + _hd] = 10 + _hd
-    _hd = _hd + 1
 
 _SPACE = 32
 _TAB = 9
@@ -1554,7 +1544,7 @@ class Router:
                 out.append(m)
         if "GET" in out and "HEAD" not in out:
             out.append("HEAD")
-        return sorted(out)
+        return out.sorted()
 
 
 # Match a route's segments against a path's. `:name` binds one segment and
@@ -1563,16 +1553,16 @@ def _match(pat, segs):
     if len(pat) != len(segs):
         return null
     params = {}
-    i = 0
-    while i < len(pat):
-        p = pat[i]
+    # Two sequences in lockstep is what `zip` is for: the index existed only to
+    # reach into both, and `for p, s in pat.zip(segs)` says what the loop means
+    # in the line that opens it.
+    for p, s in pat.zip(segs):
         if len(p) > 0 and p[0] == ":":
-            if len(segs[i]) == 0:
+            if len(s) == 0:
                 return null
-            params[p[1:]] = segs[i]
-        elif p != segs[i]:
+            params[p[1:]] = s
+        elif p != s:
             return null
-        i = i + 1
     return params
 
 
@@ -1770,7 +1760,7 @@ def encode_query(params):
                 out.append(key + "=" + quote_plus(_query_bytes(item, "value")).to_str())
         else:
             out.append(key + "=" + quote_plus(_query_bytes(v, "value")).to_str())
-    return "&".join(out)
+    return out.join("&")
 
 
 # `out`, as the type `s` was: bytes stay bytes, and anything else — which is

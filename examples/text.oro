@@ -1,0 +1,81 @@
+# The string surface, which is where Oro's names diverge from Python's most.
+# The semantics are Python's; the spellings are one each.
+#
+#     oro examples/text.oro
+#
+#     s.lstrip()          -> s.strip(side="left")
+#     s.rstrip()          -> s.strip(side="right")
+#     s.rfind(sub)        -> s.find(sub, reverse=true)
+#     s.rsplit(sep, n)    -> s.split(sep, n, side="right")
+#     s.removeprefix(p)   -> s.rm_prefix(p)
+#     s.removesuffix(p)   -> s.rm_suffix(p)
+#     s.isdigit()         -> s.is_digit()   (also is_alpha/is_alnum/is_space)
+#
+# Everything a left/right pair used to do is one name and a keyword, so there
+# is never a moment of wondering whether this one is `rsplit` or `splitr`.
+
+# --- strip: a set of characters, from either end or both --------------------
+line = "\t  WARN  auth: token expired  \n"
+print(repr(line.strip()))
+print(repr(line.strip(side="left")))
+print(repr(line.strip(side="right")))
+# With an argument it is a *set* of characters, not a suffix. This is the
+# classic Python footgun, and it is why rm_prefix/rm_suffix exist below.
+print(repr("ping.png".strip(".png", side="right")))
+print(repr("ping.png".rm_suffix(".png")))
+print(repr("v1.2.3".rm_prefix("v")), repr("v1.2.3".rm_prefix("x")))
+
+# --- split: on a separator, on whitespace, or from the right ----------------
+level, rest = line.strip().split(null, 1)
+print(level, repr(rest))
+print("a.b.c".split("."))
+print("a.b.c".split(".", 1))
+print("a.b.c".split(".", 1, side="right"))
+# `split(null)` collapses runs of whitespace and drops the empty ends, which
+# `split(" ")` deliberately does not.
+print("  two   spaced  words ".split(null), "a  b".split(" "))
+
+# --- find: first, last, and "not there" is -1 -------------------------------
+path = "/var/log/oro/today.log"
+print(path.find("/"), path.find("/", reverse=true), path.find("zzz"))
+cut = path.find("/", reverse=true)
+print(repr(path[:cut]), repr(path[cut + 1:]))
+# ... which is the same answer `side="right"` gives directly, in fields.
+print(path.split("/", 1, side="right"))
+
+# --- count ------------------------------------------------------------------
+print(path.count("/"), path.count("log"), path.count("zzz"), path.count(""))
+
+# --- the four predicates ----------------------------------------------------
+# Each asks about the whole string, and each is false on the empty string.
+for word in ["2026", "oro", "oro9", "  ", "", "café"]:
+    print(f"{word!r:>8}  digit={word.is_digit()} alpha={word.is_alpha()} alnum={word.is_alnum()} space={word.is_space()}")
+
+# --- a real line, pulled apart ----------------------------------------------
+# `date=... level=... msg="..."` is the shape half the world's logs are in.
+RAW = 'ts=2026-09-10T11:04:22Z level=warn code=429 msg="rate limited"'
+
+
+# The `maxsplit` argument earns its keep here: the last field's value has a
+# space in it, so the split has to stop counting after three.
+def fields(raw, n):
+    out = {}
+    for pair in raw.split(" ", n):
+        key, value = pair.split("=", 1)
+        out[key] = value.strip('"')
+    return out
+
+
+record = fields(RAW, 3)
+for key, value in record:
+    print(f"{key:>6} = {value}")
+
+# Conversions are methods, because the type names are keywords and are not
+# callable: there is no `int(s)`, only `s.to_int()`.
+code = record["code"]
+limit = code.to_int()
+print(code.is_digit(), limit + 1, limit.to_str().count("9"))
+
+# One last join, the other way round from Python's: the separator is the
+# argument, not the receiver.
+print(record.keys().sorted().join(", "))

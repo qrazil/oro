@@ -2,10 +2,8 @@
 # recursion, so pipelines of generators nest freely.
 
 def naturals(n):
-    i = 0
-    while i < n:
+    for i in range(n):
         yield i
-        i = i + 1
 
 def squares(source):
     for x in source:
@@ -49,10 +47,8 @@ print(collected)
 
 # Summing a generator by hand.
 def gen_range(a, b):
-    i = a
-    while i < b:
+    for i in range(a, b):
         yield i
-        i = i + 1
 
 total = 0
 for v in gen_range(1, 101):
