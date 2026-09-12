@@ -53,5 +53,5 @@ print(d.keys().sort_by(k => k), d.values().sum(), d.keys().join("-"))
 # The half that used to be `.items()` is the dict itself, and `to_list()` is the
 # list form of it — one list, with the same protocol on it as the other two.
 print(d.to_list().map(pair => pair[0]))
-for key in d.keys():
+for _, key in d.keys():
     print("key", key)

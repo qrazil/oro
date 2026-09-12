@@ -108,7 +108,7 @@ print(n in [n], [n] == [n], (n,) == (n,), {"k": n} == {"k": n})
 # references to a single object settles every element without asking anything,
 # and a Rust frame per element would be a stack overflow rather than an answer.
 wide = []
-for i in range(20000):
+for _, i in range(20000):
     wide.append(n)
 other = wide[0:20000]
 print(len(wide), wide == other, n in wide)
@@ -150,7 +150,7 @@ print(ne == 1)
 print([ne] != [1], [ne] == [1])
 
 print("--- the operator the program wrote is the one the TypeError names")
-for op in ["lt", "gt", "le", "ge"]:
+for _, op in ["lt", "gt", "le", "ge"]:
     try:
         if op == "lt":
             print(1 < {})
@@ -254,7 +254,7 @@ class Plain:
         return "Plain()"
 
 
-for thunk in ["sort_by", "min", "max", "lt", "nested"]:
+for _, thunk in ["sort_by", "min", "max", "lt", "nested"]:
     try:
         if thunk == "sort_by":
             print([Plain(), Plain()].sort_by(p => p))

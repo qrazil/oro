@@ -29,7 +29,7 @@ def die(message, code):
 # Flags first, then paths — and an unknown flag is an error, not a filename.
 def parse_args(argv):
     flags, paths = [], []
-    for arg in argv.drop(1):
+    for _, arg in argv.drop(1):
         if arg.startswith("--"):
             if arg != "--lines":
                 die(f"unknown option {arg}\n{_USAGE}", 2)
@@ -54,10 +54,10 @@ if len(paths) == 0:
 # are bound out here, before the loop that adds to them.
 totals = [0, 0, 0]
 failed = 0
-for path in paths:
+for _, path in paths:
     try:
         counts = measure(path)
-        for i in range(3):
+        for _, i in range(3):
             totals[i] = totals[i] + counts[i]
         if len(flags) > 0:
             print(f"{counts[0]:>8}  {path}")

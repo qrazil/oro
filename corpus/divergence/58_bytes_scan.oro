@@ -35,7 +35,7 @@ print(b"\x00\x00".scan(b"\x00"))
 
 TCHAR_DELIMS = '"(),/:;<=>?@[\\]{}'
 _t = []
-for _i in range(127, start=33):
+for _, _i in range(127, start=33):
     if f"{_i:c}" not in TCHAR_DELIMS:
         _t.append(_i)
 TCHAR = _t.to_bytes()
@@ -58,13 +58,13 @@ print(b"Content Type".scan(TCHAR))
 # §5 asked for, out of the same primitive.
 
 _all = []
-for _b in range(256):
+for _, _b in range(256):
     _all.append(_b)
 
 
 def without(cut):
     out = []
-    for x in _all:
+    for _, x in _all:
         if x not in cut:
             out.append(x)
     return out.to_bytes()

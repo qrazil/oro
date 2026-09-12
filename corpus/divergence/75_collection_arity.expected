@@ -16,14 +16,11 @@ ValueError: take() needs a count >= 0
 TypeError: take() argument must be int, not 'bool'
 TypeError: take() takes 1 argument(s) but 2 were given
 [10, 20]
---- sum and enumerate take their start by name
+--- sum takes its start by name
 sum() takes no positional arguments — the start is named: `xs.sum(start=n)`
 sum() start must not be null — leave `start=` out for the default of 0
 sum() got an unexpected keyword argument 'base'
-enumerate() takes no positional arguments — the start is named: `xs.enumerate(start=n)`
-enumerate() start must not be null — leave `start=` out for the default of 0
-enumerate() start must be an int, not 'str'
-13 [(1, 7), (2, 8)]
+13
 --- sort_by takes the function, and takes `reverse=` by name
 sort_by() takes exactly 1 argument
 sort_by() needs a function, not 'int'

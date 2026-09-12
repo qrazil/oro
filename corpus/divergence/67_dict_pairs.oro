@@ -27,9 +27,11 @@ d = {"b": 2, "a": 1, "c": 3}
 for k, v in d:
     print(k, v)
 
-# Bound to a single name, the element is the pair itself. This is the line that
-# changed meaning in existing code, so it is pinned deliberately.
-for pair in d:
+# There is no single-binding `for` any more, so the whole pair has no one-name
+# spelling on the way in: `for k, v in d` is the only form, and code that wants
+# the pair as one value rebuilds it. (This block used to read `for pair in d`.)
+for k, v in d:
+    pair = (k, v)
     print(pair, pair[0], pair[1])
 
 # --- order: pairs come out in the order the keys did ------------------------
@@ -53,7 +55,7 @@ print("a" in d.keys(), ("a", 1) in d.to_list())
 # `.keys()` and `.values()` are how you ask for one half of an entry. They are
 # not redundant with the iterator: neither of them is the pair.
 print(d.keys(), d.values())
-for k in d.keys():
+for _, k in d.keys():
     print("key", k)
 
 # --- `.items()` is cut ------------------------------------------------------
@@ -65,14 +67,13 @@ except AttributeError as e:
     print(e)
 
 # --- everything that walks an iterable sees the same element ----------------
-# These were the `sorted`/`enumerate`/`min`/`max` *builtins* when this file was
-# written, and each is now the collection method of the same name: a builtin
-# takes scalars and a collection method takes a collection. The answers are
-# unchanged — the six builtins read the iterator, which is what made them
-# follow the pair shape in the first place.
+# These were the `sorted`/`min`/`max` *builtins* when this file was written, and
+# each is now the collection method of the same name: a builtin takes scalars
+# and a collection method takes a collection. The answers are unchanged — those
+# builtins read the iterator, which is what made them follow the pair shape in
+# the first place.
 print(d.to_list())
 print(d.sort_by(p => p))
-print(d.enumerate())
 print(d.min(), d.max())
 print(d.map((k, v) => (k, v * 10)))
 print(d.filter((k, v) => v > 1))

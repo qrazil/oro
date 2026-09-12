@@ -1,18 +1,18 @@
 def counter(n):
-    for i in range(n):
+    for _, i in range(n):
         yield i
 
 def evens(n):
-    for x in counter(n):
+    for _, x in counter(n):
         if x % 2 == 0:
             yield x
 
 total = 0
-for v in counter(5):
+for _, v in counter(5):
     total = total + v
 print(total)
 
 got = []
-for v in evens(10):
+for _, v in evens(10):
     got.append(v)
 print(got)

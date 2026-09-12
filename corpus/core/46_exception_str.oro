@@ -68,7 +68,7 @@ except KeyError as e:
 
 # Nothing else in the hierarchy reprs anything: every one of these is the plain
 # argument, quotes and all if the argument carries them.
-for exc in [
+for _, exc in [
     ValueError("v"),
     TypeError("t"),
     IndexError("i"),

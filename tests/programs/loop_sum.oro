@@ -1,7 +1,7 @@
 # Summing a list with a for loop, plus `xs.sum()` as a cross-check.
 nums = [3, 1, 4, 1, 5, 9, 2, 6]
 total = 0
-for n in nums:
+for _, n in nums:
     total = total + n
 print(total)
 print(nums.sum())

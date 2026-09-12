@@ -34,8 +34,8 @@ def words(line):
 
 def count_words(lines):
     counts = {}
-    for line in lines:
-        for word in words(line):
+    for _, line in lines:
+        for _, word in words(line):
             counts[word] = counts.get(word, default=0) + 1
     return counts
 

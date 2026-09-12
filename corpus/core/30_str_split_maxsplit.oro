@@ -17,21 +17,21 @@ print("one".split(sep=",", maxsplit=5))
 # The table. Same inputs as the right arm, so the two files read as one matrix.
 SPLITS = [("a.b.c", "."), ("a..b", "."), (".a.", "."), ("", "."), ("aXXbXXc", "XX")]
 print("--- split(sep=, maxsplit=)")
-for s, sep in SPLITS:
-    for m in [-1, 0, 1, 2, 5]:
+for _, (s, sep) in SPLITS:
+    for _, m in [-1, 0, 1, 2, 5]:
         print(repr(s), repr(sep), m, s.split(sep=sep, maxsplit=m))
 
 print("--- split(maxsplit=)")
-for s in [" a  b  c ", "  a b  ", "   ", "", "a"]:
-    for m in [-1, 0, 1, 2, 5]:
+for _, s in [" a  b  c ", "  a b  ", "   ", "", "a"]:
+    for _, m in [-1, 0, 1, 2, 5]:
         print(repr(s), m, s.split(maxsplit=m))
 
 print("--- bytes.split(sep=, maxsplit=)")
-for m in [-1, 0, 1, 2, 5]:
+for _, m in [-1, 0, 1, 2, 5]:
     print(m, b"a.b.c".split(sep=b".", maxsplit=m), b"a..b".split(sep=b".", maxsplit=m))
 
 print("--- bytes.split(maxsplit=)")
-for m in [-1, 0, 1, 2, 5]:
+for _, m in [-1, 0, 1, 2, 5]:
     print(m, b" a  b  c ".split(maxsplit=m), b"  a b  ".split(maxsplit=m))
 
 # What `zfill` used to spell. `{:05d}` pads a number, `{:0>5}` pads a string,

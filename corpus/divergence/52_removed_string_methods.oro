@@ -168,7 +168,7 @@ print("---")
 
 # `side` is validated by name. A typo is a ValueError that names the three
 # values, not a strip that quietly did nothing.
-for side in ["both", "left", "right", "middle", "LEFT", ""]:
+for _, side in ["both", "left", "right", "middle", "LEFT", ""]:
     try:
         print(repr(side), repr("  hi  ".strip(side=side)))
     except ValueError as e:
@@ -185,7 +185,7 @@ print("---")
 # "both" end, so the error names two. `side` with no `maxsplit` is a no-op and
 # not an error — with the splits unlimited both ends give the same list, and
 # "had no effect" is a property of the data, not of the call.
-for side in ["left", "right", "both", "middle", ""]:
+for _, side in ["left", "right", "both", "middle", ""]:
     try:
         print(repr(side), "a.b.c".split(sep=".", maxsplit=1, side=side))
     except ValueError as e:

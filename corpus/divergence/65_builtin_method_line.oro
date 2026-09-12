@@ -104,17 +104,13 @@ print([1, 2, 3].zip([4, 5], [6, 7, 8, 9]))
 print([].zip([1], [2]))
 print((1, 2).zip((3, 4), (5, 6)))
 print(range(3).zip(range(2), range(9)))
-for a, b, c in [1, 2].zip([3, 4], [5, 6]):
+for _, (a, b, c) in [1, 2].zip([3, 4], [5, 6]):
     print(a, b, c)
 
-# `enumerate` takes a start and nothing else, and takes it by name: the number
-# in `xs.enumerate(1)` said nothing about what it was, and the call that read
-# neither the 9 nor the reader's mind is refused twice over now.
-print([7, 8].enumerate(), [7, 8].enumerate(start=1))
-try:
-    print([7, 8].enumerate(1, 9))
-except TypeError as e:
-    print(e)
+# `enumerate` is gone as both a builtin and a method: every `for` yields
+# (index, value), so `for i, x in xs` is the whole of it.
+for i, x in [7, 8]:
+    print(i, x)
 
 # `sum` carries the start the builtin's second argument was, by name too.
 print([1, 2].sum(), [1, 2].sum(start=10), [].sum())
@@ -144,7 +140,6 @@ print("---")
 # and now they are the only spelling.
 d = {"b": 1, "a": 2}
 print(d.min(), d.max())
-print(d.enumerate())
 print(d.zip([10, 20]))
 print(d.any(p => p), d.all(p => p), d.len())
 print(d.sort_by(p => p), {}.sort_by(p => p), type(d.sort_by(p => p)))
@@ -183,4 +178,4 @@ try:
 except AttributeError as e:
     print(e)
 
-print("ba".to_list().sort_by(x => x), b"ba".to_list().min(), "ab".to_list().enumerate())
+print("ba".to_list().sort_by(x => x), b"ba".to_list().min())

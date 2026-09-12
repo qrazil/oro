@@ -2,7 +2,7 @@
 # language's, so it cannot be forgotten, skipped by a `continue`, or stepped in
 # the wrong place.
 total = 0
-for i in range(10):
+for _, i in range(10):
     if i % 3 == 0:
         total = total + i
     elif i % 5 == 0:
@@ -21,19 +21,19 @@ while n < 1000:
 print(n, steps)
 
 n = 0
-for x in range(5):
+for _, x in range(5):
     n = n + x
 print(n)
 
 found = -1
-for x in range(20):
+for _, x in range(20):
     if x * x > 50:
         found = x
         break
 print(found)
 
 c = 0
-for x in range(10):
+for _, x in range(10):
     if x % 2 == 0:
         continue
     c = c + 1

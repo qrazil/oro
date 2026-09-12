@@ -181,7 +181,7 @@ else:
 fn for_loop_over_range_and_break_continue() {
     let src = "\
 r = 0
-for i in range(10):
+for _, i in range(10):
     if i == 3:
         continue
     if i == 6:
@@ -317,7 +317,7 @@ fn runtime_type_error_is_clean_with_position() {
 #[test]
 fn mutating_list_during_iteration_is_a_clean_error() {
     // Must surface as an Oro runtime error, never a Rust panic (RefCell borrow).
-    let err = run_err("xs = [1, 2, 3]\nfor v in xs:\n    xs.append(v)\n");
+    let err = run_err("xs = [1, 2, 3]\nfor _, v in xs:\n    xs.append(v)\n");
     assert!(err.message.contains("changed size"), "got: {}", err.message);
 }
 
@@ -639,7 +639,7 @@ fn unknown_module_raises_module_not_found() {
 #[test]
 fn generator_basic_iteration() {
     let src = "def up(n):\n    i = 0\n    while i < n:\n        yield i\n        i = i + 1\n\
-               total = 0\nfor v in up(5):\n    total = total + v\n";
+               total = 0\nfor _, v in up(5):\n    total = total + v\n";
     // total is a module local; sum 0..4 = 10
     let locals = run_locals(src);
     assert!(locals.iter().any(|v| matches!(v, Value::Int(10))), "expected 10 in {locals:?}");
@@ -648,8 +648,8 @@ fn generator_basic_iteration() {
 #[test]
 fn generator_consumes_generator() {
     let src = "def up(n):\n    i = 0\n    while i < n:\n        yield i\n        i = i + 1\n\
-               def evens(n):\n    for x in up(n):\n        if x % 2 == 0:\n            yield x\n\
-               got = []\nfor v in evens(10):\n    got.append(v)\n";
+               def evens(n):\n    for _, x in up(n):\n        if x % 2 == 0:\n            yield x\n\
+               got = []\nfor _, v in evens(10):\n    got.append(v)\n";
     let locals = run_locals(src);
     let list = locals.iter().find_map(|v| match v {
         Value::List(l) => Some(l.borrow().iter().map(|x| match x { Value::Int(i)=>*i, _=>-1 }).collect::<Vec<_>>()),
@@ -680,7 +680,7 @@ fn generator_is_a_generator_value() {
 
 #[test]
 fn break_runs_enclosing_finally() {
-    let src = "log = []\ndef f():\n    global log\n    for i in range(3):\n        try:\n            if i == 1:\n                break\n            log.append(i)\n        finally:\n            log.append(10 + i)\nf()\nout = log\n";
+    let src = "log = []\ndef f():\n    global log\n    for _, i in range(3):\n        try:\n            if i == 1:\n                break\n            log.append(i)\n        finally:\n            log.append(10 + i)\nf()\nout = log\n";
     let v = eval_last(src);
     let got: Vec<i64> = match v {
         Value::List(l) => l.borrow().iter().map(|x| match x { Value::Int(i)=>*i, _=>-1 }).collect(),
@@ -692,7 +692,7 @@ fn break_runs_enclosing_finally() {
 
 #[test]
 fn continue_runs_enclosing_finally() {
-    let src = "log = []\ndef f():\n    global log\n    for i in range(3):\n        try:\n            if i == 1:\n                continue\n            log.append(i)\n        finally:\n            log.append(10 + i)\nf()\nout = log\n";
+    let src = "log = []\ndef f():\n    global log\n    for _, i in range(3):\n        try:\n            if i == 1:\n                continue\n            log.append(i)\n        finally:\n            log.append(10 + i)\nf()\nout = log\n";
     let got: Vec<i64> = match eval_last(src) {
         Value::List(l) => l.borrow().iter().map(|x| match x { Value::Int(i)=>*i, _=>-1 }).collect(),
         _ => panic!("expected list"),
@@ -733,7 +733,7 @@ fn re_search_and_groups() {
 
 #[test]
 fn re_finditer_positions() {
-    let src = "import re\nspans = []\nfor m in re.finditer(r\"\\w+\", \"aa bb\"):\n    spans.append(m.start(0))\n    spans.append(m.end(0))\n";
+    let src = "import re\nspans = []\nfor _, m in re.finditer(r\"\\w+\", \"aa bb\"):\n    spans.append(m.start(0))\n    spans.append(m.end(0))\n";
     let got: Vec<i64> = run_locals(src)
         .iter()
         .find_map(|v| match v {
@@ -903,10 +903,10 @@ out = f"{sorted_t} {t.take(2)} {sorted_d} {flat}"
 
 // --- A callback destructures its element the way `for` does -------------------
 
-/// The protocol's own pair-makers — `enumerate`, `zip`, a dict's `to_list()`,
-/// `group_by`, a generator of tuples — feed its callbacks. Every chain here has
-/// two or three steps, so the destructuring happens in fused stages as well as
-/// in the terminal.
+/// The protocol's own pair-makers — `range(len(xs)).zip(xs)` for an index,
+/// `zip`, a dict's `to_list()`, `group_by`, a generator of tuples — feed its
+/// callbacks. Every chain here has two or three steps, so the destructuring
+/// happens in fused stages as well as in the terminal.
 #[test]
 fn multi_parameter_callbacks_destructure_in_fused_chains() {
     let src = r#"
@@ -918,7 +918,7 @@ xs = ["a", "b", "c"]
 ns = [1, 2, 3]
 d = {"x": 1, "y": 2, "z": 3}
 orders = [{"r": "eu", "t": 3}, {"r": "us", "t": 5}, {"r": "eu", "t": 2}]
-a = xs.enumerate().map((i, s) => s * (i + 1)).filter(s => s != "bb")
+a = range(len(xs)).zip(xs).map((i, s) => s * (i + 1)).filter(s => s != "bb")
 b = xs.zip(ns).filter((s, n) => n > 1).map((s, n) => s * n)
 c = d.to_list().filter((k, v) => v != 2).map((k, v) => (v, k)).filter((v, k) => v < 3)
 g = orders.group_by(o => o["r"]).to_list().map((r, rows) => (r, rows.len())).filter((r, n) => n > 1)
@@ -929,11 +929,11 @@ out = f"{a} {b} {c} {g} {h}"
 }
 
 /// Every step that takes a callback, as the terminal of a fused chain over
-/// `enumerate` output — `reduce` counting its parameters after the accumulator.
+/// `(index, value)` pairs — `reduce` counting its parameters after the accumulator.
 #[test]
 fn every_callback_terminal_destructures() {
     let src = r#"
-e = [5, 3, 8].enumerate()
+e = range(3).zip([5, 3, 8])
 a = e.filter((i, x) => x > 3).any((i, x) => i == 2)
 b = e.map((i, x) => (x, i)).all((x, i) => x > i)
 c = e.filter((i, x) => i > 0).count((i, x) => x > 4)
@@ -1043,18 +1043,24 @@ out = f"{a} {b} {g} {h} {i} {j} {k}"
 
 /// A length mismatch is `for`'s `ValueError`, word for word — not the
 /// "missing required argument" of a callback bound to the wrong number of
-/// values. An element `for` cannot unpack at all fails the same way too.
+/// values. A callback destructures the *element*, which a `for` reaches by
+/// nesting the pattern in its value slot (`for _, (a, b, c) in xs`), so the two
+/// fail the same way. An element `for` cannot unpack at all fails the same way
+/// too.
 #[test]
 fn a_destructuring_mismatch_is_fors_error() {
     let cases = [
-        ("x = [(1, 2)].map((a, b, c) => a)\n", "for a, b, c in [(1, 2)]:\n    pass\n"),
-        ("x = [(1, 2, 3)].map((a, b) => a)\n", "for a, b in [(1, 2, 3)]:\n    pass\n"),
+        ("x = [(1, 2)].map((a, b, c) => a)\n", "for _, (a, b, c) in [(1, 2)]:\n    pass\n"),
+        ("x = [(1, 2, 3)].map((a, b) => a)\n", "for _, (a, b) in [(1, 2, 3)]:\n    pass\n"),
         (
             "x = [(1, 2)].filter(p => true).map((a, b, c) => a).first()\n",
-            "for a, b, c in [(1, 2)]:\n    pass\n",
+            "for _, (a, b, c) in [(1, 2)]:\n    pass\n",
         ),
-        ("x = [1].map((a, b) => a)\n", "for a, b in [1]:\n    pass\n"),
-        ("x = {1: 2}.reduce(0, (acc, a, b, c) => acc)\n", "for a, b, c in {1: 2}:\n    pass\n"),
+        ("x = [1].map((a, b) => a)\n", "for _, (a, b) in [1]:\n    pass\n"),
+        (
+            "x = {1: 2}.reduce(0, (acc, a, b, c) => acc)\n",
+            "for _, (a, b, c) in {1: 2}.to_list():\n    pass\n",
+        ),
     ];
     for (chain, stmt) in cases {
         let got = run_err(chain);
@@ -1122,7 +1128,6 @@ fn the_six_duplicate_builtins_are_cut_naming_their_methods() {
         ("sorted", "r = sorted([2, 1])\n", "`sorted` is not defined in Oro"),
         ("any", "r = any([true])\n", "`any` is not defined in Oro"),
         ("all", "r = all([true])\n", "`all` is not defined in Oro"),
-        ("enumerate", "r = enumerate([1])\n", "`enumerate` is not defined in Oro"),
         ("zip", "r = zip([1], [2])\n", "`zip` is not defined in Oro"),
     ] {
         let e = run_err(call);
@@ -1130,6 +1135,11 @@ fn the_six_duplicate_builtins_are_cut_naming_their_methods() {
         // The replacement is named, which is the whole convention.
         assert!(e.message.contains("collection method"), "{name}: got {}", e.message);
     }
+    // `enumerate` is not "a builtin that became a method" — it is gone entirely,
+    // because every `for` yields (index, value). Its message names that form.
+    let e = run_err("r = enumerate([1])\n");
+    assert!(e.message.contains("`enumerate` is not in Oro"), "got {}", e.message);
+    assert!(e.message.contains("for i, x in xs"), "got {}", e.message);
 }
 
 /// `min(a, b)` is the half that has no chain spelling, so it stays; `min(xs)`
@@ -1306,24 +1316,17 @@ fn take_drop_and_chunk_require_an_int_count() {
     assert_eq!(eval("r = [1, 2, 3].map(x => x * 10).take(2)\n").repr(), "[10, 20]");
 }
 
-/// `sum` and `enumerate` take their start by name. The number in
-/// `xs.enumerate(1)` said nothing about what it was, and `start=null` is not a
-/// second spelling of leaving it out.
+/// `sum` takes its start by name. The number in `xs.sum(10)` said nothing about
+/// what it was, and `start=null` is not a second spelling of leaving it out.
+/// (`enumerate` is gone entirely — every `for` yields the index.)
 #[test]
-fn sum_and_enumerate_take_their_start_by_name() {
+fn sum_takes_its_start_by_name() {
     assert_eq!(eval("r = [1, 2].sum(start=10)\n").repr(), "13");
-    assert_eq!(eval("r = [7, 8].enumerate(start=1)\n").repr(), "[(1, 7), (2, 8)]");
-    for call in ["[1, 2].sum(10)", "[7, 8].enumerate(1)"] {
-        let e = run_err(&format!("r = {call}\n"));
-        assert!(e.message.contains("takes no positional arguments"), "got: {}", e.message);
-        assert!(e.message.contains("start="), "got: {}", e.message);
-    }
-    for call in ["[1, 2].sum(start=null)", "[7, 8].enumerate(start=null)"] {
-        let e = run_err(&format!("r = {call}\n"));
-        assert!(e.message.contains("must not be null"), "got: {}", e.message);
-    }
-    let e = run_err("r = [7, 8].enumerate(start=\"x\")\n");
-    assert!(e.message.contains("start must be an int"), "got: {}", e.message);
+    let e = run_err("r = [1, 2].sum(10)\n");
+    assert!(e.message.contains("takes no positional arguments"), "got: {}", e.message);
+    assert!(e.message.contains("start="), "got: {}", e.message);
+    let e = run_err("r = [1, 2].sum(start=null)\n");
+    assert!(e.message.contains("must not be null"), "got: {}", e.message);
     let e = run_err("r = [1, 2].sum(base=10)\n");
     assert!(e.message.contains("unexpected keyword argument 'base'"), "got: {}", e.message);
 }
@@ -1494,7 +1497,7 @@ fn bytes_sequence_protocol() {
     assert_eq!(eval("r = b\"ab\" * 3\n").repr(), "b'ababab'");
     assert_eq!(eval("r = b\"ab\" * -1\n").repr(), "b''");
     // Iteration yields ints, so a sum over bytes is a sum of octets.
-    assert_eq!(int(&eval("r = 0\nfor x in b\"abc\":\n    r = r + x\n")), 294);
+    assert_eq!(int(&eval("r = 0\nfor _, x in b\"abc\":\n    r = r + x\n")), 294);
 }
 
 #[test]
@@ -2142,7 +2145,7 @@ fn two_tasks_interleave_deterministically() {
 ch = chan()
 log = []
 def echo():
-    for x in ch:
+    for _, x in ch:
         log.append(\"task \" + x.to_str())
 t = spawn(echo)
 i = 0
@@ -2173,11 +2176,11 @@ fn a_channel_round_trip() {
 req = chan()
 rep = chan()
 def square():
-    for n in req:
+    for _, n in req:
         rep.send(n * n)
 s = spawn(square)
 out = []
-for n in [2, 3, 4]:
+for _, n in [2, 3, 4]:
     req.send(n)
     out.append(rep.recv())
 req.close()
@@ -2198,7 +2201,7 @@ fn a_buffered_channel_blocks_only_when_full() {
 ch = chan(cap=2)
 log = []
 def fill():
-    for i in [1, 2, 3]:
+    for _, i in [1, 2, 3]:
         ch.send(i)
         log.append(\"sent \" + i.to_str())
 def nothing():
@@ -2234,7 +2237,7 @@ def boom():
     raise KeyError(\"k\")
 t = spawn(boom)
 out = []
-for _ in [1, 2]:
+for _, _ in [1, 2]:
     try:
         t.join()
         out.append(\"no raise\")
@@ -2260,7 +2263,7 @@ def ok(n):
     return n * 2
 hs = [spawn(crash), spawn(ok, 5), spawn(crash), spawn(ok, 7)]
 out = []
-for h in hs:
+for _, h in hs:
     try:
         out.append(h.join())
     except ValueError:
@@ -2314,7 +2317,7 @@ def slow():
         n = n + 1
 g = slow()
 def drive():
-    for _ in g:
+    for _, _ in g:
         pass
 a = spawn(drive)
 b = spawn(drive)
@@ -2351,7 +2354,7 @@ ch = chan(cap=1)
 def consume():
     g = ch.recv()
     out = []
-    for x in g:
+    for _, x in g:
         out.append(x)
     return out
 c = spawn(consume)
@@ -2475,7 +2478,7 @@ fn yield_now_hands_over_and_never_deadlocks() {
         "\
 out = []
 def w(log, name):
-    for i in range(2):
+    for _, i in range(2):
         log.append(name + i.to_str())
         yield_now()
 a = spawn(w, out, \"a\")
@@ -2494,10 +2497,10 @@ b.join()
         "\
 out = []
 def g():
-    for i in range(2):
+    for _, i in range(2):
         yield_now()
         yield i
-for x in g():
+for _, x in g():
     out.append(x)
 ",
         "out",
@@ -2535,7 +2538,7 @@ fn the_concurrency_diagnostics_are_catchable_by_class() {
 out = []
 def f():
     return 0
-for thunk in [() => chan(cap=-1), () => chan(cap=\"x\"), () => spawn(len, []), () => chan().send()]:
+for _, thunk in [() => chan(cap=-1), () => chan(cap=\"x\"), () => spawn(len, []), () => chan().send()]:
     try:
         thunk()
         out.append(\"no raise\")

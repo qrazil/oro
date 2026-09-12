@@ -19,7 +19,7 @@ def other(x):
 
 
 def counting():
-    for i in range(3):
+    for _, i in range(3):
         yield i
 
 
@@ -81,7 +81,7 @@ registry[json] = "json"
 registry[len] = "len"
 registry[c.m] = "c.m"
 registry[range(3)] = "range(3)"
-for k in [f, other, gen, C, c, json, len, c.m, range(3)]:
+for _, k in [f, other, gen, C, c, json, len, c.m, range(3)]:
     print(registry[k])
 print(len(registry))
 
@@ -98,7 +98,7 @@ r[range(2, start=2, step=7)] = "b"
 print(len(r), r[range(0)])
 
 print("--- what stays unhashable")
-for v in [[1, 2], {"a": 1}]:
+for _, v in [[1, 2], {"a": 1}]:
     try:
         d = {}
         d[v] = 1

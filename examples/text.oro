@@ -48,7 +48,7 @@ print(path.count("/"), path.count("log"), path.count("zzz"), path.count(""))
 
 # --- the four predicates ----------------------------------------------------
 # Each asks about the whole string, and each is false on the empty string.
-for word in ["2026", "oro", "oro9", "  ", "", "café"]:
+for _, word in ["2026", "oro", "oro9", "  ", "", "café"]:
     print(f"{word!r:>8}  digit={word.is_digit()} alpha={word.is_alpha()} alnum={word.is_alnum()} space={word.is_space()}")
 
 # --- a real line, pulled apart ----------------------------------------------
@@ -60,7 +60,7 @@ RAW = 'ts=2026-09-10T11:04:22Z level=warn code=429 msg="rate limited"'
 # space in it, so the split has to stop counting after three.
 def fields(raw, n):
     out = {}
-    for pair in raw.split(sep=" ", maxsplit=n):
+    for _, pair in raw.split(sep=" ", maxsplit=n):
         key, value = pair.split(sep="=", maxsplit=1)
         out[key] = value.strip(chars='"')
     return out

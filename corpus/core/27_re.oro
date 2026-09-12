@@ -29,6 +29,6 @@ print(p.findall("Hello World foo Bar"))
 # finditer exposes positions — the two-pass primitive. Doubled-word detection:
 # match adjacent word pairs, then compare the two groups in code.
 text = "the the quick brown brown fox"
-for mm in re.finditer(r"(\w+)\s+(\w+)", text):
+for _, mm in re.finditer(r"(\w+)\s+(\w+)", text):
     if mm.group(1) == mm.group(2):
         print("doubled:", mm.group(1), "at", mm.start(0))

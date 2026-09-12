@@ -187,7 +187,7 @@ _STREAM_CHUNK = 8192
 # tchar: the characters a method or a header field name may contain.
 _TOKEN_DELIMS = '"(),/:;<=>?@[\\]{}'
 _tchars = []
-for _tb in range(127, start=33):
+for _, _tb in range(127, start=33):
     if f"{_tb:c}" not in _TOKEN_DELIMS:
         _tchars.append(_tb)
 _TOKEN_OK = _tchars.to_bytes()
@@ -195,7 +195,7 @@ _TOKEN_OK = _tchars.to_bytes()
 # A field value: HTAB, and every octet from 0x20 up except DEL. Bytes above
 # 127 are allowed here and answered for at the strict decode below.
 _vchars = [9]
-for _vb in range(256, start=32):
+for _, _vb in range(256, start=32):
     if _vb != 127:
         _vchars.append(_vb)
 _FIELD_VALUE_OK = _vchars.to_bytes()
@@ -203,7 +203,7 @@ _FIELD_VALUE_OK = _vchars.to_bytes()
 # A request target: visible ASCII or above. Control characters are rejected;
 # bytes above 127 are not, because clients do send raw UTF-8 in a path.
 _gchars = []
-for _gb in range(256, start=33):
+for _, _gb in range(256, start=33):
     if _gb != 127:
         _gchars.append(_gb)
 _TARGET_OK = _gchars.to_bytes()
@@ -231,9 +231,9 @@ _DIGIT_OK = b"0123456789"
 # "is this a hex digit" test, so a malformed escape is one lookup rather than
 # a decode that might itself raise.
 _HEX_VALUE = {}
-for _hd in range(10):
+for _, _hd in range(10):
     _HEX_VALUE[48 + _hd] = _hd
-for _hd in range(6):
+for _, _hd in range(6):
     _HEX_VALUE[65 + _hd] = 10 + _hd
     _HEX_VALUE[97 + _hd] = 10 + _hd
 
@@ -570,7 +570,7 @@ def _escape_fault(b):
 def _has_token(value, token):
     if value == null:
         return false
-    for part in value.split(sep=","):
+    for _, part in value.split(sep=","):
         if part.strip().lower() == token:
             return true
     return false
@@ -732,7 +732,7 @@ def _authority_path(rest):
 # should read `req.query` from the raw target itself.
 def _parse_query(qs, fail, where):
     out = {}
-    for pair in qs.split(sep=b"&"):
+    for _, pair in qs.split(sep=b"&"):
         if len(pair) == 0:
             continue
         e = pair.find(b"=")
@@ -815,7 +815,7 @@ def _body_reader(r, headers):
 def _content_length(s, fail):
     if len(s) == 0:
         fail("empty Content-Length")
-    for ch in s:
+    for _, ch in s:
         if ch not in "0123456789":
             fail(f"malformed Content-Length '{s}'")
     return s.to_int()
@@ -943,7 +943,7 @@ class _ChunkedReader:
         if len(head) == 0:
             self.fail("empty chunk size")
         size = 0
-        for c in head:
+        for _, c in head:
             v = _HEX_VALUE.get(c)
             if v == null:
                 self.fail("malformed chunk size")
@@ -1466,7 +1466,7 @@ def _drain_live(live, tally, drain):
     waiting = len(live)
     if waiting == 0:
         return tally
-    for entry in live.values():
+    for _, entry in live.values():
         entry.stopping = true
         if not entry.busy:
             entry.conn.close()
@@ -1478,13 +1478,13 @@ def _drain_live(live, tally, drain):
     while len(live) > 0 and time.monotonic() < deadline:
         time.sleep(_DRAIN_TICK)
     rest = live.values()
-    for entry in rest:
+    for _, entry in rest:
         entry.conn.close()
     tally["forced"] = tally["forced"] + len(rest)
     tally["drained"] = tally["drained"] + waiting - len(rest)
     # Joining is free here and only here: the accept loop is over, so nothing
     # is waiting on this task, and `_conn_task` cannot raise into it.
-    for entry in rest:
+    for _, entry in rest:
         entry.task.join()
     return tally
 
@@ -1532,7 +1532,7 @@ class Router:
         if h != null:
             return h
         segs = req.path.split(sep="/")
-        for m, pat, fn in self.patterns:
+        for _, (m, pat, fn) in self.patterns:
             if m == method:
                 params = _match(pat, segs)
                 if params != null:
@@ -1543,11 +1543,11 @@ class Router:
     def allowed(self, path):
         out = []
         segs = path.split(sep="/")
-        for key in self.exact.keys():
+        for _, key in self.exact.keys():
             sp = key.find(" ")
             if key[sp + 1:] == path:
                 out.append(key[0:sp])
-        for m, pat, fn in self.patterns:
+        for _, (m, pat, fn) in self.patterns:
             if _match(pat, segs) != null and m not in out:
                 out.append(m)
         if "GET" in out and "HEAD" not in out:
@@ -1564,7 +1564,7 @@ def _match(pat, segs):
     # Two sequences in lockstep is what `zip` is for: the index existed only to
     # reach into both, and `for p, s in pat.zip(segs)` says what the loop means
     # in the line that opens it.
-    for p, s in pat.zip(segs):
+    for _, (p, s) in pat.zip(segs):
         if len(p) > 0 and p[0] == ":":
             if len(s) == 0:
                 return null
@@ -1755,16 +1755,20 @@ def unquote(s, plus=false):
 # encoding.
 def encode_query(params):
     out = []
-    # A dict and a list of pairs need no distinguishing: iterating a dict
-    # yields its (key, value) pairs, which is exactly what the list spelling
-    # already is.
-    for k, v in params:
+    # A dict and a list of pairs no longer iterate alike: a `for` over a dict
+    # yields its (key, value) pairs, but a `for` over a list yields (index,
+    # element). So normalise a dict to its list of pairs first, then destructure
+    # the element in the value slot.
+    pairs = params
+    if type(params) == dict:
+        pairs = params.to_list()
+    for _, (k, v) in pairs:
         # `_query_bytes` hands back octets and `quote_plus` returns the type
         # it was given, so these are bytes — and `.to_str()` on them cannot
         # fail, because what comes out of a percent-encoder is ASCII.
         key = quote_plus(_query_bytes(k, "key")).to_str()
         if type(v) == list:
-            for item in v:
+            for _, item in v:
                 out.append(key + "=" + quote_plus(_query_bytes(item, "value")).to_str())
         else:
             out.append(key + "=" + quote_plus(_query_bytes(v, "value")).to_str())

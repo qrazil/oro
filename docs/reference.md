@@ -364,7 +364,6 @@ xs.take(n) / xs.drop(n)        prefix / rest; n required
 xs.chunk(n)                    list of n-sized lists
 xs.flatten()                   one level, -> list
 xs.zip(other, ...)             n-way, truncated to the shortest
-xs.enumerate(start=0)          list of (index, element)
 xs.join(sep)                   str or bytes, from the separator's type
 xs.map(f) / xs.filter(p)       type-preserving
 xs.flat_map(f)                 -> list
@@ -412,7 +411,7 @@ conn.peer / conn.local / ln.local    address strings
 t.join()                     wait; returns the value or re-raises the exception
 ch.send(v) / ch.recv()       block the task; ChannelClosed after close
 ch.close()                   idempotent shutdown signal
-for x in ch                  until closed and drained
+for _, x in ch               until closed and drained
 ```
 
 ### Modules ([5.15](#515-modules))
@@ -594,13 +593,15 @@ xs = [1, 2, 3, 4, 5]
 print(xs.filter(x => x > 1).map(x => x * x).filter(x => x < 30))
 ```
 
-A callback with **two or more parameters destructures its element exactly as
-`for` does**, and a dict's element is its `(key, value)` pair:
+A callback with **two or more parameters destructures its element** — the same
+way a nested `for` target (`for _, (a, b) in xs`) destructures its value slot —
+and a dict's element is its `(key, value)` pair. (An index in a chain is not
+`enumerate`, which is gone; it is `range(len(xs)).zip(xs)`.)
 
 ```oro
 d = {"a": 1, "b": 2}
 print(d.filter((k, v) => v > 1))
-print([1, 2, 3].enumerate().map((i, x) => i * x))
+print(range(len([1, 2, 3])).zip([1, 2, 3]).map((i, x) => i * x))
 print([("x", 1), ("y", 2)].map((name, n) => f"{name}={n}"))
 ```
 
@@ -700,7 +701,7 @@ leak out. This is the one divergence most likely to bite when porting Python.
 
 ```oro
 last = null
-for i in range(3):
+for i, _ in range(3):
     last = i
 print(last)
 ```
@@ -708,6 +709,22 @@ print(last)
 Without the first line, `print(last)` is a `NameError`. Since a name is created
 by assigning to it, carrying a result out of a block means binding it
 beforehand — choose the placeholder so a skipped block is loud, not silent.
+
+**Every `for` binds an `(index, value)` pair.** There is one loop form;
+destructuring selects what you want (`for i, v`, `for _, v`, `for i, _`), a
+single binding (`for x in xs`) is an error, and a tuple element is a nested
+pattern in the value slot (`for _, (a, b) in pairs`). What the index *is*
+depends on the iterable:
+
+| iterable | index | value |
+|---|---|---|
+| `list`, `tuple`, `str`, `bytes`, `range` | position (`0, 1, 2, …`) | the element |
+| `dict` | the **key** | the value |
+| generator | a 0-based counter | the yielded value |
+
+There is no `enumerate` and no `range(len(xs))`: the index is built in. An index
+inside a *chain* (which has no `for` to carry one) is `range(len(xs)).zip(xs)`.
+`corpus/divergence/80_for_pairs.oro` pins the index for each type.
 
 - **`global`** mutates module-level state from a function. **There is no
   `nonlocal`**, and a nested function cannot rebind an enclosing local (reading
@@ -884,12 +901,12 @@ stack.
 
 ```oro
 def counter(n):
-    for i in range(n):
+    for i, _ in range(n):
         yield i
 
 
 def evens(n):
-    for x in counter(n):
+    for _, x in counter(n):
         if x % 2 == 0:
             yield x
 
@@ -919,7 +936,7 @@ print(t.join())
 ch = chan(cap=2)
 ch.send("a")
 ch.close()
-for msg in ch:
+for _, msg in ch:
     print("got", msg)
 print(yield_now())
 ```
@@ -1103,7 +1120,7 @@ print(b.upper(), b.lower(), b.hex(), b.find(b"l"), b.count(b"l"))
 print(b.startswith(b"He"), b" a b ".strip(), b"a,b".split(sep=b","), b" a b ".split())
 print(b.scan(b"Helo"), b.scan(b"xyz"), b.replace(b"l", b"L", count=1))
 print(len(b), b[0], b[1:3], b"el" in b, [b"a", b"b"].join(b"-"))
-for x in b"ab":
+for _, x in b"ab":
     print(x)
 ```
 
@@ -1237,11 +1254,12 @@ Two rules govern all of it:
 - **Operations that select or reorder preserve the receiver's type**
   (`map`, `filter`, `sort_by`, `unique`, `unique_by`, `reversed`, `take`, `drop`,
   `take_while`, `drop_while`); operations that reshape the data give a `list`
-  (`flatten`, `chunk`, `zip`, `enumerate`), a `dict` (`group_by`) or a tuple of
-  two (`partition`). A range or a generator has no shape to keep, so it gives a
-  list.
-- **A callback with two or more parameters destructures its element** as `for`
-  does; one parameter takes the element whole.
+  (`flatten`, `chunk`, `zip`), a `dict` (`group_by`) or a tuple of two
+  (`partition`). A range or a generator has no shape to keep, so it gives a list.
+- **A callback with two or more parameters destructures its element** the way a
+  nested `for` target destructures its value slot; one parameter takes the
+  element whole. (There is no `enumerate`; an index in a chain is
+  `range(len(xs)).zip(xs)`, and in a loop it is the `for` index.)
 
 #### Without a callback
 
@@ -1257,7 +1275,6 @@ Two rules govern all of it:
 | `xs.chunk(n)` | `list[list]` | `TypeError` as above, `ValueError` if `n < 1` |
 | `xs.flatten()` | `list` | `TypeError` if an element is not iterable |
 | `xs.zip(other, …)` | `list[tuple]` | `TypeError` on a non-iterable | 
-| `xs.enumerate(start=0)` | `list[tuple]` | `TypeError` on a positional argument |
 | `xs.join(sep)` | `str` or `bytes` (the separator's type) | `TypeError` on a mismatched element |
 
 ```oro
@@ -1265,7 +1282,7 @@ xs = [3, 1, 2]
 print(xs.len(), xs.sum(), xs.sum(start=10), xs.min(), xs.max(), xs.first(), xs.last())
 print(xs.reversed(), xs.unique(), xs.take(2), xs.drop(1), xs.chunk(2))
 print([[1, 2], [3]].flatten(), xs.zip([9, 8]), xs.zip([9, 8], [7, 6]))
-print(xs.enumerate(), xs.enumerate(start=1), ["a", "b"].join(", "))
+print(["a", "b"].join(", "))
 ```
 
 `xs.zip(a, b)` is a three-way zip truncated to the shortest — not a two-way one
@@ -1312,7 +1329,7 @@ flips the ties too).
 
 **A chain runs in one pass.** Runs of `map`/`filter` between barriers are fused,
 so no intermediate collection is built for them; `sort_by`, `reversed`,
-`unique`, `unique_by`, `chunk`, `flatten`, `zip`, `enumerate`, `group_by`,
+`unique`, `unique_by`, `chunk`, `flatten`, `zip`, `group_by`,
 `partition`, `min_by`, `max_by` and `take_while` are barriers that materialise.
 The receiver is copied before the first callback runs, so a chain never sees its
 own source change. The one observable ordering: `xs.map(f).map(g)` runs
@@ -1326,12 +1343,12 @@ A generator has **no methods of its own** — no `send`, `next`, `close` or
 
 ```oro
 def nums():
-    for i in range(5):
+    for i, _ in range(5):
         yield i
 
 
 print(nums().to_list(), nums().sum(), nums().max(), nums().len())
-print(nums().sort_by(x => x), nums().take(2), nums().enumerate())
+print(nums().sort_by(x => x), nums().take(2), nums().zip([9, 8]))
 print(nums().filter(x => x % 2 == 0).sum(), nums().map(x => x * 2).take(3))
 g = nums()
 print(g.to_list(), g.to_list())
@@ -1377,7 +1394,7 @@ print(m.group(0), m.group(1), m.start(0), m.end(0))
 p = re.compile(r"a(b)")
 print(p.search("zab").group(1), p.findall("abab"), p.sub("X", "ab"), p.split("1ab2"))
 print(re.search(r"z", "ab") == null, len(re.finditer(r"\d", "a1b2")))
-for hit in re.finditer(r"(\w+)@(\w+)", "a@b c@d"):
+for _, hit in re.finditer(r"(\w+)@(\w+)", "a@b c@d"):
     print(hit.group(1), hit.group(2))
 try:
     m.group()
@@ -1927,7 +1944,7 @@ yourself reaching for a Python spelling, look here first.
 | `xs.sort(key=f)` | `xs.sort_in_place(f)` | The in-place half; lists only, answers `null` |
 | `sum(xs)` | `xs.sum()` | as `sorted` |
 | `any(xs)` / `all(xs)` | `xs.any(x => x)` / `xs.all(x => x)` | The predicate is required; truthiness is spelled out |
-| `enumerate(xs)` / `enumerate(xs, 1)` | `xs.enumerate()` / `xs.enumerate(start=1)` | as `sorted`; eager, and it answers a list |
+| `enumerate(xs)` / `xs.enumerate()` | `for i, x in xs` (loop), `range(len(xs)).zip(xs)` (chain) | Gone: every `for` yields `(index, value)`, so there is nothing left to do |
 | `zip(a, b)` | `a.zip(b)` | as `sorted`; takes any number of further sequences, eager |
 | `min(xs)` / `max(xs)` | `xs.min()` / `xs.max()` | `min(a, b)` over two or more values is unchanged |
 | `sorted("ba")` / `min(b"ba")` | `"ba".to_list().sort_by(x => x)` | A `str`/`bytes` is not a collection; `to_list()` is the bridge |
@@ -1939,7 +1956,7 @@ yourself reaching for a Python spelling, look here first.
 | `set()` / `{1, 2}` | `{1: true, 2: true}` with `k in d`, or a list | Sets are cut; only set algebra is a real gap |
 | `isinstance(x, str)` | `type(x) == str` | A type name *is* the type |
 | `isinstance(e, Base)` | `except Base:` | `except` is the one place a subclass test is the right question |
-| `iter(xs)` / `next(g)` | `for x in xs` | Not defined; iteration is the `for` loop and the protocol |
+| `iter(xs)` / `next(g)` | `for i, x in xs` | Not defined; iteration is the `for` loop and the protocol |
 | `hash(x)` / `input()` / `eval` / `exec` | *(absent)* | No hashing surface, no REPL-style input, no runtime code growth |
 | `f(*args)` / `f(**kwargs)` | `apply(f, args=xs, kwargs=d)` | One spelling, and the argument rule still applies |
 | `def f(*args)` / `def f(**kw)` | `def f(items)` / `def f(opts)` — a list or a dict | as above |
@@ -1985,6 +2002,11 @@ yourself reaching for a Python spelling, look here first.
 | Python | Oro |
 |---|---|
 | `lambda x: x * 2` | `x => x * 2` |
+| `for x in xs:` | `for _, x in xs:` — every `for` binds an `(index, value)` pair |
+| `for i, x in enumerate(xs):` | `for i, x in xs:` — the index is built in |
+| `for i in range(n):` | `for i, _ in range(n):` — the position is the index |
+| `for a, b in pairs:` (a list of tuples) | `for _, (a, b) in pairs:` — the element is nested in the value slot |
+| `for k, v in d.items():` | `for k, v in d:` — a dict's index *is* its key |
 | `if xs:` / `while xs:` (a collection) | `if len(xs) != 0:` — no truthiness |
 | `if n:` (a number) | `if n != 0:` |
 | `if x:` (a maybe-null value) | `if x != null:` |
@@ -2112,7 +2134,7 @@ always were:
 
 ```oro
 print("--- the class is a property of the operation, never of the data")
-for text in ["timed out", "No such file or directory", "division by zero"]:
+for _, text in ["timed out", "No such file or directory", "division by zero"]:
     try:
         {"a": 1}[text]
     except KeyError as e:
@@ -2249,7 +2271,7 @@ one, `./corpus/run.sh` will tell you which expectations move.
 
 **6. Habits that pay off in this language specifically.**
 
-- Reach for a chain before a loop, and for `for i in range(n)` before a `while`
+- Reach for a chain before a loop, and for `for i, _ in range(n)` before a `while`
   with a counter — a `while` is for a condition that is not a count.
 - Bind a name before a block if you need its value after it (`try` is a scope
   too).

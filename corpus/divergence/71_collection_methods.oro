@@ -48,7 +48,7 @@ class Counter:
         self.n = n
 
     def up(self):
-        for i in range(self.n):
+        for _, i in range(self.n):
             yield i
 
 

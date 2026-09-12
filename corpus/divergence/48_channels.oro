@@ -25,7 +25,7 @@ req = chan()
 rep = chan()
 
 def double():
-    for n in req:
+    for _, n in req:
         rep.send(n * 2)
     rep.close()
 
@@ -44,7 +44,7 @@ log = []
 gate = chan()
 
 def producer():
-    for i in range(2):
+    for _, i in range(2):
         log.append("send " + i.to_str())
         gate.send(i)
         log.append("sent " + i.to_str())
@@ -73,7 +73,7 @@ work.send("x")
 work.send("y")
 work.close()
 seen = []
-for item in work:
+for _, item in work:
     seen.append(item)
 print("a closed channel hands out its buffer first, then ends the loop:", seen == ["x", "y"])
 
@@ -125,7 +125,7 @@ except Exception as e:
 # It has a default, so it is keyword-only: `chan(8)` would not say what the 8
 # is. A positional capacity is refused with the spelling that works, and
 # `cap=null` is not a third spelling of `chan()`.
-for thunk in [() => chan(8), () => chan(cap=null), () => chan(size=8)]:
+for _, thunk in [() => chan(8), () => chan(cap=null), () => chan(size=8)]:
     try:
         thunk()
         print("UNREACHABLE")

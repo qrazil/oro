@@ -1,14 +1,14 @@
 lines = ["alice,30,dallas", "bob,25,austin", "carol,35,houston"]
 rows = []
-for line in lines:
+for _, line in lines:
     rows.append(line.split(sep=","))
 
 names = []
-for r in rows:
+for _, r in rows:
     names.append(r[0].upper())
 
 cities = []
-for r in rows:
+for _, r in rows:
     cities.append(r[2])
 # `sorted(cities)` moved to corpus/divergence/71_collection_methods.oro.
 print(rows[0], len(rows), rows[1][0].startswith("b"))

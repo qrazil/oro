@@ -62,7 +62,7 @@ cases = [
     ("Pattern.split", p_split_3),
     ("Pattern.sub", p_sub_4),
 ]
-for label, call in cases:
+for _, (label, call) in cases:
     try:
         call()
         print(label + ": accepted")

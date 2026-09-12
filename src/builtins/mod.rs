@@ -916,9 +916,8 @@ pub fn cut_global_message(name: &str) -> Option<&'static str> {
              takes a collection: use `xs.all(p)`, or `xs.all(x => x)` for truthiness"
         }
         "enumerate" => {
-            "`enumerate` is not defined in Oro — a builtin takes scalars and a collection \
-             method takes a collection: use `xs.enumerate()`, or `xs.enumerate(start=1)` \
-             to start elsewhere"
+            "`enumerate` is not in Oro — every `for` yields (index, value), so write \
+             `for i, x in xs` (and `for _, x in xs` when the index is unused)"
         }
         "zip" => {
             "`zip` is not defined in Oro — a builtin takes scalars and a collection method \
@@ -945,6 +944,14 @@ pub fn cut_method_message(recv: &Value, name: &str) -> Option<&'static str> {
         return (name == "items").then_some(
             "`dict.items()` is not in Oro — iterating a dict already yields its (key, value) \
              pairs, so write `for k, v in d`; `d.to_list()` is the list of pairs",
+        );
+    }
+    // `enumerate` went the way `range(len(x))` did: every `for` now yields
+    // (index, value), so a separate index-pairing step has no job.
+    if is_collection(recv) && name == "enumerate" {
+        return Some(
+            "`enumerate` is not in Oro — every `for` yields (index, value), so write \
+             `for i, x in xs` (and `for _, x in xs` when the index is unused)",
         );
     }
     if !matches!(recv, Value::Str(_) | Value::Bytes(_)) {
@@ -1116,7 +1123,7 @@ pub fn method_exists(recv: &Value, name: &str) -> bool {
 fn takes_kwargs(recv: &Value, name: &str) -> bool {
     match recv {
         _ if name == "to_int" => true,
-        _ if is_collection(recv) && matches!(name, "sum" | "enumerate") => true,
+        _ if is_collection(recv) && name == "sum" => true,
         Value::Str(_) | Value::Bytes(_) => matches!(
             name,
             "strip" | "split" | "find" | "count" | "startswith" | "endswith" | "replace"
@@ -1861,7 +1868,7 @@ pub fn is_seq_native(name: &str) -> bool {
     matches!(
         name,
         "sum" | "min" | "max" | "unique" | "take" | "drop" | "first" | "last"
-            | "flatten" | "chunk" | "zip" | "join" | "reversed" | "enumerate" | "len"
+            | "flatten" | "chunk" | "zip" | "join" | "reversed" | "len"
     )
 }
 
@@ -2104,27 +2111,6 @@ fn seq_native_method(
                 cols.push(crate::vm::iterate_to_vec(a)?);
             }
             Ok(zip_cols(cols))
-        }
-        "enumerate" => {
-            // `enumerate` takes a start and nothing else, and takes it by
-            // name. Before the start was named, `xs.enumerate(1, 9)` answered
-            // confidently, having read neither the 9 nor the reader's mind.
-            let start = match start_kwarg(&args, kwargs, "enumerate")? {
-                None => 0,
-                Some(Value::Int(n)) => *n,
-                Some(other) => {
-                    return Err(type_error(format!(
-                        "enumerate() start must be an int, not '{}'",
-                        other.type_name()
-                    )))
-                }
-            };
-            let out: Vec<Value> = items
-                .into_iter()
-                .enumerate()
-                .map(|(i, v)| Value::Tuple(OroTuple::new(vec![Value::Int(start + i as i64), v])))
-                .collect();
-            Ok(Value::List(OroList::new(out)))
         }
         "join" => {
             // The only join in the language: `", ".join(xs)` is cut, because

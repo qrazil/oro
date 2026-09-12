@@ -49,7 +49,7 @@ def read_response(c):
     status = lines[0].split(sep=b" ")[1].to_str()
     n = 0
     closing = false
-    for line in lines:
+    for _, line in lines:
         field = line.to_str().lower()
         if field.startswith("content-length:"):
             n = field[field.find(":") + 1:].strip().to_int()

@@ -26,10 +26,10 @@ print(b[::2], b[::-1], b[4:1:-1])
 print(b[10:20], b[20:30], b[-100:2])
 
 # --- Iteration --------------------------------------------------------------
-for x in b"abc":
+for _, x in b"abc":
     print(x)
 total = 0
-for x in b"abc":
+for _, x in b"abc":
     total = total + x
 print("sum", total)
 print(len(b"abc"), b"abc"[0] + b"abc"[1])
@@ -73,7 +73,7 @@ COLON = 58
 header = b"Host: example.com"
 i = header.find(b":")
 print(header[i] == COLON, header[:i], header[i + 2:])
-for part in b"GET /a?b=1 HTTP/1.1".split(sep=b" "):
+for _, part in b"GET /a?b=1 HTTP/1.1".split(sep=b" "):
     print(part, len(part))
 
 # --- Hashing: bytes as dict keys --------------------------------------------
@@ -86,7 +86,7 @@ print(len(d))
 mixed = {b"k": "bytes key", "k": "str key"}
 print(len(mixed), mixed[b"k"], mixed["k"])
 counts = {}
-for w in b"a b a c b a".split(sep=b" "):
+for _, w in b"a b a c b a".split(sep=b" "):
     counts[w] = counts.get(w, default=0) + 1
 print(counts)
 

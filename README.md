@@ -280,7 +280,7 @@ Implemented and working today:
 
   *Without a callback:* `sum(start=0)` `min` `max` `len` `first` `last`
   `reversed` `unique` `take(n)` `drop(n)` `chunk(n)` `flatten`
-  `zip(other, ...)` `enumerate(start=0)` `join(sep)`.
+  `zip(other, ...)` `join(sep)`.
   `zip` takes any number of further sequences and truncates to the shortest, so
   `a.zip(b, c)` is a three-way zip and not a two-way one with `c` thrown away.
   The counts are required: `take()` with none is an error rather than a
@@ -313,7 +313,7 @@ Implemented and working today:
   the protocol makes itself feed the next step the same way:
 
   ```python
-  xs.enumerate().filter((i, x) => i % 2 == 0).map((i, x) => x)
+  range(len(xs)).zip(xs).filter((i, x) => i % 2 == 0).map((i, x) => x)
   names.zip(ages).filter((name, age) => age >= 18).map((name, age) => name)
   orders.group_by(o => o.region).to_list().map((region, rows) => (region, rows.len()))
   ```
@@ -345,7 +345,7 @@ Implemented and working today:
   it as one job. Two things follow that are worth knowing about.
 
   *Some steps are barriers.* `sort_by` `reversed` `unique`
-  `unique_by` `chunk` `flatten` `zip` `enumerate` `group_by` `partition`
+  `unique_by` `chunk` `flatten` `zip` `group_by` `partition`
   `min_by` `max_by` and `take_while` each need the finished intermediate before
   they can answer, so a chain fuses the runs of `map`/`filter` between them and
   materialises at each barrier. `xs.map(f).filter(p).sort_by(k).map(g)` is two
@@ -477,7 +477,7 @@ Each of these is omitted on purpose. The reason matters more than the list.
   `map`/`filter` are **type-preserving**: a list gives a list, a tuple a tuple,
   a dict a dict, so a chain never silently changes the shape of the data. A
   callback with several parameters destructures its element as `for` does —
-  `d.filter((k, v) => v > 1)`, `xs.enumerate().map((i, x) => i * x)` — and `map`
+  `d.filter((k, v) => v > 1)`, `pairs.map((a, b) => a * b)` — and `map`
   over a dict returns the `(key, value)` pair. `range` and generators have no
   literal to rebuild, so they yield a list.
 - **No type annotations.** `def f(a: int) -> int` and `x: int = 5` are rejected
@@ -565,7 +565,9 @@ Each of these is omitted on purpose. The reason matters more than the list.
   down the middle, which settles nothing: a reader has no way to know which
   half the codebase prefers, because it used both. The rule settles it, and
   every cut names its replacement: `xs.sum()`, `xs.sort_by(x => x)`,
-  `xs.any(p)`, `xs.all(p)`, `xs.enumerate()`, `a.zip(b, c)`.
+  `xs.any(p)`, `xs.all(p)`, `a.zip(b, c)`. `enumerate` is the one with no method
+  either — it went *entirely*, because every `for` now yields `(index, value)`,
+  so the whole of it is `for i, x in xs` (see above).
 
   The duplication was not merely noise. Three of the nine pairs had already
   *drifted* into disagreeing — `a.zip(b, c)` silently discarded `c`,
@@ -709,7 +711,7 @@ written up in the script's own header.
 Names bound inside a block do **not** leak out of it:
 
 ```python
-for i in range(10):
+for i, _ in range(10):
     last = i
 print(last)   # NameError in Oro; prints 9 in Python
 ```
@@ -779,10 +781,12 @@ replace them, and still oracles against CPython, which agrees on every line.
 
 ### The loop rule: `for … in range(n)` counts, `while` waits
 
-> **A loop over a known count is `for i in range(n)`. A loop over a collection
-> is `for x in` the collection, or a chain. `while` is for a condition that is
-> not a count — a poll, an EOF drain, an accept loop.** And a loop whose index
-> exists only to reach into two sequences at once is `a.zip(b)`.
+> **A loop over a known count is `for i, _ in range(n)`. A loop over a
+> collection is `for _, x in` the collection, or a chain. `while` is for a
+> condition that is not a count — a poll, an EOF drain, an accept loop.** And a
+> loop whose index exists only to reach into two sequences at once is `a.zip(b)`.
+
+(Every `for` binds an `(index, value)` pair — see [above](#every-for-yields-index-value) — so the count loop keeps the index and discards the value, and the collection loop does the reverse.)
 
 This is written down because nothing in Oro can enforce it. `oro fmt` is a
 formatter, not a linter, and "no options, one output" means it will never grow
@@ -792,7 +796,7 @@ It needed writing because the tree had got it backwards. A bounded count was
 spelled two ways and the worse one had won 67 to 17:
 
 ```python
-i = 0                          for i in range(10):
+i = 0                          for i, _ in range(10):
 while i < 10:                      work(i)
     work(i)
     i = i + 1
@@ -906,51 +910,68 @@ family of stream types.
 The full reasoning, including what was cut and why, is in
 `docs/stdlib-server-design.md` §2.
 
-### Iterating a dict yields `(key, value)`, and `.items()` is gone
+### Every `for` yields `(index, value)`
+
+There is one loop form. A `for` binds an `(index, value)` pair, and
+destructuring selects what you want:
 
 ```python
-d = {"a": 1, "b": 2}
-
-for k, v in d:         # the one spelling. In Python this raises.
-    print(k, v)
-
-for k in d.keys():     # when you want only the keys
-    print(k)
-
-d.items()              # AttributeError: iterating the dict *is* its items
+for i, v in xs:        # both
+for _, v in xs:        # the value only  (`_` discards — see below)
+for i, _ in xs:        # the index only
+for x in xs:           # error: a `for` binds a pair — write `for _, x in xs`
 ```
 
-Python iterates a dict's keys. Oro iterates its entries, and the argument is
-not ergonomics — it is that **the pair shape is already this language's answer
-for a dict everywhere else**. `d.map(f)` hands `f` the `(key, value)` pair.
-A dict's `filter`, `find`, `count`, `any` and `all` callbacks take *two*
-arguments, key and value. `group_by` builds a dict whose entries are what you
-then want. Key iteration was the single place where a dict's element was
-something other than its entry, and `.items()` existed only to undo it — a
-method whose whole job is to reverse a choice nothing else in the language
-makes. So the choice went instead.
+**What the index is depends on the iterable, and this is the part to remember:**
 
-`.keys()` and `.values()` stay: they are how you ask for *one half* of an
-entry, which is a different question, and neither of them is the pair. What
-goes is the third spelling. Before, a dict could be walked three ways — `for k
-in d`, `for k in d.keys()`, `for k, v in d.items()` — of which the first two
-were the same operation; now there are two, and they ask for different things.
+| iterable | index | value |
+|---|---|---|
+| `list`, `tuple`, `str`, `bytes` | position (`0, 1, 2, …`) | the element |
+| `range` | position | the number |
+| `dict` | the **key** | the value |
+| generator | a 0-based counter | the yielded value |
 
-**`k in d` still tests keys.** Membership is a hash lookup, not a walk — it
-never touches the iterator — so `"a" in d` is true and `("a", 1) in d` is not.
-That is the thing a change like this is most likely to break silently, so it is
-pinned explicitly in `corpus/divergence/67_dict_pairs.oro`, along with pair
-order (insertion order, the same order the keys came out in) and the behaviour
-of a dict mutated mid-loop (a dict iterator walks a snapshot taken when the
-loop starts, as it always has — inserting neither raises nor is seen).
+A dict is the one whose index is not a position — `for k, v in d` yields its
+entries, key and value. That is not a special case bolted on: **the pair shape
+is already this language's answer for a dict everywhere else.** `d.map(f)` hands
+`f` the `(key, value)` pair; a dict's `filter`, `find`, `count`, `any` and `all`
+callbacks take *two* arguments; `group_by` builds a dict whose entries are what
+you then want. So iterating a dict yields the same pair, with the key in the
+index slot.
 
-**The cost is paid in the corpus, not hidden.** Dict iteration leaves the
-CPython oracle, so `corpus/divergence/67_dict_pairs.oro` has a hand-reviewed
-baseline — checked against `67_dict_pairs.twin.py`, the same program with
-`.items()` written back in, so the expectation is still CPython's output for
-every line except the divergence itself. `d.sum()` is the one thing that got
-worse rather than different: it summed the keys and is now an attempt to add a
-tuple to an int. `d.values().sum()` is what it was reaching for.
+The common case gets slightly noisier — `for _, line in lines` where Python
+writes `for line in lines` — and that is an accepted trade. One loop form with a
+pair, rather than a bare element that means something different for a dict than
+for a list, is what makes human- and model-written Oro converge, and it is less
+to hold in your head: there is no `enumerate`, no `range(len(xs))`, no
+`.items()`, no bare `for x in d` that quietly hands you a key one place and a
+pair the next.
+
+```python
+for _, x in xs.enumerate()   # no: `enumerate` is gone entirely
+for i, x in xs               # yes: the index is built in
+for i in range(len(xs))      # no: redundant, and a single binding besides
+range(len(xs)).zip(xs)       # an index *in a chain*, the one place `for` can't reach
+d.items()                    # AttributeError: iterating the dict *is* its items
+```
+
+A tuple **element** is a nested pattern in the value slot, since the top-level
+binding is now `(index, value)`:
+
+```python
+for _, (a, b) in pairs       # pairs is a list of 2-tuples
+for _, (a, b, c) in triples  # or 3-tuples; the index is still `for i, (a, b, c)`
+```
+
+`.keys()` and `.values()` stay: they are how you ask for *one half* of an entry,
+a different question, and neither is the pair. **`k in d` still tests keys** —
+membership is a hash lookup, not a walk, so `"a" in d` is true and `("a", 1) in
+d` is not. That is the thing most likely to break silently, so it is pinned in
+`corpus/divergence/67_dict_pairs.oro` along with pair order and mid-loop
+mutation; `corpus/divergence/80_for_pairs.oro` pins the index for every iterable
+type. `d.sum()` is the one thing that got worse rather than different: it summed
+the keys and is now an attempt to add a tuple to an int — `d.values().sum()` is
+what it was reaching for.
 
 ### `dict.keys()` / `.values()` answer lists
 
@@ -960,8 +981,8 @@ print(d.keys())        # ['a'] here; dict_keys(['a']) in Python
 print(d.keys()[0])     # 'a' here; TypeError in Python — a view is not indexable
 ```
 
-Eagerness is not the divergence — that is settled and stated above, and
-`enumerate` and `zip` make the same choice. The divergence is only the *repr*,
+Eagerness is not the divergence — that is settled and stated above, and `zip`
+makes the same choice. The divergence is only the *repr*,
 and the question is whether a type should exist whose entire job is to print
 differently.
 
@@ -977,8 +998,8 @@ it with no second type to learn: `d.keys().sort_by(k => k)`, `d.values().sum()`,
 `d.keys().join("-")`. Recorded, with all three behavioural differences shown,
 in `corpus/divergence/59_dict_views.oro`. (There is no `.items()` to ask the
 question about — see above — and `d.to_list()` is the list of pairs.) The related case is already settled the
-same way: CPython's repr of an `enumerate` or a `zip` carries a heap address
-(`<enumerate object at 0x7f…>`), which is not reproducible output and could not
+same way: CPython's repr of a `zip` carries a heap address
+(`<zip object at 0x7f…>`), which is not reproducible output and could not
 be matched even in principle.
 
 ### Tabs rejected in leading whitespace
@@ -1320,7 +1341,7 @@ measurement, and the reason the same argument does not move `http`.
 
   ```python
   import re
-  for m in re.finditer(r"(\w+)\s+(\w+)", text):
+  for _, m in re.finditer(r"(\w+)\s+(\w+)", text):
       if m.group(1) == m.group(2):      # the "backreference", checked in code
           print("doubled:", m.group(1))
   ```
@@ -1372,7 +1393,8 @@ different.
 | `s.removeprefix(p)` / `s.removesuffix(p)` | `s.rm_prefix(p)` / `s.rm_suffix(p)` | Same method, shorter name |
 | `s.isdigit()` / `isalpha()` / `isalnum()` / `isspace()` | `s.is_digit()` / `is_alpha()` / `is_alnum()` / `is_space()` | Same predicates, in the language's own naming |
 | `sep.join(xs)` | `xs.join(sep)` | One join, on the collection; the sequence is the subject and the call ends a chain |
-| `sum(xs)` / `sorted(xs)` / `any(xs)` / `all(xs)` / `enumerate(xs)` / `zip(a, b)` | `xs.sum()` / `xs.sort_by(x => x)` / `xs.any(x => x)` / `xs.all(x => x)` / `xs.enumerate()` / `a.zip(b)` | A builtin takes scalars, a collection method takes a collection |
+| `sum(xs)` / `sorted(xs)` / `any(xs)` / `all(xs)` / `zip(a, b)` | `xs.sum()` / `xs.sort_by(x => x)` / `xs.any(x => x)` / `xs.all(x => x)` / `a.zip(b)` | A builtin takes scalars, a collection method takes a collection |
+| `enumerate(xs)` / `xs.enumerate()` | `for i, x in xs`, or `range(len(xs)).zip(xs)` in a chain | Gone entirely: every `for` yields `(index, value)` |
 | `sorted(xs, key=f, reverse=true)` | `xs.sort_by(f, reverse=true)` | The key is the operand, so it is positional; `reverse=` is a stable descending sort, `.reversed()` is not |
 | `xs.sort(key=f, reverse=true)` | `xs.sort_in_place(f, reverse=true)` | The in-place half of `sort_by`, with the same shape; lists only, and it answers `null` |
 | `min(xs)` / `max(xs)` | `xs.min()` / `xs.max()` | `min(a, b)` over two or more *values* is unchanged |

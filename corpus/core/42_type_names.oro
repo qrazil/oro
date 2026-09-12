@@ -24,7 +24,7 @@ print(type(f), type(re))
 # The type name is the same string whatever the value inside is, which is the
 # property that makes it usable as a dispatch key — std/json.oro does exactly
 # this.
-for v in [1, 1.5, "s", true, [1], {"a": 1}, (1,)]:
+for _, v in [1, 1.5, "s", true, [1], {"a": 1}, (1,)]:
     print(type(v))
 
 # Two values of one type answer the same thing, and two of different types do

@@ -68,7 +68,7 @@ acc = 0
 
 def push(items):
     global acc
-    for x in items:
+    for _, x in items:
         acc = acc + x
 
 push([1, 2, 3])

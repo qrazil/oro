@@ -1,11 +1,11 @@
 # Building lists and dicts, indexing, iteration, tuple unpacking.
 squares = []
-for i in range(6, start=1):
+for _, i in range(6, start=1):
     squares.append(i * i)
 print(squares)
 
 counts = {}
-for w in ["red", "blue", "red", "green", "blue", "red"]:
+for _, w in ["red", "blue", "red", "green", "blue", "red"]:
     counts[w] = counts.get(w, default=0) + 1
 print(counts)
 
@@ -13,7 +13,7 @@ for word, n in counts:
     print(word, n)
 
 pairs = [(1, "one"), (2, "two"), (3, "three")]
-for num, word in pairs:
+for _, (num, word) in pairs:
     print(num, word)
 
 d = {"a": 1, "b": 2}

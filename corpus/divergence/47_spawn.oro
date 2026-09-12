@@ -13,7 +13,7 @@
 order = []
 
 def worker(name, n):
-    for i in range(n):
+    for _, i in range(n):
         order.append(name)
     return name.upper()
 
@@ -35,13 +35,13 @@ print("joining twice gives the same value:", t.join() == "A")
 total = {"n": 0}
 
 def bump(k):
-    for i in range(k):
+    for _, i in range(k):
         total["n"] = total["n"] + 1
 
 ts = []
-for k in [10, 20, 30]:
+for _, k in [10, 20, 30]:
     ts.append(spawn(bump, k))
-for h in ts:
+for _, h in ts:
     h.join()
 print("three tasks summed into one dict:", total["n"] == 60)
 
@@ -86,7 +86,7 @@ def refusal(thunk):
 direct = [refusal(() => recorded(1, bogus=2)), refusal(() => recorded(1, a=2)), refusal(() => recorded(b=2)), refusal(() => recorded(1, 2, 3))]
 spawned = [refusal(() => spawn(recorded, 1, bogus=2)), refusal(() => spawn(recorded, 1, a=2)), refusal(() => spawn(recorded, b=2)), refusal(() => spawn(recorded, 1, 2, 3))]
 print("spawn refuses what the direct call refuses, in the same words:", direct == spawned)
-for m in spawned:
+for _, m in spawned:
     print("  TypeError:", m)
 spawn(recorded, "the one real task").join()
 print("and no refused spawn left a task behind:", ran == ["the one real task"])

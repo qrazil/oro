@@ -4,7 +4,7 @@ print(len(d))
 print(d["a"])
 print(d.get("zz"))
 counts = {}
-for w in ["x", "y", "x", "z", "x"]:
+for _, w in ["x", "y", "x", "z", "x"]:
     if w in counts:
         counts[w] = counts[w] + 1
     else:

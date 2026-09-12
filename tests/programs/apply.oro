@@ -3,7 +3,7 @@ def describe(label, values, scale=1):
     print(label)
     print(values)
     total = 0
-    for a in values:
+    for _, a in values:
         total = total + a
     print(total)
     print(scale)

@@ -175,7 +175,7 @@ def acceptor(n):
     while i < n:
         conns.append(spawn(serve, ln.accept()))
         i = i + 1
-    for t in conns:
+    for _, t in conns:
         t.join()
 
 def slow():
@@ -629,7 +629,7 @@ d.join()
 w.join()
 ln.close()
 
-for line in log:
+for _, line in log:
     print(line)
 "#,
     );
@@ -719,7 +719,7 @@ while i < 12:
     i = i + 1
 
 total = 0
-for t in tasks:
+for _, t in tasks:
     total = total + t.join()
 ln.close()
 print("resolved", len(tasks), "sum", total)

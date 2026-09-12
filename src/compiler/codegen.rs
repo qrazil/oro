@@ -628,6 +628,7 @@ impl<'a> Codegen<'a> {
     }
 
     fn emit_for(&mut self, target: &Expr, iter: &Expr, body: &[Stmt]) -> CResult<()> {
+        self.check_for_target(target)?;
         let (il, ic) = iter.pos();
         // SetupLoop before the iterator so the loop block's saved stack depth is
         // *below* the iterator — a `break` then removes it on the way out.
@@ -659,6 +660,41 @@ impl<'a> Codegen<'a> {
         self.scope = saved_scope;
         self.cursor = saved_cursor;
         Ok(())
+    }
+
+    /// Every `for` binds an `(index, value)` pair — there is no single-binding
+    /// `for`, and there is no truthiness or bare element to fall back on. So the
+    /// target must be exactly two top-level bindings; a lone name or a 3-name
+    /// target is refused, with the pair form spelled out.
+    ///
+    /// `for i, v in xs` binds both; `for _, v in xs` the value only; `for i, _
+    /// in xs` the index only; and a tuple *element* is a nested pattern in the
+    /// value slot: `for _, (a, b, c) in triples`.
+    fn check_for_target(&self, target: &Expr) -> CResult<()> {
+        if let Expr::Tuple { elements, .. } | Expr::List { elements, .. } = target {
+            if elements.len() == 2 {
+                return Ok(());
+            }
+            let (l, c) = target.pos();
+            return Err(self.err(
+                format!(
+                    "a `for` loop binds an (index, value) pair, but this target has {} \
+                     names — use `for _, (…) in xs` to destructure a tuple element",
+                    elements.len()
+                ),
+                l,
+                c,
+            ));
+        }
+        let (l, c) = target.pos();
+        Err(self.err(
+            "a `for` loop binds an (index, value) pair — write `for _, x in xs` for the \
+             value, `for i, x in xs` for both, `for i, _ in xs` for the index. A dict \
+             yields `(key, value)`; every other iterable's index is its position (a \
+             generator's is a counter)",
+            l,
+            c,
+        ))
     }
 
     /// Patch a `SetupLoop`'s continue point. `setup` is its slot in the

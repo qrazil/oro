@@ -13,7 +13,6 @@ print(xs.take(2), xs.drop(4), xs.chunk(2))
 print(["a", "b", "c"].join(", "))
 print([[1, 2], [3], [4, 5]].flatten())
 print([1, 2, 3].zip(["a", "b"]))
-print(["x", "y"].enumerate())
 
 # callback-taking
 print(xs.sort_by(x => -x))
@@ -52,7 +51,7 @@ print(d.count((k, v) => v > 1), d.any((k, v) => v > 2))
 
 # generators can start a chain
 def nums(n):
-    for i in range(n):
+    for _, i in range(n):
         yield i
 
 print(nums(10).filter(x => x % 2 == 0).sum())

@@ -39,7 +39,7 @@ print(0xff > 0o377 - 1, 0b1010 == 10)
 d = {0xff: "hex", 0o17: "oct"}
 print(d[255], d[15])
 
-for n in [0xf, 0o7, 0b1, 1_0]:
+for _, n in [0xf, 0o7, 0b1, 1_0]:
     match n:
         case 0xf:
             print(n, "matched the hex pattern")

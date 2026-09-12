@@ -1686,12 +1686,12 @@ impl Vm {
                     // not a half-taken step.
                     let frame = self.task.frames.last_mut().expect("no active frame");
                     let advance = match frame.stack.last() {
-                        Some(it @ Value::Iter(_)) => iter_next(it).ok(),
+                        Some(it @ Value::Iter(_)) => iter_next_pair(it).ok(),
                         _ => None,
                     };
                     match advance {
-                        Some(Some(v)) => {
-                            frame.stack.push(v);
+                        Some(Some((i, v))) => {
+                            frame.stack.push(Value::Tuple(OroTuple::new(vec![i, v])));
                             continue;
                         }
                         Some(None) => {
@@ -2190,9 +2190,9 @@ impl Vm {
                             }
                         }
                     } else {
-                        let next = self.wrap(iter_next(&it))?;
+                        let next = self.wrap(iter_next_pair(&it))?;
                         match next {
-                            Some(v) => self.push(v),
+                            Some((i, v)) => self.push(Value::Tuple(OroTuple::new(vec![i, v]))),
                             None => {
                                 self.pop(); // discard the exhausted iterator
                                 self.top().pc = target;
@@ -2242,7 +2242,17 @@ impl Vm {
                     let (gen, driver) = self.task.gen_stack.pop().expect("yield outside a generator");
                     put_gen_frame(&mut gen.borrow_mut(), frame);
                     match driver {
-                        GenDriver::ForLoop(_) => self.push(value),
+                        GenDriver::ForLoop(_) => {
+                            // Every `for` yields (index, value); a generator's
+                            // index is a 0-based counter held on the GenBox.
+                            let idx = {
+                                let mut g = gen.borrow_mut();
+                                let i = g.for_index;
+                                g.for_index += 1;
+                                i
+                            };
+                            self.push(Value::Tuple(OroTuple::new(vec![Value::Int(idx), value])));
+                        }
                         GenDriver::Materialize => {
                             self.task.mat_jobs.last_mut().expect("materialise job").items.push(value);
                             return self.drive_materialize();
@@ -3063,7 +3073,7 @@ impl Vm {
                     // Calling a generator function does not run it; it produces a
                     // generator holding the suspended (unstarted) frame.
                     let gen =
-                        crate::value::GenBox { done: false, frame: Some(Box::new(Some(frame))) };
+                        crate::value::GenBox { done: false, for_index: 0, frame: Some(Box::new(Some(frame))) };
                     self.push(Value::Generator(Rc::new(RefCell::new(gen))));
                 } else {
                     self.task.frames.push(frame);
@@ -3178,7 +3188,7 @@ impl Vm {
         let mut frame = self.bind_call(func, Some(receiver.clone()), args, kwargs)?;
         frame.super_ctx = Some((defclass, receiver));
         let gen =
-            crate::value::GenBox { done: false, frame: Some(Box::new(Some(frame))) };
+            crate::value::GenBox { done: false, for_index: 0, frame: Some(Box::new(Some(frame))) };
         self.push(Value::Generator(Rc::new(RefCell::new(gen))));
         Ok(Step::Next)
     }
@@ -6118,7 +6128,7 @@ fn store_param(frame: &mut Frame, target: VarTarget, value: Value) {
 
 fn get_iter(v: &Value) -> VResult<Value> {
     let state = match v {
-        Value::Range(r) => IterState::Range { cur: r.start, stop: r.stop, step: r.step },
+        Value::Range(r) => IterState::Range { cur: r.start, stop: r.stop, step: r.step, n: 0 },
         Value::List(l) => {
             IterState::List { list: l.clone(), idx: 0, orig_len: l.borrow().len() }
         }
@@ -6149,7 +6159,7 @@ fn iter_next(it: &Value) -> VResult<Option<Value>> {
     };
     let mut st = it.borrow_mut();
     match &mut *st {
-        IterState::Range { cur, stop, step } => {
+        IterState::Range { cur, stop, step, .. } => {
             let go = if *step > 0 { *cur < *stop } else { *cur > *stop };
             if go {
                 let v = *cur;
@@ -6204,6 +6214,86 @@ fn iter_next(it: &Value) -> VResult<Option<Value>> {
                 let (k, v) = items[*idx].clone();
                 *idx += 1;
                 Ok(Some(Value::Tuple(OroTuple::new(vec![k, v]))))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+}
+
+/// The `for`-loop step: every `for` yields an `(index, value)` pair. The index
+/// is the element's *position* for an ordered sequence (list, tuple, str, bytes,
+/// range), and the *key* for a dict — the same pair the collection protocol
+/// hands a dict callback. Generators and channels are self-driven and paired at
+/// their delivery sites (with a 0-based counter), so they never reach here.
+fn iter_next_pair(it: &Value) -> VResult<Option<(Value, Value)>> {
+    let it = match it {
+        Value::Iter(i) => i,
+        _ => return Err(runtime_error("internal: ForIter target is not an iterator")),
+    };
+    let mut st = it.borrow_mut();
+    match &mut *st {
+        IterState::Range { cur, stop, step, n } => {
+            let go = if *step > 0 { *cur < *stop } else { *cur > *stop };
+            if go {
+                let v = *cur;
+                let idx = *n;
+                *cur += *step;
+                *n += 1;
+                Ok(Some((Value::Int(idx), Value::Int(v))))
+            } else {
+                Ok(None)
+            }
+        }
+        IterState::List { list, idx, orig_len } => {
+            let cur_len = list.borrow().len();
+            if cur_len != *orig_len {
+                return Err(runtime_error("list changed size during iteration"));
+            }
+            if *idx < cur_len {
+                let v = list.borrow()[*idx].clone();
+                let i = *idx as i64;
+                *idx += 1;
+                Ok(Some((Value::Int(i), v)))
+            } else {
+                Ok(None)
+            }
+        }
+        IterState::Tuple { tuple, idx } => {
+            if *idx < tuple.len() {
+                let v = tuple[*idx].clone();
+                let i = *idx as i64;
+                *idx += 1;
+                Ok(Some((Value::Int(i), v)))
+            } else {
+                Ok(None)
+            }
+        }
+        IterState::Str { chars, idx } => {
+            if *idx < chars.len() {
+                let v = Value::str(chars[*idx].clone());
+                let i = *idx as i64;
+                *idx += 1;
+                Ok(Some((Value::Int(i), v)))
+            } else {
+                Ok(None)
+            }
+        }
+        IterState::Bytes { bytes, idx } => {
+            if *idx < bytes.len() {
+                let v = Value::Int(bytes[*idx] as i64);
+                let i = *idx as i64;
+                *idx += 1;
+                Ok(Some((Value::Int(i), v)))
+            } else {
+                Ok(None)
+            }
+        }
+        IterState::DictPairs { items, idx } => {
+            if *idx < items.len() {
+                let (k, v) = items[*idx].clone();
+                *idx += 1;
+                Ok(Some((k, v)))
             } else {
                 Ok(None)
             }

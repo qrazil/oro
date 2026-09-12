@@ -111,7 +111,7 @@ check("pairs work as well as a dict", http.encode_query([["a", "1"], ["a", "2"]]
 # keeps the last of a repeated key, which is a limit of a dict and not of the
 # encoding — the wire carries both.
 print("--- built here, read back by this module's own parser")
-for q in [{"q": "a&b"}, {"q": "a=b"}, {"q": "a+b"}, {"q": "a b"}, {"q": "a%b"}, {"q": "a/b?c#d"}, {"q": "café ☕"}, {"": ""}, {"q": ""}]:
+for _, q in [{"q": "a&b"}, {"q": "a=b"}, {"q": "a+b"}, {"q": "a b"}, {"q": "a%b"}, {"q": "a/b?c#d"}, {"q": "café ☕"}, {"": ""}, {"q": ""}]:
     encoded = http.encode_query(q)
     back = http.parse_url("http://h/?" + encoded).query
     print(f"    {q} -> {encoded} -> {back} {back == q}")

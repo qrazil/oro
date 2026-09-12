@@ -9,14 +9,14 @@
 
 def total(nums):
     t = 0
-    for n in nums:
+    for _, n in nums:
         t = t + n
     return t
 
 
 def describe(name, tags, w=0, h=0):
     out = name
-    for t in tags:
+    for _, t in tags:
         out = out + " " + t
     return out + f" w={w} h={h}"
 

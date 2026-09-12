@@ -52,7 +52,7 @@ def _scrub_line(line):
 
 def show(label, raw):
     print(f"--- {label}")
-    for line in scrub(raw).split(sep=b"\r\n"):
+    for _, line in scrub(raw).split(sep=b"\r\n"):
         print(f"    {line}")
 
 

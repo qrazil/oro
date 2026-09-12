@@ -14,10 +14,9 @@
 words = ["ant", "bee", "cat", "dog"]
 counts = [3, 1, 4, 1]
 
-print("--- enumerate")
-print([f"{i}:{w}" for i, w in enumerate(words)])
-print([w for i, w in enumerate(words) if i % 2 == 0])
-print([n for n in [i * 10 for i, w in enumerate(words, start=1) if w != "bee"] if n > 10])
+print("--- an index in a chain is range(len(xs)).zip(xs)")
+print([f"{i}:{w}" for i, w in zip(range(len(words)), words)])
+print([w for i, w in zip(range(len(words)), words) if i % 2 == 0])
 
 print("--- zip")
 pairs = list(zip(words, counts))

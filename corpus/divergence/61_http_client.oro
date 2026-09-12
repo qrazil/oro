@@ -26,7 +26,7 @@ def check(label, got, want):
 
 def show(label, raw):
     print(f"--- {label}")
-    for line in raw.split(sep=b"\r\n"):
+    for _, line in raw.split(sep=b"\r\n"):
         print(f"    {line}")
 
 

@@ -24,16 +24,16 @@ import http
 
 def row(items):
     line = []
-    for it in items:
+    for _, it in items:
         line.append(it)
     print(line.join(" "))
 
 
 def table(label, f):
     print(f"--- {label}")
-    for i in range(256, step=16):
+    for _, i in range(256, step=16):
         cells = []
-        for j in range(16):
+        for _, j in range(16):
             cells.append(f([i + j].to_bytes()).to_str())
         row(cells)
 
@@ -58,7 +58,7 @@ print(http.quote(UNRESERVED, safe="") == UNRESERVED)
 # --- safe= --------------------------------------------------------------------
 SUBJECT = "a/b?c=d&e f+g:h@i;j,k$l~m"
 print("--- safe=")
-for safe in ["", "/", "/?", ":/?#[]@", "!$&'()*+,;=", "abc", " "]:
+for _, safe in ["", "/", "/?", ":/?#[]@", "!$&'()*+,;=", "abc", " "]:
     print(f"safe={safe!r} {http.quote(SUBJECT, safe=safe)}")
     print(f"safe={safe!r} {http.quote_plus(SUBJECT, safe=safe)}")
 
@@ -71,7 +71,7 @@ print(http.quote("a/b c", safe=""))
 
 # --- non-ASCII is UTF-8 octets, each escaped ----------------------------------
 print("--- utf-8")
-for s in ["café", "☕", "naïve résumé", "日本語", "é", "ÿ", "😀"]:
+for _, s in ["café", "☕", "naïve résumé", "日本語", "é", "ÿ", "😀"]:
     print(http.quote(s, safe=""), http.quote_plus(s))
 
 
@@ -121,14 +121,14 @@ def roundtrips(b):
 
 print("--- round trip")
 bad = 0
-for i in range(256):
+for _, i in range(256):
     if not roundtrips([i].to_bytes()):
         bad = bad + 1
 print("every single octet:", bad)
 
 bad = 0
-for i in range(256):
-    for j in range(256):
+for _, i in range(256):
+    for _, j in range(256):
         if not roundtrips([i, j].to_bytes()):
             bad = bad + 1
 print("every pair of octets:", bad)
@@ -137,10 +137,10 @@ print("every pair of octets:", bad)
 # depends on Oro and CPython agreeing about anything but arithmetic.
 bad = 0
 seed = 12345
-for n in range(2000):
+for _, n in range(2000):
     length = seed % 40
     parts = []
-    for k in range(length):
+    for _, k in range(length):
         seed = (seed * 1103515245 + 12345) % 2147483648
         parts.append(seed % 256)
     seed = (seed * 1103515245 + 12345) % 2147483648

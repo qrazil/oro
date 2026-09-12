@@ -6,17 +6,17 @@
 # where CPython still checks it — only the casts had to move.
 lines = ["alice,30,dallas", "bob,25,austin", "carol,35,houston"]
 rows = []
-for line in lines:
+for _, line in lines:
     rows.append(line.split(sep=","))
 
 total = 0
-for r in rows:
+for _, r in rows:
     total = total + r[1].to_int()
 print(total)
 
 oldest = ""
 best = 0
-for r in rows:
+for _, r in rows:
     age = r[1].to_int()
     if age > best:
         best = age

@@ -91,7 +91,7 @@ shapes = [
 ]
 
 checksum = 0
-for shape in shapes:
+for _, shape in shapes:
     text = json.stringify(shape[1])
     checksum = checksum + rounds(text, shape[1], shape[2])
 

@@ -108,7 +108,7 @@ use std::time::{Duration, Instant};
 use crate::exc::{os_error, runtime_error, timeout_error, type_error, value_error, Exc, VErr};
 use crate::stream::{Io, OroStream};
 use crate::task::{Channel, TaskHandle, TaskId, TaskState};
-use crate::value::{MethodKind, VResult, Value};
+use crate::value::{MethodKind, OroTuple, VResult, Value};
 
 use super::{Frame, ReturnAction, RuntimeError, Step, Task, Vm, VmError};
 
@@ -1644,7 +1644,21 @@ impl Vm {
         // Borrow, decide, drop — never a borrow held across `wake_*`.
         let waiter = ch.recv_waiters.borrow_mut().pop_front();
         if let Some(rid) = waiter {
-            self.wake_with_value(rid, v);
+            // A `for msg in ch` receiver is woken with an (index, value) pair,
+            // like every `for`; a plain `recv()` receiver is woken with the bare
+            // value. The parked task's `Park` says which.
+            let is_iter = matches!(
+                self.parked.get(&rid).map(|p| &p.park),
+                Some(Park::IterRecv(..))
+            );
+            let delivered = if is_iter {
+                let n = ch.iter_index.get();
+                ch.iter_index.set(n + 1);
+                Value::Tuple(OroTuple::new(vec![Value::Int(n), v]))
+            } else {
+                v
+            };
+            self.wake_with_value(rid, delivered);
             self.push(Value::None);
             return Ok(Step::Next);
         }
@@ -1715,7 +1729,11 @@ impl Vm {
         target: usize,
     ) -> Result<Step, VmError> {
         if let Some(v) = self.chan_take(&ch) {
-            self.push(v);
+            // Every `for` yields (index, value); a channel's index is a 0-based
+            // receive counter held on the Channel.
+            let n = ch.iter_index.get();
+            ch.iter_index.set(n + 1);
+            self.push(Value::Tuple(OroTuple::new(vec![Value::Int(n), v])));
             return Ok(Step::Next);
         }
         if ch.closed.get() {

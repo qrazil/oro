@@ -23,14 +23,14 @@ PROSE = [
     "nan is not JSON serializable",
 ]
 
-for s in PROSE:
+for _, s in PROSE:
     try:
         s.to_int()
         print("no raise:", s)
     except ValueError as e:
         print("to_int", type(e), f"{e}")
 
-for s in PROSE:
+for _, s in PROSE:
     try:
         s.to_float()
         print("no raise:", s)
@@ -46,6 +46,6 @@ def parse_id(raw):
     except ValueError:
         return -1
 
-for s in PROSE:
+for _, s in PROSE:
     print("handler", parse_id(s))
 print("handler", parse_id("12"))

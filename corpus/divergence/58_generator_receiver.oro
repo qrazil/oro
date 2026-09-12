@@ -21,7 +21,7 @@
 
 
 def nums():
-    for i in range(5):
+    for _, i in range(5):
         yield i
 
 
@@ -48,7 +48,6 @@ print(words().unique())
 print(nums().take(2), nums().drop(3))
 print(nums().chunk(2))
 print(nums().zip([9, 8]))
-print(nums().enumerate())
 print(words().join(", "))
 print(nums().map(x => [x]).flatten())
 
@@ -76,7 +75,7 @@ print(empty().to_list(), empty().sum(), empty().to_bool(), empty().to_str())
 
 
 def outer():
-    for x in nums():
+    for _, x in nums():
         yield x * 10
 
 

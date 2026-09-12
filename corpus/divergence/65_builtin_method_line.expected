@@ -2,7 +2,7 @@
 `sorted` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `xs.sort_by(x => x)`, or `xs.sort_by(f, reverse=true)` with a key
 `any` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `xs.any(p)`, or `xs.any(x => x)` for truthiness
 `all` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `xs.all(p)`, or `xs.all(x => x)` for truthiness
-`enumerate` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `xs.enumerate()`, or `xs.enumerate(start=1)` to start elsewhere
+`enumerate` is not in Oro — every `for` yields (index, value), so write `for i, x in xs` (and `for _, x in xs` when the index is unused)
 `zip` is not defined in Oro — a builtin takes scalars and a collection method takes a collection: use `a.zip(b)`, which takes any number of further sequences
 ---
 1 3 0.5 b
@@ -22,8 +22,8 @@ max() takes two or more values in Oro — a builtin takes scalars and a collecti
 [(0, 0, 0), (1, 1, 1)]
 1 3 5
 2 4 6
-[(0, 7), (1, 8)] [(1, 7), (2, 8)]
-enumerate() takes no positional arguments — the start is named: `xs.enumerate(start=n)`
+0 7
+1 8
 3 13 0
 [1, 2, 3] (1, 2, 3) ()
 [1, 2, 3]
@@ -33,7 +33,6 @@ enumerate() takes no positional arguments — the start is named: `xs.enumerate(
 sort_by() takes exactly 1 argument
 ---
 ('a', 2) ('b', 1)
-[(0, ('b', 1)), (1, ('a', 2))]
 [(('b', 1), 10), (('a', 2), 20)]
 true true 2
 {'a': 2, 'b': 1} {} <class 'dict'>
@@ -43,4 +42,4 @@ d.sum() -> unsupported operand type(s) for +: 'int' and 'tuple'
 a `str` is not a collection in Oro — `s.to_list()` is the bridge into the collection protocol, so write `s.to_list().sort_by(x => x)`
 a `bytes` is not a collection in Oro — `b.to_list()` is the bridge into the collection protocol, so write `b.to_list().sort_by(x => x)`
 `len` is a builtin in Oro and not a method on `str`/`bytes` — write `len(s)`
-['a', 'b'] 97 [(0, 'a'), (1, 'b')]
+['a', 'b'] 97

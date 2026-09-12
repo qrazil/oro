@@ -23,7 +23,7 @@ except KeyError as e:
 # Insertion order survives a removal from the middle, and a re-inserted key goes
 # to the back rather than back to where it was.
 n = {}
-for i in range(6):
+for _, i in range(6):
     n[i] = i * i
 print(n.pop(2))
 print(n)

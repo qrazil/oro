@@ -25,41 +25,41 @@ SUBS = ["b", "", "abc", "é", "😀"]
 
 
 print("--- str.find(sub, start=, end=)")
-for s in STRS:
-    for sub in SUBS:
+for _, s in STRS:
+    for _, sub in SUBS:
         row = [s.find(sub)]
-        for start in BOUNDS:
+        for _, start in BOUNDS:
             row.append(s.find(sub, start=start))
-            for end in BOUNDS:
+            for _, end in BOUNDS:
                 row.append(s.find(sub, start=start, end=end))
         print(repr(s), repr(sub), row)
 
 print("--- str.startswith(prefix, start=, end=)")
-for s in STRS:
-    for sub in SUBS:
+for _, s in STRS:
+    for _, sub in SUBS:
         row = [s.startswith(sub)]
-        for start in BOUNDS:
+        for _, start in BOUNDS:
             row.append(s.startswith(sub, start=start))
-            for end in BOUNDS:
+            for _, end in BOUNDS:
                 row.append(s.startswith(sub, start=start, end=end))
         print(repr(s), repr(sub), row)
 
 print("--- str.endswith(suffix, start=, end=)")
-for s in STRS:
-    for sub in SUBS:
+for _, s in STRS:
+    for _, sub in SUBS:
         row = [s.endswith(sub)]
-        for start in BOUNDS:
+        for _, start in BOUNDS:
             row.append(s.endswith(sub, start=start))
-            for end in BOUNDS:
+            for _, end in BOUNDS:
                 row.append(s.endswith(sub, start=start, end=end))
         print(repr(s), repr(sub), row)
 
 print("--- str.replace(old, new, count=)")
-for s in STRS:
-    for old in ["a", "", "ab", "é", "α"]:
-        for new in ["X", "", "yy", "éé"]:
+for _, s in STRS:
+    for _, old in ["a", "", "ab", "é", "α"]:
+        for _, new in ["X", "", "yy", "éé"]:
             row = [s.replace(old, new)]
-            for count in COUNTS:
+            for _, count in COUNTS:
                 row.append(s.replace(old, new, count=count))
             print(repr(s), repr(old), repr(new), row)
 
@@ -69,9 +69,9 @@ for s in STRS:
 # U+001C..U+001F as whitespace and Rust's `char::is_whitespace` does not, which
 # `split()` shared.
 print("--- str.strip(chars=)")
-for s in ["  hi  ", "xxhixx", "xyxhixyx", "", "xxx", "\thi\n ", "ααhiα", "a\x1cb\x1d", "\x1c\x1e hi \x1f"]:
+for _, s in ["  hi  ", "xxhixx", "xyxhixyx", "", "xxx", "\thi\n ", "ααhiα", "a\x1cb\x1d", "\x1c\x1e hi \x1f"]:
     row = [s.strip()]
-    for chars in ["x", "xy", "", "α", "abc"]:
+    for _, chars in ["x", "xy", "", "α", "abc"]:
         row.append(s.strip(chars=chars))
     print(repr(s), row, s.split())
 
@@ -81,12 +81,12 @@ for s in ["  hi  ", "xxhixx", "xyxhixyx", "", "xxx", "\thi\n ", "ααhiα", "a\x
 # empty needle is where the window is visible: it is found once per position
 # *in the window*, so the bounds change the answer even when nothing matches.
 print("--- str.count(sub, start=, end=)")
-for s in STRS:
-    for sub in SUBS:
+for _, s in STRS:
+    for _, sub in SUBS:
         row = [s.count(sub)]
-        for start in BOUNDS:
+        for _, start in BOUNDS:
             row.append(s.count(sub, start=start))
-            for end in BOUNDS:
+            for _, end in BOUNDS:
                 row.append(s.count(sub, start=start, end=end))
         print(repr(s), repr(sub), row)
 
@@ -95,57 +95,57 @@ BYTES = [b"abcabc", b"abc", b"", b"\xc3\xa9x\xc3\xa9", b"\x00a\xff"]
 BSUBS = [b"b", b"", b"abc", b"\xc3\xa9", b"\xff"]
 
 print("--- bytes.find(sub, start=, end=)")
-for s in BYTES:
-    for sub in BSUBS:
+for _, s in BYTES:
+    for _, sub in BSUBS:
         row = [s.find(sub)]
-        for start in BOUNDS:
+        for _, start in BOUNDS:
             row.append(s.find(sub, start=start))
-            for end in BOUNDS:
+            for _, end in BOUNDS:
                 row.append(s.find(sub, start=start, end=end))
         print(repr(s), repr(sub), row)
 
 print("--- bytes.count(sub, start=, end=)")
-for s in BYTES:
-    for sub in BSUBS:
+for _, s in BYTES:
+    for _, sub in BSUBS:
         row = [s.count(sub)]
-        for start in BOUNDS:
+        for _, start in BOUNDS:
             row.append(s.count(sub, start=start))
-            for end in BOUNDS:
+            for _, end in BOUNDS:
                 row.append(s.count(sub, start=start, end=end))
         print(repr(s), repr(sub), row)
 
 print("--- bytes.startswith / endswith(affix, start=, end=)")
-for s in BYTES:
-    for sub in BSUBS:
+for _, s in BYTES:
+    for _, sub in BSUBS:
         row = [s.startswith(sub), s.endswith(sub)]
-        for start in BOUNDS:
+        for _, start in BOUNDS:
             row.append(s.startswith(sub, start=start))
             row.append(s.endswith(sub, start=start))
-            for end in BOUNDS:
+            for _, end in BOUNDS:
                 row.append(s.startswith(sub, start=start, end=end))
                 row.append(s.endswith(sub, start=start, end=end))
         print(repr(s), repr(sub), row)
 
 print("--- bytes.replace(old, new, count=)")
-for s in BYTES:
-    for old in [b"a", b"", b"ab", b"\xc3\xa9"]:
-        for new in [b"X", b"", b"yy"]:
+for _, s in BYTES:
+    for _, old in [b"a", b"", b"ab", b"\xc3\xa9"]:
+        for _, new in [b"X", b"", b"yy"]:
             row = [s.replace(old, new)]
-            for count in COUNTS:
+            for _, count in COUNTS:
                 row.append(s.replace(old, new, count=count))
             print(repr(s), repr(old), repr(new), row)
 
 print("--- bytes.strip(chars=)")
-for s in BYTES:
+for _, s in BYTES:
     row = [s.strip()]
-    for chars in [b"a", b"ab", b"", b"\xff\x00"]:
+    for _, chars in [b"a", b"ab", b"", b"\xff\x00"]:
         row.append(s.strip(chars=chars))
     print(repr(s), row)
 
 print("--- bytes.count(sub)")
-for s in BYTES:
+for _, s in BYTES:
     row = []
-    for sub in BSUBS:
+    for _, sub in BSUBS:
         row.append(s.count(sub))
     print(repr(s), row)
 

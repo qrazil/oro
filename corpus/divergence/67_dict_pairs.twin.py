@@ -17,8 +17,6 @@
 #   d.sort_by(p => p)        ->  dict(sorted(d.items())) — `sort_by` rebuilds the
 #                                shape it was handed, and a sorted sequence of
 #                                entries is a dict
-#   d.enumerate()            ->  list(enumerate(d.items())) — Oro's enumerate is
-#                                eager, also recorded in 59_dict_views.oro
 #   d.min() / d.max()        ->  min(...) / max(...) — the builtins are cut; a
 #                                builtin takes scalars, a collection method
 #                                takes a collection
@@ -75,7 +73,6 @@ print(
 
 print(list(d.items()))
 print(dict(sorted(d.items())))
-print(list(enumerate(d.items())))
 print(min(d.items()), max(d.items()))
 print({k: v * 10 for k, v in d.items()})
 print({k: v for k, v in d.items() if v > 1})

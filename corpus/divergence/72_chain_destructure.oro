@@ -10,16 +10,16 @@
 #
 # The rule: a callback with two or more parameters destructures its element
 # exactly as `for a, b in xs` does, and a callback with one takes the element
-# whole. So the protocol's own pair-making steps — `enumerate`, `zip`, a dict's
-# `to_list()`, `group_by` — feed its own callbacks.
+# whole. So the protocol's own pair-making steps — `zip`, a dict's `to_list()`,
+# `group_by` — feed its own callbacks. (There is no `enumerate`: an index in a
+# chain is `range(len(xs)).zip(xs)`, and in a loop it is `for i, x in xs`.)
 
 words = ["ant", "bee", "cat", "dog"]
 counts = [3, 1, 4, 1]
 
-print("--- enumerate")
-print(words.enumerate().map((i, w) => f"{i}:{w}"))
-print(words.enumerate().filter((i, w) => i % 2 == 0).map((i, w) => w))
-print(words.enumerate(start=1).filter((i, w) => w != "bee").map((i, w) => i * 10).filter(n => n > 10))
+print("--- an index in a chain is range(len(xs)).zip(xs)")
+print(range(len(words)).zip(words).map((i, w) => f"{i}:{w}"))
+print(range(len(words)).zip(words).filter((i, w) => i % 2 == 0).map((i, w) => w))
 
 print("--- zip")
 pairs = words.zip(counts)

@@ -11,7 +11,7 @@
 
 def collect(g):
     out = []
-    for v in g:
+    for _, v in g:
         out.append(v)
     return out
 
@@ -21,13 +21,13 @@ class Counter:
         self.n = n
 
     def up(self):
-        for i in range(self.n):
+        for _, i in range(self.n):
             yield i
 
 
 c = Counter(3)
 out = []
-for x in c.up():
+for _, x in c.up():
     out.append(x)
 print(out)
 
@@ -38,11 +38,11 @@ print(out)
 
 g = c.up()
 first = []
-for x in g:
+for _, x in g:
     first.append(x)
     break
 rest = []
-for x in g:
+for _, x in g:
     rest.append(x)
 print(first, rest)
 
@@ -57,14 +57,14 @@ print(collect(c.up()))
 
 class Tens(Counter):
     def up(self):
-        for x in super().up():
+        for _, x in super().up():
             yield x * 10
 
 
 print(collect(Tens(4).up()))
 t = Tens(3)
 seen = []
-for x in t.up():
+for _, x in t.up():
     seen.append(x)
 print(seen)
 
@@ -77,11 +77,11 @@ class Pipeline:
         self.items = items
 
     def each(self):
-        for it in self.items:
+        for _, it in self.items:
             yield it
 
     def evens(self):
-        for it in self.each():
+        for _, it in self.each():
             if it % 2 == 0:
                 yield it
 

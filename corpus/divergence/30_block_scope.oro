@@ -3,7 +3,7 @@
 # Under CPython this script prints 9 then 2; under Oro both lookups must
 # be errors. This file is NOT part of the CPython differential set.
 
-for i in range(10):
+for _, i in range(10):
     leaked = i
 
 print(leaked)

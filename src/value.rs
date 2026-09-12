@@ -582,7 +582,10 @@ impl RangeVal {
 
 /// The state backing a live iterator. Each `ForIter` step advances it.
 pub enum IterState {
-    Range { cur: i64, stop: i64, step: i64 },
+    /// `n` is the position counter — a `for` yields `(index, value)`, and a
+    /// range's index is its position, which the raw `cur`/`step` do not give
+    /// directly once `start` is not zero.
+    Range { cur: i64, stop: i64, step: i64, n: i64 },
     /// Iterates by index, remembering the original length so a size change
     /// during iteration is reported as a clean error rather than silently
     /// skipping or panicking.
@@ -843,6 +846,11 @@ fn same_name(k: &Rc<str>, name: &str) -> bool {
 /// frame layout. `done` is set when the generator is exhausted.
 pub struct GenBox {
     pub done: bool,
+    /// The position counter for a `for` loop over this generator: a `for` yields
+    /// `(index, value)`, and a generator's index is a plain 0-based counter (it
+    /// has no positions to speak of, and may be infinite). Bumped once per value
+    /// delivered to a `for` driver; untouched by materialisation into a chain.
+    pub for_index: i64,
     /// The generator's frame slot: a box holding `Some(frame)` while it is
     /// suspended and `None` while it is running (its frame is then on some
     /// task's frame stack). `yield` is statement-only in Oro, so resuming just

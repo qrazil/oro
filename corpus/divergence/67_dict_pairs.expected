@@ -16,7 +16,6 @@ key c
 `dict.items()` is not in Oro — iterating a dict already yields its (key, value) pairs, so write `for k, v in d`; `d.to_list()` is the list of pairs
 [('b', 2), ('a', 1), ('c', 3)]
 {'a': 1, 'b': 2, 'c': 3}
-[(0, ('b', 2)), (1, ('a', 1)), (2, ('c', 3))]
 ('a', 1) ('c', 3)
 {'b': 20, 'a': 10, 'c': 30}
 {'b': 2, 'c': 3}

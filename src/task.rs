@@ -108,6 +108,10 @@ pub struct Channel {
     /// trying to hand over. The value lives here rather than on the parked task
     /// so a receiver can take it without reaching into another task's stack.
     pub send_waiters: RefCell<VecDeque<(TaskId, Value)>>,
+    /// The position counter for `for msg in ch`: a `for` yields `(index, value)`,
+    /// and a channel's index is a 0-based receive counter. Bumped once per value
+    /// handed to a `for` driver, never by a plain `recv()`.
+    pub iter_index: Cell<i64>,
 }
 
 impl Channel {
@@ -118,6 +122,7 @@ impl Channel {
             closed: Cell::new(false),
             recv_waiters: RefCell::new(VecDeque::new()),
             send_waiters: RefCell::new(VecDeque::new()),
+            iter_index: Cell::new(0),
         }
     }
 

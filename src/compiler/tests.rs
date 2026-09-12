@@ -67,7 +67,7 @@ fn loop_accumulator_rebinds_outer_variable() {
     // `total` is declared before the loop; the in-loop assignment rebinds it
     // rather than creating a fresh block-local, so there is exactly one local
     // for it and no cell.
-    let code = compile_src("total = 0\nfor i in [1, 2, 3]:\n    total = total + i\n");
+    let code = compile_src("total = 0\nfor _, i in [1, 2, 3]:\n    total = total + i\n");
     // `total` and (nothing else at module level) => at least one local.
     assert!(code.nlocals >= 1);
     assert_eq!(code.ncells, 0);
@@ -125,7 +125,7 @@ fn a_jump_out_of_finally_is_refused() {
     let cases = [
         ("def f():\n    try:\n        pass\n    finally:\n        return 1\n", "`return`"),
         ("while true:\n    try:\n        pass\n    finally:\n        break\n", "`break`"),
-        ("for x in [1]:\n    try:\n        pass\n    finally:\n        continue\n", "`continue`"),
+        ("for _, x in [1]:\n    try:\n        pass\n    finally:\n        continue\n", "`continue`"),
         (
             "def f():\n    try:\n        pass\n    finally:\n        if true:\n            return 1\n",
             "`return`",
@@ -151,11 +151,11 @@ fn a_jump_out_of_finally_is_refused() {
 #[test]
 fn a_jump_that_stays_inside_finally_is_allowed() {
     compile_src(
-        "try:\n    pass\nfinally:\n    for x in [1, 2]:\n        if x == 1:\n            \
+        "try:\n    pass\nfinally:\n    for _, x in [1, 2]:\n        if x == 1:\n            \
          continue\n        break\n",
     );
     compile_src("try:\n    pass\nfinally:\n    def g():\n        return 1\n");
-    compile_src("def f():\n    for x in [1]:\n        try:\n            return x\n        finally:\n            pass\n");
+    compile_src("def f():\n    for _, x in [1]:\n        try:\n            return x\n        finally:\n            pass\n");
 }
 
 // --- Type keywords ----------------------------------------------------------
@@ -181,7 +181,7 @@ fn every_binding_form_refuses_a_type_keyword() {
         ("dict = {}\n", "a variable"),
         ("str += 1\n", "a variable"),
         ("a, list = 1, 2\n", "a variable"),
-        ("for str in [1]:\n    pass\n", "a loop variable"),
+        ("for _, str in [1]:\n    pass\n", "a loop variable"),
         ("def bytes():\n    pass\n", "a function name"),
         ("class int:\n    pass\n", "a class name"),
         ("def f(dict):\n    return dict\n", "a parameter name"),
@@ -200,6 +200,26 @@ fn every_binding_form_refuses_a_type_keyword() {
             e.message
         );
     }
+}
+
+/// Every `for` binds an `(index, value)` pair. A single binding is refused
+/// naming the pair form; a target of any width other than two is refused naming
+/// the nested spelling for a tuple element.
+#[test]
+fn a_for_target_must_be_a_pair() {
+    let single = compile_err("for x in [1, 2]:\n    pass\n");
+    assert!(single.message.contains("binds an (index, value) pair"), "got {}", single.message);
+    assert!(single.message.contains("for _, x in xs"), "got {}", single.message);
+
+    let three = compile_err("for a, b, c in [(1, 2, 3)]:\n    pass\n");
+    assert!(three.message.contains("this target has 3 names"), "got {}", three.message);
+    assert!(three.message.contains("for _, (…) in xs"), "got {}", three.message);
+
+    // The pair forms all compile.
+    compile_src("for i, v in [1, 2]:\n    pass\n");
+    compile_src("for _, v in [1, 2]:\n    pass\n");
+    compile_src("for i, _ in [1, 2]:\n    pass\n");
+    compile_src("for _, (a, b) in [(1, 2)]:\n    pass\n");
 }
 
 /// A type keyword is reserved in the *variable* namespace and nowhere else. A

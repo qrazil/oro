@@ -18,13 +18,13 @@
 # The first two blocks entire: C0 controls, printable ASCII, DEL, the C1
 # controls, and the Latin-1 supplement. Every code point here has been assigned
 # since Unicode 1.0, so no Unicode-version skew can reach this loop.
-for i in range(256):
+for _, i in range(256):
     print(i, repr(chr(i)))
 
 # U+2000..U+202F: the densest mix of the escaping categories anywhere — Zs
 # spaces (2000-200A, 202F), Cf invisibles (200B-200F, 202A-202E), Zl (2028) and
 # Zp (2029), interleaved with ordinary printable punctuation.
-for i in range(8240, start=8192):
+for _, i in range(8240, start=8192):
     print(i, repr(chr(i)))
 
 # One case per category the rule names, plus the printable neighbours that must

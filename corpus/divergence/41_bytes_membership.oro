@@ -34,7 +34,7 @@ except TypeError as e:
 print(b"abc".find([5].to_bytes()), b"abc".find([97].to_bytes()))
 print(b"abc"[0] == 97, b"abc"[0] == 5)
 found = false
-for octet in b"abc":
+for _, octet in b"abc":
     if octet == 97:
         found = true
 print("found by iteration:", found)

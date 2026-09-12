@@ -93,7 +93,7 @@ def raw_conn(conn):
         # A head in five packets, with the terminating CRLFCRLF split across
         # two of them. `read_until` is what makes this a non-event; a
         # hand-rolled `read(n)` loop is what makes it a heisenbug.
-        for piece in [b"HTTP/1.1 2", b"00 OK\r\ncontent-len", b"gth: 5\r\nx-slow: yes\r", b"\n\r", b"\nfive!"]:
+        for _, piece in [b"HTTP/1.1 2", b"00 OK\r\ncontent-len", b"gth: 5\r\nx-slow: yes\r", b"\n\r", b"\nfive!"]:
             conn.write(piece)
             time.sleep(0.01)
     elif target == b"/silent":

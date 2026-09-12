@@ -29,7 +29,7 @@ PROSE = [
 
 # A missing key is a KeyError whatever the key says.
 d = {"a": 1}
-for k in PROSE:
+for _, k in PROSE:
     try:
         d[k]
         print("no raise for", k)

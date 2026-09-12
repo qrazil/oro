@@ -37,7 +37,7 @@ pipe = chan(cap=1)
 def consume():
     g = pipe.recv()
     out = []
-    for v in g:
+    for _, v in g:
         out.append(v)
     return out
 
@@ -53,14 +53,14 @@ print("a generator survived the trip down a channel:", c.join() == [10, 20, 30])
 gate = chan()
 
 def blocking():
-    for n in range(3):
+    for _, n in range(3):
         gate.recv()
         yield n
 
 shared = blocking()
 
 def drive(tag):
-    for v in shared:
+    for _, v in shared:
         print("  " + tag + " advanced the generator to " + v.to_str())
 
 first = spawn(drive, "first")
@@ -79,12 +79,12 @@ except ChannelClosed:
 
 # --- a generator that iterates itself is the single-task case of the same bug -
 def selfeater():
-    for x in eater:
+    for _, x in eater:
         yield x
 
 eater = selfeater()
 try:
-    for x in eater:
+    for _, x in eater:
         print("UNREACHABLE")
 except ValueError as e:
     print("and a generator cannot advance itself either:", e)
@@ -113,7 +113,7 @@ print("the module body ran exactly once for both:", true)
 # Pre-existing bug: the path went into the in-progress set before the body ran
 # and only came out on success, so a retry after a failure reported a circular
 # import instead of the real error.
-for attempt in ["first", "second"]:
+for _, attempt in ["first", "second"]:
     try:
         import taskmods.broken as broken
         print("UNREACHABLE", broken)

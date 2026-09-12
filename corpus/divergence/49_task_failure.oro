@@ -68,7 +68,7 @@ def survive(tag):
 
 hs = [spawn(crash, "a"), spawn(survive, "b"), spawn(crash, "c"), spawn(survive, "d")]
 outcomes = []
-for h in hs:
+for _, h in hs:
     try:
         outcomes.append(h.join())
     except RuntimeError as e:

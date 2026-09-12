@@ -1,0 +1,55 @@
+# DIVERGENCE: every `for` binds an `(index, value)` pair. CPython's `for` binds
+# the element, so this cannot be oracled against it. Reviewed by hand.
+#
+# The index is the element's *position* for an ordered sequence — list, tuple,
+# str, bytes, range — and the *key* for a dict (the same pair the collection
+# protocol hands a dict callback). A generator's index is a plain 0-based
+# counter, since it has no positions to speak of and may be infinite.
+#
+# `_` in a target discards, so `for _, v in xs` is value-only and `for i, _ in
+# xs` is index-only. A tuple *element* is a nested pattern in the value slot.
+
+# --- position is the index for the ordered sequences ------------------------
+for i, v in ["a", "b", "c"]:
+    print(i, v)
+for i, v in "x", "y":
+    print(i, v)
+for i, ch in "hi":
+    print(i, ch)
+for i, byte in b"AB":
+    print(i, byte)
+for i, n in range(3):
+    print(i, n)
+# A range with a start: the index is the position, the value is the number.
+for i, n in range(30, start=10, step=10):
+    print(i, n)
+
+# --- a dict's index is its key ----------------------------------------------
+for k, v in {"one": 1, "two": 2}:
+    print(k, v)
+
+# --- a generator's index is a 0-based counter -------------------------------
+def letters():
+    yield "p"
+    yield "q"
+    yield "r"
+
+for i, c in letters():
+    print(i, c)
+
+# --- the discard: value-only, index-only ------------------------------------
+for _, v in [10, 20, 30]:
+    print("v", v)
+for i, _ in [10, 20, 30]:
+    print("i", i)
+
+# --- a tuple element is a nested pattern in the value slot ------------------
+for _, (name, count) in [("ant", 3), ("bee", 1)]:
+    print(name, count)
+# The index is still available alongside the destructured element.
+for i, (a, b) in [("x", 1), ("y", 2)]:
+    print(i, a, b)
+
+# --- an index in a chain is range(len(xs)).zip(xs) (there is no enumerate) --
+words = ["ant", "bee", "cat"]
+print(range(len(words)).zip(words).map((i, w) => f"{i}:{w}"))

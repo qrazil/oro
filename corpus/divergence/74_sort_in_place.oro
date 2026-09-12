@@ -77,7 +77,7 @@ print(dupes)
 
 print("--- sorting a long list, where the reordering is the whole of the work")
 long = []
-for i in range(50):
+for _, i in range(50):
     long.append(i * 37 % 50)
 long.sort_in_place(x => x)
 print(long.first(), long.last(), len(long))

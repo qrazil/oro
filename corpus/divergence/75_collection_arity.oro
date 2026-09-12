@@ -14,10 +14,11 @@
 #   the count      `take`/`drop`/`chunk` ignored a second argument and answered
 #                  a *ValueError* when given none, because the count was an
 #                  optional parameter with a sentinel default. It is required.
-#   the start      `sum` and `enumerate` take theirs by name, so `xs.sum(10)`
-#                  and `xs.enumerate(1)` — where the number said nothing about
-#                  what it was — are refused, and so is `start=null`, which
-#                  would be a second spelling of leaving it out.
+#   the start      `sum` takes its start by name, so `xs.sum(10)` — where the
+#                  number said nothing about what it was — is refused, and so is
+#                  `start=null`, which would be a second spelling of leaving it
+#                  out. (`enumerate` is gone entirely — every `for` yields the
+#                  index — so it takes nothing at all.)
 #   the sorts      `xs.sorted()` and `list.sort()` are gone; each says which of
 #                  `sort_by` and `sort_in_place` replaced it.
 def positive(x):
@@ -25,7 +26,7 @@ def positive(x):
 
 
 print("--- any/all/count need their predicate")
-for name in ["any", "all", "count"]:
+for _, name in ["any", "all", "count"]:
     try:
         if name == "any":
             print([1, 0].any())
@@ -41,7 +42,7 @@ print([1, 0].any(x => x), [1, 0].all(x => x), [1, 0].count(x => x))
 print([1, 0].any(positive), [0, 0].any(positive), [].all(x => x))
 
 print("--- take/drop/chunk need their count, and refuse a second argument")
-for call in ["take", "take2", "takestr", "takebool", "drop", "chunk", "chunk0", "takeneg"]:
+for _, call in ["take", "take2", "takestr", "takebool", "drop", "chunk", "chunk0", "takeneg"]:
     try:
         if call == "take":
             print([1, 2].take())
@@ -67,7 +68,7 @@ for call in ["take", "take2", "takestr", "takebool", "drop", "chunk", "chunk0", 
 # A fused chain reads the count the same way. Before it was required, the
 # fused `take` declined these two shapes and the native one then ran on the
 # *unmapped* receiver: `[1, 2, 3].map(x => x * 10).take(true)` answered `[1]`.
-for call in ["bool", "extra"]:
+for _, call in ["bool", "extra"]:
     try:
         if call == "bool":
             print([1, 2, 3].map(x => x * 10).take(true))
@@ -77,28 +78,22 @@ for call in ["bool", "extra"]:
         print("TypeError:", e)
 print([1, 2, 3].map(x => x * 10).take(2))
 
-print("--- sum and enumerate take their start by name")
-for call in ["sumpos", "sumnull", "sumbogus", "enumpos", "enumnull", "enumstr"]:
+print("--- sum takes its start by name")
+for _, call in ["sumpos", "sumnull", "sumbogus"]:
     try:
         if call == "sumpos":
             print([1, 2].sum(10))
         elif call == "sumnull":
             print([1, 2].sum(start=null))
-        elif call == "sumbogus":
-            print([1, 2].sum(base=10))
-        elif call == "enumpos":
-            print([7, 8].enumerate(1))
-        elif call == "enumnull":
-            print([7, 8].enumerate(start=null))
         else:
-            print([7, 8].enumerate(start="x"))
+            print([1, 2].sum(base=10))
     except TypeError as e:
         print(e)
 
-print([1, 2].sum(start=10), [7, 8].enumerate(start=1))
+print([1, 2].sum(start=10))
 
 print("--- sort_by takes the function, and takes `reverse=` by name")
-for call in ["none", "notfn", "revint", "revnull", "bogus"]:
+for _, call in ["none", "notfn", "revint", "revnull", "bogus"]:
     try:
         if call == "none":
             print([1, 2].sort_by())
@@ -114,7 +109,7 @@ for call in ["none", "notfn", "revint", "revnull", "bogus"]:
         print(e)
 
 print("--- sort_in_place is the same shape, on a list only")
-for call in ["none", "two", "notfn", "revint", "tuple", "dict", "gen"]:
+for _, call in ["none", "two", "notfn", "revint", "tuple", "dict", "gen"]:
     try:
         if call == "none":
             print([1, 2].sort_in_place())
@@ -136,7 +131,7 @@ for call in ["none", "two", "notfn", "revint", "tuple", "dict", "gen"]:
         print(e)
 
 print("--- the two cut sorts name their replacement")
-for call in ["sorted", "sortedkw", "sort", "sortkw", "strsorted"]:
+for _, call in ["sorted", "sortedkw", "sort", "sortkw", "strsorted"]:
     try:
         if call == "sorted":
             print([1, 2].sorted())

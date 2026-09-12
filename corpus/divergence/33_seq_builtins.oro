@@ -1,21 +1,20 @@
 # DIVERGENCE: `list(x)`/`dict(x)` are spelled `x.to_list()`/`x.to_dict()`, and
-# `enumerate`/`zip`/`any`/`all` are collection methods rather than builtins, so
-# this cannot be oracled against CPython. Reviewed by hand.
+# `zip`/`any`/`all` are collection methods rather than builtins, so this cannot
+# be oracled against CPython. Reviewed by hand.
 #
 # The rule the second half of that records: **a builtin takes scalars, a
-# collection method takes a collection.** `enumerate`, `zip`, `any` and `all`
-# each had both spellings and they answered the same thing — until they did
-# not, which is what settled it (see 65_builtin_method_line.oro).
+# collection method takes a collection.** `zip`, `any` and `all` each had both
+# spellings and they answered the same thing — until they did not, which is what
+# settled it (see 65_builtin_method_line.oro). `enumerate` is gone entirely —
+# every `for` yields (index, value), so there is nothing left for it to do.
 print([], range(3).to_list(), "abc".to_list())
 print({}, [("a", 1), ("b", 2)].to_dict())
-print(["a", "b"].enumerate())
-print(["a", "b"].enumerate(start=1))
 print([1, 2, 3].zip([4, 5]))
 print([].zip([1]))
 print([false, true].any(x => x), [].any(x => x), [true, true].all(x => x), [true, false].all(x => x), [].all(x => x))
 print("ff".to_int(base=16), "0x1f".to_int(base=16), "777".to_int(base=8), "1010".to_int(base=2))
 print("-ff".to_int(base=16), "+10".to_int(base=10), "1_0".to_int(base=10), "z".to_int(base=36))
-for i, x in ["p", "q"].enumerate():
+for i, x in ["p", "q"]:
     print(i, x)
-for a, b in [1, 2].zip(["x", "y"]):
+for _, (a, b) in [1, 2].zip(["x", "y"]):
     print(a, b)

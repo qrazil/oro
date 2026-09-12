@@ -3,7 +3,7 @@
 
 def break_runs_finally():
     log = []
-    for i in range(5):
+    for _, i in range(5):
         try:
             if i == 2:
                 break
@@ -16,7 +16,7 @@ print(break_runs_finally())
 
 def continue_runs_finally():
     log = []
-    for i in range(4):
+    for _, i in range(4):
         try:
             if i % 2 == 0:
                 continue
@@ -30,7 +30,7 @@ print(continue_runs_finally())
 # A nested try/finally: an inner break runs BOTH finally blocks.
 def nested():
     log = []
-    for i in range(3):
+    for _, i in range(3):
         try:
             try:
                 if i == 1:

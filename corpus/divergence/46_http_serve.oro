@@ -54,7 +54,7 @@ def _scrub_line(line):
 
 def show(label, raw):
     print(f"--- {label}")
-    for line in scrub(raw).split(sep=b"\r\n"):
+    for _, line in scrub(raw).split(sep=b"\r\n"):
         print(f"    {line}")
 
 
@@ -107,7 +107,7 @@ check("the response says the connection is ending", scrub(c.sent()).find(b"conne
 
 print("--- a connection cannot be reused forever")
 capped = []
-for i in range(1200):
+for _, i in range(1200):
     capped.append(b"GET / HTTP/1.1\r\nHost: h\r\n\r\n")
 c = Conn(capped.join(b""))
 check("requests served before the cap", http.serve_conn(c, req => http.Response(200, body=b"")), 1000)

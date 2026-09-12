@@ -12,7 +12,7 @@ print(a, b)
 def minmax(xs):
     lo = xs[0]
     hi = xs[0]
-    for x in xs:
+    for _, x in xs:
         if x < lo:
             lo = x
         if x > hi:
@@ -34,7 +34,7 @@ print((9, 9) in grid)
 # Counting pairs with composite keys.
 counts = {}
 pairs = [("a", 1), ("b", 2), ("a", 1), ("a", 1)]
-for p in pairs:
+for _, p in pairs:
     if p in counts:
         counts[p] = counts[p] + 1
     else:
