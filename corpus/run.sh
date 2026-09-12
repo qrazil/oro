@@ -3,6 +3,29 @@
 set -uo pipefail
 ORO="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/target/release/oro}"
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Preflight: prove the binary exists and actually executes BEFORE the loop.
+#
+# Without this, a missing, stale, or wrong-environment binary (e.g. one linked
+# against a newer glibc than the host has — `version 'GLIBC_2.39' not found`)
+# still runs the loop: every invocation fails to launch, its loader error is
+# captured as "output", nothing matches its .expected, and the run reports a
+# catastrophic-looking `pass 0  fail 103`. That number is a lie — the corpus
+# was never run — so say exactly what went wrong instead.
+if [[ ! -e "$ORO" ]]; then
+  echo "run.sh: oro binary not found: $ORO" >&2
+  echo "  build it first (cargo build --release) or pass a path: run.sh /path/to/oro" >&2
+  exit 2
+fi
+if ! probe="$("$ORO" --version 2>&1)"; then
+  echo "run.sh: oro binary will not execute: $ORO" >&2
+  echo "  it exists but failed to run — the corpus was NOT run. The error was:" >&2
+  printf '    %s\n' "$probe" >&2
+  echo "  (a 'GLIBC_x.yz not found' here means the binary was built for a newer" >&2
+  echo "   environment than this host; rebuild it, e.g. for musl static linking.)" >&2
+  exit 2
+fi
+
 pass=0; fail=0
 for f in "$DIR"/core/*.oro; do
   exp="${f%.oro}.expected"
