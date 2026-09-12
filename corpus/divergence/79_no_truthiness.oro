@@ -1,0 +1,77 @@
+# Oro has no truthiness. `if`, `while`, `and`, `or` and `not` take a `bool` and
+# nothing else; a non-bool faults with a TypeError that names the explicit test
+# the caller meant — emptiness for a collection, `!= 0` for a number, `!= null`
+# for anything that might be absent. This program is deliberate divergence:
+# every line below runs without complaint under CPython.
+
+# --- `if` on each non-bool shape --------------------------------------------
+try:
+    if [1]:
+        print("no")
+except TypeError as e:
+    print(e)
+
+try:
+    if "x":
+        print("no")
+except TypeError as e:
+    print(e)
+
+try:
+    if {1: 2}:
+        print("no")
+except TypeError as e:
+    print(e)
+
+try:
+    if 5:
+        print("no")
+except TypeError as e:
+    print(e)
+
+try:
+    if 1.5:
+        print("no")
+except TypeError as e:
+    print(e)
+
+try:
+    if null:
+        print("no")
+except TypeError as e:
+    print(e)
+
+# --- `while` ----------------------------------------------------------------
+try:
+    while [1]:
+        print("no")
+except TypeError as e:
+    print(e)
+
+# --- `and` / `or`: both operands must be bool -------------------------------
+try:
+    x = "" and true
+except TypeError as e:
+    print(e)
+
+try:
+    x = true and []
+except TypeError as e:
+    print(e)
+
+# The falsy-fallback trap is now unrepresentable: `name or "anon"` is a fault,
+# not a silent replacement of a legitimate empty string.
+try:
+    x = false or "anon"
+except TypeError as e:
+    print(e)
+
+# --- `not` ------------------------------------------------------------------
+try:
+    x = not [1]
+except TypeError as e:
+    print(e)
+
+# A comparison is a bool, so it composes freely.
+print(len([]) == 0 and not 1 != 1)
+print(true or false, false and true, not 0 == 1)

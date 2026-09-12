@@ -597,6 +597,25 @@ fn unpack_exact(seq: &Value, n: usize) -> VResult<Vec<Value>> {
     }))
 }
 
+/// A condition or boolean operand that is not a `bool`. Oro has no truthiness:
+/// `if`, `while`, `and`, `or` and `not` take a `bool` and nothing else, so a
+/// non-bool here is a fault that names the explicit test the caller meant. The
+/// suggested spelling follows the value's type — emptiness for a collection,
+/// `!= 0` for a number, `!= null` for anything that might be absent.
+fn not_bool(v: &Value, ctx: &str) -> VErr {
+    let suggestion = match v {
+        Value::Str(_) | Value::Bytes(_) | Value::List(_) | Value::Tuple(_)
+        | Value::Dict(_) | Value::Range(_) => "len(x) != 0",
+        Value::Int(_) | Value::Big(_) | Value::Float(_) => "x != 0",
+        _ => "x != null",
+    };
+    type_error(format!(
+        "{ctx} must be a bool, not '{}' — Oro has no truthiness, so write the test: `{}`",
+        v.type_label(),
+        suggestion
+    ))
+}
+
 /// How many arguments an Oro callback asks for its element to be spread over,
 /// or `None` for a native callable, which declares no parameters to count.
 ///
@@ -1827,7 +1846,17 @@ impl Vm {
                 }
                 Op::UnaryNot => {
                     let v = self.pop();
-                    self.push(Value::Bool(!v.truthy()));
+                    match v {
+                        Value::Bool(b) => self.push(Value::Bool(!b)),
+                        _ => return Err(self.err(not_bool(&v, "the operand of `not`"))),
+                    }
+                }
+                Op::AssertBool => {
+                    let ok = matches!(self.top().stack.last(), Some(Value::Bool(_)));
+                    if !ok {
+                        let v = self.top().stack.last().expect("operand stack underflow").clone();
+                        return Err(self.err(not_bool(&v, "the operands of `and`/`or`")));
+                    }
                 }
                 Op::BinAdd
                 | Op::BinSub
@@ -1895,28 +1924,52 @@ impl Vm {
                 }
                 Op::PopJumpIfFalse(t) => {
                     let v = self.pop();
-                    if !v.truthy() {
-                        self.top().pc = t as usize;
+                    match v {
+                        Value::Bool(b) => {
+                            if !b {
+                                self.top().pc = t as usize;
+                            }
+                        }
+                        _ => return Err(self.err(not_bool(&v, "a condition"))),
                     }
                 }
                 Op::PopJumpIfTrue(t) => {
                     let v = self.pop();
-                    if v.truthy() {
-                        self.top().pc = t as usize;
+                    match v {
+                        Value::Bool(b) => {
+                            if b {
+                                self.top().pc = t as usize;
+                            }
+                        }
+                        _ => return Err(self.err(not_bool(&v, "a condition"))),
                     }
                 }
                 Op::JumpIfFalseOrPop(t) => {
-                    if self.top().stack.last().unwrap().truthy() {
-                        self.pop();
-                    } else {
-                        self.top().pc = t as usize;
+                    match self.top().stack.last() {
+                        Some(Value::Bool(true)) => {
+                            self.pop();
+                        }
+                        Some(Value::Bool(false)) => {
+                            self.top().pc = t as usize;
+                        }
+                        _ => {
+                            let v = self.top().stack.last().unwrap().clone();
+                            return Err(self.err(not_bool(&v, "the operands of `and`/`or`")));
+                        }
                     }
                 }
                 Op::JumpIfTrueOrPop(t) => {
-                    if self.top().stack.last().unwrap().truthy() {
-                        self.top().pc = t as usize;
-                    } else {
-                        self.pop();
+                    match self.top().stack.last() {
+                        Some(Value::Bool(true)) => {
+                            self.top().pc = t as usize;
+                        }
+                        Some(Value::Bool(false)) => {
+                            self.pop();
+                        }
+                        _ => {
+                            let v = self.top().stack.last().unwrap().clone();
+                            return Err(self.err(not_bool(&v, "the operands of `and`/`or`")));
+                        }
                     }
                 }
                 Op::BuildList(n) => {

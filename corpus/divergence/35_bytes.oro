@@ -40,12 +40,12 @@ print(b"ab" in b"xaby", b"ba" in b"xaby", b"" in b"x", b"xaby" in b"xaby")
 print(b"abc" == b"abc", b"abc" == b"abd", b"abc" != b"abd")
 print(b"abc" < b"abd", b"abc" < b"ab", b"Z" < b"a", b"\xff" > b"a")
 
-# --- Truthiness -------------------------------------------------------------
-if b"":
+# --- Emptiness (Oro has no truthiness; test the length) ---------------------
+if len(b"") != 0:
     print("unreachable")
 else:
-    print("empty bytes are falsy")
-if b"\x00":
+    print("empty bytes are empty")
+if len(b"\x00") != 0:
     print("a zero octet is still one octet")
 
 # --- Type identity ----------------------------------------------------------

@@ -123,9 +123,24 @@ fn comparison_and_chaining() {
 
 #[test]
 fn boolean_short_circuit() {
-    assert_eq!(int(&eval("r = 0 or 5\n")), 5);
-    assert_eq!(int(&eval("r = 3 and 4\n")), 4);
-    assert!(matches!(eval("r = not 0\n"), Value::Bool(true)));
+    // `and`/`or`/`not` are pure boolean operators: both operands must be a bool
+    // and the result is always a bool (Oro has no truthiness, and no
+    // value-returning `or`).
+    assert!(matches!(eval("r = false or true\n"), Value::Bool(true)));
+    assert!(matches!(eval("r = true and false\n"), Value::Bool(false)));
+    assert!(matches!(eval("r = not false\n"), Value::Bool(true)));
+    // Short-circuit still holds: the right operand is not evaluated when the
+    // left decides the answer, so a fault on the right is not reached.
+    assert!(matches!(eval("r = true or (1 // 0 == 0)\n"), Value::Bool(true)));
+    assert!(matches!(eval("r = false and (1 // 0 == 0)\n"), Value::Bool(false)));
+
+    // A non-bool operand is a TypeError naming the explicit test — on the left
+    // (checked by the short-circuit jump) and on the right (checked after it).
+    assert!(run_err("r = 5 or true\n").message.starts_with("TypeError: "));
+    assert!(run_err("r = true and 5\n").message.contains("must be a bool"));
+    assert!(run_err("r = not 0\n").message.contains("the operand of `not`"));
+    // The condition path (`if`/`while`) faults the same way.
+    assert!(run_err("if [1]:\n    r = 1\n").message.contains("a condition must be a bool"));
 }
 
 #[test]

@@ -180,6 +180,11 @@ pub enum Op {
     UnaryNeg,
     UnaryPos,
     UnaryNot,
+    /// Fault unless the top of the stack is a `bool`, leaving it in place. Emitted
+    /// after the right operand of `and`/`or`, whose left operand the
+    /// short-circuit jump already checked — Oro has no truthiness, so both
+    /// operands of a boolean operator must be `bool`.
+    AssertBool,
     BinAdd,
     BinSub,
     BinMul,

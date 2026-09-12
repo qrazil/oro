@@ -1,0 +1,13 @@
+a condition must be a bool, not 'list' — Oro has no truthiness, so write the test: `len(x) != 0`
+a condition must be a bool, not 'str' — Oro has no truthiness, so write the test: `len(x) != 0`
+a condition must be a bool, not 'dict' — Oro has no truthiness, so write the test: `len(x) != 0`
+a condition must be a bool, not 'int' — Oro has no truthiness, so write the test: `x != 0`
+a condition must be a bool, not 'float' — Oro has no truthiness, so write the test: `x != 0`
+a condition must be a bool, not 'null' — Oro has no truthiness, so write the test: `x != null`
+a condition must be a bool, not 'list' — Oro has no truthiness, so write the test: `len(x) != 0`
+the operands of `and`/`or` must be a bool, not 'str' — Oro has no truthiness, so write the test: `len(x) != 0`
+the operands of `and`/`or` must be a bool, not 'list' — Oro has no truthiness, so write the test: `len(x) != 0`
+the operands of `and`/`or` must be a bool, not 'str' — Oro has no truthiness, so write the test: `len(x) != 0`
+the operand of `not` must be a bool, not 'list' — Oro has no truthiness, so write the test: `len(x) != 0`
+true
+true false true

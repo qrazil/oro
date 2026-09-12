@@ -19,7 +19,7 @@ b'abcd' b'ababab' b'ababab' b''
 true false true true
 true false true
 true false true true
-empty bytes are falsy
+empty bytes are empty
 a zero octet is still one octet
 <class 'bytes'> true false false
 b'Content-Type: text/html'

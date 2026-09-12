@@ -1,8 +1,9 @@
-falsy
-truthy
-falsy
-truthy
-falsy
-truthy
-falsy
-falsy
+true false
+true false
+true false
+true false false
+true
+absent
+nonzero
+true false true false
+false true

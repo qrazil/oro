@@ -659,7 +659,7 @@ depends on an interpreter flag — `raise` is the one way to fail.)
 
 ## Deliberate divergences from Python
 
-Oro is a subset, but in eight places it deliberately behaves *differently* from
+Oro is a subset, but in nine places it deliberately behaves *differently* from
 Python. Each divergence is a place where Python made a choice it could not later
 reverse, and Oro — starting fresh, with a single implementation — makes the
 choice Python would arguably prefer.
@@ -739,6 +739,43 @@ beforehand, to `null` or to whatever the failure case should look like. That
 placeholder is the tax this rule charges, and it is worth knowing that it can
 hide a failure: if the block does not run, the placeholder flows on instead of
 the `NameError` that would have told you. Choose it so the wrong path is loud.
+
+### No truthiness — `if` / `while` / `and` / `or` / `not` take a `bool`
+
+Oro has no truthiness. A condition, and every operand of a boolean operator, is
+a `bool` and nothing else; a non-bool is a `TypeError` that names the explicit
+test the caller meant:
+
+```python
+if xs:          # TypeError: a condition must be a bool, not 'list' — use `len(x) != 0`
+if n:           # TypeError: ... not 'int' — use `x != 0`
+if x:           # TypeError: ... — use `x != null`   (for a maybe-null value)
+```
+
+The rewrites are the ones the standard library already used, unanimously, for
+2,400 lines before this was enforced: **absence is `== null`, emptiness is
+`len(x) == 0`, a numeric zero is `== 0`.** Not one conditional in `std/` tested
+a list, string or bytes for truthiness rather than for length; the eight bare
+`if x:` tests in the whole library were all on a `bool`. So this cut breaks
+almost nothing in the tree — it writes down what the tree was already doing.
+
+**`and` and `or` are pure boolean operators that return a `bool`**, not
+CPython's value-returning versions. That is the cut's second job. In Python
+`user.get("name") or "anon"` is the idiom for a fallback, and it silently
+replaces a legitimate empty string, `0`, or `[]` — because all three are falsy.
+In Oro that expression is a `TypeError` (the left operand of `or` is not a
+`bool`), so the trap is not discouraged, it is **unrepresentable**. A fallback
+is written where it can be seen: `d.get(k, default="anon")`, or an explicit
+`if name == null`.
+
+Why this is sharper in Oro than the truthiness Python keeps: Oro chose sentinel
+returns. `s.find(x)` answers `-1` (truthy) and `0` (falsy), so `if s.find(x):`
+is wrong at both ends; `d.get(k)` cannot tell a missing key from a key holding
+`0`. A language whose lookups answer with values rather than raising cannot
+afford truthiness, and the standard library had been avoiding the edge without
+saying so. Now the language says so. `corpus/divergence/79_no_truthiness.oro`
+pins the faults; `corpus/core/04_truthiness.oro` is the explicit tests that
+replace them, and still oracles against CPython, which agrees on every line.
 
 ### The loop rule: `for … in range(n)` counts, `while` waits
 

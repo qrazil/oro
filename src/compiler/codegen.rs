@@ -1169,6 +1169,9 @@ impl<'a> Codegen<'a> {
                     BoolOp::Or => self.emit(Op::JumpIfTrueOrPop(0), *line, *col),
                 };
                 self.emit_expr(right)?;
+                // The short-circuit jump checked the left operand; the right one
+                // is whatever fell through, so it needs its own bool check.
+                self.emit(Op::AssertBool, *line, *col);
                 let end = self.here();
                 self.set_target(jump, end);
             }

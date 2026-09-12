@@ -528,7 +528,7 @@ is not listed is a parse error.
 |---|---|---|
 | arithmetic | `+` `-` `*` `/` `//` `%` `**`, unary `-` `+` | — |
 | comparison | `==` `!=` `<` `<=` `>` `>=`, chained (`1 < 2 < 3`) | `is`, `is not` |
-| logical | `and` `or` `not` | — |
+| logical | `and` `or` `not` — **operands and result are `bool`** | truthiness; value-returning `or` |
 | membership | `in`, `not in` | — |
 | assignment | `=`, `+=` `-=` `*=` `/=`, tuple unpacking | `//=` `%=` `**=`, chained `a = b = c`, walrus `:=` |
 | bitwise | *nothing* | `&` `\|` `^` `~` `<<` `>>` |
@@ -563,6 +563,15 @@ Three consequences worth stating plainly:
   which is why `is` could be cut. `len == len` is true (builtins compare by
   name) and `a.m == a.m` is true (bound methods compare by receiver and
   function).
+- **There is no truthiness.** `if`, `while`, `and`, `or` and `not` take a
+  `bool` and nothing else; a non-bool is a `TypeError` that names the test the
+  caller meant (`if xs:` → `use len(xs) != 0`, `if n:` → `use n != 0`, `if x:`
+  on a maybe-null value → `use x != null`). `and`/`or` are therefore pure
+  boolean operators returning a `bool`, not CPython's value-returning versions,
+  so `name or "anon"` is a fault rather than a silent fallback — the falsy-value
+  trap where a legitimate `""`, `0` or `[]` is replaced cannot be written. A
+  fallback is `d.get(k, default=…)` or an explicit `if x == null`; the migration
+  table in [§6](#6-cut-and-what-to-write-instead) lists the rewrites.
 
 ### 4.3 Lambdas, and chains instead of comprehensions
 
@@ -1976,6 +1985,11 @@ yourself reaching for a Python spelling, look here first.
 | Python | Oro |
 |---|---|
 | `lambda x: x * 2` | `x => x * 2` |
+| `if xs:` / `while xs:` (a collection) | `if len(xs) != 0:` — no truthiness |
+| `if n:` (a number) | `if n != 0:` |
+| `if x:` (a maybe-null value) | `if x != null:` |
+| `name = d.get(k) or "anon"` (falsy fallback) | `name = d.get(k, default="anon")`, or an explicit `if name == null` — `or` takes bools |
+| `x and y` / `x or y` returning an operand | both operands are `bool`, the result is a `bool` |
 | `x is y` / `x is not y` | `x == y` / `x != y` |
 | `True` / `False` / `None` | `true` / `false` / `null` |
 | `a if c else b` | an `if`/`else` statement |
