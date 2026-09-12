@@ -11,5 +11,5 @@ for _, w in ["x", "y", "x", "z", "x"]:
         counts[w] = 1
 # The three `sorted(...)` lines are in
 # corpus/divergence/71_collection_methods.oro: the builtin is cut and
-# `d.keys().sort_by(k => k)` is not Python.
+# `d.keys().sort(k => k)` is not Python.
 print(counts["x"])

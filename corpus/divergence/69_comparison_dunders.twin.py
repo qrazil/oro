@@ -10,7 +10,7 @@
 #
 #   xs.sort_by(x => x)                ->  sorted(xs)
 #   xs.sort_by(f, reverse=True)       ->  sorted(xs, key=f, reverse=True)
-#   xs.sort_in_place(f, reverse=True) ->  xs.sort(key=f, reverse=True)
+#   xs = xs.sort(f, reverse=True) ->  xs.sort(key=f, reverse=True)
 #   xs.min() / xs.max()               ->  min(xs) / max(xs)
 #   true / false / null               ->  True / False / None
 #

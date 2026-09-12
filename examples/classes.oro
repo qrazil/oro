@@ -77,7 +77,7 @@ def parse(text):
 
 versions = ["v1.4.2", "v2.0.0-rc1", "v0.9.11", "v2.0.0", "v1.10.0"].map(t => parse(t))
 print(versions)
-print(versions.sort_by(v => v).map(v => v.to_str()).join("  <  "))
+print(versions.sort(v => v).map(v => v.to_str()).join("  <  "))
 
 # Ask the object, do not ask its type: `stable()` is the question, and the
 # subclass answering it differently is the reason the subclass exists.

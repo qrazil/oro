@@ -341,10 +341,8 @@ b.scan(allowed)                             bytes only: leading run inside a byt
 ### `list` ([5.6](#56-list)), `dict` ([5.8](#58-dict)), `range` ([5.9](#59-range))
 
 ```text
-xs.append(x) / xs.extend(iterable)      -> null
+xs.append(x) / xs.extend(iterable)      -> null (a list's element mutators stay)
 xs.pop(index=-1)                        remove and return; index is keyword-only
-xs.reverse()                            in place, -> null
-xs.sort_in_place(f, reverse=false)      in place, lists only, -> null
 d.get(key, default=null)                fallback is keyword-only
 d.pop(key) / d.pop(key, default=v)      raises KeyError / returns v
 d.keys() / d.values()                   plain lists, not views
@@ -358,7 +356,7 @@ xs.len()                       element count
 xs.sum(start=0)                fold with +
 xs.min() / xs.max()            extreme element
 xs.first() / xs.last()         end element; IndexError when empty
-xs.reversed()                  reversed copy
+xs.reverse()                   a new reversed collection
 xs.unique()                    first occurrences
 xs.take(n) / xs.drop(n)        prefix / rest; n required
 xs.chunk(n)                    list of n-sized lists
@@ -367,7 +365,7 @@ xs.zip(other, ...)             n-way, truncated to the shortest
 xs.join(sep)                   str or bytes, from the separator's type
 xs.map(f) / xs.filter(p)       type-preserving
 xs.flat_map(f)                 -> list
-xs.sort_by(f, reverse=false)   the only keyed sort; reverse= is stable descending
+xs.sort(f, reverse=false)   the only keyed sort; reverse= is stable descending
 xs.group_by(f)                 -> dict of key -> list
 xs.partition(p)                -> (matching, rest)
 xs.find(p)                     first match or null; short-circuits
@@ -1163,34 +1161,34 @@ print(round(1250, ndigits=-2), round(2.675, ndigits=2))
 - Float repr is CPython's shortest-round-trip form.
 ### 5.6 `list`
 
-A list has five methods of its own, and the whole collection protocol on top.
-The three mutators answer `null`, as CPython's do.
+A list has three methods of its own — the element mutators — and the whole
+collection protocol on top. The mutators answer `null`, as CPython's do; they
+add and remove single elements, which is different from a *transform* like
+`sort` or `reverse` (those return a new collection, below).
 
 | signature | returns | raises | note |
 |---|---|---|---|
 | `xs.append(x)` | `null` | `TypeError` on the wrong arity | |
 | `xs.extend(iterable)` | `null` | `TypeError` if not iterable | |
 | `xs.pop(index=-1)` | the element | `IndexError` on an empty list or a bad index | **CPython trap**: the index is keyword-only, so that a positional argument to `pop` only ever means a dict key. |
-| `xs.reverse()` | `null` | — | In place. `xs.reversed()` is the copy. |
-| `xs.sort_in_place(f, reverse=false)` | `null` | `TypeError` on a non-list receiver | The in-place half of `sort_by`. Lists only. |
 
 ```oro
 xs = [3, 1, 2]
 xs.append(4)
 xs.extend([5])
 print(xs, xs.pop(), xs.pop(index=0), xs)
-xs.reverse()
+xs = xs.sort(x => x)     # sort returns a new list — rebind it
 print(xs)
-xs.sort_in_place(x => x)
+xs = xs.reverse()        # reverse likewise
 print(xs)
-ys = [3, 1, 2]
-ys.sort_in_place(x => x, reverse=true)
-print(ys)
 ```
 
-Absent: `insert`, `remove`, `index`, `clear`, `copy`, `sort`, and `count(value)`
-— `xs.count(p)` takes a *predicate* (see 5.10). `list.sort` raises, naming
-`sort_in_place`.
+Absent: `insert`, `remove`, `index`, `clear`, `copy`, and `count(value)` —
+`xs.count(p)` takes a *predicate* (see 5.10). There is **no in-place `sort` or
+`reverse`**: `xs.sort(f)` and `xs.reverse()` return a new collection (5.10), so
+the aliasing bug where a shared list is reordered under another name cannot be
+written. `sorted`, `sort_in_place` and `reversed` each raise, naming the new
+spelling.
 
 ### 5.7 `tuple`
 
@@ -1200,7 +1198,7 @@ that select or reorder give a tuple back.
 
 ```oro
 t = (3, 1, 2)
-print(t.len(), t.sum(), t.first(), t.sort_by(x => x), t.map(x => x * 2))
+print(t.len(), t.sum(), t.first(), t.sort(x => x), t.map(x => x * 2))
 print(t[0], t[0:2], len(t), 1 in t, t + (9,), (1,) * 2)
 d = {(1, "a"): "v"}
 print(d[(1, "a")])
@@ -1227,7 +1225,7 @@ print({"a": 1}.pop("zz", default="fallback"))
 for k, v in {"k": 1}:
     print(k, v)
 print({"a": 1, "b": 2}.filter((k, v) => v > 1), {"a": 1}.map((k, v) => (k, v * 2)))
-print(d.keys().sort_by(k => k), d.values().sum(), d.to_list(), "b" in d, len(d))
+print(d.keys().sort(k => k), d.values().sum(), d.to_list(), "b" in d, len(d))
 ```
 
 - **`k in d` tests keys**, always — membership is a hash lookup, not a walk.
@@ -1267,7 +1265,7 @@ what replaced comprehensions, and it composes in reading order.
 Two rules govern all of it:
 
 - **Operations that select or reorder preserve the receiver's type**
-  (`map`, `filter`, `sort_by`, `unique`, `unique_by`, `reversed`, `take`, `drop`,
+  (`map`, `filter`, `sort`, `unique`, `unique_by`, `reverse`, `take`, `drop`,
   `take_while`, `drop_while`); operations that reshape the data give a `list`
   (`flatten`, `chunk`, `zip`), a `dict` (`group_by`) or a tuple of two
   (`partition`). A range or a generator has no shape to keep, so it gives a list.
@@ -1284,7 +1282,7 @@ Two rules govern all of it:
 | `xs.sum(start=0)` | the sum | `TypeError` on non-addable elements |
 | `xs.min()` / `xs.max()` | an element | `ValueError` on an empty receiver |
 | `xs.first()` / `xs.last()` | an element | `IndexError` on an empty receiver |
-| `xs.reversed()` | same type | — |
+| `xs.reverse()` | same type | — |
 | `xs.unique()` | same type | `TypeError` on an unhashable element |
 | `xs.take(n)` / `xs.drop(n)` | same type | `TypeError` if `n` is missing or not an int, `ValueError` if negative |
 | `xs.chunk(n)` | `list[list]` | `TypeError` as above, `ValueError` if `n < 1` |
@@ -1295,7 +1293,7 @@ Two rules govern all of it:
 ```oro
 xs = [3, 1, 2]
 print(xs.len(), xs.sum(), xs.sum(start=10), xs.min(), xs.max(), xs.first(), xs.last())
-print(xs.reversed(), xs.unique(), xs.take(2), xs.drop(1), xs.chunk(2))
+print(xs.reverse(), xs.unique(), xs.take(2), xs.drop(1), xs.chunk(2))
 print([[1, 2], [3]].flatten(), xs.zip([9, 8]), xs.zip([9, 8], [7, 6]))
 print(["a", "b"].join(", "))
 ```
@@ -1310,7 +1308,7 @@ with `b` discarded.
 | `xs.map(f)` | same type | whatever `f` raises |
 | `xs.filter(p)` | same type | |
 | `xs.flat_map(f)` | `list` | `TypeError` if a result is not iterable |
-| `xs.sort_by(f, reverse=false)` | same type | `TypeError` on incomparable keys |
+| `xs.sort(f, reverse=false)` | same type | `TypeError` on incomparable keys |
 | `xs.group_by(f)` | `dict` | `TypeError` on an unhashable key |
 | `xs.partition(p)` | `(matching, rest)` | |
 | `xs.find(p)` | an element, or `null` | |
@@ -1324,7 +1322,7 @@ with `b` discarded.
 ```oro
 xs = [3, 1, 2]
 print(xs.map(x => x * 2), xs.filter(x => x > 1), xs.flat_map(x => [x, x]))
-print(xs.sort_by(x => x), xs.sort_by(x => x, reverse=true), xs.unique_by(x => x % 2))
+print(xs.sort(x => x), xs.sort(x => x, reverse=true), xs.unique_by(x => x % 2))
 print(xs.group_by(x => x % 2), xs.partition(x => x > 1))
 print(xs.find(x => x > 1), xs.any(x => x > 2), xs.all(x => x > 0), xs.count(x => x > 1))
 print(xs.min_by(x => -x), xs.max_by(x => -x))
@@ -1337,13 +1335,16 @@ print(xs.reduce(0, (acc, v) => acc + v), {"a": 1, "b": 2}.reduce(0, (acc, k, v) 
 `find`, `any` and `all` short-circuit, and the stop reaches back through a fused
 chain.
 
-**Keyed sorting is only `sort_by`.** There is no `sorted()` and no `key=`:
-`xs.sort_by(x => x)` is the elements' own order, and `reverse=true` is a
-*stable* descending sort, which `xs.sort_by(f).reversed()` is not (reversing
-flips the ties too).
+**Keyed sorting is only `sort`, and it returns a new collection.** There is no
+`sorted()`, no `key=`, and no in-place sort: `xs.sort(x => x)` is the elements'
+own order, `reverse=true` is a *stable* descending sort (which `xs.sort(f).reverse()`
+is not — reversing flips the ties too), and `reverse()` likewise returns a new
+collection. `sort` returning a copy rather than mutating is a **silent
+behavioural difference from Python's `list.sort`** — see the migration note in
+[§6](#6-cut-and-what-to-write-instead).
 
 **A chain runs in one pass.** Runs of `map`/`filter` between barriers are fused,
-so no intermediate collection is built for them; `sort_by`, `reversed`,
+so no intermediate collection is built for them; `sort`, `reverse`,
 `unique`, `unique_by`, `chunk`, `flatten`, `zip`, `group_by`,
 `partition`, `min_by`, `max_by` and `take_while` are barriers that materialise.
 The receiver is copied before the first callback runs, so a chain never sees its
@@ -1363,7 +1364,7 @@ def nums():
 
 
 print(nums().to_list(), nums().sum(), nums().max(), nums().len())
-print(nums().sort_by(x => x), nums().take(2), nums().zip([9, 8]))
+print(nums().sort(x => x), nums().take(2), nums().zip([9, 8]))
 print(nums().filter(x => x % 2 == 0).sum(), nums().map(x => x * 2).take(3))
 g = nums()
 print(g.to_list(), g.to_list())
@@ -1800,7 +1801,7 @@ print(http.fetch("GET", f"http://{addr}/json", params={"q": "a&b"}).text())
 print("a raising handler ->", http.fetch("GET", f"http://{addr}/boom").status)
 ln.close()
 tally = server.join()
-print("tally:", tally.keys().sort_by(k => k), tally["accepted"] > 0)
+print("tally:", tally.keys().sort(k => k), tally["accepted"] > 0)
 ```
 
 **Shutdown is closing the listener, and nothing else.** `ready=` is a channel
@@ -1950,19 +1951,30 @@ Almost every removal **raises a message naming its replacement**, and the
 messages below are the interpreter's own, quoted from a run. If you find
 yourself reaching for a Python spelling, look here first.
 
+> **The one silent difference.** Every other cut here is loud — a `NameError`,
+> an `AttributeError`, a `TypeError` at the call. The exception is `sort` and
+> `reverse`: Python's `list.sort()` and `list.reverse()` **mutate in place and
+> return `None`**, and Oro's `xs.sort(f)` / `xs.reverse()` **return a new
+> collection and do not touch the receiver**. `xs.sort(f)` as a bare statement
+> therefore does nothing; you must rebind, `xs = xs.sort(f)`. Code ported from
+> Python compiles and runs, and quietly does something different — the one place
+> in this table where reading it is the only way to catch it. In exchange, the
+> aliasing bug where `b = a; a.sort()` reorders what `b` sees cannot be written.
+
 ### Builtins and functions
 
 | Python | Oro | why |
 |---|---|---|
-| `sorted(xs)` | `xs.sort_by(x => x)` | A builtin takes scalars; a collection method takes a collection |
-| `sorted(xs, key=f, reverse=true)` | `xs.sort_by(f, reverse=true)` | The key is the operand, so it is positional |
-| `xs.sort(key=f)` | `xs.sort_in_place(f)` | The in-place half; lists only, answers `null` |
+| `sorted(xs)` | `xs.sort(x => x)` | A builtin takes scalars; a collection method takes a collection |
+| `sorted(xs, key=f, reverse=true)` | `xs.sort(f, reverse=true)` | The key is the operand, so it is positional |
+| `xs.sort(key=f)` (Python's in-place) | `xs = xs.sort(f)` | **Silent behaviour change:** Oro's `sort` returns a new list and does *not* mutate — rebind it. There is no in-place sort. |
+| `xs.reverse()` (Python's in-place) | `xs = xs.reverse()` | Likewise a new collection, not a mutation |
 | `sum(xs)` | `xs.sum()` | as `sorted` |
 | `any(xs)` / `all(xs)` | `xs.any(x => x)` / `xs.all(x => x)` | The predicate is required; truthiness is spelled out |
 | `enumerate(xs)` / `xs.enumerate()` | `for i, x in xs` (loop), `range(len(xs)).zip(xs)` (chain) | Gone: every `for` yields `(index, value)`, so there is nothing left to do |
 | `zip(a, b)` | `a.zip(b)` | as `sorted`; takes any number of further sequences, eager |
 | `min(xs)` / `max(xs)` | `xs.min()` / `xs.max()` | `min(a, b)` over two or more values is unchanged |
-| `sorted("ba")` / `min(b"ba")` | `"ba".to_list().sort_by(x => x)` | A `str`/`bytes` is not a collection; `to_list()` is the bridge |
+| `sorted("ba")` / `min(b"ba")` | `"ba".to_list().sort(x => x)` | A `str`/`bytes` is not a collection; `to_list()` is the bridge |
 | `xs.count(v)` | `xs.count(x => x == v)` | The collection `count` takes a predicate |
 | `int(s)` / `str(x)` / `float(s)` / `bool(x)` | `s.to_int()` / `f"{x}"` or `x.to_str()` / `s.to_float()` / `x.to_bool()` | Type names are not callable; conversion is a method that chains |
 | `int(s, 16)` | `s.to_int(base=16)` | as above |

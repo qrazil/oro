@@ -6,9 +6,11 @@
 #     | sed -E 's/\bTrue\b/true/g; s/\bFalse\b/false/g; s/\bNone\b/null/g' \
 #     | diff - corpus/divergence/73_lists.expected
 #
-# The one translation:
+# The translations (Oro rebinds a new collection; CPython mutates in place, but
+# the printed values are the same):
 #
-#   xs.sort_in_place(x => x)  ->  xs.sort()
+#   xs = xs.sort(x => x)  ->  xs.sort()
+#   xs = xs.reverse()     ->  xs.reverse()
 xs = [3, 1, 4, 1, 5, 9, 2, 6]
 print(len(xs))
 print(xs[0], xs[-1])

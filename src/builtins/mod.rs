@@ -487,7 +487,7 @@ pub fn sorted_shape_of(v: &Value) -> SortedShape {
 /// ordering only a user `__lt__` can decide.
 ///
 /// It is a backstop, not a path: the VM checks every ordering entry point
-/// (`sort_by`, `sort_in_place`, `min`, `max`, and their chain spellings) for such an
+/// (`sort`, `min`, `max`, and their chain spellings) for such an
 /// operand *before* calling native code, and runs the resumable comparison
 /// itself instead. Seeing this message means an entry point was missed — which
 /// is worth a loud internal error, because the alternative for a `__lt__` that
@@ -502,7 +502,7 @@ pub fn ord_or_defer(a: &Value, b: &Value, sym: &'static str) -> VResult<std::cmp
 
 /// Stable sort of `items` by the matching entry in `keys` (the classic
 /// decorate-sort-undecorate). `reverse` inverts the *comparator* rather than
-/// reversing the result: `sort_by` is stable, so equal keys keep their original
+/// reversing the result: `sort` is stable, so equal keys keep their original
 /// order in both directions — which is what CPython guarantees. Reversing the
 /// sorted output instead would flip ties and break that.
 pub fn sort_by_keys(items: Vec<Value>, keys: &[Value], reverse: bool) -> VResult<Vec<Value>> {
@@ -904,8 +904,8 @@ pub fn cut_global_message(name: &str) -> Option<&'static str> {
         }
         "sorted" => {
             "`sorted` is not defined in Oro — a builtin takes scalars and a collection \
-             method takes a collection: use `xs.sort_by(x => x)`, or \
-             `xs.sort_by(f, reverse=true)` with a key"
+             method takes a collection: use `xs.sort(x => x)`, or \
+             `xs.sort(f, reverse=true)` with a key"
         }
         "any" => {
             "`any` is not defined in Oro — a builtin takes scalars and a collection method \
@@ -975,41 +975,41 @@ pub fn cut_method_message(recv: &Value, name: &str) -> Option<&'static str> {
     if is_seq_native(name) || crate::vm::is_seq_op(name) || name == "sorted" {
         return Some(if matches!(recv, Value::Str(_)) {
             "a `str` is not a collection in Oro — `s.to_list()` is the bridge into the \
-             collection protocol, so write `s.to_list().sort_by(x => x)`"
+             collection protocol, so write `s.to_list().sort(x => x)`"
         } else {
             "a `bytes` is not a collection in Oro — `b.to_list()` is the bridge into the \
-             collection protocol, so write `b.to_list().sort_by(x => x)`"
+             collection protocol, so write `b.to_list().sort(x => x)`"
         });
     }
     None
 }
 
-/// The two sorts that went when keyed sorting became one spelling. Sorting is
-/// `xs.sort_by(f, reverse=)`, which returns a new collection, and the elements'
-/// own order is `xs.sort_by(x => x)`; sorting a list where it is, is
-/// `xs.sort_in_place(f, reverse=)`. `sorted(key=)` and `sort_by(f)` had given
-/// identical answers under two names, and the function is the operand, so it is
-/// the positional argument, as it is for `min_by` and `group_by`.
+/// Sorting is one spelling now: `xs.sort(f, reverse=)`, which returns a new
+/// collection. There is no in-place sort and no `sorted` builtin — every
+/// collection operation returns a new collection, so the aliasing bug where
+/// `b = a; a.sort()` silently reorders what `b` sees cannot be written. The
+/// function is the operand, so it is the positional argument, as for `min_by`
+/// and `group_by`. `reversed` is likewise `reverse` now, also a new collection.
 fn cut_sort_message(recv: &Value, name: &str) -> Option<&'static str> {
     if !is_collection(recv) {
         return None;
     }
     Some(match name {
         "sorted" => {
-            "`sorted` is not in Oro — sort with `xs.sort_by(f)`: `xs.sort_by(x => x)` for \
-             the elements' own order, `xs.sort_by(f, reverse=true)` for a stable \
-             descending one"
+            "`sorted` is not in Oro — sort with `xs.sort(f)`: `xs.sort(x => x)` for the \
+             elements' own order, `xs.sort(f, reverse=true)` for a stable descending one"
         }
-        "sort" if matches!(recv, Value::List(_)) => {
-            "`list.sort` is not in Oro — sort a list where it is with \
-             `xs.sort_in_place(f)`: `xs.sort_in_place(x => x)` for the elements' own \
-             order, `xs.sort_in_place(f, reverse=true)` for a stable descending one"
+        "sort_by" => {
+            "`sort_by` is spelled `sort` in Oro — `xs.sort(f)`, or `xs.sort(x => x)` for \
+             the elements' own order"
         }
-        // Only a list can be reordered where it is; everything else in the
-        // protocol is sorted into a new collection.
-        "sort" | "sort_in_place" => {
-            "`sort_in_place` sorts a list where it is, and only a list can be changed \
-             that way — `xs.sort_by(f)` returns a sorted copy"
+        "sort_in_place" => {
+            "`sort_in_place` is not in Oro — every collection operation returns a new \
+             collection, so sorting is `xs.sort(f)` and you rebind: `xs = xs.sort(f)`"
+        }
+        "reversed" => {
+            "`reversed` is spelled `reverse` in Oro — `xs.reverse()`, which returns a new \
+             collection (there is no in-place reverse)"
         }
         _ => return None,
     })
@@ -1069,7 +1069,7 @@ pub fn method_exists(recv: &Value, name: &str) -> bool {
         // only bytes needs.
         Value::Bytes(_) => is_str_method(name) || matches!(name, "hex" | "scan"),
         Value::List(_) => {
-            matches!(name, "append" | "pop" | "extend" | "sort_in_place" | "reverse" | "map" | "filter")
+            matches!(name, "append" | "pop" | "extend" | "map" | "filter")
         }
         // map/filter are type-preserving, so every collection carries them.
         Value::Tuple(_) | Value::Range(_) | Value::Generator(_) => {
@@ -1868,7 +1868,7 @@ pub fn is_seq_native(name: &str) -> bool {
     matches!(
         name,
         "sum" | "min" | "max" | "unique" | "take" | "drop" | "first" | "last"
-            | "flatten" | "chunk" | "zip" | "join" | "reversed" | "len"
+            | "flatten" | "chunk" | "zip" | "join" | "reverse" | "len"
     )
 }
 
@@ -2052,8 +2052,8 @@ fn seq_native_method(
             }
             Ok(best)
         }
-        "reversed" => {
-            exactly(&args, 0, "reversed")?;
+        "reverse" => {
+            exactly(&args, 0, "reverse")?;
             let mut out = items;
             out.reverse();
             rebuild(shape, out)
@@ -2751,11 +2751,6 @@ fn list_method(
                 return Err(index_error("pop index out of range"));
             }
             Ok(b.remove(adj as usize))
-        }
-        "reverse" => {
-            exactly(&args, 0, "reverse")?;
-            l.borrow_mut().reverse();
-            Ok(Value::None)
         }
         _ => Err(attribute_error(format!("'list' object has no method '{name}'"))),
     }

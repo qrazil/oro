@@ -68,6 +68,6 @@ print(type(g()))
 # used to answer a string, which sorted and compared against string literals,
 # and the standard library was built on exactly that. It is not a string now.
 try:
-    print([type(1.5), type(1)].sort_by(t => t))
+    print([type(1.5), type(1)].sort(t => t))
 except TypeError as e:
     print("types do not order:", f"{e}")

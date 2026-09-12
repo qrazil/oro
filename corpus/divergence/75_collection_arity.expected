@@ -21,37 +21,19 @@ sum() takes no positional arguments — the start is named: `xs.sum(start=n)`
 sum() start must not be null — leave `start=` out for the default of 0
 sum() got an unexpected keyword argument 'base'
 13
---- sort_by takes the function, and takes `reverse=` by name
-sort_by() takes exactly 1 argument
-sort_by() needs a function, not 'int'
-sort_by() reverse must be a bool, not 'int'
-sort_by() reverse must be a bool, not 'null'
-sort_by() got an unexpected keyword argument 'key'
---- sort_in_place is the same shape, on a list only
-sort_in_place() takes exactly 1 argument, the key function (0 given) — `xs.sort_in_place(x => x)` sorts by the elements themselves
-sort_in_place() takes exactly 1 argument, the key function (2 given) — `xs.sort_in_place(x => x)` sorts by the elements themselves
-sort_in_place() needs a key function, not 'str' — `xs.sort_in_place(x => x)` sorts by the elements themselves
-sort_in_place() reverse must be a bool, not 'int'
-`sort_in_place` sorts a list where it is, and only a list can be changed that way — `xs.sort_by(f)` returns a sorted copy
-`sort_in_place` sorts a list where it is, and only a list can be changed that way — `xs.sort_by(f)` returns a sorted copy
-`sort_in_place` sorts a list where it is, and only a list can be changed that way — `xs.sort_by(f)` returns a sorted copy
---- the two cut sorts name their replacement
-`sorted` is not in Oro — sort with `xs.sort_by(f)`: `xs.sort_by(x => x)` for the elements' own order, `xs.sort_by(f, reverse=true)` for a stable descending one
-`sorted` is not in Oro — sort with `xs.sort_by(f)`: `xs.sort_by(x => x)` for the elements' own order, `xs.sort_by(f, reverse=true)` for a stable descending one
-`list.sort` is not in Oro — sort a list where it is with `xs.sort_in_place(f)`: `xs.sort_in_place(x => x)` for the elements' own order, `xs.sort_in_place(f, reverse=true)` for a stable descending one
-`list.sort` is not in Oro — sort a list where it is with `xs.sort_in_place(f)`: `xs.sort_in_place(x => x)` for the elements' own order, `xs.sort_in_place(f, reverse=true)` for a stable descending one
-a `str` is not a collection in Oro — `s.to_list()` is the bridge into the collection protocol, so write `s.to_list().sort_by(x => x)`
---- a key function that writes to the list it is sorting
-list modified during sort_in_place() — a key function or `__lt__` changed the list while it was being sorted
-[0, 1, 2] [1, 2, 3]
-list modified during sort_in_place() — a key function or `__lt__` changed the list while it was being sorted
-[1, 2, 3]
---- a key function that raises leaves the list as it was
-boom
-[3, 1, 2]
-[1, 2, 3]
-[1, 2, 3]
---- and so does a __lt__ that raises, mid-sort
+--- sort takes the function positionally, and `reverse=` by name
+sort() takes exactly 1 argument
+sort() needs a function, not 'int'
+sort() reverse must be a bool, not 'int'
+sort() reverse must be a bool, not 'null'
+sort() got an unexpected keyword argument 'key'
+--- the cut sorts name their replacement
+`sorted` is not in Oro — sort with `xs.sort(f)`: `xs.sort(x => x)` for the elements' own order, `xs.sort(f, reverse=true)` for a stable descending one
+`sorted` is not in Oro — sort with `xs.sort(f)`: `xs.sort(x => x)` for the elements' own order, `xs.sort(f, reverse=true)` for a stable descending one
+`sort_in_place` is not in Oro — every collection operation returns a new collection, so sorting is `xs.sort(f)` and you rebind: `xs = xs.sort(f)`
+`reversed` is spelled `reverse` in Oro — `xs.reverse()`, which returns a new collection (there is no in-place reverse)
+a `str` is not a collection in Oro — `s.to_list()` is the bridge into the collection protocol, so write `s.to_list().sort(x => x)`
+--- a __lt__ that raises during a sort propagates; the original is untouched
 boom-lt
 [Boom(2), Boom(1)]
 --- a key that is not orderable against the others

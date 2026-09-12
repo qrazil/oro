@@ -25,8 +25,8 @@
 #
 # An empty diff is the review, so every answer below is still CPython's.
 #
-#   xs.sort_by(x => x) / xs.sort_by(f, reverse=)  ->  sorted(xs, ...)
-#   xs.sort_in_place(x => x)                      ->  xs.sort(...)
+#   xs.sort(x => x) / xs.sort(f, reverse=)  ->  sorted(xs, ...)
+#   xs = xs.sort(x => x)                     ->  xs.sort(...)
 #   xs.min() / xs.max()                      ->  min(xs) / max(xs)
 #
 # `min(V(2), V(1), V(3))` is unchanged: two or more *values* is the form the
@@ -177,14 +177,14 @@ class V:
 
 vs = [V(3), V(1), V(4), V(1), V(5)]
 print(V(1) < V(2), V(2) < V(1), V(2) > V(1))
-print(vs.sort_by(v => v))
-print(vs.sort_by(v => v, reverse=true))
+print(vs.sort(v => v))
+print(vs.sort(v => v, reverse=true))
 print(vs.min(), vs.max())
 print(min(V(2), V(1), V(3)), max(V(2), V(1), V(3)))
 mutable = [V(3), V(1), V(2)]
-mutable.sort_in_place(v => v)
+mutable = mutable.sort(v => v)
 print(mutable)
-mutable.sort_in_place(v => v, reverse=true)
+mutable = mutable.sort(v => v, reverse=true)
 print(mutable)
 
 
@@ -192,8 +192,8 @@ def itself(v):
     return v
 
 
-print(vs.sort_by(itself))
-print(vs.sort_by(itself, reverse=true))
+print(vs.sort(itself))
+print(vs.sort(itself, reverse=true))
 print([[V(2)], [V(1)]].min(), [[V(2)], [V(1)]].max())
 
 print("--- a sort that needs __lt__ is still stable")
@@ -210,8 +210,8 @@ class Grade:
 
 
 ties = [Grade(1, "a"), Grade(0, "b"), Grade(1, "c"), Grade(0, "d"), Grade(1, "e")]
-print(ties.sort_by(g => g))
-print(ties.sort_by(g => g, reverse=true))
+print(ties.sort(g => g))
+print(ties.sort(g => g, reverse=true))
 
 print("--- ordering nested in containers")
 class W:
@@ -232,7 +232,7 @@ print([W(1)] < [W(2)], [W(2)] < [W(1)])
 print([W(1), W(3)] < [W(1), W(4)])
 print([W(1)] < [W(1), W(0)])
 print((W(1), W(2)) < (W(1), W(3)))
-print([[W(2)], [W(1)], [W(1), W(0)]].sort_by(w => w))
+print([[W(2)], [W(1)], [W(1), W(0)]].sort(w => w))
 
 print("--- the reflected ordering dunder")
 class OnlyGt:
@@ -246,7 +246,7 @@ class OnlyGt:
         return f"OnlyGt({self.n})"
 
 
-print([OnlyGt(2), OnlyGt(1)].sort_by(o => o))
+print([OnlyGt(2), OnlyGt(1)].sort(o => o))
 
 print("--- a class with no ordering is still not orderable")
 class Plain:
@@ -257,7 +257,7 @@ class Plain:
 for _, thunk in ["sort_by", "min", "max", "lt", "nested"]:
     try:
         if thunk == "sort_by":
-            print([Plain(), Plain()].sort_by(p => p))
+            print([Plain(), Plain()].sort(p => p))
         elif thunk == "min":
             print([Plain(), Plain()].min())
         elif thunk == "max":
@@ -290,7 +290,7 @@ try:
 except ValueError as e:
     print(e)
 try:
-    print([Boom(), Boom()].sort_by(b => b))
+    print([Boom(), Boom()].sort(b => b))
 except ValueError as e:
     print(e)
 try:
@@ -300,7 +300,7 @@ except ValueError as e:
 
 # The job stack must be intact afterwards: a comparison abandoned mid-flight
 # used to be able to leave one behind.
-print(a in [b], vs.sort_by(v => v))
+print(a in [b], vs.sort(v => v))
 
 print("--- a cycle is a RecursionError, not a hang and not a crash")
 x = []

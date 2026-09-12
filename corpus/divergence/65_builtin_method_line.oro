@@ -117,18 +117,18 @@ print([1, 2].sum(), [1, 2].sum(start=10), [].sum())
 
 # `sort_by` preserves the receiver's shape, which is the collection protocol's
 # stated rule for anything that reorders, and it carries the `reverse=` the
-# builtin had. `xs.sort_by(f).reversed()` is *not* `xs.sort_by(f, reverse=true)`:
+# builtin had. `xs.sort(f).reverse()` is *not* `xs.sort(f, reverse=true)`:
 # reversing a sorted sequence flips the ties too. The elements' own order is
-# `xs.sort_by(x => x)` — the key is the operand, so there is no keyword whose
+# `xs.sort(x => x)` — the key is the operand, so there is no keyword whose
 # absence means "the elements themselves".
-print([3, 1, 2].sort_by(x => x), (3, 1, 2).sort_by(x => x), ().sort_by(x => x))
-print(range(0, start=3, step=-1).sort_by(x => x))
-print(type((3, 1, 2).sort_by(x => x)))
+print([3, 1, 2].sort(x => x), (3, 1, 2).sort(x => x), ().sort(x => x))
+print(range(0, start=3, step=-1).sort(x => x))
+print(type((3, 1, 2).sort(x => x)))
 ties = [("a", 2), ("b", 1), ("c", 2), ("d", 1)]
-print(ties.sort_by(p => p[1], reverse=true))
-print(ties.sort_by(p => p[1]).reversed())
+print(ties.sort(p => p[1], reverse=true))
+print(ties.sort(p => p[1]).reverse())
 try:
-    [1].sort_by()
+    [1].sort()
 except TypeError as e:
     print(e)
 
@@ -142,7 +142,7 @@ d = {"b": 1, "a": 2}
 print(d.min(), d.max())
 print(d.zip([10, 20]))
 print(d.any(p => p), d.all(p => p), d.len())
-print(d.sort_by(p => p), {}.sort_by(p => p), type(d.sort_by(p => p)))
+print(d.sort(p => p), {}.sort(p => p), type(d.sort(p => p)))
 
 # `sum` over a dict is an attempt to add a tuple to an int, and says so.
 # `d.values().sum()` is how you add up a dict.
@@ -162,7 +162,7 @@ print("---")
 # a worse inconsistency than the loss. `to_list()` is the documented bridge, and
 # it is what the capability costs — one call, at the point it is needed.
 try:
-    "ba".sort_by(x => x)
+    "ba".sort(x => x)
 except AttributeError as e:
     print(e)
 
@@ -178,4 +178,4 @@ try:
 except AttributeError as e:
     print(e)
 
-print("ba".to_list().sort_by(x => x), b"ba".to_list().min())
+print("ba".to_list().sort(x => x), b"ba".to_list().min())

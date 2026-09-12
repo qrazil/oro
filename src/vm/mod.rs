@@ -180,7 +180,6 @@ struct Block {
 struct JobDepths {
     prints: u32,
     str_jobs: u32,
-    sort_jobs: u32,
     seq_jobs: u32,
     mat_jobs: u32,
     cmp_jobs: u32,
@@ -218,7 +217,6 @@ enum ReturnAction {
     /// Apply an f-string format spec to the returned (string) value, then push.
     FormatSpec(String),
     /// Feed the returned key into the active sort job and continue it.
-    DriveSort,
     /// Feed the returned value into the active map/filter job and continue it.
     DriveSeq,
     /// Feed the returned comparison dunder's value into the active deep
@@ -347,7 +345,7 @@ impl SeqOp {
             SeqOp::Map => "map",
             SeqOp::Filter => "filter",
             SeqOp::FlatMap => "flat_map",
-            SeqOp::SortBy => "sort_by",
+            SeqOp::SortBy => "sort",
             SeqOp::GroupBy => "group_by",
             SeqOp::Partition => "partition",
             SeqOp::Find => "find",
@@ -369,7 +367,7 @@ impl SeqOp {
             "map" => SeqOp::Map,
             "filter" => SeqOp::Filter,
             "flat_map" => SeqOp::FlatMap,
-            "sort_by" => SeqOp::SortBy,
+            "sort" => SeqOp::SortBy,
             "group_by" => SeqOp::GroupBy,
             "partition" => SeqOp::Partition,
             "find" => SeqOp::Find,
@@ -507,7 +505,7 @@ enum Spread {
     Unpack(u32),
 }
 
-/// An in-flight `.map(f)` / `.filter(p)`. Like [`SortJob`], the callback is Oro
+/// An in-flight `.map(f)` / `.filter(p)`. Like [`SeqJob`], the callback is Oro
 /// code and must run in a frame, so elements are processed one at a time and the
 /// collection is rebuilt once the last result lands.
 struct SeqJob {
@@ -546,7 +544,7 @@ struct SeqJob {
     limit: usize,
     /// `first()`: answer with the single element rather than a collection.
     pick_first: bool,
-    /// `sort_by(f, reverse=true)`: a stable descending sort. Read by no other
+    /// `sort(f, reverse=true)`: a stable descending sort. Read by no other
     /// step.
     reverse: bool,
     /// Where the step that ends the chain is written. Only a `first()` on an
@@ -654,89 +652,6 @@ fn seq_spread(func: &Value, shape: SeqShape, leading: usize) -> Spread {
     })
 }
 
-/// An in-flight `xs.sort_in_place(f, reverse=…)`. The key function is Oro
-/// code, which must run in a frame rather than by re-entering the interpreter,
-/// so keys are computed one element at a time and collected here; when the last
-/// one lands the ordering machine sorts by them.
-///
-/// The elements are not a copy: they are the list's own storage, lent out of it
-/// for the length of the sort (see [`LentList`]).
-struct SortJob {
-    lent: LentList,
-    keys: Vec<Value>,
-    next: usize,
-    keyfn: Value,
-    /// How `keyfn` takes each element — exactly as a collection step's
-    /// callback does (see [`Spread`]), so `pairs.sort_in_place((k, v) => v)`
-    /// reads the pair the way `pairs.sort_by((k, v) => v)` does.
-    spread: Spread,
-    reverse: bool,
-}
-
-/// A list's element storage, taken out of the list for the length of an
-/// in-place sort and put back when the sort ends.
-///
-/// This is how `sort_in_place` sorts the list's own storage rather than a copy
-/// of it: the vector is *moved* out and back, and in between it is reordered
-/// where it lies. It is also how a key function that writes to the list is
-/// caught. While the storage is out, the list holds an empty, unallocated
-/// vector, so a key function that looks at the list sees it empty — as
-/// CPython's does — and any write to it either leaves something in it or
-/// allocates. Either one is found when the storage comes back, and is CPython's
-/// `ValueError`; the write is discarded and the list keeps its own elements,
-/// sorted, which is CPython's rule too.
-///
-/// If the sort never finishes — a key function raises, or a `__lt__` does, or
-/// the task is torn down — whatever job holds this is dropped, and the drop
-/// puts the elements back in their original order. That is the one exit that
-/// cannot be written as a return, which is why it is a `Drop`.
-struct LentList {
-    list: Rc<OroList>,
-    items: Vec<Value>,
-    /// Where the sort is written, for the diagnostics raised after its last
-    /// callback has returned, when the VM's position names that callback.
-    at: (u32, u32),
-    /// Set once the storage has gone back, so the drop does not return it a
-    /// second time over the answer.
-    returned: bool,
-}
-
-impl LentList {
-    fn lend(list: Rc<OroList>, at: (u32, u32)) -> LentList {
-        let items = std::mem::take(&mut *list.borrow_mut());
-        LentList { list, items, at, returned: false }
-    }
-
-    /// Put the storage back. `false` if the list was written to while it was
-    /// out, in which case what was written is dropped.
-    fn give_back(mut self) -> bool {
-        self.returned = true;
-        let items = std::mem::take(&mut self.items);
-        let discarded = {
-            let mut slot = self.list.borrow_mut();
-            std::mem::replace(&mut *slot, items)
-        };
-        // Released outside the borrow: what a key function wrote may hold
-        // the list itself.
-        discarded.is_empty() && discarded.capacity() == 0
-    }
-}
-
-impl Drop for LentList {
-    fn drop(&mut self) {
-        if self.returned {
-            return;
-        }
-        // Never a panic from a drop: if the list is somehow borrowed at this
-        // moment its elements are lost, which is the lesser failure.
-        let discarded = match self.list.try_borrow_mut() {
-            Ok(mut slot) => std::mem::replace(&mut *slot, std::mem::take(&mut self.items)),
-            Err(_) => return,
-        };
-        drop(discarded);
-    }
-}
-
 /// Rendering a container to a string, where some elements are instances whose
 /// `__repr__` must run (via a frame). Phase 1 collected those instances; phase 2
 /// runs each and fills `results`; phase 3 rebuilds the string splicing them in.
@@ -771,7 +686,7 @@ const CMP_DEPTH_LIMIT: usize = 600;
 /// The VM never recurses in Rust (module docs), so the "recursion" of a deep
 /// comparison is this explicit `levels` stack instead: each level is one
 /// suspended `a == b` that is waiting on the answer to a smaller one. That is
-/// the same trade [`SortJob`] and [`SeqJob`] make — the difference is only that
+/// the same trade [`SeqJob`] makes — the difference is only that
 /// what suspends here is an operator rather than a call.
 ///
 /// The fast path never builds one of these. [`Value::try_equals`] and
@@ -860,7 +775,7 @@ struct OrdJob {
     cont: OrdCont,
     /// The values being ordered. For a keyed sort these are the *keys*; `items`
     /// carries what they decorate — except for an in-place sort, whose elements
-    /// stay in the storage [`OrdKind::SortInPlace`] holds, leaving `items` empty.
+    /// carried in the job. Read by no in-place path any more.
     keys: Vec<Value>,
     items: Vec<Value>,
     reverse: bool,
@@ -871,24 +786,18 @@ struct OrdJob {
 /// and for the same reason: an ordering is not always something the program
 /// wrote at the top level. `xs.map(sorted)` runs one per element from inside a
 /// [`SeqJob`], and `sorted(xs, key=min)` runs one per key from inside a
-/// [`SortJob`], and neither wants its answer on the operand stack.
+/// a chain step, and neither wants its answer on the operand stack.
 enum OrdCont {
     /// An ordering the program wrote: push it.
     Push,
     /// A collection callback's result: record it and carry on with the chain.
     Seq,
-    /// A sort key: record it and carry on computing keys.
-    Sort,
 }
 
 /// Which ordering an [`OrdJob`] is carrying out, and where its answer goes.
 enum OrdKind {
-    /// `xs.sort_by(f)`: push a new collection of this shape.
+    /// `xs.sort(f)`: push a new collection of this shape.
     Sort(SeqShape),
-    /// `xs.sort_in_place(f)`: reorder the list's own storage, which is lent out
-    /// of it here rather than carried in the job's `items`, hand it back, and
-    /// answer `null`.
-    SortInPlace(LentList),
     /// `min` / `max` / `min_by` / `max_by`: push the winning element. `who`
     /// is the spelling the program used, so the empty-sequence message names
     /// the call that was actually written.
@@ -953,7 +862,6 @@ struct Task {
     prints: Vec<PrintJob>,
     /// Stack of in-flight container-stringify jobs (see [`StrJob`]).
     str_jobs: Vec<StrJob>,
-    sort_jobs: Vec<SortJob>,
     seq_jobs: Vec<SeqJob>,
     mat_jobs: Vec<MatJob>,
     /// Stack of in-flight deep comparisons (see [`CmpJob`]). A `__eq__` that
@@ -1001,7 +909,6 @@ impl Task {
             col: 0,
             prints: Vec::new(),
             str_jobs: Vec::new(),
-            sort_jobs: Vec::new(),
             seq_jobs: Vec::new(),
             mat_jobs: Vec::new(),
             cmp_jobs: Vec::new(),
@@ -2756,7 +2663,7 @@ impl Vm {
     /// unchanged, including the order of its tests: several of these methods
     /// must run *in the VM* rather than as native code, because they can park
     /// (`join`, `send`, `recv`, `close`, the io protocol), or run an Oro
-    /// callback (`map`, `filter`, `sort_by`, `sort_in_place`, `min`, `max`), or run a
+    /// callback (`map`, `filter`, `sort`, `min`, `max`), or run a
     /// user `__str__` (`to_str`).
     ///
     /// `hint` and `flush` carry [`crate::compiler::CHAIN_HINT`] and
@@ -2849,14 +2756,6 @@ impl Vm {
         if flush {
             if let Some(step) = self.chain_tail(&receiver, name, &args)? {
                 return Ok(step);
-            }
-        }
-        // `xs.sort_in_place(f, reverse=…)` runs its key function through
-        // frames, so it is driven from here. Only a list has the method;
-        // anything else never resolves it, and `cut_sort_message` says why.
-        if &**name == "sort_in_place" {
-            if let Value::List(l) = &receiver {
-                return self.do_sort_in_place(l.clone(), args, kwargs).map(|()| Step::Next);
             }
         }
         // The chain's two orderings. Like their builtin twins
@@ -3213,7 +3112,7 @@ impl Vm {
         // is left here is the dispatched half — a dunder, or a bound method
         // used as a chain callback — and every one of those has a continuation
         // waiting for a *value* from a frame that runs now (`DriveStr` wants
-        // the string, `DriveSort` the key, `DriveSeq` the element). Handing one
+        // the string, `DriveSeq` the element). Handing one
         // a generator instead is not a feature, it is a different bug. It was a
         // `yield outside a generator` panic before; refusing by name is the
         // same answer `sorted(key=…)` already gives.
@@ -4182,7 +4081,7 @@ impl Vm {
             .map(|()| Step::Next)
     }
 
-    /// The `reverse=` option `sort_by` and `sort_in_place` take: a flag, so it
+    /// The `reverse=` option `sort` takes: a flag, so it
     /// is named, and a bool, so `reverse=null` is not a second spelling of
     /// leaving it out. It is a *stable* descending sort — the comparator is
     /// inverted, so equal keys keep their input order — which
@@ -4209,129 +4108,6 @@ impl Vm {
         Ok(reverse)
     }
 
-    /// `xs.sort_in_place(f, reverse=false)`: sort a list where it is, by the
-    /// keys `f` gives, and answer `null` as `append` and `extend` do.
-    ///
-    /// The keys come first — they are Oro calls, a frame each — and only then
-    /// is the storage reordered, in place, by the permutation the ordering
-    /// machine finds. [`LentList`] is how the storage is lent out for that, and
-    /// what a key function that writes to the list gets.
-    fn do_sort_in_place(
-        &mut self,
-        list: Rc<OroList>,
-        args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
-    ) -> Result<(), VmError> {
-        let keyfn = match args.as_slice() {
-            [f @ (Value::Func(_) | Value::Builtin(_) | Value::Method(_))] => f.clone(),
-            [other] => {
-                return Err(self.err(type_error(format!(
-                    "sort_in_place() needs a key function, not '{}' — \
-                     `xs.sort_in_place(x => x)` sorts by the elements themselves",
-                    other.type_name()
-                ))))
-            }
-            _ => {
-                return Err(self.err(type_error(format!(
-                    "sort_in_place() takes exactly 1 argument, the key function ({} given) — \
-                     `xs.sort_in_place(x => x)` sorts by the elements themselves",
-                    args.len()
-                ))))
-            }
-        };
-        let reverse = self.reverse_kwarg("sort_in_place", kwargs)?;
-        let spread = seq_spread(&keyfn, SeqShape::List, 0);
-        let lent = LentList::lend(list, (self.task.line, self.task.col));
-        let n = lent.items.len();
-        self.task.sort_jobs.push(SortJob {
-            lent,
-            keys: Vec::with_capacity(n),
-            next: 0,
-            keyfn,
-            spread,
-            reverse,
-        });
-        self.drive_sort()
-    }
-
-    fn drive_sort(&mut self) -> Result<(), VmError> {
-        loop {
-            let (keyfn, call_args, at) = {
-                let job = self.task.sort_jobs.last_mut().expect("active sort job");
-                if job.next >= job.lent.items.len() {
-                    let job = self.task.sort_jobs.pop().unwrap();
-                    // The keys are user values and may be instances, so the
-                    // sort itself can need frames too — `begin_order` decides.
-                    // The elements travel in the lent storage, not as `items`.
-                    return self.begin_order(
-                        OrdKind::SortInPlace(job.lent),
-                        Vec::new(),
-                        job.keys,
-                        job.reverse,
-                    );
-                }
-                let item = job.lent.items[job.next].clone();
-                job.next += 1;
-                (job.keyfn.clone(), Self::seq_args(job.spread, item, None), job.lent.at)
-            };
-            let call_args = self.seq_unpacked(call_args, at)?;
-
-            match keyfn {
-                Value::Func(f) => {
-                    // A plain (non-method) key function: bind it the same way an
-                    // ordinary call does, but route its return into the sort job.
-                    if self.task.frames.len() >= MAX_FRAMES {
-                        return Err(self.err(recursion_error("maximum recursion depth exceeded")));
-                    }
-                    if f.code.is_generator {
-                        (self.task.line, self.task.col) = at;
-                        return Err(self.err(type_error(
-                            "sort_in_place() key must not be a generator function",
-                        )));
-                    }
-                    let mut frame = self.bind_call(&f, None, call_args, Vec::new())?;
-                    frame.ret_action = ReturnAction::DriveSort;
-                    self.task.frames.push(frame);
-                    return Ok(());
-                }
-                // A native key (len, str, …) cannot re-enter Oro, so it can be
-                // called inline and the loop continues without a frame.
-                Value::Builtin(b) => {
-                    let Some(args) = self.ord_callback(b.name, call_args, OrdCont::Sort)? else {
-                        return Ok(());
-                    };
-                    let key = self.wrap((b.func)(args))?;
-                    self.task.sort_jobs.last_mut().unwrap().keys.push(key);
-                }
-                Value::Method(m) => match &m.kind {
-                    MethodKind::Native(name) => {
-                        let key = self.wrap(crate::builtins::call_method(
-                            &m.receiver,
-                            name,
-                            call_args,
-                            Vec::new(),
-                        ))?;
-                        self.task.sort_jobs.last_mut().unwrap().keys.push(key);
-                    }
-                    // A bound Oro method, as `sort_by` takes one.
-                    MethodKind::User { func, defclass } => {
-                        if self.task.frames.len() >= MAX_FRAMES {
-                            return Err(self.err(recursion_error("maximum recursion depth exceeded")));
-                        }
-                        return self.invoke_user(
-                            func.clone(),
-                            m.receiver.clone(),
-                            defclass.clone(),
-                            call_args,
-                            Vec::new(),
-                            ReturnAction::DriveSort,
-                        );
-                    }
-                },
-                _ => return Err(self.err(type_error("sort_in_place() key is not callable"))),
-            }
-        }
-    }
 
     /// Drive an in-flight `print`: render remaining args left to right, calling
     /// `__str__` (through a frame) for instances that define one. When the last
@@ -4870,13 +4646,6 @@ impl Vm {
                 let best = items[best].clone();
                 self.deliver_order(cont, best)
             }
-            OrdKind::SortInPlace(mut lent) => {
-                // An error here is an unorderable pair; `lent` is dropped on
-                // the way out and the list gets its elements back unsorted.
-                let perm = self.wrap(crate::builtins::sort_permutation(&keys, reverse))?;
-                crate::builtins::apply_permutation(&mut lent.items, perm);
-                self.give_back(lent, cont)
-            }
             OrdKind::Sort(shape) => {
                 let sorted = self.wrap(crate::builtins::sort_by_keys(items, &keys, reverse))?;
                 self.finish_order(shape, sorted, cont)
@@ -4896,22 +4665,6 @@ impl Vm {
     }
 
     /// Hand a sorted list's storage back to it and answer `null` — or, when a
-    /// key function or a `__lt__` wrote to the list while the storage was out,
-    /// CPython's `ValueError`. See [`LentList`].
-    fn give_back(&mut self, lent: LentList, cont: OrdCont) -> Result<(), VmError> {
-        let at = lent.at;
-        if !lent.give_back() {
-            // Raised after the last callback returned, so the position the VM
-            // holds is that callback's; the error belongs to the call.
-            (self.task.line, self.task.col) = at;
-            return Err(self.err(value_error(
-                "list modified during sort_in_place() — a key function or `__lt__` \
-                 changed the list while it was being sorted",
-            )));
-        }
-        self.deliver_order(cont, Value::None)
-    }
-
     /// Hand a finished ordering to whatever asked for it.
     fn deliver_order(&mut self, cont: OrdCont, v: Value) -> Result<(), VmError> {
         match cont {
@@ -4922,10 +4675,6 @@ impl Vm {
             OrdCont::Seq => {
                 self.record_seq_result(v);
                 self.drive_seq()
-            }
-            OrdCont::Sort => {
-                self.task.sort_jobs.last_mut().expect("sort job").keys.push(v);
-                self.drive_sort()
             }
         }
     }
@@ -5097,12 +4846,6 @@ impl Vm {
                 self.deliver_order(job.cont, v)
             }
             OrdState::Merge { src, .. } => match job.kind {
-                // Reordered where it lies: the permutation is applied to the
-                // list's own storage, and the storage handed back.
-                OrdKind::SortInPlace(mut lent) => {
-                    crate::builtins::apply_permutation(&mut lent.items, src);
-                    self.give_back(lent, job.cont)
-                }
                 OrdKind::Sort(shape) => {
                     let mut out = job.items;
                     crate::builtins::apply_permutation(&mut out, src);
@@ -5615,10 +5358,6 @@ impl Vm {
                 self.task.str_jobs.last_mut().expect("str job").results.push(s);
                 self.drive_str()?;
             }
-            ReturnAction::DriveSort => {
-                self.task.sort_jobs.last_mut().expect("sort job").keys.push(value);
-                self.drive_sort()?;
-            }
             ReturnAction::DriveSeq => {
                 self.record_seq_result(value);
                 self.drive_seq()?;
@@ -5741,7 +5480,6 @@ impl Vm {
         JobDepths {
             prints: self.task.prints.len() as u32,
             str_jobs: self.task.str_jobs.len() as u32,
-            sort_jobs: self.task.sort_jobs.len() as u32,
             seq_jobs: self.task.seq_jobs.len() as u32,
             mat_jobs: self.task.mat_jobs.len() as u32,
             cmp_jobs: self.task.cmp_jobs.len() as u32,
@@ -5754,7 +5492,6 @@ impl Vm {
     fn truncate_jobs(&mut self, d: JobDepths) {
         self.task.prints.truncate(d.prints as usize);
         self.task.str_jobs.truncate(d.str_jobs as usize);
-        self.task.sort_jobs.truncate(d.sort_jobs as usize);
         self.task.seq_jobs.truncate(d.seq_jobs as usize);
         self.task.mat_jobs.truncate(d.mat_jobs as usize);
         self.task.cmp_jobs.truncate(d.cmp_jobs as usize);

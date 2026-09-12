@@ -1,14 +1,14 @@
-# The list surface: indexing, slicing, `append`, sorting where it is, and
-# `reverse`.
+# The list surface: indexing, slicing, `append`, `sort` and `reverse`.
 #
 # DIVERGENCE IN SPELLING, NOT IN BEHAVIOUR. This was core/08_lists until the
-# in-place `list.sort(key=, reverse=)` was cut. Sorting a list where it is, is
-# `xs.sort_in_place(f)` now: the key function is required and positional, as it
-# is for `sort_by`, so there is one spelling of a keyed sort per direction and
-# no argument that means "the elements themselves" by being absent. CPython has
-# no `sort_in_place`, so the file can no longer be oracled, and it carries a
-# twin (73_lists.twin.py) instead — this program with `xs.sort()` written back
-# in. The .expected below is that twin's output:
+# in-place sort was cut. Every collection operation returns a **new** collection
+# now: `xs.sort(f)` gives a sorted copy (the key function is required and
+# positional) and `xs.reverse()` a reversed copy, so both are rebound onto `xs`
+# rather than mutating it — the aliasing bug where a shared list is reordered
+# under another name cannot be written. CPython's `list.sort`/`list.reverse`
+# mutate and return `None`, so the file can no longer be oracled directly; it
+# carries a twin (73_lists.twin.py) with `sorted(xs)` / `list(reversed(xs))`
+# written back in. The .expected below is that twin's output:
 #
 #   python3 corpus/divergence/73_lists.twin.py \
 #     | sed -E 's/\bTrue\b/true/g; s/\bFalse\b/false/g; s/\bNone\b/null/g' \
@@ -16,16 +16,17 @@
 #
 # An empty diff is the review, so every answer is still CPython's.
 #
-#   xs.sort()  ->  xs.sort_in_place(x => x)
+#   xs.sort()             ->  xs = xs.sort(x => x)
+#   xs.reverse()          ->  xs = xs.reverse()
 xs = [3, 1, 4, 1, 5, 9, 2, 6]
 print(len(xs))
 print(xs[0], xs[-1])
 print(xs[2:5])
 xs.append(99)
 print(xs)
-xs.sort_in_place(x => x)
+xs = xs.sort(x => x)
 print(xs)
-xs.reverse()
+xs = xs.reverse()
 print(xs)
 # `sum(xs)` and `min`/`max` over a sequence moved to
 # corpus/divergence/71_collection_methods.oro when the builtins were cut.

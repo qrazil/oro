@@ -8,10 +8,8 @@
 #
 # The translations, plus the three literals:
 #
-#   xs.sort_by(f, reverse=True)        ->  sorted(xs, key=f, reverse=True)
-#   xs.sort_by(x => x)                 ->  sorted(xs)
-#   xs.sort_in_place(f, reverse=True)  ->  xs.sort(key=f, reverse=True)
-#   xs.sort_in_place(x => x)           ->  xs.sort()
+#   xs.sort(f, reverse=True)  ->  sorted(xs, key=f, reverse=True)
+#   xs.sort(x => x)           ->  sorted(xs)
 #
 def neg(x):
     return -x
@@ -30,15 +28,3 @@ print(sorted([]), sorted([], key=neg))
 ties = [("a", 1), ("b", 1), ("c", 0)]
 print(sorted(ties, key=second))
 print(sorted(ties, key=second, reverse=True))
-a = [3, 1, 2]
-a.sort()
-print(a)
-b = [3, 1, 2]
-b.sort(reverse=True)
-print(b)
-c = ["bbb", "a", "cc"]
-c.sort(key=len)
-print(c)
-d = [("y", 2), ("x", 1)]
-d.sort(key=second, reverse=True)
-print(d)

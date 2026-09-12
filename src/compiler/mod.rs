@@ -122,7 +122,7 @@ pub const CHAIN_BITS: u32 = CHAIN_HINT | CHAIN_FLUSH;
 pub fn chain_flushes(name: &str) -> bool {
     matches!(
         name,
-        "map" | "filter" | "flat_map" | "sort_by" | "group_by" | "partition"
+        "map" | "filter" | "flat_map" | "sort" | "group_by" | "partition"
             | "find" | "any" | "all" | "count" | "min_by" | "max_by" | "unique_by"
             | "take_while" | "drop_while" | "reduce"
             // The two native short-circuit terminals. `first` and `take(n)`
@@ -137,8 +137,8 @@ pub fn chain_flushes(name: &str) -> bool {
 /// produce a collection one element at a time, with no reordering and no view
 /// of the whole input.
 ///
-/// `sorted`, `sort_by`, `unique`, `chunk`, `flatten`, `group_by`, `partition`,
-/// `min_by`/`max_by`, `reversed` and `zip` are barriers: each needs the
+/// `sort`, `unique`, `chunk`, `flatten`, `group_by`, `partition`,
+/// `min_by`/`max_by`, `reverse` and `zip` are barriers: each needs the
 /// finished intermediate. `take_while` is a barrier too, for a subtler reason
 /// — it evaluates its predicate over the *whole* receiver today rather than
 /// stopping at the first false, and fusing it would quietly change how many

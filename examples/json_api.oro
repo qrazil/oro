@@ -49,7 +49,7 @@ def summarise(orders):
         "orders": len(orders),
         "unpaid": len(orders) - len(paid),
         "revenue": round(paid.map(o => o["total"]).sum(), ndigits=2),
-        "regions": regions.sort_by((name, stats) => -stats["revenue"]),
+        "regions": regions.sort((name, stats) => -stats["revenue"]),
     }
 
 

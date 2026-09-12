@@ -70,7 +70,7 @@ for _, (name, job, size) in results:
 # the chain gets a name — which reads better here anyway.
 completed = workers.map(w => w.join()).sum()
 print(f"\n{len(_JOBS)} jobs, {completed} completions")
-for name, count in tally.sort_by((n, c) => n):
+for name, count in tally.sort((n, c) => n):
     print(f"  {name} took {count}")
 
 # A task that raises does not take the program with it. The exception is held

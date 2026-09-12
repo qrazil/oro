@@ -1,4 +1,4 @@
-# `xs.sort_by(f)` answers a list for every receiver that has no other shape to
+# `xs.sort(f)` answers a list for every receiver that has no other shape to
 # keep: a list is already one, and a str, a range and a generator have no
 # literal to rebuild. All of that is CPython's answer too, so a twin pins it.
 #
@@ -13,8 +13,8 @@
 #
 # An empty diff is the review.
 #
-#   sorted(xs) / sorted(xs, key=f)           ->  xs.sort_by(x => x) / xs.sort_by(f)
-#   sorted(s) for a str                      ->  s.to_list().sort_by(x => x)
+#   sorted(xs) / sorted(xs, key=f)           ->  xs.sort(x => x) / xs.sort(f)
+#   sorted(s) for a str                      ->  s.to_list().sort(x => x)
 #
 # That last line is the one place the cut costs a capability rather than a
 # spelling, and it is deliberate. `sorted("cab")` worked because the builtin
@@ -27,26 +27,26 @@
 #
 # Two receivers Oro treats differently, and neither can live in this file:
 #
-#   a tuple  `(3, 1, 2).sort_by(x => x)` is `(1, 2, 3)` here, because sorting reorders
+#   a tuple  `(3, 1, 2).sort(x => x)` is `(1, 2, 3)` here, because sorting reorders
 #            and reordering preserves the receiver's type;
 #   a dict   the same rule, now that walking a dict yields its `(key, value)`
-#            pairs: `{"b": 1, "a": 2}.sort_by(p => p)` is `{'a': 2, 'b': 1}`, a dict —
-#            and `{}.sort_by(p => p)` is `{}`, so even the empty case has left.
+#            pairs: `{"b": 1, "a": 2}.sort(p => p)` is `{'a': 2, 'b': 1}`, a dict —
+#            and `{}.sort(p => p)` is `{}`, so even the empty case has left.
 #
 # Both are in corpus/divergence/65_builtin_method_line.oro.
 
-print([3, 1, 2].sort_by(x => x))
-print([].sort_by(x => x))
-print("cab".to_list().sort_by(x => x))
-print(range(0, start=3, step=-1).sort_by(x => x))
-print([3, 1, 2].sort_by(x => x, reverse=true))
+print([3, 1, 2].sort(x => x))
+print([].sort(x => x))
+print("cab".to_list().sort(x => x))
+print(range(0, start=3, step=-1).sort(x => x))
+print([3, 1, 2].sort(x => x, reverse=true))
 
 
 def neg(x):
     return -x
 
 
-print([3, 1, 2].sort_by(neg))
+print([3, 1, 2].sort(neg))
 
 
 def gen():
@@ -54,4 +54,4 @@ def gen():
     yield 1
 
 
-print(gen().sort_by(x => x))
+print(gen().sort(x => x))

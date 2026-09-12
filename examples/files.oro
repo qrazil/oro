@@ -45,7 +45,7 @@ def count_words(lines):
 # preserve the receiver's type, what comes back out is still a dict.
 def report(counts, n):
     out = []
-    for word, count in counts.sort_by((w, c) => -c).take(n):
+    for word, count in counts.sort((w, c) => -c).take(n):
         out.append(f"{count:>7}  {word}")
     return out.join("\n") + "\n"
 
