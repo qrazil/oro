@@ -5872,8 +5872,15 @@ impl Vm {
         let params = &code.params;
         let first_defaulted = params.len() - code.defaults.len();
 
-        // Slots for the parameters, filled as we go (None = still missing).
-        let mut filled: Vec<Option<Value>> = vec![None; params.len()];
+        // The checks below read the keyword list rather than a table of filled
+        // slots, and the values go straight into the frame. A keyword list is
+        // one or two entries on a real call, so scanning it twice is cheaper
+        // than the `Vec<Option<Value>>` this path used to allocate on top of
+        // everything else a keyword call already allocates.
+        //
+        // Validation comes first and borrows: while `args` and `kwargs` are
+        // both still intact, a refusal can rewrite the reader's whole call.
+        // Binding comes second and consumes, so no argument is copied.
 
         // 1. Positional arguments fill the parameters with no default, left to
         //    right. They stop there: the rest are keyword-only.
@@ -5900,12 +5907,8 @@ impl Vm {
                 code.name
             ))));
         }
-        for (i, a) in args.iter().enumerate() {
-            filled[i] = Some(a.clone());
-        }
-
         // 2. Keyword arguments name the parameters that have defaults.
-        for (name, value) in &kwargs {
+        for (j, (name, value)) in kwargs.iter().enumerate() {
             let Some(pos) = params.iter().position(|p| &*p.name == name) else {
                 return Err(self.err(type_error(format!(
                     "{}() got an unexpected keyword argument '{name}'",
@@ -5923,7 +5926,7 @@ impl Vm {
                     code.name
                 ))));
             }
-            if filled[pos].is_some() {
+            if kwargs[..j].iter().any(|(earlier, _)| earlier == name) {
                 return Err(self.err(type_error(format!(
                     "{}() got multiple values for argument '{name}'",
                     code.name
@@ -5945,27 +5948,33 @@ impl Vm {
                     self.err(crate::builtins::null_is_not_omitted(&code.name, name, want))
                 );
             }
-            filled[pos] = Some(value.clone());
         }
 
-        // 3. Defaults fill any remaining parameters; error if none.
-        //    `code.defaults` aligns with the trailing defaulted params.
-        for (i, slot) in filled.iter_mut().enumerate() {
-            if slot.is_none() {
-                if i >= first_defaulted {
-                    *slot = Some(code.defaults[i - first_defaulted].clone());
-                } else {
-                    return Err(self.err(type_error(format!(
-                        "{}() missing required argument: '{}'",
-                        code.name, params[i].name
-                    ))));
-                }
-            }
+        // 3. Every parameter without a default must have been supplied, and
+        //    only a positional argument can supply one — so the first one the
+        //    arguments did not reach is the one that is missing.
+        if args.len() < first_defaulted {
+            return Err(self.err(type_error(format!(
+                "{}() missing required argument: '{}'",
+                code.name, params[args.len()].name
+            ))));
         }
 
-        // 4. Write bound values into the frame via each parameter's target.
-        for (p, value) in params.iter().zip(filled) {
-            store_param(&mut frame, p.target, value.expect("every parameter filled"));
+        // 4. Bind, consuming. The positional arguments now cover exactly the
+        //    parameters with no default; every other parameter takes its
+        //    default, and a keyword then writes over the ones it named.
+        for (p, value) in params.iter().zip(args) {
+            store_param(&mut frame, p.target, value);
+        }
+        for (i, p) in params.iter().enumerate().skip(first_defaulted) {
+            store_param(&mut frame, p.target, code.defaults[i - first_defaulted].clone());
+        }
+        for (name, value) in kwargs {
+            let pos = params
+                .iter()
+                .position(|p| *p.name == name)
+                .expect("every keyword was matched to a parameter above");
+            store_param(&mut frame, params[pos].target, value);
         }
 
         Ok(frame)
