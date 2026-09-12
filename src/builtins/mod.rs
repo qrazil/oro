@@ -168,7 +168,7 @@ fn positional_at_most(
 
 /// How an argument appears in a rewritten call: a scalar as its literal, so the
 /// fix can be pasted, and anything else as `…`.
-fn lit(v: &Value) -> String {
+pub(crate) fn lit(v: &Value) -> String {
     match v {
         Value::None | Value::Bool(_) | Value::Int(_) | Value::Float(_) => v.repr(),
         Value::Str(s) if s.char_len() <= 24 => v.repr(),
@@ -180,7 +180,7 @@ fn lit(v: &Value) -> String {
 /// A call rewritten into the argument rule's shape: `fixed` stay positional,
 /// and each of `named` becomes `name=value` — or is dropped, where the old
 /// positional spelling passed `null` to mean "omitted".
-fn respell(who: &str, fixed: &[&Value], named: &[(&str, &Value)]) -> String {
+pub(crate) fn respell(who: &str, fixed: &[&Value], named: &[(&str, &Value)]) -> String {
     let parts: Vec<String> = fixed
         .iter()
         .map(|v| lit(v))

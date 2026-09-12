@@ -9,9 +9,9 @@ a keyword reaches the task: true
 so do forwarded ones: true
 spawn refuses what the direct call refuses, in the same words: true
   TypeError: recorded() got an unexpected keyword argument 'bogus'
-  TypeError: recorded() got multiple values for argument 'a'
+  TypeError: recorded() got 'a' by name, but 'a' has no default and is passed by position
   TypeError: recorded() missing required argument: 'a'
-  TypeError: recorded() takes 2 positional arguments but 3 were given
+  TypeError: recorded() takes 1 positional argument but 3 were given: a parameter with a default is passed by name
 and no refused spawn left a task behind: true
 main's last statement
 a spawned task still ran after main's last statement

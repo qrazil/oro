@@ -1,0 +1,80 @@
+# INTENTIONAL DIVERGENCE.
+# The argument rule: a parameter with no default is positional-only, and a
+# parameter with a default is keyword-only. CPython accepts either spelling for
+# either kind, so most of what this program prints is a refusal CPython does not
+# give — which is why it moved out of core/ and carries no twin. The difference
+# is the subject.
+#
+# This is the reference `spawn` and `apply` are held to. Both bind through the
+# binder a direct call uses, so what a direct call accepts, refuses and says
+# here is what they accept, refuse and say.
+
+
+def f(a, b=1, c=2):
+    return f"{a} {b} {c}"
+
+
+class K:
+    def m(self, x, y=0):
+        return x + y
+
+
+# --- what the rule accepts ----------------------------------------------------
+# One positional argument per parameter with no default, and a name for each one
+# with a default, in any order.
+print(f(1))
+print(f(1, c=9))
+print(f(1, c=3, b=4))
+print(f(1, b=2, c=3))
+print(K().m(1, y=41))
+
+# `null` where the default is `null` is an ordinary value, not an omission.
+def maybe(x, tag=null):
+    return f"{x} {tag}"
+
+
+print(maybe(1))
+print(maybe(1, tag=null))
+print(maybe(1, tag="t"))
+
+# Forwarded arguments bind by the same rule: the list by position, so only into
+# the parameters without defaults; the dict by name, so only into the ones with.
+print(apply(f, args=[1], kwargs={"c": 3}))
+
+
+# --- the refusals -------------------------------------------------------------
+def refusal(thunk):
+    try:
+        thunk()
+    except TypeError as e:
+        return f"{e}"
+    return "no raise"
+
+
+# A parameter with a default, reached by position. The message rewrites the
+# reader's own call, the way the natives' messages do.
+print(refusal(() => f(1, 2)))
+print(refusal(() => f(1, 2, 3)))
+
+# A parameter with no default, reached by name.
+print(refusal(() => f(a=5)))
+print(refusal(() => f(1, a=2)))
+
+# An explicit `null` is not a second spelling of "omitted".
+print(refusal(() => f(1, b=null)))
+
+# A method's receiver is not an argument, so it is not in the count and not in
+# the rewritten call.
+print(refusal(() => K().m(1, 2)))
+
+# The refusals that are not about the rule are unchanged.
+print(refusal(() => f(1, x=1)))
+print(refusal(() => f()))
+print(refusal(() => f(1, 2, 3, 4)))
+print(refusal(() => K().m(1, z=1)))
+
+# And every one of them is the same through `spawn` and `apply`, because there
+# is one binder.
+print("spawn refuses alike:", refusal(() => spawn(f, 1, 2)) == refusal(() => f(1, 2)))
+print("apply refuses alike:", refusal(() => apply(f, args=[1, 2])) == refusal(() => f(1, 2)))
+print("and by name too:", refusal(() => apply(f, kwargs={"a": 5})) == refusal(() => f(a=5)))

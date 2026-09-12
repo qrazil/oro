@@ -23,8 +23,8 @@ def counting(out, name, n):
         out.append(name + i.to_str())
         yield_now()
 
-a = spawn(counting, log, "a", n=3)
-b = spawn(counting, log, "b", n=3)
+a = spawn(counting, log, "a", 3)
+b = spawn(counting, log, "b", 3)
 a.join()
 b.join()
 print("two tasks alternate:", log)
@@ -39,8 +39,8 @@ def greedy(out, name, n):
     for i in range(n):
         out.append(name + i.to_str())
 
-c = spawn(greedy, log2, "c", n=3)
-d = spawn(greedy, log2, "d", n=3)
+c = spawn(greedy, log2, "c", 3)
+d = spawn(greedy, log2, "d", 3)
 c.join()
 d.join()
 print("without a yield, no interleaving:", log2)

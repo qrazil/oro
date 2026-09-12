@@ -13,7 +13,7 @@ def collect(x=[]):
 
 
 print("a fresh list each call:", collect() == [1] and collect() == [1])
-print("an argument still wins:", collect([9]) == [9, 1])
+print("an argument still wins:", collect(x=[9]) == [9, 1])
 
 
 def counts(m={}):

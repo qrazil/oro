@@ -1,0 +1,22 @@
+1 1 2
+1 1 9
+1 4 3
+1 2 3
+42
+1 null
+1 null
+1 t
+1 1 3
+f() takes 1 positional argument but 2 were given — write `f(1, b=2)`: a parameter with a default is passed by name
+f() takes 1 positional argument but 3 were given — write `f(1, b=2, c=3)`: a parameter with a default is passed by name
+f() got 'a' by name, but 'a' has no default and is passed by position — write `f(5)`
+f() got 'a' by name, but 'a' has no default and is passed by position
+f(): b= must be int, not null — null does not mean "omitted"; leave b= out for the default
+m() takes 1 positional argument but 2 were given — write `m(1, y=2)`: a parameter with a default is passed by name
+f() got an unexpected keyword argument 'x'
+f() missing required argument: 'a'
+f() takes 1 positional argument but 4 were given: a parameter with a default is passed by name
+m() got an unexpected keyword argument 'z'
+spawn refuses alike: true
+apply refuses alike: true
+and by name too: true

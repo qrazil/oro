@@ -229,7 +229,7 @@ r = d[\"x\"]
 #[test]
 fn functions_defaults_and_recursion() {
     assert_eq!(int(&eval_last("def f(a, b=10):\n    return a + b\nr = f(5)\n")), 15);
-    assert_eq!(int(&eval_last("def f(a, b=10):\n    return a + b\nr = f(5, 20)\n")), 25);
+    assert_eq!(int(&eval_last("def f(a, b=10):\n    return a + b\nr = f(5, b=20)\n")), 25);
     let fib = "\
 def fib(n):
     if n < 2:
@@ -2405,7 +2405,7 @@ class K:
     def m(self, x, y=0):
         return x + y
 kw = {\"b\": 7}
-r = [spawn(f, 1, c=9).join(), spawn(f, a=5).join(), apply(spawn, args=[f, 3], kwargs=kw).join(), spawn(K().m, 1, y=41).join()]
+r = [spawn(f, 1, c=9).join(), spawn(f, 5).join(), apply(spawn, args=[f, 3], kwargs=kw).join(), spawn(K().m, 1, y=41).join()]
 ",
         "r",
     );
@@ -2417,6 +2417,10 @@ r = [spawn(f, 1, c=9).join(), spawn(f, a=5).join(), apply(spawn, args=[f, 3], kw
         ("f(1, a=2)", "spawn(f, 1, a=2)"),
         ("f(b=2)", "spawn(f, b=2)"),
         ("f()", "spawn(f)"),
+        // The rule's own two refusals, through `spawn` as through a call: a
+        // defaulted parameter reached by position, and a required one by name.
+        ("f(1, 2)", "spawn(f, 1, 2)"),
+        ("f(a=1)", "spawn(f, a=1)"),
         ("f(1, 2, 3, 4)", "spawn(f, 1, 2, 3, 4)"),
     ] {
         let d = run_err(&format!("{def}{direct}\n"));
@@ -2794,7 +2798,7 @@ def f(x=[]):
 def d(m={}):
     m[\"k\"] = len(m)
     return m
-r = [f(), f(), f([9]), d(), d()]
+r = [f(), f(), f(x=[9]), d(), d()]
 ",
         "r",
     );

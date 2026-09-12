@@ -2358,11 +2358,11 @@ impl Vm {
             _ => return None,
         };
         let code = &f.code;
-        if code.is_generator || n > code.params.len() {
-            return None;
-        }
-        let first_defaulted = code.params.len() - code.defaults.len();
-        if n < first_defaulted {
+        // One positional argument per parameter with no default, and no others:
+        // under the argument rule that is the whole shape of a positional call,
+        // so the test is one equality. Too few, or one that would reach a
+        // keyword-only parameter, owes a diagnostic and goes the general way.
+        if code.is_generator || n != code.params.len() - code.defaults.len() {
             return None;
         }
         Some(f.clone())
@@ -2432,9 +2432,10 @@ impl Vm {
                 match &stack[stack.len() - n - 2] {
                     Value::Func(f) => {
                         let code = &f.code;
+                        // `n + 1` counts the receiver, which is the first
+                        // parameter and never has a default.
                         !code.is_generator
-                            && n < code.params.len()
-                            && n + 1 >= code.params.len() - code.defaults.len()
+                            && n + 1 == code.params.len() - code.defaults.len()
                     }
                     _ => false,
                 }
@@ -5831,18 +5832,16 @@ impl Vm {
 
         // --- The static path ---------------------------------------------
         //
-        // No keywords, and every parameter filled by a
-        // positional argument or its own default. That is the overwhelming
-        // majority of calls, and it needs no name matching at all — so it needs
-        // no allocation either. The dynamic path below builds three vectors
-        // (the normal-parameter list, the fill slots, the leftovers) before it
-        // can bind anything; on a call-heavy program that dominated.
+        // No keywords, and exactly one positional argument for each parameter
+        // that has no default. Under the argument rule that is not merely the
+        // common shape, it is the *only* shape a positional-only call can have:
+        // a parameter with a default can only be passed by name, so one more
+        // argument is an error rather than a longer call. The test is therefore
+        // a single equality — cheaper than the pair of comparisons it replaces
+        // — and it needs no name matching and no allocation.
         let supplied = args.len() + usize::from(receiver.is_some());
-        let first_defaulted = code.params.len().saturating_sub(code.defaults.len());
-        if kwargs.is_empty()
-            && supplied <= code.params.len()
-            && supplied >= first_defaulted
-        {
+        let first_defaulted = code.params.len() - code.defaults.len();
+        if kwargs.is_empty() && supplied == first_defaulted {
             let mut values = receiver.into_iter().chain(args);
             for p in &code.params[..supplied] {
                 let v = values.next().expect("supplied counts the values exactly");
@@ -5856,6 +5855,13 @@ impl Vm {
         }
 
         // --- The dynamic path ---------------------------------------------
+        //
+        // This is where the argument rule is enforced. A parameter with no
+        // default is positional-only and a parameter with a default is
+        // keyword-only, so each of the two kinds of argument has exactly one
+        // half of the parameter list it may reach, and a call that crosses the
+        // line is refused with its own call rewritten.
+        let skip = usize::from(receiver.is_some());
         let mut args = args;
         if let Some(receiver) = receiver {
             // Only now is the combined vector worth building: this path has to
@@ -5864,44 +5870,86 @@ impl Vm {
         }
 
         let params = &code.params;
+        let first_defaulted = params.len() - code.defaults.len();
 
         // Slots for the parameters, filled as we go (None = still missing).
         let mut filled: Vec<Option<Value>> = vec![None; params.len()];
 
-        // 1. Positional arguments fill parameters left to right.
-        if args.len() > params.len() {
+        // 1. Positional arguments fill the parameters with no default, left to
+        //    right. They stop there: the rest are keyword-only.
+        if args.len() > first_defaulted {
+            let writable = first_defaulted - skip;
+            let takes = match writable {
+                0 => "no positional arguments".to_string(),
+                1 => "1 positional argument".to_string(),
+                n => format!("{n} positional arguments"),
+            };
+            let given = args.len() - skip;
+            let verb = if given == 1 { "was" } else { "were" };
+            let fix = write_it_as(code, skip, &args, &kwargs);
+            // Only say why when there is a keyword-only parameter to say it
+            // about. A function with no defaults that was handed too many
+            // arguments has a plain arity error, and always did.
+            let because = if first_defaulted < params.len() {
+                ": a parameter with a default is passed by name"
+            } else {
+                ""
+            };
             return Err(self.err(type_error(format!(
-                "{}() takes {} positional argument{} but {} were given",
-                code.name,
-                params.len(),
-                if params.len() == 1 { "" } else { "s" },
-                args.len()
+                "{}() takes {takes} but {given} {verb} given{fix}{because}",
+                code.name
             ))));
         }
-        for (i, a) in args.into_iter().enumerate() {
-            filled[i] = Some(a);
+        for (i, a) in args.iter().enumerate() {
+            filled[i] = Some(a.clone());
         }
 
-        // 2. Keyword arguments: match by name.
-        for (name, value) in kwargs {
-            let Some(pos) = params.iter().position(|p| *p.name == name) else {
+        // 2. Keyword arguments name the parameters that have defaults.
+        for (name, value) in &kwargs {
+            let Some(pos) = params.iter().position(|p| &*p.name == name) else {
                 return Err(self.err(type_error(format!(
                     "{}() got an unexpected keyword argument '{name}'",
                     code.name
                 ))));
             };
+            if pos < first_defaulted {
+                // A parameter with no default. Passing it by name is the other
+                // half of the rule, and it is refused for the same reason: one
+                // spelling per argument, decided by the `=` in the signature.
+                let fix = write_it_as(code, skip, &args, &kwargs);
+                return Err(self.err(type_error(format!(
+                    "{}() got '{name}' by name, but '{name}' has no default and is passed by \
+                     position{fix}",
+                    code.name
+                ))));
+            }
             if filled[pos].is_some() {
                 return Err(self.err(type_error(format!(
                     "{}() got multiple values for argument '{name}'",
                     code.name
                 ))));
             }
-            filled[pos] = Some(value);
+            // An explicit `null` is not a way of saying "omitted". Where the
+            // default *is* `null`, `null` is a real value and passing it is
+            // fine; anywhere else it would make `f(x=null)` a second spelling
+            // of `f()`.
+            let default = &code.defaults[pos - first_defaulted];
+            if matches!(value, Value::None) && !matches!(default, Value::None) {
+                let want = match default {
+                    // A non-constant default is not a value until the call
+                    // asks for it, so there is no type to name.
+                    Value::Unbound => "a value",
+                    other => other.type_name(),
+                };
+                return Err(
+                    self.err(crate::builtins::null_is_not_omitted(&code.name, name, want))
+                );
+            }
+            filled[pos] = Some(value.clone());
         }
 
         // 3. Defaults fill any remaining parameters; error if none.
         //    `code.defaults` aligns with the trailing defaulted params.
-        let first_defaulted = params.len() - code.defaults.len();
         for (i, slot) in filled.iter_mut().enumerate() {
             if slot.is_none() {
                 if i >= first_defaulted {
@@ -5943,6 +5991,57 @@ fn put_gen_frame(g: &mut crate::value::GenBox, frame: Frame) {
     match g.frame.as_mut() {
         Some(b) => *b.downcast_mut::<Option<Frame>>().expect("gen frame") = Some(frame),
         None => g.frame = Some(Box::new(Some(frame))),
+    }
+}
+
+/// The call the reader wrote, rewritten into the rule's shape: every parameter
+/// with no default as a positional argument, every one with a default as
+/// `name=value`.
+///
+/// `skip` is the number of leading parameters the call site does not write —
+/// 1 for a method, whose receiver is bound from the `obj.` and is not an
+/// argument. `None` when the arguments given do not cover the parameters with
+/// no default, because then there is no correct call to show and a bare
+/// diagnostic is the honest one.
+///
+/// This is [`crate::builtins::respell`], the same rewriting the natives do, so
+/// a refusal from an Oro `def` reads exactly like a refusal from `find` or
+/// `split`.
+fn respelled_call(
+    code: &CodeObject,
+    skip: usize,
+    args: &[Value],
+    kwargs: &[(String, Value)],
+) -> Option<String> {
+    let required = code.params.len() - code.defaults.len();
+    let mut slots: Vec<Option<&Value>> = vec![None; code.params.len()];
+    for (i, a) in args.iter().enumerate() {
+        *slots.get_mut(i)? = Some(a);
+    }
+    for (name, v) in kwargs {
+        let pos = code.params.iter().position(|p| *p.name == *name)?;
+        if slots[pos].is_some() {
+            return None;
+        }
+        slots[pos] = Some(v);
+    }
+    if slots[skip..required].iter().any(Option::is_none) {
+        return None;
+    }
+    let fixed: Vec<&Value> = slots[skip..required].iter().map(|s| s.expect("checked")).collect();
+    let named: Vec<(&str, &Value)> = code.params[required..]
+        .iter()
+        .zip(&slots[required..])
+        .filter_map(|(p, s)| s.map(|v| (&*p.name, v)))
+        .collect();
+    Some(crate::builtins::respell(&code.name, &fixed, &named))
+}
+
+/// " — write `f(1, c=2)`", or nothing when the call cannot be rewritten.
+fn write_it_as(code: &CodeObject, skip: usize, args: &[Value], kwargs: &[(String, Value)]) -> String {
+    match respelled_call(code, skip, args, kwargs) {
+        Some(call) => format!(" — write {call}"),
+        None => String::new(),
     }
 }
 

@@ -224,8 +224,8 @@ check("neither header on a response means 'until the connection closes'", body_o
 check("and that is the same rule for a 1.0 response", body_of(b"HTTP/1.0 200 OK\r\n\r\nold"), "200 b'old'")
 
 # The two the response cannot tell you about itself.
-check("a HEAD has no body however framed", body_of(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n", "HEAD"), "200 b''")
-check("a HEAD is not fooled by chunked either", body_of(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n", "HEAD"), "200 b''")
+check("a HEAD has no body however framed", body_of(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n", method="HEAD"), "200 b''")
+check("a HEAD is not fooled by chunked either", body_of(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n", method="HEAD"), "200 b''")
 check("204 has no body", body_of(b"HTTP/1.1 204 No Content\r\n\r\n"), "204 b''")
 check("304 has no body even carrying a Content-Length", body_of(b"HTTP/1.1 304 Not Modified\r\nContent-Length: 99\r\n\r\n"), "304 b''")
 check("204 likewise", body_of(b"HTTP/1.1 204 No Content\r\nContent-Length: 42\r\n\r\n"), "204 b''")
