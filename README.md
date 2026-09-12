@@ -1745,6 +1745,10 @@ checks that the first was answered and the second was not waited for.
   `concurrency`, `text`, `cli` and `classes` for the language, and
   `server`/`client` for the HTTP stack.
 - `corpus/` — the CPython-generated differential test suite.
+- `docs/reference.md` — the reference guide: every callable with its exact
+  signature, the argument rule, and what each cut Python spelling becomes.
+  Where it and this README disagree, the reference was checked against the
+  binary and wins.
 
 ## License
 
