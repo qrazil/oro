@@ -86,6 +86,13 @@ edits = [
 for ln, c0, c1, new in sorted(edits, reverse=True):
     line = lines[ln - 1]
     lines[ln - 1] = line[:c0] + new + line[c1:]
+# Oro's `for` binds an (index, value) pair for every iterable; CPython's binds
+# the element. `enumerate(E)` yields exactly Oro's pair for every non-dict
+# iterable — position and element for a sequence or range, a 0-based counter for
+# a generator — and no core program iterates a dict (that is a divergence). So
+# wrap each for-header's iterable, and the two languages agree line for line.
+FOR = re.compile(r'^(\s*)for (.+) in (.+):(\s*)$')
+lines = [FOR.sub(r'\1for \2 in enumerate(\3):\4', ln) for ln in lines]
 sys.stdout.write("".join(lines))
 PY
   then
