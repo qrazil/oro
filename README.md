@@ -788,9 +788,24 @@ replace them, and still oracles against CPython, which agrees on every line.
 
 (Every `for` binds an `(index, value)` pair — see [above](#every-for-yields-index-value) — so the count loop keeps the index and discards the value, and the collection loop does the reverse.)
 
-This is written down because nothing in Oro can enforce it. `oro fmt` is a
-formatter, not a linter, and "no options, one output" means it will never grow
-a rule, so the rewrite is the enforcement and the sentence above is the record.
+**Half of this rule the grammar now enforces.** A `while name < bound` whose
+body steps `name` by an integer constant — the hand-rolled counter — is a
+compile error naming `for`:
+
+```python
+i = 0
+while i < 10:      # TypeError at compile: this `while` counts `i` by a constant —
+    i = i + 1      #   a counted loop is `for i, _ in range(n)`
+```
+
+A step by a *runtime* value (`got = got + len(chunk)`), a non-`<`/`>` condition
+(the EOF drain `while chunk != b""`), a compound condition, and `while true` are
+all genuine conditions and compile — because a condition is not a count. The
+collection half (`for _, x in xs` over `while i < len(xs)`) still rests on the
+rewrite: `oro fmt` is a formatter, not a linter, and detecting every
+index-into-a-collection is not something a compile-time check can do without
+false positives. But the counter, which is where the tree had actually gone
+wrong, is now unwritable.
 
 It needed writing because the tree had got it backwards. A bounded count was
 spelled two ways and the worse one had won 67 to 17:

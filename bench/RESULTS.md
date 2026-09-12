@@ -46,9 +46,9 @@ The rest of that file, and every other program here, is byte for byte what it
 was. When the suite is next rebaselined, `fuse` needs a fresh pair of numbers
 rather than a comparison against these.
 
-## Why the benchmarks still count by hand
+## The benchmarks no longer count by hand — and these numbers predate that
 
-Every program here spells a bounded count the long way:
+Every program here used to spell a bounded count the long way:
 
 ```python
 i = 0
@@ -57,30 +57,28 @@ while i < 200000:
     i = i + 1
 ```
 
-Oro's rule is the other one — **`for i in range(n)` for a bounded count,
-`while` for a condition** — and the standard library, the corpus and the
-examples were all rewritten to it. The benchmarks were deliberately not, and
-the reason is the same measurement that makes the rule worth having.
+They were kept that way deliberately, because a benchmark's loop is inside its
+measurement: `range` steps in Rust, so a `for` form runs ~31% faster here
+without a single VM instruction changing (and CPython's own gain is smaller, so
+even the vs-CPython *ratio* moves). Keeping the manual counter kept the loop
+matched to the VM's dispatch rather than to `range`'s stepping.
 
-Measured on one core, best of nine, `loop` at 3M iterations:
+**The loop rule ended that.** `while` stepping a variable by an integer constant
+is now a compile error (README, "The loop rule"), so the manual counter is not a
+form the language has any more, and every program here was rewritten to
+`for i, _ in range(n)`. The measurement argument above is why it mattered, and
+is exactly why **every number in this file now predates the loops that produce
+it**: the suite must be rebaselined against the `for` form before these figures
+mean anything again, and both the oro and cpython columns must be retaken
+together so the ratios stay comparable.
+
+For the record, measured on one core, best of nine, `loop` at 3M iterations,
+*before* the rewrite:
 
 | form | oro | cpython | ratio |
 |---|---|---|---|
 | `i = 0; while i < n: …; i = i + 1` | 0.203s | 0.445s | 0.46x |
-| `for i in range(n): …` | 0.139s | 0.345s | 0.40x |
-
-**A benchmark's loop is inside its measurement.** `range` steps in Rust, so the
-`for` form is 31% faster here without a single instruction of the VM having
-changed — and CPython's own gain is smaller (22%), so even the *ratio* column
-moves, by 13%, in the direction that reads as an Oro improvement. Rewriting the
-counters would have made all thirteen rows better at once, permanently, for
-nothing, and would have made every number above incomparable with the four
-optimization passes that produced them.
-
-So the manual counter stays here and only here, each file says so at the top,
-and `loop.oro` — where the counter genuinely *is* the subject — says it at
-length. If the suite is ever rebaselined for another reason, this is the first
-thing to change, and both columns must be retaken together.
+| `for i, _ in range(n): …` | 0.139s | 0.345s | 0.40x |
 
 ## Where things stand
 

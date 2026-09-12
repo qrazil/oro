@@ -1,0 +1,14 @@
+# DIVERGENCE: `while` is for a condition, never a counter. A `while name < bound`
+# whose body steps `name` by an integer constant is a hand-rolled `range` — so
+# it is a compile error pointing at `for`, where CPython runs it fine. A counted
+# loop is `for i, _ in range(n)`; `while` is for a condition that is not a count
+# (an EOF drain `while chunk != b""`, a poll, `while true`), and those all
+# compile — see std/http.oro and corpus/core/25_break_continue_finally.oro.
+#
+# This file is the rejection itself: the whole program is one counting `while`,
+# and its output is the error. (A program cannot both trigger a compile error
+# and run, so the allowed forms are exercised elsewhere and unit-tested.)
+i = 0
+while i < 10:
+    print(i)
+    i = i + 1

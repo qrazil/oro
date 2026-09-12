@@ -1,16 +1,14 @@
-# Dispatch-bound: a 3M-iteration while loop doing integer arithmetic. This is
-# close to a pure measure of instruction-fetch + dispatch cost.
+# Dispatch-bound: a 3M-iteration loop doing integer arithmetic. This is close to
+# a pure measure of instruction-fetch + dispatch cost.
 #
-# The hand-rolled counter is the subject, not an oversight. Oro's rule is that a
-# bounded count is `for i in range(n)` — and the reason this program must not be
-# written that way is exactly the reason the rule exists: `range` steps in Rust,
-# so the `for` form runs this in 0.139s against 0.203s, a third less, without
-# the VM having changed. Rewriting it would measure `range`'s stepping instead
-# of dispatch, and would silently rebaseline every number in RESULTS.md.
-i = 0
+# It counts with `for i, _ in range(n)` because that is now the only bounded
+# count Oro has — a `while` stepping a variable by a constant is a compile error
+# (see README, "The loop rule"). This used to be a hand-rolled `while` counter,
+# kept on purpose so the measured loop matched the VM's dispatch rather than
+# `range`'s Rust-side stepping; the loop rule ended that, so these numbers must
+# be rebaselined against the `for` form (see bench/RESULTS.md).
 total = 0
-while i < 3000000:
+for _, i in range(3000000):
     total = total + i
-    i = i + 1
 
 print(total)

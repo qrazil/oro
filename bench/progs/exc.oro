@@ -1,8 +1,5 @@
 # Exception-heavy: a raise/catch on most iterations, plus a finally that always
 # runs. Exercises block setup, unwinding, and handler dispatch.
-#
-# The counter here is hand-rolled on purpose: a benchmark's loop is inside its
-# measurement. See bench/RESULTS.md, "Why the benchmarks still count by hand".
 class Boom(Exception):
     pass
 
@@ -15,15 +12,13 @@ def risky(i):
 
 caught = 0
 total = 0
-i = 0
-while i < 200000:
+for _, i in range(200000):
     try:
         total = total + risky(i)
     except Boom:
         caught = caught + 1
     finally:
         total = total + 1
-    i = i + 1
 
 print(caught)
 print(total)

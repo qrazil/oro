@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::ast::{
-    BinOp, BoolOp, ExceptHandler, Expr, MatchCase, Param, Pattern, Stmt, UnaryOp,
+    AugOp, BinOp, BoolOp, CmpOp, ExceptHandler, Expr, MatchCase, Param, Pattern, Stmt, UnaryOp,
 };
 use crate::bigint::BigInt;
 use crate::lexer::Lexer;
@@ -604,7 +604,42 @@ impl<'a> Codegen<'a> {
         Ok(())
     }
 
+    /// `while` is for a *condition*, never a counter. A `while name < bound`
+    /// whose body steps `name` by an integer constant is a hand-rolled `range`
+    /// — slower, longer, and with three failure modes `for` cannot have — so it
+    /// is refused, pointing at the loop it should be. A step by a *runtime*
+    /// value (`got = got + len(chunk)`), a non-`<`/`>` condition (an EOF drain
+    /// `while chunk != b""`), a compound condition, and `while true` are all
+    /// genuine conditions and pass. This enforces the README's loop rule that
+    /// nothing else can.
+    fn check_while_not_a_counter(&self, cond: &Expr, body: &[Stmt]) -> CResult<()> {
+        // The condition must be a single comparison `name <rel> bound`.
+        let Expr::Compare { first, rest, .. } = cond else { return Ok(()) };
+        if rest.len() != 1 {
+            return Ok(());
+        }
+        if !matches!(rest[0].0, CmpOp::Lt | CmpOp::LtEq | CmpOp::Gt | CmpOp::GtEq) {
+            return Ok(());
+        }
+        let Expr::Name { name, .. } = &**first else { return Ok(()) };
+        // Its body must step that same name by an integer literal.
+        if let Some((l, c)) = body.iter().find_map(|s| counter_step_pos(s, name)) {
+            return Err(self.err(
+                format!(
+                    "this `while` counts `{name}` by a constant — a counted loop is a `for` \
+                     over `range(…)` (`for {name}, _ in range(n)`), not a hand-rolled counter. \
+                     `while` is for a condition that is not a count: an EOF drain \
+                     (`while chunk != b\"\"`), a poll, `while true`",
+                ),
+                l,
+                c,
+            ));
+        }
+        Ok(())
+    }
+
     fn emit_while(&mut self, cond: &Expr, body: &[Stmt]) -> CResult<()> {
+        self.check_while_not_a_counter(cond, body)?;
         let (cl, cc) = cond.pos();
         // The loop block is pushed once, before the condition; break/continue
         // unwind to it (running any enclosing finally).
@@ -1953,6 +1988,46 @@ fn const_default(e: &Expr) -> Option<()> {
         | Expr::Bool { .. }
         | Expr::NoneLit { .. } => Some(()),
         Expr::Unary { op: UnaryOp::Neg, operand, .. } => const_default(operand),
+        _ => None,
+    }
+}
+
+/// An integer literal, possibly negated — the constant step of a counter.
+fn is_int_literal(e: &Expr) -> bool {
+    match e {
+        Expr::Int { .. } => true,
+        Expr::Unary { op: UnaryOp::Neg | UnaryOp::Pos, operand, .. } => is_int_literal(operand),
+        _ => false,
+    }
+}
+
+/// If `stmt` steps the variable `name` by an integer *constant* — `name = name
+/// + K`, `name = K + name`, `name = name - K`, or `name += K` / `name -= K` —
+/// return its position. This is the signature of a hand-rolled counter; a step
+/// by a runtime value (a name, a call) is not one and returns `None`.
+fn counter_step_pos(stmt: &Stmt, name: &str) -> Option<(usize, usize)> {
+    let is_name = |e: &Expr| matches!(e, Expr::Name { name: n, .. } if n == name);
+    match stmt {
+        Stmt::AugAssign { target, op: AugOp::Add | AugOp::Sub, value, line, col }
+            if is_name(target) && is_int_literal(value) =>
+        {
+            Some((*line, *col))
+        }
+        Stmt::Assign { targets, value, line, col }
+            if targets.len() == 1 && is_name(&targets[0]) =>
+        {
+            if let Expr::Binary { op: BinOp::Add | BinOp::Sub, left, right, .. } = value {
+                // `name + K`, or (for `+`) the commuted `K + name`.
+                let stepped = (is_name(left) && is_int_literal(right))
+                    || (matches!(value, Expr::Binary { op: BinOp::Add, .. })
+                        && is_int_literal(left)
+                        && is_name(right));
+                if stepped {
+                    return Some((*line, *col));
+                }
+            }
+            None
+        }
         _ => None,
     }
 }

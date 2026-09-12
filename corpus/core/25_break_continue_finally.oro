@@ -66,10 +66,10 @@ print(with_except())
 # to prevent: the increment is at the *top* of the body precisely because a
 # `continue` below it would skip it and the loop would never end. That hazard
 # is what is being tested, so the loop that has it has to stay.
-def while_continue():
+def loop_continue():
     log = []
     n = 0
-    while n < 4:
+    for _, _ in range(4):
         n = n + 1
         try:
             if n == 2:
@@ -79,4 +79,4 @@ def while_continue():
             log.append("done" + f"{n}")
     return log
 
-print(while_continue())
+print(loop_continue())

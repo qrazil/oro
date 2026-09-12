@@ -222,6 +222,30 @@ fn a_for_target_must_be_a_pair() {
     compile_src("for _, (a, b) in [(1, 2)]:\n    pass\n");
 }
 
+/// `while` is for a condition, not a counter: `while name < bound` whose body
+/// steps `name` by an integer constant is refused, pointing at `for`. A step by
+/// a runtime value, a non-`<`/`>` condition, a compound condition and
+/// `while true` are genuine conditions and compile.
+#[test]
+fn a_counting_while_is_refused() {
+    for src in [
+        "i = 0\nwhile i < 10:\n    i = i + 1\n",
+        "i = 0\nwhile i < 10:\n    i += 1\n",
+        "i = 0\nwhile i <= 9:\n    x = i\n    i = i + 2\n",
+        "i = 10\nwhile i > 0:\n    i = i - 1\n",
+    ] {
+        let e = compile_err(src);
+        assert!(e.message.contains("counts `i` by a constant"), "{src:?} gave {}", e.message);
+    }
+    // Genuine conditions — all compile.
+    compile_src("while true:\n    break\n");
+    compile_src("c = b\"x\"\nwhile c != b\"\":\n    c = b\"\"\n"); // EOF-drain sentinel
+    compile_src("got = 0\nn = 9\nk = 3\nwhile got < n:\n    got = got + k\n"); // runtime step
+    compile_src("n = 1\nwhile n < 1000:\n    n = n * 3\n"); // not `+`/`-`
+    compile_src("i = 0\nwhile i < 10 and true:\n    i = i + 1\n"); // compound condition
+    compile_src("xs = [1]\nwhile len(xs) != 0:\n    xs = xs.drop(1)\n"); // condition, not a name
+}
+
 /// `_` is a discard: it binds nothing (so `for _, _ in xs` and `a, _ = pair`
 /// compile with no duplicate-binding error), and reading it back is refused.
 #[test]

@@ -1,0 +1,1 @@
+divergence/82_loop_rule.oro:14:5: this `while` counts `i` by a constant — a counted loop is a `for` over `range(…)` (`for i, _ in range(n)`), not a hand-rolled counter. `while` is for a condition that is not a count: an EOF drain (`while chunk != b""`), a poll, `while true`

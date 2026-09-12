@@ -1,8 +1,5 @@
 # Method- and attribute-heavy OO code: instance construction, attribute
 # loads/stores, method calls, and inheritance with super().
-#
-# The counter here is hand-rolled on purpose: a benchmark's loop is inside its
-# measurement. See bench/RESULTS.md, "Why the benchmarks still count by hand".
 class Vec:
     def __init__(self, x, y):
         self.x = x
@@ -31,19 +28,15 @@ class Tagged(Vec):
 
 acc = Vec(0, 0)
 one = Vec(1, 2)
-i = 0
-while i < 200000:
+for _, i in range(200000):
     acc = acc.add(one)
-    i = i + 1
 
 t = Tagged(0, 0, "t")
 total = 0
-i = 0
-while i < 100000:
+for _, i in range(100000):
     t.x = i
     t.y = i
     total = total + t.norm1()
-    i = i + 1
 
 print(acc.norm1())
 print(total)

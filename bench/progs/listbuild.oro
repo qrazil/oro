@@ -1,20 +1,13 @@
 # List-heavy: build, index, and mutate a 400k-element list, then reduce it with
 # an explicit loop. Portable to CPython (no chains, no `=>`).
-#
-# The counter here is hand-rolled on purpose: a benchmark's loop is inside its
-# measurement. See bench/RESULTS.md, "Why the benchmarks still count by hand".
 xs = []
-i = 0
-while i < 400000:
+for _, i in range(400000):
     xs.append(i * 3)
-    i = i + 1
 
 total = 0
-i = 0
 n = len(xs)
-while i < n:
+for _, i in range(n):
     xs[i] = xs[i] + 1
     total = total + xs[i]
-    i = i + 1
 
 print(total)

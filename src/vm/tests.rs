@@ -155,10 +155,8 @@ fn truthiness_matches_python() {
 fn control_flow_if_while() {
     let src = "\
 r = 0
-n = 5
-while n > 0:
+for _, n in range(6):
     r = r + n
-    n = n - 1
 ";
     assert_eq!(int(&eval(src)), 15);
 
@@ -175,6 +173,18 @@ else:
     r = 3
 ";
     assert_eq!(int(&eval(src2)), 2);
+
+    // A genuine condition-`while` (not a counter, so it is allowed): drain a
+    // list to empty. The condition is not a `name < bound` comparison, so the
+    // `n = n + 1` inside is not mistaken for a loop counter.
+    let src3 = "\
+xs = [1, 2, 3, 4]
+n = 0
+while len(xs) != 0:
+    xs = xs.drop(1)
+    n = n + 1
+";
+    assert_eq!(int(&eval_var(src3, "n")), 4);
 }
 
 #[test]
@@ -638,7 +648,7 @@ fn unknown_module_raises_module_not_found() {
 
 #[test]
 fn generator_basic_iteration() {
-    let src = "def up(n):\n    i = 0\n    while i < n:\n        yield i\n        i = i + 1\n\
+    let src = "def up(n):\n    for _, i in range(n):\n        yield i\n\
                total = 0\nfor _, v in up(5):\n    total = total + v\n";
     // total is a module local; sum 0..4 = 10
     let locals = run_locals(src);
@@ -647,7 +657,7 @@ fn generator_basic_iteration() {
 
 #[test]
 fn generator_consumes_generator() {
-    let src = "def up(n):\n    i = 0\n    while i < n:\n        yield i\n        i = i + 1\n\
+    let src = "def up(n):\n    for _, i in range(n):\n        yield i\n\
                def evens(n):\n    for _, x in up(n):\n        if x % 2 == 0:\n            yield x\n\
                got = []\nfor _, v in evens(10):\n    got.append(v)\n";
     let locals = run_locals(src);
@@ -807,16 +817,17 @@ fn exception_in_callback_does_not_leak_jobs() {
 def boom(x):
     raise ValueError("x")
 
-i = 0
-while i < 200:
+for _, _ in range(200):
     try:
         [1].map(boom)
     except ValueError:
         pass
-    i = i + 1
 out = [1, 2].map(x => x * 3).to_str()
 "#;
-    assert_eq!(fstr(src), "[3, 6]");
+    match eval_var(src, "out") {
+        Value::Str(s) => assert_eq!(&*s.s, "[3, 6]"),
+        other => panic!("expected str, got {}", other.repr()),
+    }
 }
 
 #[test]
@@ -2148,11 +2159,9 @@ def echo():
     for _, x in ch:
         log.append(\"task \" + x.to_str())
 t = spawn(echo)
-i = 0
-while i < 3:
+for _, i in range(3):
     log.append(\"main \" + i.to_str())
     ch.send(i)
-    i = i + 1
 ch.close()
 t.join()
 r = log
@@ -2310,11 +2319,9 @@ fn a_generator_cannot_be_driven_by_two_tasks() {
         "\
 gate = chan()
 def slow():
-    n = 0
-    while n < 2:
+    for _, n in range(2):
         gate.recv()
         yield n
-        n = n + 1
 g = slow()
 def drive():
     for _, _ in g:

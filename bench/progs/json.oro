@@ -8,9 +8,6 @@
 #
 # ORO_ONLY: `json.parse`/`json.stringify` are Oro's spellings; the CPython twin
 # is json.py.
-#
-# The counter here is hand-rolled on purpose: a benchmark's loop is inside its
-# measurement. See bench/RESULTS.md, "Why the benchmarks still count by hand".
 import json
 
 SMALL_ROUNDS = 400
@@ -20,10 +17,8 @@ BIG_ROUNDS = 12
 # A ~1 KB API response: nested objects, an array of records, mixed types.
 def small_payload():
     items = []
-    i = 0
-    while i < 13:
+    for _, i in range(13):
         items.append({"sku": f"ABC-{i}", "qty": i, "price": i * 1.5, "note": null})
-        i = i + 1
     return {
         "id": 12345,
         "name": "Widget Assembly",
@@ -38,47 +33,37 @@ def small_payload():
 
 def record_array(n):
     out = []
-    i = 0
-    while i < n:
+    for _, i in range(n):
         out.append({"id": i, "name": f"record-{i}", "v": i * 3.25, "ok": i % 2 == 0, "tags": ["x", "y"]})
-        i = i + 1
     return out
 
 
 def nested(n):
     v = 0
-    i = 0
-    while i < n:
+    for _, i in range(n):
         v = {"n": v}
-        i = i + 1
     return v
 
 
 def string_list(n):
     out = []
-    i = 0
-    while i < n:
+    for _, i in range(n):
         out.append(f"the quick brown fox jumps over the lazy dog {i}")
-        i = i + 1
     return out
 
 
 def number_list(n):
     out = []
-    i = 0
-    while i < n:
+    for _, i in range(n):
         out.append(i * 7919)
         out.append(i * 0.125)
-        i = i + 1
     return out
 
 
 def rounds(text, value, n):
     total = 0
-    i = 0
-    while i < n:
+    for _, i in range(n):
         total = total + len(json.stringify(json.parse(text)))
-        i = i + 1
     return total
 
 
@@ -98,9 +83,7 @@ for _, shape in shapes:
 # The pretty path is a different code path (padding, separators), so it gets a
 # few rounds of its own rather than being trusted to follow from the compact one.
 pretty = 0
-i = 0
-while i < SMALL_ROUNDS:
+for _, i in range(SMALL_ROUNDS):
     pretty = pretty + len(json.stringify(small_payload(), indent=2))
-    i = i + 1
 
 print(checksum, pretty)

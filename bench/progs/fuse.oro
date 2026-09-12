@@ -11,17 +11,12 @@
 #                   `sort_by(x => x)` is the same sort with a callback per
 #                   element, so d's number is not comparable with runs taken
 #                   before the cut. See bench/RESULTS.md.
-#
-# The counter here is hand-rolled on purpose: a benchmark's loop is inside its
-# measurement. See bench/RESULTS.md, "Why the benchmarks still count by hand".
 def f(x):
     return x + 1
 
 xs = []
-i = 0
-while i < 120000:
+for _, i in range(120000):
     xs.append(i)
-    i = i + 1
 
 a = xs.map(f)
 b = xs.filter(x => x % 2 == 0).map(f)

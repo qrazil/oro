@@ -733,6 +733,14 @@ There is no `enumerate` and no `range(len(xs))`: the index is built in. An index
 inside a *chain* (which has no `for` to carry one) is `range(len(xs)).zip(xs)`.
 `corpus/divergence/80_for_pairs.oro` pins the index for each type.
 
+**`while` is for a condition, not a counter.** A `while name < bound` whose body
+steps `name` by an integer constant is a hand-rolled `range` and a compile error
+pointing at `for i, _ in range(…)`. A step by a runtime value
+(`got = got + len(chunk)`), a non-`<`/`>` condition (the EOF drain
+`while chunk != b""`), a compound condition, and `while true` are genuine
+conditions and compile. This is the counter half of the loop rule, enforced;
+the collection half (`for` over `while i < len(xs)`) rests on the convention.
+
 - **`global`** mutates module-level state from a function. **There is no
   `nonlocal`**, and a nested function cannot rebind an enclosing local (reading
   one works, and an assignment makes a new local).

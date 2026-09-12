@@ -171,10 +171,8 @@ def serve(conn):
 
 def acceptor(n):
     conns = []
-    i = 0
-    while i < n:
+    for _, _ in range(n):
         conns.append(spawn(serve, ln.accept()))
-        i = i + 1
     for _, t in conns:
         t.join()
 
@@ -294,11 +292,9 @@ def sender():
     conn.shutdown_write()
 
 def meanwhile():
-    i = 0
-    while i < 3:
+    for _, _ in range(3):
         progress.append("ran while the write was parked")
         yield_now()
-        i = i + 1
 
 def receiver():
     got = 0
@@ -392,11 +388,9 @@ def reader():
         print("reader:", e, "after", len(ticks), "ticks elapsed")
 
 def ticker():
-    i = 0
-    while i < 4:
+    for _, i in range(4):
         ticks.append(i)
         time.sleep(0.05)
-        i = i + 1
 
 r = spawn(reader)
 t = spawn(ticker)
@@ -617,11 +611,9 @@ def dialer():
 def worker():
     # Four turns. Every one of them is a scheduling decision the VM could only
     # have made with the dialling task suspended.
-    i = 0
-    while i < 4:
+    for _, i in range(4):
         log.append("worker " + i.to_str())
         yield_now()
-        i = i + 1
 
 d = spawn(dialer)
 w = spawn(worker)
@@ -713,10 +705,8 @@ def dial_one(n):
     return n
 
 tasks = []
-i = 0
-while i < 12:
+for _, i in range(12):
     tasks.append(spawn(dial_one, i))
-    i = i + 1
 
 total = 0
 for _, t in tasks:
