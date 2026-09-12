@@ -515,6 +515,13 @@ print([1, 2], (1, 2), (1,), {"k": 1}, {})
   input raises `ValueError` rather than substituting replacement characters).
 - **No sets.** `{1, 2}` and `set()` are both errors pointing at a dict or a
   list. Tuples stay: they are the only hashable composite.
+- **`_` is a discard, not a name.** In an assignment or `for` target it binds
+  nothing — `for _, v in xs` keeps the value, `a, _ = pair` drops the second
+  component, `for _, _ in xs` repeats it with no duplicate-binding error, and
+  `_ = f()` runs `f` for its effect and drops the result. Reading `_` back is a
+  compile error (`` `_` is a discard … cannot be read ``), so a discarded value
+  cannot be picked up again by accident. (`case _` in a `match` is the unrelated
+  wildcard pattern, and still matches anything.)
 - **Indentation is spaces.** A tab in leading whitespace is a hard error, not a
   width-8 guess.
 

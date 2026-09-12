@@ -222,6 +222,20 @@ fn a_for_target_must_be_a_pair() {
     compile_src("for _, (a, b) in [(1, 2)]:\n    pass\n");
 }
 
+/// `_` is a discard: it binds nothing (so `for _, _ in xs` and `a, _ = pair`
+/// compile with no duplicate-binding error), and reading it back is refused.
+#[test]
+fn underscore_is_a_discard() {
+    compile_src("for _, _ in [(1, 2)]:\n    pass\n");
+    compile_src("a, _ = (1, 2)\nprint(a)\n");
+    compile_src("_ = f()\n"); // a call whose result is deliberately dropped
+
+    let e = compile_err("a, _ = (1, 2)\nprint(_)\n");
+    assert!(e.message.contains("`_` is a discard"), "got {}", e.message);
+    let e2 = compile_err("x = _ + 1\n");
+    assert!(e2.message.contains("cannot be read"), "got {}", e2.message);
+}
+
 /// A type keyword is reserved in the *variable* namespace and nowhere else. A
 /// member is reached through an object and can never be mistaken for the type,
 /// and the tree depends on this: `std/http.oro` alone calls `.bytes()` sixteen

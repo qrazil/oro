@@ -1,0 +1,33 @@
+# DIVERGENCE: `_` is a discard, not an ordinary name. It binds nothing, so it
+# cannot be read back, and the same target may repeat with no duplicate-binding
+# error. CPython treats `_` as a normal variable, so this cannot be oracled
+# against it. (Reading `_` is a *compile* error, which aborts before any output,
+# so that case is pinned by a unit test rather than here.) Reviewed by hand.
+
+# --- destructuring assignment: discard a component --------------------------
+a, _ = 1, 2
+print(a)
+_, b = 1, 2
+print(b)
+first, _, last = 10, 20, 30
+print(first, last)
+
+# --- a `for` target: value-only, index-only, and both discarded -------------
+for _, v in [10, 20, 30]:
+    print("v", v)
+for i, _ in ["a", "b"]:
+    print("i", i)
+# `for _, _` is not a duplicate-binding error, because there is no binding.
+count = 0
+for _, _ in [(1, 2), (3, 4), (5, 6)]:
+    count = count + 1
+print("count", count)
+
+# --- a nested pattern can discard part of the element -----------------------
+for _, (name, _) in [("ant", 3), ("bee", 1)]:
+    print(name)
+
+# --- a bare assignment: run for the effect, drop the result -----------------
+d = {}
+_ = d.get("missing", default=0)
+print(len(d))

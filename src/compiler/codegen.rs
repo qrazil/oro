@@ -1082,6 +1082,13 @@ impl<'a> Codegen<'a> {
     /// Emit code that stores the value on top of the stack into `target`.
     fn emit_store(&mut self, target: &Expr) -> CResult<()> {
         match target {
+            // `_` is a discard: it binds nothing, so storing into it drops the
+            // value. This is what makes `for _, v in xs`, `a, _ = pair` and
+            // `for _, _ in xs` work — the last with no duplicate-binding error,
+            // because there is no binding.
+            Expr::Name { name, line, col } if name == "_" => {
+                self.emit(Op::Pop, *line, *col);
+            }
             Expr::Name { name, line, col } => {
                 match self.unthreaded_check(name, *line, *col)? {
                     Resolution::Local(s) => self.emit(Op::StoreFast(s), *line, *col),
@@ -1155,6 +1162,17 @@ impl<'a> Codegen<'a> {
                 self.emit(Op::LoadNone, *line, *col);
             }
             Expr::Name { name, line, col } => {
+                // `_` is a discard, not a name: it binds nothing, so there is
+                // nothing to read back. Reading it is refused here rather than
+                // resolving to an unbound slot and failing later as a NameError.
+                if name == "_" {
+                    return Err(self.err(
+                        "`_` is a discard: it binds nothing and cannot be read — give the \
+                         value a name if you need it",
+                        *line,
+                        *col,
+                    ));
+                }
                 // A type keyword is a constant, not a lookup. It cannot be
                 // bound (`compiler::reserved` rejects that), so there is never
                 // a local to shadow it, and the value it denotes is known here

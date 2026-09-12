@@ -917,10 +917,16 @@ destructuring selects what you want:
 
 ```python
 for i, v in xs:        # both
-for _, v in xs:        # the value only  (`_` discards — see below)
+for _, v in xs:        # the value only  (`_` discards)
 for i, _ in xs:        # the index only
 for x in xs:           # error: a `for` binds a pair — write `for _, x in xs`
 ```
+
+`_` is a **discard**, not an ordinary name: it binds nothing, so `for _, _ in
+xs` is not a duplicate-binding error, `a, _ = pair` drops a component, and
+`_ = f()` runs `f` for its effect and throws the result away. Reading `_` back
+is a compile error, so a value you discarded cannot be picked up by accident.
+(`case _` in a `match` is the unrelated wildcard, and still matches anything.)
 
 **What the index is depends on the iterable, and this is the part to remember:**
 
