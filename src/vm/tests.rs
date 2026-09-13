@@ -22,6 +22,38 @@ fn run_locals(src: &str) -> Vec<Value> {
     vm.task.last_locals
 }
 
+/// A syntactically visible chain fuses into a single pass that builds **no
+/// intermediate collection**: a deferred `map`/`filter` pushes the receiver as
+/// a placeholder and constructs nothing, so only the source and the terminal's
+/// own result are ever allocated. The same chain split across variables cannot
+/// fuse — each stage is a whole step that materialises its own list — so it
+/// allocates strictly more. `OroList::LIST_ALLOCS` counts `list` payloads.
+#[test]
+fn a_fused_chain_allocates_no_intermediate() {
+    use crate::value::LIST_ALLOCS;
+    let count = |src: &str| {
+        LIST_ALLOCS.with(|c| c.set(0));
+        let _ = run_locals(src);
+        LIST_ALLOCS.with(|c| c.get())
+    };
+    // One fused chain to a scalar terminal: the `[…]` literal is the only list
+    // built. `map` and `filter` defer and build nothing; `reduce` folds to an int.
+    let fused = count(
+        "xs = [1, 2, 3, 4, 5, 6, 7, 8]\n\
+         r = xs.map(x => x * 2).filter(x => x > 4).reduce(0, (a, b) => a + b)\n",
+    );
+    // The same pipeline split across variables: each intermediate is its own
+    // materialised list, so `map` and `filter` each allocate one.
+    let split = count(
+        "xs = [1, 2, 3, 4, 5, 6, 7, 8]\n\
+         a = xs.map(x => x * 2)\n\
+         b = a.filter(x => x > 4)\n\
+         r = b.reduce(0, (acc, x) => acc + x)\n",
+    );
+    assert!(fused < split, "fused {fused} must allocate fewer lists than split {split}");
+    assert_eq!(fused, 1, "the fused chain built {fused} lists; expected only the source literal");
+}
+
 /// Run `src` and return the value bound to the first module variable (slot 0).
 fn eval(src: &str) -> Value {
     run_locals(src).into_iter().next().expect("at least one local")

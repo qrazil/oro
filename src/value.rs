@@ -215,8 +215,22 @@ mod teardown {
 #[derive(Default)]
 pub struct OroList(RefCell<Vec<Value>>);
 
+// A test-only tally of how many `list` payloads have been allocated — the
+// observable for the fusion invariant: a fused chain builds no intermediate
+// collection, so `xs.map(f).filter(p).reduce(…)` allocates exactly the source
+// and nothing per stage. See `vm::tests::a_fused_chain_allocates_no_intermediate`.
+// Thread-local, not a global atomic: the test suite runs in parallel and the VM
+// allocates on the calling test's own thread, so a per-thread tally sees exactly
+// one test's `list` allocations and no other's.
+#[cfg(test)]
+thread_local! {
+    pub static LIST_ALLOCS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl OroList {
     pub fn new(items: Vec<Value>) -> Rc<OroList> {
+        #[cfg(test)]
+        LIST_ALLOCS.with(|c| c.set(c.get() + 1));
         Rc::new(OroList(RefCell::new(items)))
     }
 }

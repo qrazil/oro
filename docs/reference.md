@@ -1353,6 +1353,13 @@ The receiver is copied before the first callback runs, so a chain never sees its
 own source change. The one observable ordering: `xs.map(f).map(g)` runs
 `f(x0), g(y0), f(x1), g(y1)` — the order a `for` loop would.
 
+Fusion applies only to a **syntactically visible chain** — one expression, where
+the step after the dot is right there. Split the chain across a variable and it
+cannot fuse: `p = xs.map(f)` then `q = p.filter(g)` builds `p` as a full
+intermediate list, because at `xs.map(f)` nothing follows the dot to fuse into.
+This is a performance property, not a semantic one — the two spellings compute
+the same thing — but it is the difference between one allocation and two.
+
 ### 5.11 Generators as values
 
 A generator has **no methods of its own** — no `send`, `next`, `close` or
