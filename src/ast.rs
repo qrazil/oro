@@ -22,6 +22,8 @@ pub enum UnaryOp {
     Pos,
     /// `not x`
     Not,
+    /// `~x`, the bitwise complement: `~x == -x - 1`.
+    Invert,
 }
 
 /// A binary arithmetic operator (the `and`/`or` logical operators are
@@ -42,6 +44,16 @@ pub enum BinOp {
     Mod,
     /// `**`
     Pow,
+    /// `&`
+    BitAnd,
+    /// `|`
+    BitOr,
+    /// `^`
+    BitXor,
+    /// `<<`
+    Shl,
+    /// `>>`
+    Shr,
 }
 
 /// A short-circuiting logical operator.
@@ -86,6 +98,22 @@ pub enum AugOp {
     Mul,
     /// `/=`
     Div,
+    /// `//=`
+    FloorDiv,
+    /// `%=`
+    Mod,
+    /// `**=`
+    Pow,
+    /// `&=`
+    BitAnd,
+    /// `|=`
+    BitOr,
+    /// `^=`
+    BitXor,
+    /// `<<=`
+    Shl,
+    /// `>>=`
+    Shr,
 }
 
 /// A single parameter in a `def` header: `name`, or `name = default`.

@@ -7,7 +7,7 @@
 
 use crate::bigint::BigInt;
 use crate::compiler::Op;
-use crate::exc::{runtime_error, type_error, zero_division_error, VErr};
+use crate::exc::{runtime_error, type_error, value_error, zero_division_error, VErr};
 use crate::value::{Number, VResult, Value};
 
 pub fn neg(v: &Value) -> VResult<Value> {
@@ -31,6 +31,17 @@ pub fn pos(v: &Value) -> VResult<Value> {
     }
 }
 
+pub fn invert(v: &Value) -> VResult<Value> {
+    match v.as_number() {
+        // `~i` *is* `-i - 1` in two's complement, and it cannot overflow: i64
+        // maps onto itself under it, `i64::MIN` included.
+        Some(Number::Int(i)) => Ok(Value::Int(!i)),
+        Some(Number::Big(b)) => Ok(Value::from_bigint(b.not())),
+        // A float has no bits to complement, which is CPython's rule too.
+        _ => Err(type_error(format!("bad operand type for unary ~: '{}'", v.type_name()))),
+    }
+}
+
 pub fn binary(op: &Op, a: &Value, b: &Value) -> VResult<Value> {
     match op {
         Op::BinAdd => add(a, b),
@@ -40,7 +51,110 @@ pub fn binary(op: &Op, a: &Value, b: &Value) -> VResult<Value> {
         Op::BinFloorDiv => num_only(a, b, "//", floordiv_num),
         Op::BinMod => num_only(a, b, "%", mod_num),
         Op::BinPow => num_only(a, b, "**", pow_num),
+        Op::BinBitAnd => bit_op(a, b, "&", BitKind::And),
+        Op::BinBitOr => bit_op(a, b, "|", BitKind::Or),
+        Op::BinBitXor => bit_op(a, b, "^", BitKind::Xor),
+        Op::BinShl => shift(a, b, "<<", true),
+        Op::BinShr => shift(a, b, ">>", false),
         _ => unreachable!("binary called with a non-binary op"),
+    }
+}
+
+/// Which of the three limb-wise bitwise operators is being applied. An enum
+/// rather than the [`Op`], so the shared body does not match on an opcode it
+/// has already been dispatched from.
+#[derive(Clone, Copy)]
+enum BitKind {
+    And,
+    Or,
+    Xor,
+}
+
+/// `&`, `|` and `^`.
+fn bit_op(a: &Value, b: &Value, sym: &str, kind: BitKind) -> VResult<Value> {
+    // Two bools answer a bool, exactly as they do in CPython: `true & false` is
+    // `false`, not `0`. Everywhere else a bool is an int here — `true + true`
+    // is 2 in both languages — and mixing a bool with an int gives an int.
+    if let (Value::Bool(x), Value::Bool(y)) = (a, b) {
+        return Ok(Value::Bool(match kind {
+            BitKind::And => *x && *y,
+            BitKind::Or => *x || *y,
+            BitKind::Xor => *x != *y,
+        }));
+    }
+    let (x, y) = int_pair(a, b, sym)?;
+    if let (Number::Int(p), Number::Int(q)) = (&x, &y) {
+        // i64 is closed under all three, so there is no promotion to consider.
+        return Ok(Value::Int(match kind {
+            BitKind::And => p & q,
+            BitKind::Or => p | q,
+            BitKind::Xor => p ^ q,
+        }));
+    }
+    let (p, q) = (x.to_bigint(), y.to_bigint());
+    Ok(Value::from_bigint(match kind {
+        BitKind::And => p.bitand(&q),
+        BitKind::Or => p.bitor(&q),
+        BitKind::Xor => p.bitxor(&q),
+    }))
+}
+
+/// `<<` and `>>`.
+fn shift(a: &Value, b: &Value, sym: &str, left: bool) -> VResult<Value> {
+    let (x, y) = int_pair(a, b, sym)?;
+    let count = match &y {
+        // CPython raises `ValueError: negative shift count`; a shift by a
+        // negative amount is a mistake, not the shift the other way.
+        Number::Int(n) if *n < 0 => return Err(value_error("negative shift count")),
+        Number::Big(n) if n.is_negative() => return Err(value_error("negative shift count")),
+        Number::Int(n) => *n as u64,
+        // A bignum shift count asks for an integer wider than memory. Refused
+        // rather than attempted, exactly as a bignum exponent is — see
+        // `pow_num` just above.
+        Number::Big(_) => return Err(runtime_error("shift count too large")),
+        Number::Float(_) => unreachable!("int_pair rejects floats"),
+    };
+    if let Number::Int(v) = &x {
+        let v = *v;
+        if left {
+            // Stay inline when the value survives the shift. The round trip is
+            // the exact test, and it holds for negatives too.
+            if count < 64 {
+                let r = v.wrapping_shl(count as u32);
+                if r >> count == v {
+                    return Ok(Value::Int(r));
+                }
+            }
+        } else {
+            // An arithmetic right shift *is* floor division by 2**count, which
+            // is what Python's `>>` means. Past 63 places every i64 has
+            // collapsed to 0 or -1, which Rust's `>>` would not do for us (it
+            // is undefined there).
+            let r = if count >= 63 {
+                if v < 0 {
+                    -1
+                } else {
+                    0
+                }
+            } else {
+                v >> count
+            };
+            return Ok(Value::Int(r));
+        }
+    }
+    let p = x.to_bigint();
+    Ok(Value::from_bigint(if left { p.shl(count) } else { p.shr(count) }))
+}
+
+/// The two integer operands of a bitwise operator.
+///
+/// A float is refused rather than truncated: `1 & 2.0` is a `TypeError` in
+/// CPython, and quietly dropping a fractional part is exactly the kind of
+/// wrong answer that arrives without a diagnostic.
+fn int_pair(a: &Value, b: &Value, sym: &str) -> VResult<(Number, Number)> {
+    match (a.as_number(), b.as_number()) {
+        (Some(x), Some(y)) if !x.is_float() && !y.is_float() => Ok((x, y)),
+        _ => Err(type_err(sym, a, b)),
     }
 }
 

@@ -69,11 +69,24 @@ pub enum TokenKind {
     DoubleSlash, // //
     Percent,     // %
     DoubleStar,  // **
+    Amp,         // &
+    Caret,       // ^
+    Tilde,       // ~
+    Shl,         // <<
+    Shr,         // >>
     Eq,          // =
     PlusEq,      // +=
     MinusEq,     // -=
     StarEq,      // *=
     SlashEq,     // /=
+    DoubleSlashEq, // //=
+    PercentEq,   // %=
+    DoubleStarEq, // **=
+    AmpEq,       // &=
+    PipeEq,      // |=
+    CaretEq,     // ^=
+    ShlEq,       // <<=
+    ShrEq,       // >>=
     EqEq,        // ==
     FatArrow,    // => (lambda)
     NotEq,       // !=

@@ -78,8 +78,19 @@ type PResult<T> = Result<T, ParseError>;
 
 /// Comparison operators all share this precedence and chain.
 const CMP_BP: u8 = 4;
-/// Right-recursion power for the unary `-`/`+` prefix operators.
-const UNARY_BP: u8 = 7;
+/// The four bitwise levels, loosest first. Each is one apart because each is a
+/// level of its own in CPython, and collapsing any two would silently
+/// reassociate expressions that use both.
+const BITOR_BP: u8 = 5;
+const BITXOR_BP: u8 = 6;
+const BITAND_BP: u8 = 7;
+const SHIFT_BP: u8 = 8;
+const ADD_BP: u8 = 9;
+const MUL_BP: u8 = 10;
+/// Right-recursion power for the unary `-`/`+`/`~` prefix operators.
+const UNARY_BP: u8 = 11;
+/// `**`, which binds tighter than the unary prefixes on its left.
+const POW_BP: u8 = 12;
 /// Right-recursion power for the `not` prefix operator.
 const NOT_BP: u8 = 3;
 
@@ -151,6 +162,7 @@ impl Parser {
                 | TokenKind::None
                 | TokenKind::Ident(_)
                 | TokenKind::Minus
+                | TokenKind::Tilde
                 | TokenKind::Not
         )
     }
@@ -339,6 +351,14 @@ impl Parser {
             TokenKind::MinusEq => self.aug_assign(first, AugOp::Sub, line, col),
             TokenKind::StarEq => self.aug_assign(first, AugOp::Mul, line, col),
             TokenKind::SlashEq => self.aug_assign(first, AugOp::Div, line, col),
+            TokenKind::DoubleSlashEq => self.aug_assign(first, AugOp::FloorDiv, line, col),
+            TokenKind::PercentEq => self.aug_assign(first, AugOp::Mod, line, col),
+            TokenKind::DoubleStarEq => self.aug_assign(first, AugOp::Pow, line, col),
+            TokenKind::AmpEq => self.aug_assign(first, AugOp::BitAnd, line, col),
+            TokenKind::PipeEq => self.aug_assign(first, AugOp::BitOr, line, col),
+            TokenKind::CaretEq => self.aug_assign(first, AugOp::BitXor, line, col),
+            TokenKind::ShlEq => self.aug_assign(first, AugOp::Shl, line, col),
+            TokenKind::ShrEq => self.aug_assign(first, AugOp::Shr, line, col),
             _ => Ok(Stmt::Expr { value: first, line, col }),
         }
     }
@@ -436,8 +456,8 @@ impl Parser {
         match self.cur_kind() {
             TokenKind::Pipe => Err(self.error(
                 "or-patterns (`case a | b:`) are not supported in Oro — write separate `case` \
-                 clauses with the same body. `|` means \"or\" only in languages without an `or` \
-                 keyword; Oro has `or`, so it does not reuse `|` for alternation.",
+                 clauses with the same body. `|` is bitwise or and nothing else here; Oro has an \
+                 `or` keyword, so it does not reuse `|` for alternation.",
             )),
             TokenKind::As => Err(self.error(
                 "as-patterns (`case PATTERN as name:`) are not supported in Oro — a `case` may \
@@ -893,6 +913,12 @@ impl Parser {
                 let operand = self.parse_expr(UNARY_BP)?;
                 Ok(Expr::Unary { op: UnaryOp::Pos, operand: Box::new(operand), line, col })
             }
+            TokenKind::Tilde => {
+                let (line, col) = self.cur_pos();
+                self.advance();
+                let operand = self.parse_expr(UNARY_BP)?;
+                Ok(Expr::Unary { op: UnaryOp::Invert, operand: Box::new(operand), line, col })
+            }
             TokenKind::Is => Err(self.cut_is()),
             _ => self.parse_postfix_atom(),
         }
@@ -1193,12 +1219,16 @@ impl Parser {
         Some(match self.cur_kind() {
             TokenKind::Or => (1, 2),
             TokenKind::And => (2, 3),
-            TokenKind::Plus | TokenKind::Minus => (5, 6),
+            TokenKind::Pipe => (BITOR_BP, BITOR_BP + 1),
+            TokenKind::Caret => (BITXOR_BP, BITXOR_BP + 1),
+            TokenKind::Amp => (BITAND_BP, BITAND_BP + 1),
+            TokenKind::Shl | TokenKind::Shr => (SHIFT_BP, SHIFT_BP + 1),
+            TokenKind::Plus | TokenKind::Minus => (ADD_BP, ADD_BP + 1),
             TokenKind::Star | TokenKind::Slash | TokenKind::DoubleSlash | TokenKind::Percent => {
-                (6, 7)
+                (MUL_BP, MUL_BP + 1)
             }
             // `**` is right-associative: recurse at its own level, not one tighter.
-            TokenKind::DoubleStar => (8, 8),
+            TokenKind::DoubleStar => (POW_BP, POW_BP),
             _ => return None,
         })
     }
@@ -1291,6 +1321,7 @@ impl Parser {
                 | TokenKind::LBrace
                 | TokenKind::Minus
                 | TokenKind::Plus
+                | TokenKind::Tilde
                 | TokenKind::Not
         )
     }
@@ -1326,6 +1357,11 @@ fn build_infix(op: &TokenKind, left: Expr, right: Expr, line: usize, col: usize)
                 TokenKind::DoubleSlash => BinOp::FloorDiv,
                 TokenKind::Percent => BinOp::Mod,
                 TokenKind::DoubleStar => BinOp::Pow,
+                TokenKind::Amp => BinOp::BitAnd,
+                TokenKind::Pipe => BinOp::BitOr,
+                TokenKind::Caret => BinOp::BitXor,
+                TokenKind::Shl => BinOp::Shl,
+                TokenKind::Shr => BinOp::Shr,
                 _ => unreachable!("build_infix called on a non-infix token"),
             };
             let (left, right) = boxed(left, right);
@@ -1417,11 +1453,24 @@ fn describe(kind: &TokenKind) -> String {
         DoubleSlash => "`//`".to_string(),
         Percent => "`%`".to_string(),
         DoubleStar => "`**`".to_string(),
+        Amp => "`&`".to_string(),
+        Caret => "`^`".to_string(),
+        Tilde => "`~`".to_string(),
+        Shl => "`<<`".to_string(),
+        Shr => "`>>`".to_string(),
         Eq => "`=`".to_string(),
         PlusEq => "`+=`".to_string(),
         MinusEq => "`-=`".to_string(),
         StarEq => "`*=`".to_string(),
         SlashEq => "`/=`".to_string(),
+        DoubleSlashEq => "`//=`".to_string(),
+        PercentEq => "`%=`".to_string(),
+        DoubleStarEq => "`**=`".to_string(),
+        AmpEq => "`&=`".to_string(),
+        PipeEq => "`|=`".to_string(),
+        CaretEq => "`^=`".to_string(),
+        ShlEq => "`<<=`".to_string(),
+        ShrEq => "`>>=`".to_string(),
         EqEq => "`==`".to_string(),
         NotEq => "`!=`".to_string(),
         Lt => "`<`".to_string(),

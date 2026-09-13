@@ -1,0 +1,22 @@
+# Augmented assignment, the complete set of twelve, on integers — where Oro and
+# CPython agree because integers are immutable in both. `x op= y` is `x = x op y`.
+x = 17
+x += 3
+x -= 2
+x *= 4
+x //= 5
+x %= 7
+x **= 2
+print(x)
+n = 12
+n &= 10
+n |= 1
+n ^= 2
+n <<= 2
+n >>= 1
+print(n)
+# A subscript target: evaluated once, rebound in place.
+d = {"n": 10}
+d["n"] += 5
+d["n"] //= 3
+print(d["n"])

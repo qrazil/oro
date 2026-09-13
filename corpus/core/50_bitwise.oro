@@ -1,0 +1,15 @@
+# The bitwise operators, against CPython's own answers. Integers and bools,
+# CPython's precedence (`|` loosest, then `^`, `&`, the shifts), and promotion
+# to bignum on a wide shift.
+print(6 & 3, 6 | 1, 6 ^ 3)
+print(~5, ~0, ~-1)
+print(1 << 4, 256 >> 2, -5 >> 1, -4 >> 1)
+print(1 << 200)
+print(1 << 200 == 2 ** 200)
+print(true & false, true | false, true ^ true)
+# `|` looser than `&`, so this is `1 | (2 & 0)` == 1, not `(1 | 2) & 0` == 0.
+print(1 | 2 & 0, (1 | 2) & 0)
+print(5 & 3 | 8 ^ 2)
+print(-1 & 255)
+# tighter than a comparison: `(5 & 1) == 1`.
+print(5 & 1 == 1)

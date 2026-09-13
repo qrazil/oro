@@ -9,3 +9,5 @@ true
 false
 FileNotFoundError caught
 remove of a missing file raises
+x/y
+b.txt

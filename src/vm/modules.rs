@@ -15,6 +15,14 @@ pub fn build(name: &str, argv: &[String]) -> Option<Value> {
     match name {
         "sys" => Some(build_sys(argv)),
         "os" => Some(build_os()),
+        // Keyed here as well as hanging off `os`, because the parser refuses
+        // `import os.path` with a diagnostic telling the reader to write
+        // `import os.path as path` — and a diagnostic that names a spelling
+        // which then raises `ModuleNotFoundError` is worse than the error it
+        // replaced. Only top-level names were registered, so that was exactly
+        // what happened. Reaching it through its parent (`import os`, then
+        // `os.path.basename(...)`) is untouched.
+        "os.path" => Some(build_os_path()),
         "time" => Some(build_time()),
         "re" => Some(build_re()),
         "proc" => Some(build_proc()),

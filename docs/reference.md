@@ -565,8 +565,8 @@ is not listed is a parse error.
 | comparison | `==` `!=` `<` `<=` `>` `>=`, chained (`1 < 2 < 3`) | `is`, `is not` |
 | logical | `and` `or` `not` — **operands and result are `bool`** | truthiness; value-returning `or` |
 | membership | `in`, `not in` | — |
-| assignment | `=`, `+=` `-=` `*=` `/=`, tuple unpacking | `//=` `%=` `**=`, chained `a = b = c`, walrus `:=` |
-| bitwise | *nothing* | `&` `\|` `^` `~` `<<` `>>` |
+| assignment | `=`, augmented `+=` `-=` `*=` `/=` `//=` `%=` `**=` `&=` `\|=` `^=` `<<=` `>>=` (the complete set — one rule, no exceptions), tuple unpacking | chained `a = b = c`, walrus `:=` |
+| bitwise | `&` `\|` `^` `~` `<<` `>>` (integers/bools; CPython's precedence and semantics) | — |
 | conditional | *nothing* | `a if c else b` |
 | indexing | `x[i]`, `x[i:j]`, `x[i:j:k]`, negative indices | — |
 
@@ -585,11 +585,18 @@ a, b = b, a
 print(a, b)
 ```
 
-Three consequences worth stating plainly:
+Four consequences worth stating plainly:
 
-- **There are no bitwise operators at all**, so flag arithmetic has to be
-  written with `//`, `%` and `*`, or kept in a dict of bools. `~`, `^` and `&`
-  are not even lexed.
+- **Augmented assignment is pure rebinding.** `x op= y` is exactly `x = x op y`,
+  for every type and every operator — never an in-place mutation. `b = a; a += [1]`
+  leaves `b` unchanged, unlike Python, whose list `+=` mutates through `__iadd__`.
+  The `lint` rule flags the longhand `x = x op y` and points at `x op= y`, so there
+  is one spelling, not two. An attribute is not a target (`obj.n += 1` is refused);
+  write `obj.n = obj.n + 1`.
+- **The bitwise operators are integers-only** (bools count as integers, as they do
+  for `+`); a `float` operand is a `TypeError`, not a truncation. Their precedence
+  is CPython's — `|` loosest, then `^`, `&`, the shifts — and all are tighter than
+  a comparison, so `x & 1 == 0` is `(x & 1) == 0`.
 - **There is no conditional expression.** `x = "big" if n > 40 else "small"` is a
   parse error; write an `if`/`else` statement. This also means an f-string field
   cannot contain one.
@@ -943,8 +950,10 @@ print(handle(1), handle("a"), handle("quit"), handle(9))
 ```
 
 Refused: bare capture names (`case QUIT:` — in Python this silently rebinds and
-matches everything), or-patterns (`case a | b:`), sequence, mapping and class
-patterns, guards (`case x if c:`) and as-patterns.
+matches everything), or-patterns (`case a | b:` — `|` is bitwise or in Oro and
+nothing else, so it is refused in pattern position explicitly rather than by
+absence; write separate `case` clauses), sequence, mapping and class patterns,
+guards (`case x if c:`) and as-patterns.
 
 ### 4.11 Generators
 
@@ -2105,8 +2114,6 @@ The takeaway a Python reader needs: **rebind.** `a = a.sort(f)`, `a = a.reverse(
 | `x is y` / `x is not y` | `x == y` / `x != y` |
 | `True` / `False` / `None` | `true` / `false` / `null` |
 | `a if c else b` | an `if`/`else` statement |
-| `a & b`, `a \| b`, `a ^ b`, `~a`, `a << b`, `a >> b` | *(no bitwise operators at all)* |
-| `n //= 2`, `n %= 2`, `n **= 2` | `n = n // 2`, … (only `+=` `-=` `*=` `/=` exist) |
 | `obj.n += 1` | `obj.n = obj.n + 1` (an attribute is not an augmented-assignment target) |
 | `a = b = c` | `a, b = c, c` |
 | `(n := f())` | an assignment statement |

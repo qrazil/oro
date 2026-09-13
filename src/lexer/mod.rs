@@ -603,7 +603,11 @@ impl Lexer {
             }
             '*' => {
                 if self.eat('*') {
-                    TokenKind::DoubleStar
+                    if self.eat('=') {
+                        TokenKind::DoubleStarEq
+                    } else {
+                        TokenKind::DoubleStar
+                    }
                 } else if self.eat('=') {
                     TokenKind::StarEq
                 } else {
@@ -612,14 +616,24 @@ impl Lexer {
             }
             '/' => {
                 if self.eat('/') {
-                    TokenKind::DoubleSlash
+                    if self.eat('=') {
+                        TokenKind::DoubleSlashEq
+                    } else {
+                        TokenKind::DoubleSlash
+                    }
                 } else if self.eat('=') {
                     TokenKind::SlashEq
                 } else {
                     TokenKind::Slash
                 }
             }
-            '%' => TokenKind::Percent,
+            '%' => {
+                if self.eat('=') {
+                    TokenKind::PercentEq
+                } else {
+                    TokenKind::Percent
+                }
+            }
             '=' => {
                 if self.eat('=') {
                     TokenKind::EqEq
@@ -636,9 +650,18 @@ impl Lexer {
                     return Err(LexError::new("unexpected character '!'", sl, sc));
                 }
             }
+            // `<=` before `<<`, and `>=` before `>>`: the two are disjoint in
+            // their second character, so one `eat` each settles it. `<<=` and
+            // `>>=` are then a third `eat` on the shift.
             '<' => {
                 if self.eat('=') {
                     TokenKind::LtEq
+                } else if self.eat('<') {
+                    if self.eat('=') {
+                        TokenKind::ShlEq
+                    } else {
+                        TokenKind::Shl
+                    }
                 } else {
                     TokenKind::Lt
                 }
@@ -646,6 +669,12 @@ impl Lexer {
             '>' => {
                 if self.eat('=') {
                     TokenKind::GtEq
+                } else if self.eat('>') {
+                    if self.eat('=') {
+                        TokenKind::ShrEq
+                    } else {
+                        TokenKind::Shr
+                    }
                 } else {
                     TokenKind::Gt
                 }
@@ -677,7 +706,31 @@ impl Lexer {
             // `|` is tokenized (not rejected here) so the parser can emit a
             // designed diagnostic — chiefly the "or-patterns are not supported"
             // message inside a `case`. It is not a binary operator in Oro.
-            '|' => TokenKind::Pipe,
+            '&' => {
+                if self.eat('=') {
+                    TokenKind::AmpEq
+                } else {
+                    TokenKind::Amp
+                }
+            }
+            // `|` is bitwise or. It is still the token the `case a | b:`
+            // diagnostic names: an or-pattern is refused by the parser, which
+            // can now say that `|` means bitwise or here and nothing else.
+            '|' => {
+                if self.eat('=') {
+                    TokenKind::PipeEq
+                } else {
+                    TokenKind::Pipe
+                }
+            }
+            '^' => {
+                if self.eat('=') {
+                    TokenKind::CaretEq
+                } else {
+                    TokenKind::Caret
+                }
+            }
+            '~' => TokenKind::Tilde,
             ',' => TokenKind::Comma,
             '.' => TokenKind::Dot,
             ':' => TokenKind::Colon,

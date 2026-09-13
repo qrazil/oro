@@ -95,8 +95,24 @@ fn none_literal_and_identifier_named_like_prefix() {
 fn multichar_operators() {
     assert_eq!(
         kinds("a //= b\n"),
-        // `//=` is not in the frozen operator set: `//` then `=`.
-        vec![ident("a"), DoubleSlash, Eq, ident("b"), Newline, Eof]
+        // `//=` is one token now that augmented assignment is complete.
+        vec![ident("a"), DoubleSlashEq, ident("b"), Newline, Eof]
+    );
+    // The bitwise operators and their augmented forms each lex as one token.
+    assert_eq!(
+        kinds("a & b | c ^ ~ d << e >> f\n"),
+        vec![
+            ident("a"), Amp, ident("b"), Pipe, ident("c"), Caret, Tilde, ident("d"),
+            Shl, ident("e"), Shr, ident("f"), Newline, Eof
+        ]
+    );
+    assert_eq!(
+        kinds("a %= b **= c &= d |= e ^= f <<= g >>= h\n"),
+        vec![
+            ident("a"), PercentEq, ident("b"), DoubleStarEq, ident("c"), AmpEq, ident("d"),
+            PipeEq, ident("e"), CaretEq, ident("f"), ShlEq, ident("g"), ShrEq, ident("h"),
+            Newline, Eof
+        ]
     );
     assert_eq!(
         kinds("a ** b == c != d <= e >= f -> g += h\n"),

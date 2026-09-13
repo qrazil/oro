@@ -31,3 +31,8 @@ try:
     print("no error")
 except FileNotFoundError:
     print("remove of a missing file raises")
+
+# `import os.path as path` — the spelling the multi-segment-import rule requires.
+import os.path as path
+print(path.join("x", "y"))
+print(path.basename("/a/b.txt"))

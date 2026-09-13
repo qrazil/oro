@@ -1,0 +1,106 @@
+# INTENTIONAL DIVERGENCE. Reviewed by hand; there is no CPython to diff this
+# against, for the reason 60_http_serve.oro gives.
+#
+# `max_requests` and the spelling of "no cap". The cap used to be turned off
+# with `max_requests=null`; the argument rule took that spelling away
+# (`f(x=null)` is a TypeError wherever the default is not itself `null`, and
+# this default is 1000), so for a while nothing spelled unlimited while
+# `serve_conn` still tested `max_requests == null` internally — a server asked
+# for no cap got a TypeError. The replacement is a **negative** cap, the
+# convention the language already uses for unlimited in `split(maxsplit=-1)`
+# and `replace(count=-1)`. `max_body=-1` on `fetch` is the same fix.
+import http
+import io
+import net
+
+_OVER_DEFAULT = 1001
+
+
+def handler(req):
+    return http.text("ok\n")
+
+
+def read_reply(c):
+    head = c.read_until(b"\r\n\r\n", 65536).to_str().lower()
+    body = io.read(c, fixed_size=3).to_str()
+    return [body, "connection: close" in head]
+
+
+def get(c):
+    c.write(b"GET / HTTP/1.1\r\nHost: h\r\n\r\n")
+    return read_reply(c)
+
+
+# --- a server with no cap, over a real socket -------------------------------
+ready = chan()
+srv = spawn(http.serve, "127.0.0.1:0", handler, ready=ready, max_requests=-1)
+ln = ready.recv()
+c = net.dial(ln.local)
+c.set_timeout(5)
+
+served = 0
+closed_early = false
+for i, _ in range(_OVER_DEFAULT):
+    answer = get(c)
+    if answer[0] == "ok\n":
+        served = served + 1
+    if answer[1]:
+        closed_early = true
+
+print("every request on one connection was answered:", served == _OVER_DEFAULT)
+print("and that is more than the default cap of 1000:", served > 1000)
+print("the server never asked to close:", closed_early == false)
+print("the connection is still open afterwards:", get(c) == ["ok\n", false])
+c.close()
+ln.close()
+tally = srv.join()
+print("one connection over the server's life:", tally["accepted"] == 1)
+
+# --- the same at the `serve_conn` seam, over in-memory buffers --------------
+class Conn:
+    def __init__(self, incoming):
+        self.incoming = io.buffer(incoming)
+        self.outgoing = io.buffer(b"")
+
+    def read(self, n):
+        return self.incoming.read(n)
+
+    def read_until(self, delim, limit):
+        return self.incoming.read_until(delim, limit)
+
+    def write(self, b):
+        self.outgoing.write(b)
+
+
+req = b"GET / HTTP/1.1\r\nHost: h\r\n\r\n"
+pipelined = b""
+for i, _ in range(1200):
+    pipelined = pipelined + req
+
+print("serve_conn with a negative cap serves the lot:", http.serve_conn(Conn(pipelined), handler, max_requests=-1) == 1200)
+print("and with the default it stops at 1000:", http.serve_conn(Conn(pipelined), handler) == 1000)
+print("a cap of 1 serves exactly one:", http.serve_conn(Conn(pipelined), handler, max_requests=1) == 1)
+
+# --- max_body=-1 is the same fix on the client ------------------------------
+# A negative cap reads the whole body; the default (a number) caps it. Both
+# used to be spelled `null`, which the argument rule now refuses.
+bready = chan()
+bsrv = spawn(http.serve, "127.0.0.1:0", req2 => http.text("0123456789"), ready=bready)
+bln = bready.recv()
+uncapped = http.fetch("GET", f"http://{bln.local}/", max_body=-1)
+print("max_body=-1 reads the whole body:", uncapped.text() == "0123456789")
+capped = false
+try:
+    http.fetch("GET", f"http://{bln.local}/", max_body=3)
+except http.BadResponse as e:
+    capped = true
+print("a small max_body still caps:", capped)
+bln.close()
+bsrv.join()
+
+# `null` is not a way to say "omitted" (§2): the argument rule refuses it.
+try:
+    http.serve_conn(Conn(req), handler, max_requests=null)
+    print("null was accepted -- the argument rule is not being applied")
+except TypeError as e:
+    print("max_requests=null is refused by the argument rule:", type(e))

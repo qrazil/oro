@@ -1,0 +1,17 @@
+# INTENTIONAL DIVERGENCE. `+=` in Oro is **pure rebinding**: `x += y` is exactly
+# `x = x + y`, for every type, always. Python's list `+=` mutates in place via
+# `__iadd__`, so an aliased list changes under the alias; Oro removed every
+# in-place collection op precisely to kill that bug class, so `b` below stays
+# what it was. This is the one place augmented assignment's behaviour is visible
+# and it is the reason completing the operator set does not reintroduce the trap.
+a = [1, 2]
+b = a
+a += [3]
+print("a", a)
+print("b", b)
+# Same for every collection-ish op, so the whole family rebinds:
+xs = [1]
+ys = xs
+xs *= 3
+print("xs", xs)
+print("ys", ys)

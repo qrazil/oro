@@ -60,6 +60,7 @@ fn sexp(e: &Expr) -> String {
                 UnaryOp::Neg => "-",
                 UnaryOp::Pos => "+",
                 UnaryOp::Not => "not",
+                UnaryOp::Invert => "~",
             };
             format!("({o} {})", sexp(operand))
         }
@@ -72,6 +73,11 @@ fn sexp(e: &Expr) -> String {
                 BinOp::FloorDiv => "//",
                 BinOp::Mod => "%",
                 BinOp::Pow => "**",
+                BinOp::BitAnd => "&",
+                BinOp::BitOr => "|",
+                BinOp::BitXor => "^",
+                BinOp::Shl => "<<",
+                BinOp::Shr => ">>",
             };
             format!("({o} {} {})", sexp(left), sexp(right))
         }

@@ -1,0 +1,11 @@
+every request on one connection was answered: true
+and that is more than the default cap of 1000: true
+the server never asked to close: true
+the connection is still open afterwards: true
+one connection over the server's life: true
+serve_conn with a negative cap serves the lot: true
+and with the default it stops at 1000: true
+a cap of 1 serves exactly one: true
+max_body=-1 reads the whole body: true
+a small max_body still caps: true
+max_requests=null is refused by the argument rule: <class 'TypeError'>

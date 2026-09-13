@@ -1322,8 +1322,9 @@ measurement, and the reason the same argument does not move `http`.
   itself. `serve` then returns a tally of `accepted` / `refused` / `drained` /
   `forced`. Its other keyword arguments are the numbers a deployment has to be
   able to change: `max_conns` (512; at the cap a connection is accepted and
-  closed with nothing written), `max_requests` per connection (1000, or `null`
-  for no cap) and `timeout` (30s, one scheduler deadline covering any single
+  closed with nothing written), `max_requests` per connection (1000, or a
+  negative number for no cap — the `maxsplit=-1` convention) and `timeout` (30s,
+  one scheduler deadline covering any single
   read or write on the connection).
 
   A request body is always a

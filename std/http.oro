@@ -128,7 +128,7 @@ _MAX_DRAIN = 65536
 # an argument, because "how long may one client keep one slot" is a
 # deployment's question and not a stdlib's: a public edge wants it low, an
 # internal RPC service reconnecting every 1000 calls is pure overhead, and
-# `max_requests=null` turns it off for a service that is already behind
+# `max_requests=-1` turns it off for a service that is already behind
 # something that limits connections for it.
 _MAX_REQUESTS_PER_CONN = 1000
 
@@ -1157,8 +1157,12 @@ def _error_response(status, message):
 # the socket — `serve` sets one, once, per connection — not to this loop,
 # which stays true to the protocol.
 #
-# `max_requests` caps how many requests one connection may carry; `null`
-# means no cap. `watch`, if given, is anything with two attributes, in the
+# `max_requests` caps how many requests one connection may carry; a negative
+# cap means no cap at all, which is the convention the language already uses
+# for "unlimited" in `split(maxsplit=-1)` and `replace(count=-1)`. It was
+# `null` until the argument rule made `f(x=null)` a TypeError wherever the
+# default is not itself `null`, which left "no cap" with no spelling.
+# `watch`, if given, is anything with two attributes, in the
 # same naming-convention-not-a-declared-type spirit as the io protocol:
 #
 #     watch.busy      # set here: true while a request is being served,
@@ -1176,7 +1180,7 @@ def _error_response(status, message):
 # that window truncates a reply that was already written.
 def serve_conn(conn, handler, max_requests=_MAX_REQUESTS_PER_CONN, watch=null):
     served = 0
-    while max_requests == null or served < max_requests:
+    while max_requests < 0 or served < max_requests:
         req = _try_read(conn)
         if req == null:
             return served
@@ -1187,7 +1191,7 @@ def serve_conn(conn, handler, max_requests=_MAX_REQUESTS_PER_CONN, watch=null):
         # Connection header this response carries is the truth about what
         # happens next rather than a promise made before checking.
         drained = _drain(req.body)
-        keep = drained and (max_requests == null or served + 1 < max_requests)
+        keep = drained and (max_requests < 0 or served + 1 < max_requests)
         if keep:
             keep = should_keep_alive(req, resp)
         if keep and watch != null and watch.stopping:
@@ -1606,7 +1610,7 @@ _CLIENT_TIMEOUT = 30
 # What `fetch` will hold in memory before giving up. `fetch`'s contract is
 # "the body, in your hands, connection closed", and a contract like that with
 # no number attached is one an unfriendly downstream service chooses for you.
-# `max_body=null` turns it off, and `stream` is the answer for a body that is
+# `max_body=-1` turns it off, and `stream` is the answer for a body that is
 # genuinely large — there the caller decides what to do with each chunk.
 _MAX_BODY = 33554432
 
@@ -2376,7 +2380,7 @@ def _payload(body):
 # uncapped form and is deliberately not what `fetch` calls: the size of an
 # outbound call's answer is chosen by the service being called.
 def _read_capped(r, limit):
-    if limit == null:
+    if limit < 0:
         return io.read(r)
     parts = []
     got = 0

@@ -1,0 +1,10 @@
+# INTENTIONAL DIVERGENCE (a compile error, so there is no runtime output to
+# oracle). `f(a=1, a=2)` used to be accepted, collect its keywords into a dict,
+# and silently keep the last — an argument the caller wrote, dropped without a
+# word. It is refused at compile time now, where the other argument-rule
+# refusals live. CPython also refuses it, at parse time, with a different
+# message.
+def connect(host, timeout=30):
+    return host
+
+print(connect("h", timeout=1, timeout=2))

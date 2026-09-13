@@ -120,7 +120,7 @@ const MAX_BLANK_RUN: usize = 2;
 
 /// Atoms and anything that already self-delimits (calls, literals, a
 /// parenthesized/bracketed collection): never needs parens as anyone's child.
-const ATOM: u8 = 9;
+const ATOM: u8 = 13;
 const POSTFIX_MIN: u8 = ATOM;
 const OR_PREC: u8 = 1;
 const AND_PREC: u8 = 2;
@@ -128,8 +128,8 @@ const NOT_PREC: u8 = 3;
 const NOT_BP: u8 = 3;
 const CMP_PREC: u8 = 4;
 const CMP_BP: u8 = 4;
-const UNARY_PREC: u8 = 7;
-const UNARY_BP: u8 = 7;
+const UNARY_PREC: u8 = 11;
+const UNARY_BP: u8 = 11;
 /// A lambda's `=>` is the loosest thing in the grammar: forming one is
 /// unconditional wherever an atom is immediately followed by `=>`, so a bare
 /// lambda can only ever be the *last* thing in whatever expression contains
@@ -615,6 +615,14 @@ fn augop_str(op: AugOp) -> &'static str {
         AugOp::Sub => "-=",
         AugOp::Mul => "*=",
         AugOp::Div => "/=",
+        AugOp::FloorDiv => "//=",
+        AugOp::Mod => "%=",
+        AugOp::Pow => "**=",
+        AugOp::BitAnd => "&=",
+        AugOp::BitOr => "|=",
+        AugOp::BitXor => "^=",
+        AugOp::Shl => "<<=",
+        AugOp::Shr => ">>=",
     }
 }
 
@@ -627,6 +635,11 @@ fn binop_str(op: BinOp) -> &'static str {
         BinOp::FloorDiv => "//",
         BinOp::Mod => "%",
         BinOp::Pow => "**",
+        BinOp::BitAnd => "&",
+        BinOp::BitOr => "|",
+        BinOp::BitXor => "^",
+        BinOp::Shl => "<<",
+        BinOp::Shr => ">>",
     }
 }
 
@@ -651,9 +664,13 @@ fn cmp_str(op: CmpOp) -> &'static str {
 /// reparse right-associated).
 fn binop_bp(op: BinOp) -> (u8, u8, u8) {
     match op {
-        BinOp::Add | BinOp::Sub => (5, 6, 5),
-        BinOp::Mul | BinOp::Div | BinOp::FloorDiv | BinOp::Mod => (6, 7, 6),
-        BinOp::Pow => (ATOM, 8, 8),
+        BinOp::BitOr => (5, 6, 5),
+        BinOp::BitXor => (6, 7, 6),
+        BinOp::BitAnd => (7, 8, 7),
+        BinOp::Shl | BinOp::Shr => (8, 9, 8),
+        BinOp::Add | BinOp::Sub => (9, 10, 9),
+        BinOp::Mul | BinOp::Div | BinOp::FloorDiv | BinOp::Mod => (10, 11, 10),
+        BinOp::Pow => (ATOM, 12, 12),
     }
 }
 
@@ -743,6 +760,9 @@ fn expr_inner(lb: &LineBreaks, e: &Expr) -> (String, u8) {
         }
         Expr::Unary { op: UnaryOp::Pos, operand, .. } => {
             (format!("+{}", expr(lb, operand, UNARY_BP)), UNARY_PREC)
+        }
+        Expr::Unary { op: UnaryOp::Invert, operand, .. } => {
+            (format!("~{}", expr(lb, operand, UNARY_BP)), UNARY_PREC)
         }
         Expr::Binary { op, left, right, .. } => {
             let (lmin, rmin, prec) = binop_bp(*op);

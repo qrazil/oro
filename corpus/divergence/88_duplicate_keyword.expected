@@ -1,0 +1,1 @@
+divergence/88_duplicate_keyword.oro:10:7: connect() got the keyword `timeout` twice — a keyword may be written once in a call; delete the one you did not mean

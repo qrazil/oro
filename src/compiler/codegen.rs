@@ -821,6 +821,14 @@ impl<'a> Codegen<'a> {
             AugOp::Sub => Op::BinSub,
             AugOp::Mul => Op::BinMul,
             AugOp::Div => Op::BinDiv,
+            AugOp::FloorDiv => Op::BinFloorDiv,
+            AugOp::Mod => Op::BinMod,
+            AugOp::Pow => Op::BinPow,
+            AugOp::BitAnd => Op::BinBitAnd,
+            AugOp::BitOr => Op::BinBitOr,
+            AugOp::BitXor => Op::BinBitXor,
+            AugOp::Shl => Op::BinShl,
+            AugOp::Shr => Op::BinShr,
         };
         match target {
             Expr::Name { .. } => {
@@ -1234,6 +1242,7 @@ impl<'a> Codegen<'a> {
                     UnaryOp::Neg => Op::UnaryNeg,
                     UnaryOp::Pos => Op::UnaryPos,
                     UnaryOp::Not => Op::UnaryNot,
+                    UnaryOp::Invert => Op::UnaryInvert,
                 };
                 self.emit(o, *line, *col);
             }
@@ -1248,6 +1257,11 @@ impl<'a> Codegen<'a> {
                     BinOp::FloorDiv => Op::BinFloorDiv,
                     BinOp::Mod => Op::BinMod,
                     BinOp::Pow => Op::BinPow,
+                    BinOp::BitAnd => Op::BinBitAnd,
+                    BinOp::BitOr => Op::BinBitOr,
+                    BinOp::BitXor => Op::BinBitXor,
+                    BinOp::Shl => Op::BinShl,
+                    BinOp::Shr => Op::BinShr,
                 };
                 self.emit(o, *line, *col);
             }
@@ -1386,6 +1400,26 @@ impl<'a> Codegen<'a> {
                     self.emit(Op::LoadSuper, line, col);
                     return Ok(());
                 }
+            }
+        }
+
+        // A keyword written twice is a mistake, not a call. `f(a=1, a=2)` used
+        // to be legal and quietly wrong: the keywords were collected into a
+        // dict, so the second value won and an argument the caller wrote was
+        // dropped without a word. There is no reading on which both are wanted
+        // — CPython refuses it too — so it is refused here, once per call site
+        // at compile time, where the other argument-rule refusals live.
+        for (i, (name, _)) in kwargs.iter().enumerate() {
+            if kwargs[..i].iter().any(|(earlier, _)| earlier == name) {
+                return Err(self.err(
+                    format!(
+                        "{} got the keyword `{name}` twice — a keyword may be written once in \
+                         a call; delete the one you did not mean",
+                        call_label(func)
+                    ),
+                    line,
+                    col,
+                ));
             }
         }
 
@@ -2029,6 +2063,18 @@ fn counter_step_pos(stmt: &Stmt, name: &str) -> Option<(usize, usize)> {
             None
         }
         _ => None,
+    }
+}
+
+/// How a call names itself in a diagnostic: `connect()` for a plain call and
+/// `get()` for a method, the way the runtime's argument-rule refusals spell a
+/// callee. A callee that is an expression rather than a name has no spelling to
+/// quote, so it is just "this call".
+fn call_label(func: &Expr) -> String {
+    match func {
+        Expr::Name { name, .. } => format!("{name}()"),
+        Expr::Attribute { attr, .. } => format!("{attr}()"),
+        _ => "this call".to_string(),
     }
 }
 

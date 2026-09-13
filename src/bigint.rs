@@ -211,6 +211,123 @@ impl BigInt {
         }
         self
     }
+
+    /// `~self`, which is `-self - 1` — the same identity the inline `i64` path
+    /// relies on, and the definition of the operator rather than a consequence
+    /// of some representation.
+    pub fn not(&self) -> BigInt {
+        self.neg().sub(&BigInt::from_i64(1))
+    }
+
+    pub fn bitand(&self, other: &BigInt) -> BigInt {
+        self.bitwise(other, |a, b| a & b, self.negative && other.negative)
+    }
+
+    pub fn bitor(&self, other: &BigInt) -> BigInt {
+        self.bitwise(other, |a, b| a | b, self.negative || other.negative)
+    }
+
+    pub fn bitxor(&self, other: &BigInt) -> BigInt {
+        self.bitwise(other, |a, b| a ^ b, self.negative != other.negative)
+    }
+
+    /// The shared body of `&`, `|` and `^`.
+    ///
+    /// Python's integers are conceptually **infinite two's-complement**: a
+    /// negative value is its magnitude's complement under an endless run of
+    /// sign bits. This type is sign-magnitude, so each operand is widened into
+    /// two's-complement limbs over a common width, combined limb by limb, and
+    /// converted back. One limb beyond the longer magnitude is enough width:
+    /// it is the limb that holds the sign, and it is all-zero for a
+    /// non-negative value and all-ones for a negative one, so every limb above
+    /// it would repeat.
+    ///
+    /// `negative` is the result's sign bit, which is the operator applied to
+    /// the two sign bits — the caller computes it because it is the one part
+    /// that is not a limb.
+    fn bitwise(&self, other: &BigInt, f: fn(u32, u32) -> u32, negative: bool) -> BigInt {
+        let n = self.mag.len().max(other.mag.len()) + 1;
+        let (x, y) = (self.twos(n), other.twos(n));
+        let limbs: Vec<u32> = x.iter().zip(&y).map(|(&a, &b)| f(a, b)).collect();
+        from_twos(limbs, negative)
+    }
+
+    /// This value as `n` two's-complement limbs (`n` at least one more than
+    /// the magnitude's length, so the top limb is the sign).
+    fn twos(&self, n: usize) -> Vec<u32> {
+        let mut out = vec![0u32; n];
+        if !self.negative {
+            out[..self.mag.len()].copy_from_slice(&self.mag);
+            return out;
+        }
+        // -m is !(m - 1). The magnitude is non-empty here, because zero is
+        // never negative.
+        let mut m = self.mag.clone();
+        sub_one(&mut m);
+        for (i, limb) in out.iter_mut().enumerate() {
+            *limb = !m.get(i).copied().unwrap_or(0);
+        }
+        out
+    }
+
+    /// `self << n`. The magnitude shifts and the sign is untouched, which is
+    /// what Python means by it: `-1 << 3` is -8.
+    pub fn shl(&self, n: u64) -> BigInt {
+        if self.is_zero() {
+            return BigInt::zero();
+        }
+        let whole = (n / 32) as usize;
+        let bits = (n % 32) as u32;
+        let mut mag = vec![0u32; whole];
+        if bits == 0 {
+            mag.extend_from_slice(&self.mag);
+        } else {
+            let mut carry = 0u32;
+            for &limb in &self.mag {
+                mag.push((limb << bits) | carry);
+                carry = limb >> (32 - bits);
+            }
+            if carry != 0 {
+                mag.push(carry);
+            }
+        }
+        normalize(&mut mag);
+        BigInt { negative: self.negative, mag }
+    }
+
+    /// `self >> n`, which Python defines as `self // 2**n` — floored, so a
+    /// negative value rounds *away* from zero: `-5 >> 1` is -3, not -2.
+    pub fn shr(&self, n: u64) -> BigInt {
+        let whole = (n / 32) as usize;
+        let bits = (n % 32) as u32;
+        if whole >= self.mag.len() {
+            // Everything shifted out. Flooring makes that -1 for a negative
+            // value and 0 for a non-negative one.
+            return if self.negative { BigInt::from_i64(-1) } else { BigInt::zero() };
+        }
+        // Whether a 1 bit fell off the bottom, which is what decides the floor
+        // adjustment below.
+        let mut lost = self.mag[..whole].iter().any(|&limb| limb != 0);
+        let src = &self.mag[whole..];
+        let mut mag = Vec::with_capacity(src.len());
+        if bits == 0 {
+            mag.extend_from_slice(src);
+        } else {
+            lost = lost || src[0] & ((1u32 << bits) - 1) != 0;
+            for i in 0..src.len() {
+                let hi = src.get(i + 1).copied().unwrap_or(0);
+                mag.push((src[i] >> bits) | (hi << (32 - bits)));
+            }
+        }
+        normalize(&mut mag);
+        let out = BigInt { negative: self.negative, mag }.normalized();
+        if self.negative && lost {
+            // Truncation toward zero gave -(m >> n); the floor is one below it.
+            out.sub(&BigInt::from_i64(1))
+        } else {
+            out
+        }
+    }
 }
 
 impl PartialOrd for BigInt {
@@ -365,6 +482,34 @@ fn add_small_inplace(mag: &mut Vec<u32>, addend: u32) {
         carry = cur >> 32;
         i += 1;
     }
+}
+
+/// Subtract one from a non-zero magnitude, in place.
+fn sub_one(mag: &mut Vec<u32>) {
+    for limb in mag.iter_mut() {
+        if *limb == 0 {
+            *limb = u32::MAX; // borrow from the next limb
+        } else {
+            *limb -= 1;
+            break;
+        }
+    }
+    normalize(mag);
+}
+
+/// Read two's-complement limbs back as a sign-magnitude value. `negative` is
+/// the sign the caller derived from the operands' sign bits.
+fn from_twos(limbs: Vec<u32>, negative: bool) -> BigInt {
+    let mut mag = limbs;
+    if negative {
+        // The magnitude of a negative two's-complement value is !limbs + 1.
+        for limb in mag.iter_mut() {
+            *limb = !*limb;
+        }
+        add_small_inplace(&mut mag, 1);
+    }
+    normalize(&mut mag);
+    BigInt { negative, mag }.normalized()
 }
 
 /// Divide the magnitude in place by a small divisor, returning the remainder.

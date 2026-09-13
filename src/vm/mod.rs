@@ -1762,6 +1762,11 @@ impl Vm {
                         _ => return Err(self.err(not_bool(&v, "the operand of `not`"))),
                     }
                 }
+                Op::UnaryInvert => {
+                    let v = self.pop();
+                    let r = self.wrap(arith::invert(&v))?;
+                    self.push(r);
+                }
                 Op::AssertBool => {
                     let ok = matches!(self.top().stack.last(), Some(Value::Bool(_)));
                     if !ok {
@@ -1775,11 +1780,20 @@ impl Vm {
                 | Op::BinDiv
                 | Op::BinFloorDiv
                 | Op::BinMod
-                | Op::BinPow => {
+                | Op::BinPow
+                | Op::BinBitAnd
+                | Op::BinBitOr
+                | Op::BinBitXor
+                | Op::BinShl
+                | Op::BinShr => {
                     let b = self.pop();
                     let a = self.pop();
+                    // `None` for a bitwise operator: Oro's dunder set stops at
+                    // the arithmetic ones, so there is no `__and__` to look for
+                    // and an instance operand falls to the type error below
+                    // rather than to a call.
                     let dunder = arith_dunder(&op);
-                    match instance_method(&a, dunder) {
+                    match dunder.and_then(|d| instance_method(&a, d)) {
                         Some((f, defclass)) => {
                             self.invoke_user(f, a, defclass, vec![b], Vec::new(), ReturnAction::Normal)?;
                         }
@@ -6723,9 +6737,15 @@ fn build_repr(value: &Value, results: &[String], idx: &mut usize, path: &mut Vec
     }
 }
 
-/// The dunder method name for a binary-arithmetic opcode.
-fn arith_dunder(op: &Op) -> &'static str {
-    match op {
+/// The dunder method name for a binary-arithmetic opcode, or `None` for one
+/// that has none.
+///
+/// The bitwise operators are the `None` cases, and deliberately: Oro's dunder
+/// set is fixed (`docs/reference.md` §4.8), `&` on two integers is what the
+/// operator is for, and a class that wants to mean something else by it is
+/// asking for an overload the language does not offer.
+fn arith_dunder(op: &Op) -> Option<&'static str> {
+    Some(match op {
         Op::BinAdd => "__add__",
         Op::BinSub => "__sub__",
         Op::BinMul => "__mul__",
@@ -6733,8 +6753,8 @@ fn arith_dunder(op: &Op) -> &'static str {
         Op::BinFloorDiv => "__floordiv__",
         Op::BinMod => "__mod__",
         Op::BinPow => "__pow__",
-        _ => unreachable!("arith_dunder on a non-arithmetic op"),
-    }
+        _ => return None,
+    })
 }
 
 /// The operator symbol for a binary-arithmetic opcode (for error messages).
@@ -6747,6 +6767,11 @@ fn arith_symbol(op: &Op) -> &'static str {
         Op::BinFloorDiv => "//",
         Op::BinMod => "%",
         Op::BinPow => "**",
+        Op::BinBitAnd => "&",
+        Op::BinBitOr => "|",
+        Op::BinBitXor => "^",
+        Op::BinShl => "<<",
+        Op::BinShr => ">>",
         _ => unreachable!("arith_symbol on a non-arithmetic op"),
     }
 }

@@ -180,6 +180,8 @@ pub enum Op {
     UnaryNeg,
     UnaryPos,
     UnaryNot,
+    /// `~x`. Unlike the other three this one is integers-only.
+    UnaryInvert,
     /// Fault unless the top of the stack is a `bool`, leaving it in place. Emitted
     /// after the right operand of `and`/`or`, whose left operand the
     /// short-circuit jump already checked — Oro has no truthiness, so both
@@ -192,6 +194,15 @@ pub enum Op {
     BinFloorDiv,
     BinMod,
     BinPow,
+    /// The bitwise operators. They take integers (and bools, as every other
+    /// arithmetic operator here does) and nothing else — there is no `__and__`
+    /// in Oro's dunder set, so an instance operand is a `TypeError` rather
+    /// than a call.
+    BinBitAnd,
+    BinBitOr,
+    BinBitXor,
+    BinShl,
+    BinShr,
     Compare(CmpOp),
 
     // Control flow. Targets are absolute op indices.
