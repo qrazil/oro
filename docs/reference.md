@@ -85,11 +85,24 @@ oro fmt <file.oro>            print the canonically formatted source
 oro fmt --write <file.oro>    rewrite the file in place
 oro fmt -w <file.oro>         the same
 oro fmt --check <file.oro>    exit 1 if the file is not already canonical
+oro lint <file.oro>...        flag one-way overlaps; exit 1 if any are found
+oro lint --rules              list the overlaps a linter deliberately skips
 ```
 
 That is the whole command line. There is no REPL, no `-c`, no `-m`, no
-`-O`, no import path flag and no `fmt` over a directory or a list of files —
-`oro fmt` takes exactly one path, so formatting a tree is a shell loop.
+`-O`, no import path flag and no `fmt` over a directory — `oro fmt` takes
+exactly one path, so formatting a tree is a shell loop.
+
+**`oro lint`** is advice, not a gate: it reports the *mechanically-checkable*
+half of the one-way audit — `find(x) >= 0` where `in` fits, `s[0:n] == p` where
+`startswith` fits, `s[len(p):]` where `rm_prefix` fits, `d.get(k) == null` where
+`k in d` fits, `xs[::-1]` where `reverse()` fits — as `file:line:col: [rule]
+advice`, and exits non-zero when it finds one. It never runs the program and
+does not touch the *judgement* overlaps (chain vs. `for`, `first()` vs. `[0]`,
+how to build a string); `oro lint --rules` lists those and why each is a human
+call. The linter is the answer to a question the audit left open — whether
+"unenforceable prose" is genuinely unenforceable or merely unenforced: run over
+`std/`, it finds eighteen real instances, so it was merely unenforced.
 
 **Arguments after the script go to the program**, in `sys.argv`, with
 `sys.argv[0]` set to the script path — Python's convention. Only the *first*

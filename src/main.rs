@@ -38,6 +38,10 @@ fn main() -> ExitCode {
         return run_fmt(&args[2..]);
     }
 
+    if args.get(1).map(String::as_str) == Some("lint") {
+        return run_lint(&args[2..]);
+    }
+
     let (mode, path) = match args.as_slice() {
         [_, flag, path] if flag == "--tokens" => (Mode::Tokens, path),
         [_, flag, path] if flag == "--ast" => (Mode::Ast, path),
@@ -180,5 +184,77 @@ fn run_fmt(args: &[String]) -> ExitCode {
                 ExitCode::FAILURE
             }
         }
+    }
+}
+
+/// `oro lint [--rules] <file.oro>...` — the mechanically-checkable half of the
+/// one-way audit (see `src/linter.rs`). Prints `file:line:col: [rule] advice`
+/// for each finding and exits non-zero if any file has one; `--rules` instead
+/// lists the audit overlaps a linter deliberately does not check, and why.
+fn run_lint(args: &[String]) -> ExitCode {
+    use oro_lang::linter;
+    let mut paths: Vec<&str> = Vec::new();
+    for a in args {
+        match a.as_str() {
+            "--rules" => {
+                println!("Not checked (judgement calls a linter would get wrong):");
+                for (name, why) in linter::UNCHECKABLE {
+                    println!("  {name}\n      {why}");
+                }
+                return ExitCode::SUCCESS;
+            }
+            other if !other.starts_with('-') => paths.push(other),
+            other => {
+                eprintln!("oro lint: unrecognized argument '{other}'");
+                return ExitCode::from(64); // EX_USAGE
+            }
+        }
+    }
+    if paths.is_empty() {
+        eprintln!("usage: oro lint [--rules] <file.oro>...");
+        return ExitCode::from(64); // EX_USAGE
+    }
+
+    let mut any = false;
+    let mut hard_error = false;
+    for path in paths {
+        let source = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("oro: cannot read {path}: {e}");
+                hard_error = true;
+                continue;
+            }
+        };
+        // The linter works on the parse tree, so a file that will not even parse
+        // is reported once and skipped — it is a compile error, not a lint.
+        let tokens = match Lexer::new(&source).tokenize() {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("{path}: {e}");
+                hard_error = true;
+                continue;
+            }
+        };
+        let program = match Parser::new(tokens).parse() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("{path}: {e}");
+                hard_error = true;
+                continue;
+            }
+        };
+        for f in linter::lint(&program) {
+            any = true;
+            println!("{path}:{}:{}: [{}] {}", f.line, f.col, f.rule, f.message);
+        }
+    }
+
+    if hard_error {
+        ExitCode::FAILURE
+    } else if any {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
     }
 }

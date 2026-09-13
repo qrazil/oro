@@ -26,6 +26,7 @@ pub mod fmt;
 pub mod format;
 pub mod json;
 pub mod lexer;
+pub mod linter;
 pub mod net;
 pub mod regexutil;
 pub mod parser;
