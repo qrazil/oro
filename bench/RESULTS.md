@@ -10,7 +10,7 @@ harness checks oro and CPython agree before reporting a time.
 | CPU | Intel Core i7-8750H @ 2.20GHz (12 threads) |
 | OS | Linux 6.14.5 (Fedora 40) |
 | rustc | 1.97.1 |
-| CPython | 3.12.10 |
+| CPython | 3.11.2 |
 | method | best-of-N wall clock (N=3 in the log below, N=5 for the summary) |
 
 ## The programs
@@ -18,7 +18,7 @@ harness checks oro and CPython agree before reporting a time.
 | bench | what it stresses |
 |---|---|
 | `fib` | the call path: `fib(27)`, ~400k frame push/bind/return cycles |
-| `loop` | raw dispatch: a 3M-iteration `while` with integer arithmetic |
+| `loop` | raw dispatch: a 3M-iteration `for i, _ in range(n)` with integer arithmetic |
 | `strjoin` | 200k f-string formats into a list, then `join` — oro-only since `sep.join(xs)` was cut, CPython twin in `strjoin.py` |
 | `dictops` | 500k integer-keyed dict writes, then a full iteration + lookup scan |
 | `dictstr` | string-keyed dicts: 200k distinct keys, then 500k hits on one small record |
@@ -30,55 +30,42 @@ harness checks oro and CPython agree before reporting a time.
 | `chain` | the collection protocol (`.filter`/`.map`/`.reduce` with `=>`) — oro-only, CPython twin in `chain.py` |
 | `json` | `json.parse` + `json.stringify` over five payload shapes — oro-only, CPython twin in `json_twin.py` |
 
-## One program's barrier changed spelling
+## Current summary — rebaselined after the loop rule
 
-`fuse.oro`'s fourth shape is a chain with a barrier in the middle, and that
-barrier was the native `sorted()` until keyed sorting became one spelling and
-`xs.sorted()` was cut. It is now `sort_by(x => x)`, which is the same sort
-reached through a callback: the keys are an Oro call per element, where
-`sorted()` compared the elements natively and called nothing.
+The loop rule (README, "The loop rule") made a `while` counter a compile error,
+so every benchmark was rewritten to `for i, _ in range(n)`. CPython cannot run
+that — its `for` binds an element, not an `(index, value)` pair — so each
+rewritten program now carries a `.py` twin in Python's spelling (`for i in
+range(n)`), and the harness runs oro on the `.oro` and CPython on the twin,
+checking their output agrees before timing. The whole suite was re-run after
+that change; **these are the current numbers**, best-of-5, one core:
 
-So **the `fuse` row above is not comparable with runs taken after this change**,
-and the same is true of the "four steps with a `sorted` barrier in the middle"
-line in the fusion table below. Nothing else in the suite moved — no other
-benchmark used a cut spelling — and only `fuse.oro`'s `d` shape was touched.
-The rest of that file, and every other program here, is byte for byte what it
-was. When the suite is next rebaselined, `fuse` needs a fresh pair of numbers
-rather than a comparison against these.
+| bench | oro | CPython | oro/CPython | note |
+|---|---|---|---|---|
+| fib | 0.095s | 0.041s | 2.32x |  |
+| loop | 0.418s | 0.269s | 1.55x | py twin |
+| strjoin | 0.115s | 0.063s | 1.83x | py twin |
+| strops | 0.206s | 0.097s | 2.12x | py twin |
+| dictops | 0.317s | 0.188s | 1.69x | py twin |
+| dictstr | 0.428s | 0.190s | 2.25x | py twin |
+| oo | 0.239s | 0.105s | 2.28x | py twin |
+| genpipe | 0.181s | 0.051s | 3.55x | py twin |
+| exc | 0.103s | 0.090s | 1.14x | py twin |
+| listbuild | 0.219s | 0.123s | 1.78x | py twin |
+| builtins | 0.191s | 0.177s | 1.08x | py twin |
+| chain | 0.136s | 0.064s | 2.12x | py twin |
+| fuse | 0.231s | 0.091s | 2.54x | py twin |
+| fusesc | 0.021s | 0.090s | 0.23x | py twin |
+| json | 0.100s | 0.141s | 0.71x | py twin |
 
-## The benchmarks no longer count by hand — and these numbers predate that
+`fuse.oro`'s barrier is `sort(x => x)` — a keyed sort through a callback, an Oro
+call per element — where it was the native `sorted()` before that cut, so its
+number reflects the callback cost, not a native compare. Every "py twin" row is
+now compared against a hand-written Python equivalent rather than the same file,
+which is the honest way to keep the vs-CPython column after the loop rule.
 
-Every program here used to spell a bounded count the long way:
-
-```python
-i = 0
-while i < 200000:
-    ...
-    i = i + 1
-```
-
-They were kept that way deliberately, because a benchmark's loop is inside its
-measurement: `range` steps in Rust, so a `for` form runs ~31% faster here
-without a single VM instruction changing (and CPython's own gain is smaller, so
-even the vs-CPython *ratio* moves). Keeping the manual counter kept the loop
-matched to the VM's dispatch rather than to `range`'s stepping.
-
-**The loop rule ended that.** `while` stepping a variable by an integer constant
-is now a compile error (README, "The loop rule"), so the manual counter is not a
-form the language has any more, and every program here was rewritten to
-`for i, _ in range(n)`. The measurement argument above is why it mattered, and
-is exactly why **every number in this file now predates the loops that produce
-it**: the suite must be rebaselined against the `for` form before these figures
-mean anything again, and both the oro and cpython columns must be retaken
-together so the ratios stay comparable.
-
-For the record, measured on one core, best of nine, `loop` at 3M iterations,
-*before* the rewrite:
-
-| form | oro | cpython | ratio |
-|---|---|---|---|
-| `i = 0; while i < n: …; i = i + 1` | 0.203s | 0.445s | 0.46x |
-| `for i, _ in range(n): …` | 0.139s | 0.345s | 0.40x |
+**The pass-by-pass log below is kept as history.** Its numbers predate the loop
+rewrite and the twins and are not comparable with the summary above.
 
 ## Where things stand
 

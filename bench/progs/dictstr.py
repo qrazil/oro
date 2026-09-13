@@ -1,0 +1,20 @@
+# CPython twin of dictstr.oro: the same program with Oro's (index, value)
+# for-pair loops written in Python's spelling. Generated for the vs-CPython
+# column after the loop rule made the .oro Oro-only.
+# String-keyed dicts, which `dictops` (integer keys) never exercises: 200k
+# writes under distinct keys, 200k lookups, then half a million reads and
+# writes of one small record — the shape real code actually uses, where the
+# same three short keys are hashed over and over.
+d = {}
+for i in range(200000):
+    d[f"key{i}"] = i
+
+total = 0
+for i in range(200000):
+    total = total + d[f"key{i}"]
+
+rec = {"name": "x", "count": 0, "tag": "t"}
+for i in range(500000):
+    rec["count"] = rec["count"] + 1
+
+print(len(d), total, rec["count"])
