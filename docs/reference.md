@@ -1348,7 +1348,10 @@ print(xs.reduce(0, (acc, v) => acc + v), {"a": 1, "b": 2}.reduce(0, (acc, k, v) 
 **Every callback is required.** `xs.any()` for truthiness is
 `xs.any(x => x)`, and `[0, 1, 2, ""].count()` read as a length and was not one.
 `find`, `any` and `all` short-circuit, and the stop reaches back through a fused
-chain.
+chain. `take_while` and `drop_while` short-circuit their **predicate** the same
+way: both stop calling it at the first false — `take_while` drops the rest,
+`drop_while` keeps the rest unevaluated — so a costly or side-effecting
+predicate never runs past the stopping point.
 
 **Keyed sorting is only `sort`, and it returns a new collection.** There is no
 `sorted()`, no `key=`, and no in-place sort: `xs.sort(x => x)` is the elements'

@@ -1023,6 +1023,28 @@ fn take_while_stops_at_the_first_false() {
     assert_eq!(eval_var(none, "out").repr(), "'[] 1'");
 }
 
+/// `drop_while` is take_while's twin: it stops *calling* its predicate at the
+/// first false and keeps every remaining element unevaluated. The element count
+/// is the observable — a costly or side-effecting predicate must not run on the
+/// kept tail.
+#[test]
+fn drop_while_stops_calling_after_the_first_false() {
+    // [1,2,3,4,1], x < 3 — runs on 1,2,3 (3 is the first false); 4 and the
+    // trailing 1 are kept without a call. Result is [3, 4, 1].
+    let src = "log = []\n\ndef p(x):\n    log.append(x)\n    return x < 3\n\nr = [1, 2, 3, 4, 1].drop_while(p)\nout = f\"{r} {log}\"\n";
+    assert_eq!(eval_var(src, "out").repr(), "'[3, 4, 1] [1, 2, 3]'");
+    // Fused behind a map: the map still runs on every element (drop_while keeps
+    // the tail), but the predicate stops at the first false.
+    let fused = "log = []\n\ndef p(x):\n    log.append(x)\n    return x < 30\n\nr = [1, 2, 3, 4, 5].map(x => x * 10).drop_while(p)\nout = f\"{r} {log}\"\n";
+    assert_eq!(eval_var(fused, "out").repr(), "'[30, 40, 50] [10, 20, 30]'");
+    // All true: everything dropped, predicate visits each once.
+    let all = "n = 0\n\ndef p(x):\n    global n\n    n = n + 1\n    return true\n\nr = [1, 2, 3].drop_while(p)\nout = f\"{r} {n}\"\n";
+    assert_eq!(eval_var(all, "out").repr(), "'[] 3'");
+    // False at the first element: one call, the whole receiver is kept.
+    let none = "n = 0\n\ndef p(x):\n    global n\n    n = n + 1\n    return false\n\nr = [5, 6, 7].drop_while(p)\nout = f\"{r} {n}\"\n";
+    assert_eq!(eval_var(none, "out").repr(), "'[5, 6, 7] 1'");
+}
+
 /// One parameter takes the element whole, on every shape — a dict included,
 /// where it used to be an arity error because the pair was always spread.
 #[test]

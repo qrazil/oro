@@ -544,6 +544,10 @@ struct SeqJob {
     limit: usize,
     /// `first()`: answer with the single element rather than a collection.
     pick_first: bool,
+    /// `drop_while`: set once its predicate has first answered false. From then
+    /// on every remaining element is kept **without calling the predicate** —
+    /// dropping stops at the first false, so the predicate must not run past it.
+    drop_done: bool,
     /// `sort(f, reverse=true)`: a stable descending sort. Read by no other
     /// step.
     reverse: bool,
@@ -3386,6 +3390,7 @@ impl Vm {
             resume: SeqResume::Terminal,
             limit: usize::MAX,
             pick_first: false,
+            drop_done: false,
             reverse,
             line: self.task.line,
             col: self.task.col,
@@ -3469,6 +3474,7 @@ impl Vm {
             resume: SeqResume::Terminal,
             limit,
             pick_first,
+            drop_done: false,
             reverse: false,
             line: self.task.line,
             col: self.task.col,
@@ -3599,6 +3605,17 @@ impl Vm {
                         job.items.push(item);
                         continue;
                     };
+                    // `drop_while` past its first false keeps every element and
+                    // no longer calls the predicate: push the element (with no
+                    // stages it is already in `items` from the source walk) and
+                    // a synthetic falsy result so `skip_while` keeps it.
+                    if job.op == SeqOp::DropWhile && job.drop_done {
+                        if !job.stages.is_empty() {
+                            job.items.push(item);
+                        }
+                        job.results.push(Value::Bool(false));
+                        continue;
+                    }
                     // With no stages `items` is the walk itself and already
                     // holds this element; with stages it has just arrived, and
                     // is kept only by the terminals whose answer is made of
@@ -3694,6 +3711,11 @@ impl Vm {
             SeqResume::Terminal => {
                 if job.op == SeqOp::Reduce {
                     job.results.clear();
+                }
+                // `drop_while` stops dropping — and stops calling its predicate —
+                // the moment that predicate first answers false.
+                if job.op == SeqOp::DropWhile && !value.truthy() {
+                    job.drop_done = true;
                 }
                 job.results.push(value);
             }
