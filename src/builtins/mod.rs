@@ -1748,6 +1748,11 @@ fn cast_method(
                 // unwriteable.
                 Value::List(l) => ints_to_bytes(&l.borrow()),
                 Value::Tuple(t) => ints_to_bytes(t),
+                // A range is a sequence of ints too, so it builds bytes the same
+                // way a list of those ints does: `range(68, start=65).to_bytes()`
+                // is `[65, 66, 67].to_bytes()` is `b'ABC'`. Materialize it first,
+                // exactly as `to_list` does, rather than refusing the receiver.
+                Value::Range(_) => ints_to_bytes(&crate::vm::iterate_to_vec(recv)?),
                 other => Err(type_error(format!(
                     "'{}' object has no conversion to bytes",
                     other.type_name()
