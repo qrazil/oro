@@ -176,8 +176,8 @@ _STREAM_CHUNK = 8192
 # value. They are built once at import, the way `json.oro` builds its control
 # character table, rather than written as dict literals: `oro fmt` collapses
 # a multi-line dict literal onto a single line whatever its length, so a
-# table with more than a handful of entries has to be assembled by statement
-# to stay readable.
+# table with more than a handful of entries is assembled instead as a
+# `filter` over the byte range — one readable expression, evaluated once.
 
 # The three grammar classes the parser checks a whole field against, as sets
 # of octets for `bytes.scan`. Each is built once at import; `scan` then
@@ -186,27 +186,15 @@ _STREAM_CHUNK = 8192
 
 # tchar: the characters a method or a header field name may contain.
 _TOKEN_DELIMS = '"(),/:;<=>?@[\\]{}'
-_tchars = []
-for _, _tb in range(127, start=33):
-    if f"{_tb:c}" not in _TOKEN_DELIMS:
-        _tchars.append(_tb)
-_TOKEN_OK = _tchars.to_bytes()
+_TOKEN_OK = range(127, start=33).filter(_tb => f"{_tb:c}" not in _TOKEN_DELIMS).to_bytes()
 
 # A field value: HTAB, and every octet from 0x20 up except DEL. Bytes above
 # 127 are allowed here and answered for at the strict decode below.
-_vchars = [9]
-for _, _vb in range(256, start=32):
-    if _vb != 127:
-        _vchars.append(_vb)
-_FIELD_VALUE_OK = _vchars.to_bytes()
+_FIELD_VALUE_OK = ([9] + range(256, start=32).filter(_vb => _vb != 127).to_list()).to_bytes()
 
 # A request target: visible ASCII or above. Control characters are rejected;
 # bytes above 127 are not, because clients do send raw UTF-8 in a path.
-_gchars = []
-for _, _gb in range(256, start=33):
-    if _gb != 127:
-        _gchars.append(_gb)
-_TARGET_OK = _gchars.to_bytes()
+_TARGET_OK = range(256, start=33).filter(_gb => _gb != 127).to_bytes()
 
 # RFC 3986 §2.3's *unreserved* set, and the one rule a percent-encoder has
 # that is not negotiable: these characters are never escaped. `%41` and `A`
@@ -554,7 +542,7 @@ def _escape_fault(b):
     while i >= 0:
         if i + 2 >= len(b):
             return "truncated"
-        if _HEX_VALUE.get(b[i + 1]) == null or _HEX_VALUE.get(b[i + 2]) == null:
+        if b[i + 1] not in _HEX_VALUE or b[i + 2] not in _HEX_VALUE:
             return "invalid"
         i = b.find(b"%", start=i + 3)
     # Unreachable: `_pct.decode` only refuses on a `%`, so one is always
@@ -624,7 +612,7 @@ class _HeadParser:
             self.fail("malformed request target")
         if not version.startswith(b"HTTP/"):
             self.fail("unrecognised protocol in the request line")
-        v = version[5:].to_str()
+        v = version.rm_prefix(b"HTTP/").to_str()
         if v != "1.1" and v != "1.0":
             self.fail(f"unsupported HTTP version '{v}'", status=505)
         return method.to_str(), target, v
@@ -677,10 +665,10 @@ def _split_target(target):
     if target == b"*":
         return "*", {}
     if target.startswith(b"http://"):
-        target = _authority_path(target[7:])
+        target = _authority_path(target.rm_prefix(b"http://"))
     elif target.startswith(b"https://"):
-        target = _authority_path(target[8:])
-    if target.find(b"#") >= 0:
+        target = _authority_path(target.rm_prefix(b"https://"))
+    if b"#" in target:
         raise BadRequest("a fragment must not be sent in a request target")
     if not target.startswith(b"/"):
         raise BadRequest("request target is not an absolute path")
@@ -763,7 +751,7 @@ def read_request(r):
     # An HTTP/1.1 request without a Host is a 400 by fiat of RFC 9112: it is
     # the field that makes name-based virtual hosting possible, and a request
     # that omits it cannot be routed by any server that has more than one name.
-    if version == "1.1" and headers.get("host") == null:
+    if version == "1.1" and "host" not in headers:
         raise BadRequest("HTTP/1.1 request without a Host header")
     path, query = _split_target(target)
     return Request(method, path, query, version=version, headers=headers, body=_body_reader(r, headers))
@@ -1025,9 +1013,9 @@ def _check_headers(headers):
 # on the way in — but a client told that its *request* header is an illegal
 # *response* header spends the next ten minutes looking in the wrong place.
 def _check_header(name, value, kind):
-    if name.find("\r") >= 0 or name.find("\n") >= 0 or name.find(":") >= 0:
+    if "\r" in name or "\n" in name or ":" in name:
         raise ValueError(f"illegal character in {kind} header name '{name}'")
-    if value.find("\r") >= 0 or value.find("\n") >= 0:
+    if "\r" in value or "\n" in value:
         raise ValueError(f"illegal character in {kind} header value for '{name}'")
 
 
@@ -1068,7 +1056,7 @@ def write_response(w, req, resp, keep_alive=false):
         # told: without this header it closes anyway and the reuse it asked
         # for silently never happens.
         h["connection"] = "keep-alive"
-    if h.get("date") == null:
+    if "date" not in h:
         h["date"] = _http_date(time.time())
 
     # `resp.reason_phrase()` and not `resp.version`: a response carries the
@@ -1512,7 +1500,7 @@ class Router:
         self.patterns = []
 
     def add(self, method, path, handler):
-        if path.find(":") < 0:
+        if ":" not in path:
             self.exact[method + " " + path] = handler
         else:
             self.patterns.append((method, path.split(sep="/"), handler))
@@ -1575,10 +1563,10 @@ def _match(pat, segs):
     # reach into both, and `for p, s in pat.zip(segs)` says what the loop means
     # in the line that opens it.
     for _, (p, s) in pat.zip(segs):
-        if len(p) > 0 and p[0] == ":":
+        if p.startswith(":"):
             if len(s) == 0:
                 return null
-            params[p[1:]] = s
+            params[p.rm_prefix(":")] = s
         elif p != s:
             return null
     return params
@@ -1895,7 +1883,7 @@ class Url:
 # is bracketed everywhere it is written next to a port. Oro's `net` uses Go's
 # form and says so in its own diagnostic; this matches it.
 def _bracket(host):
-    if host.find(":") >= 0:
+    if ":" in host:
         return f"[{host}]"
     return host
 
@@ -1934,7 +1922,7 @@ def parse_url(url):
     if frag >= 0:
         rest = rest[0:frag]
     authority, target = _split_authority(rest)
-    if authority.find(b"@") >= 0:
+    if b"@" in authority:
         raise ValueError(f"'{url}' carries userinfo before the host, which RFC 9110 deprecates and this client will not send")
     if len(authority) == 0:
         raise ValueError(f"'{url}' has no host")
@@ -1968,7 +1956,7 @@ def _split_host_port(authority, url):
 
 def _unbracket(host, url):
     if host.startswith(b"[") and host.endswith(b"]"):
-        host = host[1:len(host) - 1]
+        host = host.rm_prefix(b"[").rm_suffix(b"]")
     if len(host) == 0:
         raise ValueError(f"'{url}' has no host")
     return host.to_str()
@@ -2024,7 +2012,7 @@ def write_request(w, method, target, headers, body=b""):
     # are, and a caller who wants it can pass an empty body's length in
     # `headers`... except that this function refuses framing headers, so they
     # pass `body=b""` and the server reads no body, which is the same thing.
-    if h.get("host") == null:
+    if "host" not in h:
         raise ValueError("a request needs a Host header — `fetch` fills it in from the URL, and a caller using `write_request` directly has to say")
     parts = [f"{method} {target} HTTP/1.1\r\n".to_bytes()]
     for k, v in h:
@@ -2088,7 +2076,7 @@ class _ResponseParser(_HeadParser):
             reason = parts[2]
         if not version.startswith(b"HTTP/"):
             self.fail("unrecognised protocol in the status line")
-        v = version[5:].to_str()
+        v = version.rm_prefix(b"HTTP/").to_str()
         if v != "1.1" and v != "1.0":
             self.fail(f"unsupported HTTP version '{v}' in the status line")
         # Exactly three digits, and `bytes.scan` answers that in one call
@@ -2347,7 +2335,7 @@ def _with_params(u, params):
     # after a bare trailing `?` or `&`, which are an empty query and not a
     # first parameter.
     sep = "?"
-    if u.target.find("?") >= 0:
+    if "?" in u.target:
         sep = "&"
     if u.target.endswith("?") or u.target.endswith("&"):
         sep = ""
@@ -2362,11 +2350,11 @@ def _with_params(u, params):
 # does not match it, and that is a legitimate thing to do.
 def _client_headers(u, headers):
     h = _request_headers(headers)
-    if h.get("host") == null:
+    if "host" not in h:
         h["host"] = u.host_header()
-    if h.get("user-agent") == null:
+    if "user-agent" not in h:
         h["user-agent"] = _USER_AGENT
-    if h.get("connection") == null:
+    if "connection" not in h:
         h["connection"] = "close"
     return h
 
