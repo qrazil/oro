@@ -1961,6 +1961,19 @@ yourself reaching for a Python spelling, look here first.
 > in this table where reading it is the only way to catch it. In exchange, the
 > aliasing bug where `b = a; a.sort()` reorders what `b` sees cannot be written.
 
+The contrast, line for line (both start from `a = [3, 1, 2]` with `b = a`):
+
+| you write | CPython | Oro |
+|---|---|---|
+| `a.sort()` (as a statement) | `a` becomes `[1, 2, 3]`, returns `None` | `AttributeError` — `sort` needs a key: `a.sort(x => x)` |
+| `a.sort(x => x)` (as a statement) | — (`key=` is keyword-only there) | returns `[1, 2, 3]`; **`a` is still `[3, 1, 2]`** — the result was dropped |
+| `a = a.sort(x => x)` | — | `a` is `[1, 2, 3]`; **`b` is still `[3, 1, 2]`** (not aliased) |
+| `sorted(a)` | `[1, 2, 3]`, `a` untouched | `AttributeError` — use `a.sort(x => x)` |
+| `a.reverse()` (as a statement) | `a` becomes `[2, 1, 3]`, returns `None` | returns `[2, 1, 3]`; **`a` unchanged** |
+
+The takeaway a Python reader needs: **rebind.** `a = a.sort(f)`, `a = a.reverse()`.
+`corpus/divergence/83_sort_not_in_place.oro` runs every row above.
+
 ### Builtins and functions
 
 | Python | Oro | why |
