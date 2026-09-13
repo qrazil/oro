@@ -13,6 +13,8 @@ key <class 'KeyError'> 'maximum recursion depth exceeded'
 attr <class 'AttributeError'> 'Box' object has no attribute 'timed_out'
 attr <class 'AttributeError'> 'Box' object has no attribute 'Permission_denied'
 index <class 'IndexError'> list index out of range
+first <class 'IndexError'> first() on an empty sequence
+last <class 'IndexError'> last() on an empty sequence
 divzero <class 'ZeroDivisionError'> integer division or modulo by zero
 len <class 'TypeError'> object of type 'int' has no len()
 name <class 'NameError'> name 'undefined_name' is not defined
