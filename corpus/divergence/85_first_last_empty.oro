@@ -1,0 +1,45 @@
+# first()/last() ASK: an empty receiver answers null (like d.get(k)).
+# Indexing xs[0]/xs[-1] DEMANDS: an empty receiver raises (like d[k]).
+# Neither is a rename of the other. None of this is Python (.first() is Oro's),
+# so it is a divergence with a reviewed .expected.
+
+# --- the ASK form: null on empty, across every collection type --------------
+print([].first(), [].last())
+print(().first(), ().last())
+print({}.first(), {}.last())
+print(range(0).first(), range(0).last())
+
+def empty():
+    if false:
+        yield 1
+
+print(empty().first())
+
+# --- the ASK form on a non-empty receiver -----------------------------------
+print([10, 20, 30].first(), [10, 20, 30].last())
+print((1, 2).first(), (1, 2).last())
+print({"a": 1, "b": 2}.first(), {"a": 1, "b": 2}.last())
+print(range(9, start=5).first(), range(9, start=5).last())
+
+# --- the ambiguity the ask form buys: a real null first element reads the
+#     same as empty, exactly as d.get(k) cannot tell missing from null-valued.
+print([null].first())
+
+# --- first() ending a fused chain asks too: everything filtered out is null,
+#     not a raise, matching the bare `[].first()` above.
+print([1, 2, 3].filter(x => x > 10).first())
+print([1, 2, 3].filter(x => x > 1).map(x => x * 10).first())
+
+# --- the DEMAND form: indexing an empty receiver raises ---------------------
+try:
+    x = [][0]
+except IndexError as e:
+    print("list[0]:", e)
+try:
+    x = [][-1]
+except IndexError as e:
+    print("list[-1]:", e)
+try:
+    x = {}["k"]
+except KeyError as e:
+    print("dict[k]:", e)

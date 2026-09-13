@@ -1,0 +1,15 @@
+null null
+null null
+null null
+null null
+null
+10 30
+1 2
+('a', 1) ('b', 2)
+5 8
+null
+null
+20
+list[0]: list index out of range
+list[-1]: list index out of range
+dict[k]: 'k'

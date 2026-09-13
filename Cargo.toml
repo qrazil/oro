@@ -37,6 +37,24 @@ path = "src/lib.rs"
 # `libc` is a *bindings* crate, declarations rather than an implementation, so
 # the static-musl release gate survives it. That is checked, not assumed.
 #
+# `ahash` hashes `dict` keys. This is a *security* dependency, not a speed one:
+# a `dict`'s keys come straight from untrusted input — a JSON body, the header
+# names of an HTTP request — so the map that holds them is directly reachable by
+# an anonymous client, and `std`'s `HashMap` defends that map with SipHash, which
+# is DoS-resistant but slow (dict-heavy code measured ~2.2x CPython, most of it
+# the hash). The fast answer everyone reaches for first — FxHash / rustc-hash —
+# is *unkeyed*: its output is a fixed function of the key, so an attacker can
+# precompute keys that all land in one bucket and turn an O(1) map into an O(n)
+# list on Oro's own server. That is the one thing this map must not be. `ahash`
+# is the fast *and* keyed option: an AES-backed hash seeded per process from the
+# OS RNG (the `runtime-rng` feature, which pulls `getrandom`), so bucket layout
+# is unpredictable across runs and the collision attack has nothing to aim at.
+# It is bought for difficulty, not tedium — a fast keyed hash is real work — but
+# it is honestly the heaviest transitive subtree in the tree (`getrandom`,
+# `once_cell`, `cfg-if`, `zerocopy`); the lighter `foldhash` was declined only
+# because its own author disclaims strong DoS resistance, which is the one
+# property this dependency is being taken for. See docs/hash-and-equality.md.
+#
 # `libc` is now a *direct* dependency as well as mio's, and that promotion adds
 # nothing to the build: it is the same `libc 0.2` crate, already compiled, and
 # `cargo tree` gains a line rather than a node. It is direct because
@@ -53,6 +71,7 @@ path = "src/lib.rs"
 regex = "1"
 mio = { version = "1", features = ["os-poll", "net"] }
 libc = "0.2"
+ahash = "0.8.12"
 
 # Release build for the distributed single binary.
 #

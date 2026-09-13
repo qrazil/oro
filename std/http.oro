@@ -1420,6 +1420,16 @@ def serve(addr, handler, ready=null, max_conns=_MAX_CONNS, max_requests=_MAX_REQ
             continue
         if timeout != null:
             conn.set_timeout(timeout)
+        # Disable Nagle on every served connection. A sized response is one
+        # buffered `write` (head and body joined), so this is a no-op there —
+        # there is no small second write for Nagle to hold back. It earns its
+        # place on the streamed path: `write_response` sends the head, then
+        # `_write_chunked` sends one `write` per chunk, and Nagle would sit on
+        # each small chunk for up to ~40ms waiting for an ACK. The batching that
+        # makes the sized path one write is the application-level answer Nagle
+        # exists to encourage; where the protocol forces many writes, this is
+        # how the latency is kept off them.
+        conn.set_nodelay(true)
         entry = _Live(conn)
         live[conn] = entry
         # `spawn` enqueues and returns, so the handle is stored before the

@@ -927,6 +927,27 @@ in the tree — including six in `std/http.oro` — without needing to cut anyth
 
 ## 10. Conditionals: `match`, `if`, and truthiness
 
+> **Update (post-grammar-pass, 2026):** two parts of this section are now stale.
+>
+> 1. **Truthiness was removed outright.** The grammar pass made `and`/`or`/`not`
+>    and every condition **bool-only**; `[]`, `""`, `0`, `null` are no longer
+>    falsy, and `a or "default"` is a `TypeError` pointing at `a != null`. So the
+>    "**Verdict: keep truthiness**" below — and specifically reason 1, that
+>    `a or "default"` is "the language's idiom for a fallback" — no longer holds:
+>    that idiom was cut, `d.get(k, default=…)` is the one spelling for a fallback,
+>    and the redundancy this section flagged (`if len(parts) == 0` vs `if not
+>    parts`) is closed because only the first now typechecks. The stdlib's
+>    "unanimous choice" reading was right; the language simply enforces it now.
+>
+> 2. **The jump-table claim has been measured** (it had not been when this was
+>    written). 20-case dispatch, 2M iterations, best-of-5: `match` runs in time
+>    **constant** in the case count, the `if`/`elif` ladder in time linear in it;
+>    `match` is ~1.9× faster at 20 cases, roughly even at ~5, and marginally
+>    *slower* below that. So the jump table is real and the **crossover is about
+>    five literal cases**. The verdict stands — but note `match` still has **zero
+>    users** in `std/`, `examples/` or `bench/`, so it is frozen surface kept for
+>    a wide-switch case the codebase does not yet contain.
+
 **`match` versus `if`/`elif` is earned, narrowly, and on a performance claim that
 should be verified before the freeze.** The README is honest that the overlap is
 total and that the justification is entirely the jump table:

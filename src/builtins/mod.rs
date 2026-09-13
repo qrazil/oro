@@ -2020,11 +2020,18 @@ fn seq_native_method(
         }
         "first" | "last" => {
             exactly(&args, 0, name)?;
+            // `first()`/`last()` **ask**: an empty receiver answers `null`, the
+            // same way `d.get(k)` answers `null` for a missing key. Indexing
+            // (`xs[0]`/`xs[-1]`) **demands** and raises `IndexError` on an empty
+            // receiver, the way `d[k]` raises `KeyError`. The two spellings
+            // answer different questions — "is there one?" versus "give me the
+            // one that must be there" — so neither is a rename of the other.
+            // A receiver whose first/last element genuinely *is* `null` is
+            // indistinguishable from an empty one here, exactly as it is for
+            // `get`; that is the price of the asking form and it is the same
+            // price in both places.
             let pick = if name == "first" { items.first() } else { items.last() };
-            match pick {
-                Some(v) => Ok(v.clone()),
-                None => Err(index_error(format!("{name}() on an empty sequence"))),
-            }
+            Ok(pick.cloned().unwrap_or(Value::None))
         }
         "sum" => {
             // The whole of what the `sum` builtin used to be, now that the

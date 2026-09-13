@@ -49,6 +49,7 @@ log = []
 
 def reader(name, s):
     s.set_timeout(10)
+    s.set_nodelay(true)  # http.serve sets this on every accepted connection
     log.append(name + " got " + s.read(64).to_str())
 
 r1 = spawn(reader, "first", s_one)

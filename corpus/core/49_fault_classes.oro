@@ -62,18 +62,9 @@ try:
 except IndexError as e:
     print("index", type(e), f"{e}")
 
-# `first()`/`last()` on an empty sequence is the same fault as an out-of-range
-# subscript — a missing element is an IndexError, never a bare RuntimeError.
-try:
-    [].first()
-except IndexError as e:
-    print("first", type(e), f"{e}")
-
-try:
-    [].last()
-except IndexError as e:
-    print("last", type(e), f"{e}")
-
+# `first()`/`last()` on an empty sequence are NOT faults: they *ask*, and answer
+# `null` (like `d.get(k)`), so they moved to divergence/85_first_last_empty.oro.
+# Indexing (`xs[0]`) *demands* and stays here as the IndexError above.
 try:
     print(1 // 0)
 except ZeroDivisionError as e:

@@ -453,3 +453,49 @@ raises `'<' not supported between instances of 'object' and 'object'`.
 Recommendation: file it, fix `in` / `seq_eq` / dict-value comparison first, and
 add a `corpus/core/` program for it so CPython holds the answer. A missing
 escape hatch is a design question. This is a wrong answer.
+
+## 9. What hashes the keys: `ahash`, not SipHash (2026)
+
+Everything above is about *which values* may be dict keys and how they compare.
+This section is about the hasher that sits under the map once they are — a
+separate decision, and one made on security grounds rather than the equality
+semantics the rest of this doc argues.
+
+`OroDict`'s bucket index was a `std::collections::HashMap`, which uses SipHash: a
+keyed, DoS-resistant hash, but a slow one. Dict-heavy code measured about **2.2×
+CPython**, and profiling put most of that gap in the hash itself — CPython uses a
+much cheaper string hash and eats the DoS exposure.
+
+The reason the slow-but-keyed default is not simply swapped for the fast-but-
+unkeyed one everybody reaches for (FxHash / rustc-hash) is the whole point:
+**a dict's keys are attacker-controlled.** `json.parse` builds a dict whose keys
+are whatever was in the body; an HTTP request's header names become a dict; both
+arrive from an anonymous client over a socket. An unkeyed hash is a fixed
+function of the key, so an attacker who knows it can pick keys that all hash to
+one bucket and collapse the map to a linked list — turning every O(1) lookup on
+Oro's own server into O(n), a HashDoS. That is precisely the attack SipHash
+exists to stop, so trading it for FxHash would hand the attack back.
+
+`ahash` is the fast **and** keyed option. It hashes with the CPU's AES
+instructions where available and seeds itself **per process** from the OS RNG
+(the `runtime-rng` feature, which is why `getrandom` is in the tree): each
+`RandomState` — and so each `OroDict`, since `derive(Default)` builds one — gets
+a distinct seed, and the seed differs across process runs, so an attacker has no
+fixed bucket layout to aim at. Verified: two `RandomState::default()` values in
+one process hash the same key differently, and `RandomState::new()` differs
+across separate runs — i.e. the randomisation is real and per-process, not a
+fixed compile-time seed.
+
+What it does *not* change: **insertion order.** That lives in `OroDict.entries`
+(a `Vec`), not in the hashed index, so iteration order and `repr` are unaffected
+by the seed and stay deterministic — the randomisation is invisible to every Oro
+program, which is the property that let the corpus's order-sensitive tests pass
+unchanged.
+
+Measured after the swap: `dictstr` −6.4%, `dictops` −8.8% (integer keys benefit
+too — `ahash` beats SipHash on an `i64` as well). The cost is honest and it is a
+dependency, not a speedup trick: `ahash` is the heaviest transitive subtree Oro
+pulls (`getrandom`, `once_cell`, `cfg-if`, `zerocopy`). The lighter `foldhash`
+was considered and declined — its own author disclaims strong DoS resistance,
+which is the single property this dependency is being taken for. See the
+justification block in `Cargo.toml`.

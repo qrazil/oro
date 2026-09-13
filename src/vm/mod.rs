@@ -3540,7 +3540,7 @@ impl Vm {
             // lets the element *move* into them instead of being cloned — the
             // element is handled once per stage, so a clone per stage is a
             // clone per element per step of the chain.
-            let (who, at, func, call_args) = {
+            let (who, at, func, spread, item, acc) = {
                 let job = self.task.seq_jobs.last_mut().expect("active seq job");
                 // `find`, `any` and `all` stop as soon as the answer is settled,
                 // so a predicate is never called more often than it must be;
@@ -3593,7 +3593,7 @@ impl Vm {
                     // and keeps nothing, which is why only one of the two pays
                     // for a clone.
                     job.held = if hold { item.clone() } else { Value::None };
-                    (who, at, Some(f), Self::seq_args(spread, item, None))
+                    (who, at, Some(f), spread, item, None)
                 } else {
                     // Out the bottom of the pipeline: this one is the
                     // terminal's.
@@ -3626,8 +3626,7 @@ impl Vm {
                     // Reduce hands over the accumulator it is threading first.
                     let acc = (job.op == SeqOp::Reduce)
                         .then(|| job.results.last().cloned().unwrap_or(Value::None));
-                    let args = Self::seq_args(job.spread, item, acc);
-                    (job.op.name(), (job.line, job.col), Some(f), args)
+                    (job.op.name(), (job.line, job.col), Some(f), job.spread, item, acc)
                 }
             };
 
@@ -3650,14 +3649,50 @@ impl Vm {
                             "{who}() callback must not be a generator function"
                         ))));
                     }
-                    let call_args = self.seq_unpacked(call_args, at)?;
+                    // Fast path: bind the element (and, for `reduce`, the
+                    // accumulator) straight into the callee's slots, the way an
+                    // ordinary positional call binds off the operand stack.
+                    // `seq_args` built a `vec![item]` here, and a chain touches
+                    // one element once per stage — so that vector was an
+                    // allocation per element per step of the chain, which is the
+                    // whole gap between a chain callback and a plain call.
+                    // `Whole` is every list/tuple/range callback; a dict's
+                    // `(k, v)` destructure (`Unpack`) can fail per element, so it
+                    // keeps the vector path that owns that diagnostic.
+                    if let Spread::Whole = spread {
+                        let n = 1 + usize::from(acc.is_some());
+                        if n == f.code.params.len() - f.code.defaults.len() {
+                            let mut frame = self.take_frame(f.code.clone(), &f.freevars);
+                            let params = &f.code.params;
+                            let defaults = &f.code.defaults;
+                            let first_defaulted = params.len() - defaults.len();
+                            let mut idx = 0;
+                            if let Some(acc) = acc {
+                                store_param(&mut frame, params[idx].target, acc);
+                                idx += 1;
+                            }
+                            store_param(&mut frame, params[idx].target, item);
+                            idx += 1;
+                            for (i, p) in params.iter().enumerate().skip(idx) {
+                                store_param(
+                                    &mut frame,
+                                    p.target,
+                                    defaults[i - first_defaulted].clone(),
+                                );
+                            }
+                            frame.ret_action = ReturnAction::DriveSeq;
+                            self.task.frames.push(frame);
+                            return Ok(());
+                        }
+                    }
+                    let call_args = self.seq_unpacked(Self::seq_args(spread, item, acc), at)?;
                     let mut frame = self.bind_call(&f, None, call_args, Vec::new())?;
                     frame.ret_action = ReturnAction::DriveSeq;
                     self.task.frames.push(frame);
                     return Ok(());
                 }
                 Value::Builtin(b) => {
-                    let call_args = self.seq_unpacked(call_args, at)?;
+                    let call_args = self.seq_unpacked(Self::seq_args(spread, item, acc), at)?;
                     let Some(call_args) = self.ord_callback(b.name, call_args, OrdCont::Seq)?
                     else {
                         return Ok(());
@@ -3666,7 +3701,7 @@ impl Vm {
                     self.record_seq_result(r);
                 }
                 Value::Method(m) => {
-                    let call_args = self.seq_unpacked(call_args, at)?;
+                    let call_args = self.seq_unpacked(Self::seq_args(spread, item, acc), at)?;
                     let r = match &m.kind {
                         MethodKind::Native(name) => {
                             self.wrap(crate::builtins::call_method(&m.receiver, name, call_args, Vec::new()))?
@@ -3741,20 +3776,12 @@ impl Vm {
         // `first()` fused onto the end of a chain: the pipeline was run with a
         // limit of one, so the answer is the one element that got through.
         if job.pick_first {
-            return match job.items.into_iter().next() {
-                Some(v) => {
-                    self.push(v);
-                    Ok(())
-                }
-                None => {
-                    // Raised after the last callback returned, so the position
-                    // the VM is holding is that callback's `return`. This
-                    // belongs to the `first()` that ended the chain.
-                    self.task.line = job.line;
-                    self.task.col = job.col;
-                    Err(self.err(index_error("first() on an empty sequence")))
-                }
-            };
+            // `first()` **asks**, so an empty result answers `null` — the same
+            // as `[].first()` on a bare list and as `d.get(k)` for a missing
+            // key — whether the chain was empty to begin with or every element
+            // was filtered out before reaching this terminal.
+            self.push(job.items.into_iter().next().unwrap_or(Value::None));
+            return Ok(());
         }
         let SeqJob { op, shape, items, results, reverse, .. } = job;
 

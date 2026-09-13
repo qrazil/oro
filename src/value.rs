@@ -911,7 +911,15 @@ pub struct SuperProxy {
 /// matching modern Python.
 #[derive(Default)]
 pub struct OroDict {
-    index: HashMap<HKey, usize>,
+    // Keyed by a per-process-randomised `ahash` seed, not `std`'s SipHash: dict
+    // keys arrive from untrusted input (JSON bodies, HTTP header names), so this
+    // map is directly reachable by an anonymous client and must be fast *and*
+    // collision-attack-resistant. `ahash`'s seed is drawn once per process from
+    // the OS RNG (`runtime-rng`), so an attacker cannot precompute keys that all
+    // land in one bucket. Insertion order — the observable order — lives in
+    // `entries`, not here, so the randomised seed changes nothing a program sees.
+    // See Cargo.toml and docs/hash-and-equality.md.
+    index: HashMap<HKey, usize, ahash::RandomState>,
     /// `(key, value)` pairs in insertion order. The key `Value` is retained for
     /// iteration and repr.
     entries: Vec<(Value, Value)>,
