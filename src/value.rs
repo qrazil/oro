@@ -1192,8 +1192,8 @@ impl Value {
             Value::Module(_) | Value::Stream(_) | Value::Generator(_) => true,
             Value::Regex(_) | Value::Match(_) => true,
             // A task handle and a channel are objects, not containers: neither
-            // is ever falsy. `len(ch)` is how you ask whether a channel has
-            // anything buffered.
+            // is ever falsy, and neither answers `len()` — a channel is not a
+            // buffer you inspect but an endpoint you `send`/`recv`/`close`.
             Value::Task(_) | Value::Channel(_) => true,
             // An instance is truthy unless its class defines a falsy __len__;
             // the VM overrides this when a __len__/__bool__ dunder is present.
