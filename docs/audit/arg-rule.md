@@ -199,6 +199,7 @@ Where a decision differs from the recommendation above, this list wins.
 **Collections and sorting**
 - **`xs.sorted()` is removed.** Sorting is `xs.sort_by(f, reverse=false)`, which returns a new collection, and natural order is `xs.sort_by(x => x)`.
 - **In-place `list.sort(key=, reverse=)` is removed.** In its place is `xs.sort_in_place(f, reverse=false)`: lists only, it sorts the list's own storage without copying it first, and returns `null` like `append` and `extend`.
+  > **Superseded (later than this dated decision).** The two bullets above no longer describe Oro. `sort_by` was renamed to `sort` and the in-place `sort_in_place` was cut entirely: today `xs.sort(f)` *is* the keyed sort and returns a new collection, and `sorted`, `sort_by` and `sort_in_place` all raise, each pointing at `sort`. See `docs/reference.md §5.6` and the README's translation table for the current spelling.
 - **`xs.any(p)`, `xs.all(p)` and `xs.count(p)` always require a predicate.** Truthiness is `xs.any(x => x)`.
 - **`xs.sum(start=0)` and `xs.enumerate(start=0)`.**
 - **`take(n)`, `drop(n)` and `chunk(n)`:** the count is required, and extra arguments raise a TypeError.
