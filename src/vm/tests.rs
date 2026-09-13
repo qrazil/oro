@@ -914,10 +914,10 @@ out = f"{sorted_t} {t.take(2)} {sorted_d} {flat}"
 
 // --- A callback destructures its element the way `for` does -------------------
 
-/// The protocol's own pair-makers — `range(len(xs)).zip(xs)` for an index,
-/// `zip`, a dict's `to_list()`, `group_by`, a generator of tuples — feed its
-/// callbacks. Every chain here has two or three steps, so the destructuring
-/// happens in fused stages as well as in the terminal.
+/// The protocol's own pair-makers — `zip`, a dict's `to_list()`, `group_by`, a
+/// generator of tuples, a literal list of tuples — feed its callbacks. Every
+/// chain here has two or three steps, so the destructuring happens in fused
+/// stages as well as in the terminal.
 #[test]
 fn multi_parameter_callbacks_destructure_in_fused_chains() {
     let src = r#"
@@ -929,7 +929,7 @@ xs = ["a", "b", "c"]
 ns = [1, 2, 3]
 d = {"x": 1, "y": 2, "z": 3}
 orders = [{"r": "eu", "t": 3}, {"r": "us", "t": 5}, {"r": "eu", "t": 2}]
-a = range(len(xs)).zip(xs).map((i, s) => s * (i + 1)).filter(s => s != "bb")
+a = [(0, "a"), (1, "b"), (2, "c")].map((i, s) => s * (i + 1)).filter(s => s != "bb")
 b = xs.zip(ns).filter((s, n) => n > 1).map((s, n) => s * n)
 c = d.to_list().filter((k, v) => v != 2).map((k, v) => (v, k)).filter((v, k) => v < 3)
 g = orders.group_by(o => o["r"]).to_list().map((r, rows) => (r, rows.len())).filter((r, n) => n > 1)

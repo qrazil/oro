@@ -1,6 +1,3 @@
---- an index in a chain is range(len(xs)).zip(xs)
-['0:ant', '1:bee', '2:cat', '3:dog']
-['ant', 'cat']
 --- zip
 ['antantant', 'catcatcatcat']
 true true 2

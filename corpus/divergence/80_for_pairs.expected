@@ -27,4 +27,3 @@ ant 3
 bee 1
 0 x 1
 1 y 2
-['0:ant', '1:bee', '2:cat']

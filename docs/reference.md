@@ -600,13 +600,14 @@ print(xs.filter(x => x > 1).map(x => x * x).filter(x => x < 30))
 
 A callback with **two or more parameters destructures its element** — the same
 way a nested `for` target (`for _, (a, b) in xs`) destructures its value slot —
-and a dict's element is its `(key, value)` pair. (An index in a chain is not
-`enumerate`, which is gone; it is `range(len(xs)).zip(xs)`.)
+and a dict's element is its `(key, value)` pair. **A chain is value-only: there
+is no index parameter and no chain spelling for an index at all.** If you need
+the index, that is one of the reasons to write a `for i, x in xs` loop instead
+of a chain.
 
 ```oro
 d = {"a": 1, "b": 2}
 print(d.filter((k, v) => v > 1))
-print(range(len([1, 2, 3])).zip([1, 2, 3]).map((i, x) => i * x))
 print([("x", 1), ("y", 2)].map((name, n) => f"{name}={n}"))
 ```
 
@@ -727,8 +728,9 @@ depends on the iterable:
 | `dict` | the **key** | the value |
 | generator | a 0-based counter | the yielded value |
 
-There is no `enumerate` and no `range(len(xs))`: the index is built in. An index
-inside a *chain* (which has no `for` to carry one) is `range(len(xs)).zip(xs)`.
+There is no `enumerate` and no `range(len(xs))`: the index is built into the
+loop. A **chain has no index at all** — it is value-only, so needing the index
+is one of the reasons to write a loop rather than a chain.
 `corpus/divergence/80_for_pairs.oro` pins the index for each type.
 
 **`while` is for a condition, not a counter.** A `while name < bound` whose body
@@ -1271,8 +1273,8 @@ Two rules govern all of it:
   (`partition`). A range or a generator has no shape to keep, so it gives a list.
 - **A callback with two or more parameters destructures its element** the way a
   nested `for` target destructures its value slot; one parameter takes the
-  element whole. (There is no `enumerate`; an index in a chain is
-  `range(len(xs)).zip(xs)`, and in a loop it is the `for` index.)
+  element whole. There is no `enumerate` and **no index in a chain** — a chain
+  is value-only; when you need the index you write a `for i, x in xs` loop.
 
 #### Without a callback
 
@@ -1971,7 +1973,7 @@ yourself reaching for a Python spelling, look here first.
 | `xs.reverse()` (Python's in-place) | `xs = xs.reverse()` | Likewise a new collection, not a mutation |
 | `sum(xs)` | `xs.sum()` | as `sorted` |
 | `any(xs)` / `all(xs)` | `xs.any(x => x)` / `xs.all(x => x)` | The predicate is required; truthiness is spelled out |
-| `enumerate(xs)` / `xs.enumerate()` | `for i, x in xs` (loop), `range(len(xs)).zip(xs)` (chain) | Gone: every `for` yields `(index, value)`, so there is nothing left to do |
+| `enumerate(xs)` / `xs.enumerate()` | `for i, x in xs` | Gone: every `for` yields `(index, value)`. A chain has no index — needing one is a reason to use a loop |
 | `zip(a, b)` | `a.zip(b)` | as `sorted`; takes any number of further sequences, eager |
 | `min(xs)` / `max(xs)` | `xs.min()` / `xs.max()` | `min(a, b)` over two or more values is unchanged |
 | `sorted("ba")` / `min(b"ba")` | `"ba".to_list().sort(x => x)` | A `str`/`bytes` is not a collection; `to_list()` is the bridge |
