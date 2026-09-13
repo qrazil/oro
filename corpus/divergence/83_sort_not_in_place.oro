@@ -1,0 +1,64 @@
+# DIVERGENCE IN BEHAVIOUR, not just spelling. This is the one place a program
+# ported from Python compiles and runs but does something different, so it is
+# pinned loudly rather than left to be discovered.
+#
+# Python's `list.sort()` / `list.reverse()` mutate in place and return `None`.
+# Oro has no in-place collection operation: `xs.sort(f)` and `xs.reverse()`
+# return a NEW collection and never touch the receiver. So `xs.sort(f)` as a
+# bare statement does nothing useful (the result is dropped), and you rebind:
+# `xs = xs.sort(f)`. In exchange, the aliasing bug where `b = a; a.sort()`
+# reorders what `b` sees cannot be written.
+#
+# CPython cannot run this the way it is written (`sort` takes a positional key
+# here, `list.sort` takes none), and the *point* of the file is where the two
+# languages disagree — so it has no twin; the baseline is reviewed by hand.
+
+# --- sort does not mutate; the result must be used --------------------------
+a = [3, 1, 2]
+s = a.sort(x => x)
+# `s` is sorted; `a` is exactly as it was — the sort did not touch it.
+print(s, a)
+
+# --- an alias is safe: the bug the cut removes ------------------------------
+# In Python `b = a; a.sort()` reorders what `b` sees. Here `sort` builds a new
+# list, so `b` is untouched.
+a = [3, 1, 2]
+b = a
+sorted_a = a.sort(x => x)
+print(sorted_a, a, b)
+
+# --- the way you actually sort a variable: rebind ---------------------------
+a = [3, 1, 2]
+a = a.sort(x => x)
+print(a)
+
+# --- reverse is the same: a new collection, not a mutation ------------------
+a = [1, 2, 3]
+r = a.reverse()
+print(r, a)
+a = a.reverse()
+print(a)
+
+# --- a keyed, descending sort is one call, and still a copy -----------------
+rows = [("carol", 3), ("alice", 1), ("bob", 2)]
+def second(p):
+    return p[1]
+
+print(rows.sort(second, reverse=true), rows)
+
+# --- the Python spellings are gone, each naming what replaced it ------------
+for _, call in ["listsort", "sorted", "sortinplace", "listreverse"]:
+    try:
+        if call == "listsort":
+            # Python's `a.sort()` — no key. Oro's `sort` needs one.
+            print([3, 1, 2].sort())
+        elif call == "sorted":
+            print([3, 1, 2].sorted())
+        elif call == "sortinplace":
+            print([3, 1, 2].sort_in_place(x => x))
+        else:
+            print([3, 1, 2].reversed())
+    except AttributeError as e:
+        print(e)
+    except TypeError as e:
+        print(e)

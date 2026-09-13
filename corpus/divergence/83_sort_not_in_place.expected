@@ -1,0 +1,10 @@
+[1, 2, 3] [3, 1, 2]
+[1, 2, 3] [3, 1, 2] [3, 1, 2]
+[1, 2, 3]
+[3, 2, 1] [1, 2, 3]
+[3, 2, 1]
+[('carol', 3), ('bob', 2), ('alice', 1)] [('carol', 3), ('alice', 1), ('bob', 2)]
+sort() takes exactly 1 argument
+`sorted` is not in Oro — sort with `xs.sort(f)`: `xs.sort(x => x)` for the elements' own order, `xs.sort(f, reverse=true)` for a stable descending one
+`sort_in_place` is not in Oro — every collection operation returns a new collection, so sorting is `xs.sort(f)` and you rebind: `xs = xs.sort(f)`
+`reversed` is spelled `reverse` in Oro — `xs.reverse()`, which returns a new collection (there is no in-place reverse)
