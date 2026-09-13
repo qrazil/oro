@@ -1,0 +1,53 @@
+# DIVERGENCE: `=>` callbacks, so CPython cannot run it. Reviewed by hand.
+#
+# `take_while` stops the moment its predicate first answers false. The element
+# it drops, and everything after, never reaches the predicate — so a predicate
+# with a side effect or a real cost is called exactly as many times as it must
+# be, not once per element of the receiver. The count is the point of this file,
+# so the predicate records every call.
+
+log = []
+
+
+def p(x):
+    log.append(x)
+    return x < 3
+
+
+# Runs on 1, 2, 3 — 3 is the first false and stops it — never on 4 or the
+# trailing 1. The result keeps only what came before the false.
+r = [1, 2, 3, 4, 1].take_while(p)
+print(r)
+print(log)
+
+# Fused behind a `map`: the stop reaches back through the stage, so `map` runs
+# only on the three elements the predicate actually reaches.
+seen = []
+
+
+def big(x):
+    seen.append(x)
+    return x < 30
+
+
+doubled = [1, 2, 3, 4, 5].map(x => x * 10).take_while(big)
+print(doubled)
+print(seen)
+
+# Every element passes: each is visited once, in order.
+def always(x):
+    return true
+
+
+print([1, 2, 3].take_while(always))
+
+# False at the first element: one call, empty result.
+firstfalse = []
+
+
+def never(x):
+    firstfalse.append(x)
+    return false
+
+
+print([5, 6, 7].take_while(never), firstfalse)

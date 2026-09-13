@@ -3543,6 +3543,12 @@ impl Vm {
                 let settled = match job.op {
                     SeqOp::Find | SeqOp::Any => job.results.iter().any(|r| r.truthy()),
                     SeqOp::All => job.results.iter().any(|r| !r.truthy()),
+                    // `take_while` stops the moment its predicate first answers
+                    // false: everything after is dropped, so the predicate is
+                    // never called on it (a side-effecting or costly predicate
+                    // must not run past the stopping point), and the early stop
+                    // reaches back through the fused stages like `take`'s does.
+                    SeqOp::TakeWhile => job.results.last().is_some_and(|r| !r.truthy()),
                     _ => job.items.len() >= job.limit,
                 };
                 // Where the next element comes from: part way down the stages,
