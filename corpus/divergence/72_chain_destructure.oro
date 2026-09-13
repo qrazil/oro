@@ -11,15 +11,13 @@
 # The rule: a callback with two or more parameters destructures its element
 # exactly as `for a, b in xs` does, and a callback with one takes the element
 # whole. So the protocol's own pair-making steps — `zip`, a dict's `to_list()`,
-# `group_by` — feed its own callbacks. (There is no `enumerate`: an index in a
-# chain is `range(len(xs)).zip(xs)`, and in a loop it is `for i, x in xs`.)
+# `group_by` — feed its own callbacks. There is no `enumerate` and no chain
+# spelling for an index at all: a chain is value-only, and if you need the index
+# you write a `for i, x in xs` loop (which is already the reason to prefer a loop
+# over a chain).
 
 words = ["ant", "bee", "cat", "dog"]
 counts = [3, 1, 4, 1]
-
-print("--- an index in a chain is range(len(xs)).zip(xs)")
-print(range(len(words)).zip(words).map((i, w) => f"{i}:{w}"))
-print(range(len(words)).zip(words).filter((i, w) => i % 2 == 0).map((i, w) => w))
 
 print("--- zip")
 pairs = words.zip(counts)

@@ -315,10 +315,15 @@ Implemented and working today:
   the protocol makes itself feed the next step the same way:
 
   ```python
-  range(len(xs)).zip(xs).filter((i, x) => i % 2 == 0).map((i, x) => x)
   names.zip(ages).filter((name, age) => age >= 18).map((name, age) => name)
   orders.group_by(o => o.region).to_list().map((region, rows) => (region, rows.len()))
   ```
+
+  A chain is **value-only** — there is no index parameter and no chain spelling
+  for an index. Needing the index is one of the reasons to write a `for i, x in
+  xs` loop instead: one source, one meaning for `i`. In a chain, `i` would be
+  ambiguous the moment a `filter` came before the `map` (index in the filtered
+  result, or the original?), so the parameter simply does not exist.
 
   What counts is the parameters without a default: `def f(x, n=2)`
   takes the element whole, a defaulted parameter never counts (it is
@@ -974,9 +979,11 @@ pair the next.
 for _, x in xs.enumerate()   # no: `enumerate` is gone entirely
 for i, x in xs               # yes: the index is built in
 for i in range(len(xs))      # no: redundant, and a single binding besides
-range(len(xs)).zip(xs)       # an index *in a chain*, the one place `for` can't reach
 d.items()                    # AttributeError: iterating the dict *is* its items
 ```
+
+There is no index in a chain, either — a chain is value-only, so an index is one
+of the reasons to reach for a loop rather than a chain.
 
 A tuple **element** is a nested pattern in the value slot, since the top-level
 binding is now `(index, value)`:
@@ -1417,7 +1424,7 @@ different.
 | `s.isdigit()` / `isalpha()` / `isalnum()` / `isspace()` | `s.is_digit()` / `is_alpha()` / `is_alnum()` / `is_space()` | Same predicates, in the language's own naming |
 | `sep.join(xs)` | `xs.join(sep)` | One join, on the collection; the sequence is the subject and the call ends a chain |
 | `sum(xs)` / `sorted(xs)` / `any(xs)` / `all(xs)` / `zip(a, b)` | `xs.sum()` / `xs.sort(x => x)` / `xs.any(x => x)` / `xs.all(x => x)` / `a.zip(b)` | A builtin takes scalars, a collection method takes a collection |
-| `enumerate(xs)` / `xs.enumerate()` | `for i, x in xs`, or `range(len(xs)).zip(xs)` in a chain | Gone entirely: every `for` yields `(index, value)` |
+| `enumerate(xs)` / `xs.enumerate()` | `for i, x in xs` | Gone entirely: every `for` yields `(index, value)`. A chain has no index — needing one is a reason to use a loop |
 | `sorted(xs, key=f, reverse=true)` | `xs.sort(f, reverse=true)` | The key is the operand, so it is positional; `reverse=` is a stable descending sort, `.reverse()` is not |
 | `xs.sort(key=f)` / `xs.reverse()` (Python's in-place) | `xs = xs.sort(f)` / `xs = xs.reverse()` | **Silent change:** Oro's `sort`/`reverse` return a new collection and do not mutate — rebind. There is no in-place form; `sorted`/`sort_in_place`/`reversed` all raise, naming these. |
 | `min(xs)` / `max(xs)` | `xs.min()` / `xs.max()` | `min(a, b)` over two or more *values* is unchanged |
