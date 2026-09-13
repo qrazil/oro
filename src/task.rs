@@ -126,7 +126,9 @@ impl Channel {
         }
     }
 
-    /// `len(ch)` — how many values are sitting in the buffer.
+    /// How many values are sitting in the buffer. Internal only — a channel is
+    /// an endpoint, not a container, so this is not reachable as `len(ch)` from
+    /// Oro (that raises, like `len` on any non-container).
     pub fn len(&self) -> usize {
         self.buf.borrow().len()
     }

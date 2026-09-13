@@ -10,6 +10,14 @@ ch = chan(cap=2)
 ch.send(1)
 ch.send(2)
 print("two sends into a buffer of two did not block:", true)
+# A channel is an endpoint, not a container: it is `send`/`recv`/`close` and
+# nothing else, so `len(ch)` does not peek at the buffer — it raises like `len`
+# on any non-container (unlike CPython's `queue.Queue.qsize()`).
+try:
+    len(ch)
+    print("UNREACHABLE")
+except TypeError as e:
+    print("len(ch) raises:", e)
 print("values come out in order:", [ch.recv(), ch.recv()] == [1, 2])
 
 # --- chan() and chan(cap=0) are the same thing --------------------------------

@@ -1,4 +1,5 @@
 two sends into a buffer of two did not block: true
+len(ch) raises: object of type 'Channel' has no len()
 values come out in order: true
 chan()      is <channel cap=0>
 chan(cap=0) is <channel cap=0>

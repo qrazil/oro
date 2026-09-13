@@ -68,6 +68,13 @@ print(len([200].to_bytes()), len(f"{200:c}".to_bytes()))
 print([104, 105].to_bytes() == b"hi", [104, 105].to_bytes().to_str())
 # A bool is an int here because a bool is an int everywhere else in Oro.
 print([true, false, 98].to_bytes())
+# A range is a sequence of ints too, so it builds bytes the same way the list of
+# those ints does — no `.to_list()` detour, and the same out-of-range check.
+print(range(68, start=65).to_bytes(), range(68, start=65).to_bytes() == [65, 66, 67].to_bytes())
+try:
+    print(range(300, start=250).to_bytes())
+except ValueError as e:
+    print("range out of range:", e)
 # An element that is not an octet is refused rather than truncated or wrapped:
 # bytes built from a number that did not fit in a byte is silently wrong data.
 try:

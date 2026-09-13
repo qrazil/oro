@@ -62,6 +62,18 @@ try:
 except IndexError as e:
     print("index", type(e), f"{e}")
 
+# `first()`/`last()` on an empty sequence is the same fault as an out-of-range
+# subscript — a missing element is an IndexError, never a bare RuntimeError.
+try:
+    [].first()
+except IndexError as e:
+    print("first", type(e), f"{e}")
+
+try:
+    [].last()
+except IndexError as e:
+    print("last", type(e), f"{e}")
+
 try:
     print(1 // 0)
 except ZeroDivisionError as e:
