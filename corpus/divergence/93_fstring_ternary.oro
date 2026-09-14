@@ -1,0 +1,27 @@
+# INTENTIONAL DIVERGENCE. A ternary in an f-string field needs no parentheses:
+# the field splitter pairs each top-level `?` with a `:`, so a ternary's colons
+# are consumed by it and only an unpaired top-level `:` starts the format spec.
+# (Any f-string with `? :` is already invalid Python, so no oracle is lost.)
+c = true
+a = "A"
+b = "B"
+n = 42
+xs = [10, 20, 30]
+
+# one ternary, no spec; and with a spec after the absorbed colon
+print(f"{c ? a : b}")
+print(f"{c ? a : b:>10}")
+# a plain spec with no ternary is unaffected
+print(f"{n:5}")
+# colons inside brackets / a dict literal are skipped by nesting, not the split
+print(f"{xs[1:3]}")
+print(f"{ {1: 2} }")
+# two ternaries (the depth cap): both colons absorbed, then an optional spec
+print(f"{c ? a : c ? a : b}")
+print(f"{c ? a : c ? a : b:>5}")
+# the false branch, and a ternary mid-string alongside a normal field
+d = false
+print(f"{d ? a : b}")
+print(f"n is {n > 0 ? 'positive' : 'negative'} ({n})")
+# a colon inside a nested string literal must not count as a separator
+print(f"{c ? 'a:b' : 'c:d'}")

@@ -1782,7 +1782,14 @@ pub(super) fn scan_spec(spec: &str) -> Result<Vec<FPiece>, String> {
 
 /// Lex and parse one replacement field's expression source.
 fn parse_field_expr(src: &str) -> Result<Expr, String> {
-    if src.trim().is_empty() {
+    // Trim the field before lexing: leading/trailing space around a field
+    // expression is never significant, but a leading space lexes as an indent
+    // and a trailing one can dangle a token, so `f"{ n }"` and — the case that
+    // needs the surrounding spaces to not read as `{{` — `f"{ {1: 2} }"` would
+    // fail without it. (A field that is all whitespace is the empty-field error
+    // above.)
+    let src = src.trim();
+    if src.is_empty() {
         return Err("empty expression in f-string".to_string());
     }
     let tokens = Lexer::new(src).tokenize().map_err(|e| format!("in f-string: {}", e.message))?;
@@ -1839,6 +1846,13 @@ fn split_field(src: &str) -> Field {
     let chars: Vec<char> = src.chars().collect();
     let mut depth = 0i32;
     let mut in_str: Option<char> = None;
+    // Ternary `?` waiting for its `:`. The field-spec separator is the first
+    // top-level `:` reached with none outstanding; a `:` reached while one is
+    // outstanding belongs to a `cond ? a : b` and is consumed by it. `?`/`:`
+    // inside brackets or a string are a nested expression's and never counted
+    // (the `depth`/`in_str` guards below skip them), so `f"{c ? a : b}"` needs
+    // no parentheses and `f"{a ? b : c ? d : e:>5}"` still finds its spec.
+    let mut pending_ternaries = 0u32;
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
@@ -1857,6 +1871,7 @@ fn split_field(src: &str) -> Field {
             '\'' | '"' => in_str = Some(c),
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' => depth -= 1,
+            '?' if depth == 0 => pending_ternaries += 1,
             '!' if depth == 0 => {
                 // A conversion is `!` + one of r/s/a, then end-of-field or `:`.
                 // Anything else (e.g. `!=`) belongs to the expression.
@@ -1871,6 +1886,10 @@ fn split_field(src: &str) -> Field {
                         return Field { expr, conv: Some(n), spec };
                     }
                 }
+            }
+            ':' if depth == 0 && pending_ternaries > 0 => {
+                // This colon closes a ternary, not the field's format spec.
+                pending_ternaries -= 1;
             }
             ':' if depth == 0 => {
                 let expr: String = chars[..i].iter().collect();
