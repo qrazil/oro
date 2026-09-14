@@ -621,7 +621,7 @@ class _HeadParser:
         out = {}
         count = 0
         while self.i < self.n and len(self.lines[self.i]) > 0:
-            count = count + 1
+            count += 1
             if count > _MAX_HEADERS:
                 self.fail(f"more than {_MAX_HEADERS} header fields", status=431)
             line = self.lines[self.i]
@@ -909,7 +909,7 @@ class _ChunkedReader:
         count = 0
         line = self.r.read_until(b"\r\n", _MAX_TRAILER_LINE)
         while line != b"\r\n" and line != b"":
-            count = count + 1
+            count += 1
             if count > _MAX_HEADERS:
                 self.fail(f"more than {_MAX_HEADERS} trailer fields", status=431)
             line = self.r.read_until(b"\r\n", _MAX_TRAILER_LINE)
@@ -976,7 +976,7 @@ def _http_date(t):
 # algorithm: shift the epoch to 0000-03-01 so a leap day lands at the end of
 # a year and the month lengths become a linear sequence.
 def _civil_from_days(z):
-    z = z + 719468
+    z += 719468
     era = z // 146097
     doe = z - era * 146097
     yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
@@ -986,8 +986,8 @@ def _civil_from_days(z):
     day = doy - (153 * mp + 2) // 5 + 1
     month = mp + 3
     if month > 12:
-        month = month - 12
-        year = year + 1
+        month -= 12
+        year += 1
     return year, month, day
 
 
@@ -1132,7 +1132,7 @@ def _drain_loop(body):
     left = _MAX_DRAIN
     chunk = body.read(left)
     while chunk != b"":
-        left = left - len(chunk)
+        left -= len(chunk)
         if left < 1:
             return false
         chunk = body.read(left)
@@ -1197,7 +1197,7 @@ def serve_conn(conn, handler, max_requests=_MAX_REQUESTS_PER_CONN, watch=null):
         if keep and watch != null and watch.stopping:
             keep = false
         write_response(conn, req, resp, keep_alive=keep)
-        served = served + 1
+        served += 1
         if watch != null:
             watch.busy = false
         if not keep:
@@ -1394,7 +1394,7 @@ def serve(addr, handler, ready=null, max_conns=_MAX_CONNS, max_requests=_MAX_REQ
         if closed:
             break
         if failed != null:
-            errors = errors + 1
+            errors += 1
             if errors > _MAX_ACCEPT_ERRORS:
                 ln.close()
                 _drain_live(live, tally, drain)
@@ -1407,7 +1407,7 @@ def serve(addr, handler, ready=null, max_conns=_MAX_CONNS, max_requests=_MAX_REQ
         errors = 0
         backoff = _ACCEPT_BACKOFF
         if len(live) >= max_conns:
-            tally["refused"] = tally["refused"] + 1
+            tally["refused"] += 1
             conn.close()
             continue
         if timeout != null:
@@ -1428,7 +1428,7 @@ def serve(addr, handler, ready=null, max_conns=_MAX_CONNS, max_requests=_MAX_REQ
         # task's first instruction runs — which is what makes it safe for the
         # task to read `entry.task` and for the drain to join it.
         entry.task = spawn(_conn_task, handler, live, entry, max_requests)
-        tally["accepted"] = tally["accepted"] + 1
+        tally["accepted"] += 1
     _drain_live(live, tally, drain)
     return tally
 
@@ -1482,7 +1482,7 @@ def _drain_live(live, tally, drain):
     rest = live.values()
     for _, entry in rest:
         entry.conn.close()
-    tally["forced"] = tally["forced"] + len(rest)
+    tally["forced"] += len(rest)
     tally["drained"] = tally["drained"] + waiting - len(rest)
     # Joining is free here and only here: the accept loop is over, so nothing
     # is waiting on this task, and `_conn_task` cannot raise into it.
@@ -2115,7 +2115,7 @@ def read_response(r, method):
     resp = _read_one_response(r, method)
     interim = 0
     while resp.status < 200 and resp.status != 101:
-        interim = interim + 1
+        interim += 1
         if interim > _MAX_INTERIM:
             raise BadResponse(f"more than {_MAX_INTERIM} interim responses in a row")
         resp = _read_one_response(r, method)
@@ -2386,7 +2386,7 @@ def _read_capped(r, limit):
     got = 0
     chunk = r.read(_STREAM_CHUNK)
     while chunk != b"":
-        got = got + len(chunk)
+        got += len(chunk)
         if got > limit:
             raise BadResponse(f"the response body is larger than max_body ({limit} bytes) — use http.stream() for a body this size")
         parts.append(chunk)

@@ -12,7 +12,7 @@
 //! the spelling to use instead — advice, not an error: `oro lint` exits non-zero
 //! when it finds something, but the program still compiles and runs.
 
-use crate::ast::{CmpOp, Expr, LambdaData, Stmt, UnaryOp};
+use crate::ast::{BinOp, CmpOp, Expr, LambdaData, Stmt, UnaryOp};
 
 /// One lint hit: where it is, which rule, and what to write instead.
 pub struct Finding {
@@ -37,8 +37,13 @@ pub const UNCHECKABLE: &[(&str, &str)] = &[
 /// Lint a parsed module, returning every finding in source order.
 pub fn lint(program: &[Stmt]) -> Vec<Finding> {
     let mut out = Vec::new();
-    let mut visit = |e: &Expr| check_expr(e, &mut out);
-    walk_stmts(program, &mut visit);
+    {
+        let mut visit = |e: &Expr| check_expr(e, &mut out);
+        walk_stmts(program, &mut visit);
+    }
+    // The one statement-level rule: `x = x op y` is the longhand of `x op= y`.
+    // It reads a whole assignment, not an expression, so it runs its own walk.
+    check_manual_aug_stmts(program, &mut out);
     out.sort_by_key(|f| (f.line, f.col));
     out
 }
@@ -273,8 +278,131 @@ fn describe(e: &Expr) -> String {
         Expr::Int { value, .. } => value.clone(),
         Expr::NoneLit { .. } => "null".to_string(),
         Expr::Attribute { value, attr, .. } => format!("{}.{}", describe(value), attr),
+        Expr::Subscript { value, index, .. } => format!("{}[{}]", describe(value), describe(index)),
         _ => "…".to_string(),
     }
+}
+
+/// `x = x op y` (or `d[k] = d[k] op y`) is the longhand of the augmented form.
+///
+/// Flagged only when the assignment target is **syntactically identical to the
+/// binary operator's LEFT operand** — never the right, because none of the
+/// twelve operators is commutative: `x = y - x` is not `x -= y`, and for `str`
+/// and `list` even `+` changes with order. The target must be a plain path (a
+/// name or a subscript, which are pure in Oro — there are no property getters,
+/// so `d[k]` reads the same twice); an attribute is not an augmented-assignment
+/// target, so `obj.n = obj.n + 1` is left alone rather than suggested a form
+/// that would not compile.
+fn check_manual_aug_stmts(stmts: &[Stmt], out: &mut Vec<Finding>) {
+    for s in stmts {
+        if let Stmt::Assign { targets, value, line, col } = s {
+            if let [target] = targets.as_slice() {
+                if let Expr::Binary { op, left, .. } = value {
+                    if is_aug_target(target) && same_path(target, left) {
+                        let t = describe(target);
+                        let sym = binop_sym(*op);
+                        out.push(Finding {
+                            line: *line,
+                            col: *col,
+                            rule: "manual-augmented-assign",
+                            message: format!(
+                                "`{t} = {t} {sym} …` repeats the target — write `{t} {sym}= …`, \
+                                 the one spelling for `{t} = {t} {sym} …` (it rebinds, it does \
+                                 not mutate)"
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+        for body in child_bodies(s) {
+            check_manual_aug_stmts(body, out);
+        }
+    }
+}
+
+/// A valid augmented-assignment target: a name or a subscript, the two the
+/// compiler accepts. Not an attribute.
+fn is_aug_target(e: &Expr) -> bool {
+    matches!(e, Expr::Name { .. } | Expr::Subscript { .. })
+}
+
+/// Position-insensitive equality of two target paths. Conservative: only the
+/// shapes a target can take (name, subscript-of-path by an atom index), so a
+/// pair it cannot prove identical is simply not flagged.
+fn same_path(a: &Expr, b: &Expr) -> bool {
+    match (a, b) {
+        (Expr::Name { name: x, .. }, Expr::Name { name: y, .. }) => x == y,
+        (
+            Expr::Subscript { value: av, index: ai, .. },
+            Expr::Subscript { value: bv, index: bi, .. },
+        ) => same_path(av, bv) && same_atom(ai, bi),
+        _ => false,
+    }
+}
+
+/// Structural equality of the atoms an index is usually written as. Anything
+/// else (a call, an arithmetic expression) is not proven equal, so not flagged.
+fn same_atom(a: &Expr, b: &Expr) -> bool {
+    match (a, b) {
+        (Expr::Name { name: x, .. }, Expr::Name { name: y, .. }) => x == y,
+        (Expr::Int { value: x, .. }, Expr::Int { value: y, .. }) => x == y,
+        (Expr::Str { value: x, raw: rx, .. }, Expr::Str { value: y, raw: ry, .. }) => {
+            x == y && rx == ry
+        }
+        _ => false,
+    }
+}
+
+fn binop_sym(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mul => "*",
+        BinOp::Div => "/",
+        BinOp::FloorDiv => "//",
+        BinOp::Mod => "%",
+        BinOp::Pow => "**",
+        BinOp::BitAnd => "&",
+        BinOp::BitOr => "|",
+        BinOp::BitXor => "^",
+        BinOp::Shl => "<<",
+        BinOp::Shr => ">>",
+    }
+}
+
+/// The nested statement bodies of a compound statement, for the assign walk.
+fn child_bodies(s: &Stmt) -> Vec<&[Stmt]> {
+    let mut v: Vec<&[Stmt]> = Vec::new();
+    match s {
+        Stmt::If { body, elifs, orelse, .. } => {
+            v.push(body);
+            for (_, b) in elifs {
+                v.push(b);
+            }
+            if let Some(b) = orelse {
+                v.push(b);
+            }
+        }
+        Stmt::While { body, .. } | Stmt::For { body, .. } => v.push(body),
+        Stmt::Def { body, .. } | Stmt::Class { body, .. } => v.push(body),
+        Stmt::Try { body, handlers, finalbody, .. } => {
+            v.push(body);
+            for h in handlers {
+                v.push(&h.body);
+            }
+            if let Some(b) = finalbody {
+                v.push(b);
+            }
+        }
+        Stmt::Match { cases, .. } => {
+            for c in cases {
+                v.push(&c.body);
+            }
+        }
+        _ => {}
+    }
+    v
 }
 
 // --- Traversal ---------------------------------------------------------------
@@ -415,6 +543,13 @@ mod tests {
         assert_eq!(rules("t = s[len(p):]\n"), ["slice-rm-prefix"]);
         assert_eq!(rules("t = s[:-len(p)]\n"), ["slice-rm-suffix"]);
         assert_eq!(rules("t = s[::-1]\n"), ["slice-reverse"]);
+        // `x = x op y` is the longhand of `x op= y`, for every one of the twelve.
+        assert_eq!(rules("x = x + 1\n"), ["manual-augmented-assign"]);
+        assert_eq!(rules("x = x - y\n"), ["manual-augmented-assign"]);
+        assert_eq!(rules("x = x << 2\n"), ["manual-augmented-assign"]);
+        assert_eq!(rules("x = x & mask\n"), ["manual-augmented-assign"]);
+        // A subscript target by an identical index — pure in Oro, so it counts.
+        assert_eq!(rules("d[k] = d[k] + 1\n"), ["manual-augmented-assign"]);
     }
 
     #[test]
@@ -429,5 +564,15 @@ mod tests {
         assert!(rules("r = s.find(x) > 5\n").is_empty());
         // The reverse slice needs step -1 specifically; a plain copy is fine.
         assert!(rules("t = s[::2]\n").is_empty());
+        // `x = y op x` is NOT `x op= y`: no operator here is commutative, so the
+        // receiver being the *right* operand must not be flagged.
+        assert!(rules("x = y + x\n").is_empty());
+        assert!(rules("x = y - x\n").is_empty());
+        // Different names, different subscript indices: no repeated target.
+        assert!(rules("x = y + z\n").is_empty());
+        assert!(rules("d[k] = d[j] + 1\n").is_empty());
+        // An attribute is not an augmented-assignment target, so leave it alone
+        // rather than suggest a form that would not compile.
+        assert!(rules("o.n = o.n + 1\n").is_empty());
     }
 }

@@ -91,7 +91,7 @@ def read(r, fixed_size=null):
         if chunk == b"":
             raise EOFError(f"stream ended after {got} bytes, expected {fixed_size}")
         parts.append(chunk)
-        got = got + len(chunk)
+        got += len(chunk)
     # Everything arrived in one read, which is the usual case for a body that
     # fits in one packet. Joining a one-element list would copy it again.
     if len(parts) == 1:
@@ -109,7 +109,7 @@ def copy(dst, src):
     chunk = src.read(_CHUNK)
     while chunk != b"":
         dst.write(chunk)
-        total = total + len(chunk)
+        total += len(chunk)
         chunk = src.read(_CHUNK)
     return total
 
