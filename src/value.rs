@@ -203,6 +203,37 @@ mod teardown {
     }
 }
 
+/// How often [`Value::truthy`] was asked, in test builds only.
+///
+/// Not a profiler: a *shape* meter. Deciding whether a collection terminal's
+/// answer is settled by scanning the callback results collected so far is a
+/// `truthy` per entry, so counting the calls measures how the collection
+/// driver's work grows with the length of its input without timing anything.
+/// Counting the *operation* rather than the scan is the point: a rescan
+/// reintroduced anywhere in the driver is caught whether or not whoever wrote
+/// it thought to instrument it. Read by
+/// `vm::tests::a_short_circuit_terminal_does_not_rescan_its_results`.
+#[cfg(test)]
+pub(crate) mod truthy_count {
+    use std::cell::Cell;
+
+    thread_local! {
+        static CALLS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// Count one call.
+    pub(crate) fn bump() {
+        CALLS.with(|c| c.set(c.get() + 1));
+    }
+
+    /// Read the counter and zero it, so each measurement stands alone. The
+    /// counter is thread-local, so tests running in parallel cannot see each
+    /// other's counts.
+    pub(crate) fn take() -> u64 {
+        CALLS.with(|c| c.replace(0))
+    }
+}
+
 /// The payload of a `list`: a `Vec<Value>` behind a `RefCell`, in a type of our
 /// own so that [`teardown`] has somewhere to hook.
 ///
@@ -1197,6 +1228,8 @@ impl Value {
     /// Python truthiness (architecture point 7): `0`, `0.0`, `""`, `[]`, `{}`,
     /// `()`, empty set, `None`, `False` are falsy.
     pub fn truthy(&self) -> bool {
+        #[cfg(test)]
+        truthy_count::bump();
         match self {
             Value::None => false,
             Value::Bool(b) => *b,

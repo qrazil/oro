@@ -2953,3 +2953,53 @@ fn every_exception_class_exists() {
         assert!(registry.contains_key(e.name()), "{} is not in the registry", e.name());
     }
 }
+
+/// A list of `n` integers, then one collection step over it (optionally chained).
+fn seq_program(n: usize, chain: &str, step: &str) -> String {
+    format!("xs = []\nfor i, _ in range({n}):\n    xs.append(i)\nr = xs{chain}.{step}\n")
+}
+
+/// Run `src` and return how many times `Value::truthy` was called.
+fn truthy_calls(src: &str) -> u64 {
+    let mut vm = Vm::new(Vec::new());
+    vm.push_module_frame(compile_module(src));
+    crate::value::truthy_count::take();
+    vm.run_loop().expect("run");
+    crate::value::truthy_count::take()
+}
+
+/// A short-circuiting terminal must not re-read the results it already has.
+///
+/// `find`, `any` and `all` stop as soon as one callback result settles the
+/// answer. Asking whether it is settled by scanning *every* result so far is
+/// correct and quadratic: the question is asked once per element, so a
+/// predicate that never settles the answer walks an ever-longer vector. An
+/// early match hides it, which is why this measures the case that never settles.
+///
+/// A wall-clock assertion would be flaky, so this counts the work instead:
+/// `Value::truthy` is the operation such a scan performs once per entry, and
+/// test builds count every call to it, so a rescan is caught wherever in the
+/// driver it is written rather than only where a counter was placed. Linear is
+/// about 2x per doubling; the quadratic bug measured about 4x.
+#[test]
+fn a_short_circuit_terminal_does_not_rescan_its_results() {
+    let steps = [
+        ("all", "all(x => x >= 0)"),
+        ("any", "any(x => x < 0)"),
+        ("find", "find(x => x < 0)"),
+    ];
+    for (name, step) in steps {
+        for (spelling, chain) in [("unchained", ""), ("chained", ".map(y => y)")] {
+            let a = truthy_calls(&seq_program(300, chain, step));
+            let b = truthy_calls(&seq_program(600, chain, step));
+            assert!(
+                a > 0 && b < a * 3,
+                "{name} ({spelling}): doubling the input took the work from {a} to {b} \
+                 ({ratio:.1}x). Linear is about 2x; ~4x means the short-circuit test is \
+                 rescanning the results already collected. Settle the answer as the result \
+                 that settles it arrives, not by re-reading all of them.",
+                ratio = b as f64 / a as f64
+            );
+        }
+    }
+}

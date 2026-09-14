@@ -3554,8 +3554,16 @@ impl Vm {
                 // `limit` is the same idea for a `take(n)`/`first()` terminal,
                 // and it reaches back through the fused stages.
                 let settled = match job.op {
-                    SeqOp::Find | SeqOp::Any => job.results.iter().any(|r| r.truthy()),
-                    SeqOp::All => job.results.iter().any(|r| !r.truthy()),
+                    // Checked once per element, so it must be O(1): `results`
+                    // grows by one per iteration and this loop re-checks after
+                    // every recorded result, so the element that settles a
+                    // monotonic short-circuit is always the *last* one. Scanning
+                    // the whole vector (`.iter().any(...)`) made a settled check
+                    // O(n) and the whole terminal O(n²) — a 20k-element `all`
+                    // was 400ms. `.last()` is the same answer in O(1), the way
+                    // `take_while` below already does it.
+                    SeqOp::Find | SeqOp::Any => job.results.last().is_some_and(|r| r.truthy()),
+                    SeqOp::All => job.results.last().is_some_and(|r| !r.truthy()),
                     // `take_while` stops the moment its predicate first answers
                     // false: everything after is dropped, so the predicate is
                     // never called on it (a side-effecting or costly predicate
