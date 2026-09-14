@@ -1,0 +1,5 @@
+hello stdin 0
+text via str
+0 0
+large round-trips: true
+wc -c saw: 5

@@ -5096,6 +5096,7 @@ impl Vm {
         let mut timeout: Option<f64> = None;
         let mut check = true;
         let mut quiet = false;
+        let mut input: Option<Vec<u8>> = None;
         for (k, v) in &kwargs {
             match k.as_str() {
                 "cwd" => match v {
@@ -5119,6 +5120,19 @@ impl Vm {
                 },
                 "check" => check = v.truthy(),
                 "quiet" => quiet = v.truthy(),
+                // Fed to the child's stdin, then the pipe is closed. `bytes` is
+                // the honest type (a child reads octets); a `str` is encoded
+                // UTF-8 for the common text case, matching CPython's `input=`.
+                "input" => match v {
+                    Value::Bytes(b) => input = Some(b.as_ref().clone()),
+                    Value::Str(s) => input = Some(s.s.clone().into_bytes()),
+                    _ => {
+                        return Err(self.err(type_error(format!(
+                            "proc.run() input must be bytes or str, not '{}'",
+                            v.type_label()
+                        ))))
+                    }
+                },
                 // CPython's knobs for what Oro now does by default. Name them
                 // explicitly rather than let them silently do nothing.
                 "capture_output" | "text" => {
@@ -5144,6 +5158,11 @@ impl Vm {
         cmd.args(&parts[1..]);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
+        // Pipe stdin only when there is input to feed; without it the child
+        // inherits the parent's stdin, unchanged from before.
+        if input.is_some() {
+            cmd.stdin(std::process::Stdio::piped());
+        }
         if let Some(dir) = &cwd {
             cmd.current_dir(dir);
         }
@@ -5154,7 +5173,7 @@ impl Vm {
             }
         }
 
-        let output = match run_process(cmd, timeout, !quiet) {
+        let output = match run_process(cmd, timeout, !quiet, input) {
             Ok(o) => o,
             // "timed out" is classified into TimeoutError; a missing/inexecutable
             // program's io error into FileNotFoundError/PermissionError.
@@ -6648,6 +6667,7 @@ fn run_process(
     mut cmd: std::process::Command,
     timeout: Option<f64>,
     stream: bool,
+    input: Option<Vec<u8>>,
 ) -> Result<std::process::Output, RunError> {
     let mut child = cmd.spawn().map_err(RunError::Io)?;
     let out_handle = drain_pipe(
@@ -6658,6 +6678,22 @@ fn run_process(
         child.stderr.take(),
         if stream { Some(std::io::stderr()) } else { None },
     );
+    // Feed stdin on its own thread. Writing it all on this thread would deadlock
+    // a child that fills its stdout before reading all of stdin — the output is
+    // drained concurrently above, and the input is written concurrently here, so
+    // neither direction can block the other. On a timeout the child is killed,
+    // which closes its stdin read end and lets a blocked `write_all` return with
+    // `EPIPE` (deliberately ignored), so the thread never outlives the child.
+    let in_handle = input.map(|bytes| {
+        let stdin = child.stdin.take();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            if let Some(mut si) = stdin {
+                let _ = si.write_all(&bytes);
+                // Dropping `si` closes the pipe, so the child reads EOF.
+            }
+        })
+    });
 
     let status = match timeout {
         None => child.wait().map_err(RunError::Io)?,
@@ -6680,6 +6716,9 @@ fn run_process(
     };
     let stdout = out_handle.join().unwrap_or_default();
     let stderr = err_handle.join().unwrap_or_default();
+    if let Some(h) = in_handle {
+        let _ = h.join();
+    }
     Ok(std::process::Output { status, stdout, stderr })
 }
 

@@ -466,7 +466,7 @@ os.path.join(*parts)                POSIX join
 os.path.basename(p) / dirname(p)    str
 os.path.splitext(p)                 (root, ext)
 
-proc.run(args, cwd=, env=, timeout=, check=true, quiet=false)
+proc.run(args, input=, cwd=, env=, timeout=, check=true, quiet=false)
                                     a Completed: .returncode .ok .truncated .stdout .stderr
 
 re.search/fullmatch(pattern, s)     Match or null
@@ -1742,8 +1742,15 @@ nothing outside the program.
 
 #### `proc` — one function
 
-`proc.run(args, cwd=, env=, timeout=, check=true, quiet=false)` returns a
+`proc.run(args, input=, cwd=, env=, timeout=, check=true, quiet=false)` returns a
 `Completed` with `.returncode`, `.ok`, `.truncated`, `.stdout` and `.stderr`.
+`input=` feeds the child's stdin — `bytes`, or a `str` encoded UTF-8 — and the
+pipe is closed after, so the child reads EOF. It is written on its own thread
+while the output is drained concurrently, so an input past the pipe buffer does
+not deadlock. Reach for `input=` rather than `["sh", "-c", …]` with a redirect:
+that route hands the shell back the injection the list-only design exists to
+prevent. (Output is still captured whole, capped at 64 MiB per stream — for an
+output too large to hold, a streaming spawn is the answer, not a bigger cap.)
 
 | raises | when |
 |---|---|

@@ -1,0 +1,29 @@
+# INTENTIONAL DIVERGENCE. `proc.run(args, input=…)` feeds the child's stdin —
+# bytes, or a str encoded UTF-8, matching CPython's `subprocess.run(input=)`.
+# It closes the pipe after writing (the child sees EOF) and, crucially, feeds
+# stdin on its own thread while stdout is drained on another, so an input past
+# the pipe buffer cannot deadlock. `quiet=true` drops the live tee so only the
+# captured copy is printed.
+import proc
+
+# a small round trip through `cat`
+r = proc.run(["cat"], input=b"hello stdin", quiet=true)
+print(r.stdout.to_str(), r.returncode)
+
+# a str is encoded UTF-8
+r = proc.run(["cat"], input="text via str", quiet=true)
+print(r.stdout.to_str())
+
+# empty input: a clean EOF, empty output
+r = proc.run(["cat"], input=b"", quiet=true)
+print(len(r.stdout), r.returncode)
+
+# an input larger than a pipe buffer (>64KB) must not hang: the write parks on
+# its thread while the read drains on another.
+big = b"x" * 200000
+r = proc.run(["cat"], input=big, quiet=true)
+print("large round-trips:", len(r.stdout) == 200000)
+
+# `wc -c` counts the bytes it is fed, proving the child actually reads stdin
+r = proc.run(["wc", "-c"], input=b"12345", quiet=true)
+print("wc -c saw:", r.stdout.to_str().strip(chars=" \n", side="both"))

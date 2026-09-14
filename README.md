@@ -1342,7 +1342,7 @@ measurement, and the reason the same argument does not move `http`.
   sessions, static files, compression, and a client. `examples/server.oro` is
   the whole of it in one screen — see [Examples](#examples).
 - **`proc`** — exactly one function,
-  `run(args, check=…, quiet=…, cwd=…, env=…, timeout=…)`, returning a
+  `run(args, input=…, check=…, quiet=…, cwd=…, env=…, timeout=…)`, returning a
   `CompletedProcess` with `.returncode`, `.ok`, `.truncated`, `.stdout`,
   `.stderr`. `args` is **always a list of separate strings** that go straight to
   `execve` — there is **no `shell=True`**, so shell injection is impossible by
