@@ -2813,6 +2813,11 @@ impl Vm {
         if let Some(step) = self.task_or_channel_method(&receiver, name, &args, &kwargs)? {
             return Ok(step);
         }
+        // `proc.spawn`'s handle has one method — `wait()` — which reaps the
+        // child and so must run in the VM, not as a `Value`-returning native.
+        if let Some(step) = self.proc_method(&receiver, name, &args, &kwargs)? {
+            return Ok(step);
+        }
         // The io protocol's two methods, plus `read_until`,
         // `accept` and `close`. Four of the five can park on the
         // reactor and the fifth has to *wake* whoever is parked, so
@@ -2985,6 +2990,10 @@ impl Vm {
                     // proc.run is finished here so it can take keyword args and
                     // build a Completed instance.
                     "proc.run" => return self.do_proc_run(args, kwargs).map(|()| Step::Next),
+                    // proc.spawn is finished here for the same reason proc.run
+                    // is — it builds a live handle and needs the reactor's pipe
+                    // waker, which a plain `Builtin` cannot reach.
+                    "proc.spawn" => return self.do_proc_spawn(args, kwargs).map(|()| Step::Next),
                     // `net.listen` takes `reuseport=`, and the check further
                     // down this arm refuses keyword arguments to any plain
                     // `Builtin` — so, like `proc.run`, it is finished here. It
@@ -3167,6 +3176,41 @@ impl Vm {
             "send" => self.chan_send(ch, args[0].clone()).map(Some),
             "recv" => self.chan_recv(ch).map(Some),
             _ => self.chan_close(ch).map(Some),
+        }
+    }
+
+    /// `proc.spawn`'s handle method: `wait()`. `Ok(None)` means "not a `Proc`,
+    /// carry on". It reaps in the VM rather than as a native `Value` method
+    /// because reaping is a side effect on the live child, and because
+    /// `p.wait()` blocks (the reap is a blocking `waitpid`, like `proc.run`).
+    fn proc_method(
+        &mut self,
+        receiver: &Value,
+        name: &str,
+        args: &[Value],
+        kwargs: &[(String, Value)],
+    ) -> Result<Option<Step>, VmError> {
+        let Value::Proc(p) = receiver else { return Ok(None) };
+        // `stdin`/`stdout`/`stderr` are data attributes, read through `get_attr`,
+        // not methods; the only method is `wait`.
+        if name != "wait" {
+            return Ok(None);
+        }
+        if !kwargs.is_empty() {
+            return Ok(Some(self.raise(Exc::TypeError, "wait() takes no keyword arguments")));
+        }
+        if !args.is_empty() {
+            return Ok(Some(self.raise(
+                Exc::TypeError,
+                format!("wait() takes no arguments ({} given)", args.len()),
+            )));
+        }
+        match p.wait() {
+            Ok(code) => {
+                self.push(Value::Int(code));
+                Ok(Some(Step::Next))
+            }
+            Err(e) => Ok(Some(self.raise(Exc::OSError, e.to_string()))),
         }
     }
 
@@ -5229,6 +5273,111 @@ impl Vm {
         Ok(())
     }
 
+    /// `proc.spawn(args, cwd=…, env=…)` — start a child and hand back a live
+    /// handle whose `stdin`, `stdout` and `stderr` are streaming pipes.
+    ///
+    /// Where `proc.run` captures bounded output and reaps before it returns,
+    /// `spawn` returns at once with three pipe streams and a `wait()`. It is the
+    /// tool for output that does not fit in memory: `io.copy(conn, p.stdout)`
+    /// moves a stream of any size in constant space (`docs/reference.md`'s
+    /// run-vs-spawn rule). It takes no `check`, `quiet`, `timeout` or `input` —
+    /// there is nothing captured to check or silence, streaming has no single
+    /// deadline, and stdin is now `p.stdin`, written and closed by the program.
+    fn do_proc_spawn(
+        &mut self,
+        args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
+    ) -> Result<(), VmError> {
+        if args.len() > 1 {
+            return Err(self.err(type_error(format!(
+                "proc.spawn() takes 1 positional argument, the command, but {} were given — \
+                 cwd= and env= are passed by name",
+                args.len()
+            ))));
+        }
+        let parts = self.wrap(command_parts(args.first(), "proc.spawn"))?;
+
+        let mut cwd: Option<String> = None;
+        let mut env: Option<Vec<(String, String)>> = None;
+        for (k, v) in &kwargs {
+            match k.as_str() {
+                "cwd" => match v {
+                    Value::Str(s) => cwd = Some(s.s.clone()),
+                    _ => return Err(self.err(type_error("proc.spawn() cwd must be a string"))),
+                },
+                "env" => match v {
+                    Value::Dict(d) => {
+                        let mut pairs = Vec::new();
+                        for (ek, ev) in d.borrow().items() {
+                            pairs.push((ek.display(), ev.display()));
+                        }
+                        env = Some(pairs);
+                    }
+                    _ => return Err(self.err(type_error("proc.spawn() env must be a dict"))),
+                },
+                // The capturing knobs belong to `proc.run`; naming them here
+                // rather than ignoring them points at the right tool.
+                "check" | "quiet" | "timeout" | "capture_output" | "text" => {
+                    return Err(self.err(type_error(format!(
+                        "proc.spawn() does not take '{k}' — it streams; use proc.run() for \
+                         captured output with check=/quiet=/timeout=, or write p.stdin and read \
+                         p.stdout/p.stderr yourself"
+                    ))))
+                }
+                "input" => {
+                    return Err(self.err(type_error(
+                        "proc.spawn() does not take 'input' — write it to p.stdin and close it: \
+                         p.stdin.write(body); p.stdin.close()",
+                    )))
+                }
+                other => {
+                    return Err(self.err(type_error(format!(
+                        "proc.spawn() got an unexpected keyword argument '{other}'"
+                    ))))
+                }
+            }
+        }
+
+        let mut cmd = std::process::Command::new(&parts[0]);
+        cmd.args(&parts[1..]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        if let Some(dir) = &cwd {
+            cmd.current_dir(dir);
+        }
+        if let Some(e) = &env {
+            cmd.env_clear();
+            for (k, val) in e {
+                cmd.env(k, val);
+            }
+        }
+
+        let mut child = cmd.spawn().map_err(|e| self.err(modules::io_err(&e, &parts[0])))?;
+        // Piped above, so all three are present; taken so the helper threads own
+        // them and the child struct keeps only what `wait()`/kill need.
+        let cin = child.stdin.take().expect("stdin was piped");
+        let cout = child.stdout.take().expect("stdout was piped");
+        let cerr = child.stderr.take().expect("stderr was piped");
+
+        // One `Waker` shared by all three helper threads; created here the first
+        // time any child is spawned.
+        let waker = self.reactor.pipe_waker().map_err(|e| self.err(e))?;
+        let stdin = crate::process::feed_from_stream(cin, waker.clone(), "<child stdin>");
+        let stdout = crate::process::drain_to_stream(cout, waker.clone(), "<child stdout>");
+        let stderr = crate::process::drain_to_stream(cerr, waker, "<child stderr>");
+
+        let handle = crate::process::Proc::new(
+            parts,
+            child,
+            Value::Stream(Rc::new(stdin)),
+            Value::Stream(Rc::new(stdout)),
+            Value::Stream(Rc::new(stderr)),
+        );
+        self.push(Value::Proc(Rc::new(handle)));
+        Ok(())
+    }
+
     // --- Imports -------------------------------------------------------------
 
     /// Import the module named by the dotted `path`: a built-in, a cached user
@@ -6475,6 +6624,15 @@ fn resolve_method(obj: &Value, name: &Rc<str>) -> VResult<MethodRef> {
         Value::Channel(_) if matches!(key, "send" | "recv" | "close") => {
             Ok(MethodRef::Native(obj.clone()))
         }
+        // A spawned child's `stdin`/`stdout`/`stderr` are the pipe streams,
+        // read as data attributes; `wait()` is its one method.
+        Value::Proc(p) => match key {
+            "stdin" => Ok(MethodRef::Plain(p.stdin.clone())),
+            "stdout" => Ok(MethodRef::Plain(p.stdout.clone())),
+            "stderr" => Ok(MethodRef::Plain(p.stderr.clone())),
+            "wait" => Ok(MethodRef::Native(obj.clone())),
+            _ => Err(attribute_error(format!("'Proc' object has no attribute '{key}'"))),
+        },
         // A builtin type has no members, and says so the way a user class
         // does — `str.upper()` and `Square.nope` are the same mistake.
         Value::Type(t) => {
@@ -6567,6 +6725,15 @@ fn get_attr(obj: &Value, name: &Rc<str>) -> VResult<Value> {
         Value::Channel(_) if matches!(key, "send" | "recv" | "close") => {
             Ok(native_method(obj, name))
         }
+        // A spawned child's three pipe streams are data attributes; `wait` binds
+        // as a native method (`p.wait` then a call, or `p.wait()` directly).
+        Value::Proc(p) => match key {
+            "stdin" => Ok(p.stdin.clone()),
+            "stdout" => Ok(p.stdout.clone()),
+            "stderr" => Ok(p.stderr.clone()),
+            "wait" => Ok(native_method(obj, name)),
+            _ => Err(attribute_error(format!("'Proc' object has no attribute '{key}'"))),
+        },
         _ => {
             if crate::builtins::method_exists(obj, key) {
                 Ok(Value::Method(Rc::new(BoundMethod {
@@ -6612,6 +6779,52 @@ fn bind_member(member: Value, receiver: Value, defclass: Rc<Class>) -> Value {
 enum RunError {
     Io(std::io::Error),
     Timeout,
+}
+
+/// Validate `proc.run`/`proc.spawn`'s one positional argument: a non-empty list
+/// of strings whose first element (the program) has no whitespace. `who` names
+/// the caller so the message is `proc.spawn()` or `proc.run()` as appropriate.
+///
+/// The whitespace check is the load-bearing half of "no shell, ever": a single
+/// `"git status"` string is refused rather than split, because splitting it is
+/// reimplementing shell quoting, and there is no `shell=True` to fall back on
+/// (`docs/reference.md`). Shell injection is impossible when the arguments go
+/// straight to `execve`.
+fn command_parts(arg: Option<&Value>, who: &str) -> VResult<Vec<String>> {
+    let list = match arg {
+        Some(Value::List(l)) => l.borrow().clone(),
+        Some(Value::Str(_)) => {
+            return Err(type_error(format!(
+                "{who}() needs a list of separate string arguments, e.g. [\"git\", \"status\"], \
+                 not a single string — Oro will not split it (that would mean reimplementing \
+                 shell quoting) and there is no shell=True."
+            )))
+        }
+        _ => return Err(type_error(format!("{who}() takes a list of strings"))),
+    };
+    if list.is_empty() {
+        return Err(value_error(format!("{who}() got an empty argument list")));
+    }
+    let mut parts: Vec<String> = Vec::with_capacity(list.len());
+    for v in &list {
+        match v {
+            Value::Str(s) => parts.push(s.s.clone()),
+            other => {
+                return Err(type_error(format!(
+                    "{who}() arguments must all be strings, got '{}'",
+                    other.type_label()
+                )))
+            }
+        }
+    }
+    if parts[0].is_empty() || parts[0].contains(char::is_whitespace) {
+        return Err(value_error(format!(
+            "{who}() program '{}' contains whitespace — pass separate arguments \
+             like [\"git\", \"status\"], not one combined string",
+            parts[0]
+        )));
+    }
+    Ok(parts)
 }
 
 /// How much of a child's output `proc.run` keeps. Capture is no longer optional

@@ -53,6 +53,7 @@
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::io::{Read, Write};
 use std::net::Shutdown;
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
 use std::time::Duration;
 
 use mio::net::{TcpListener, TcpStream};
@@ -108,6 +109,13 @@ pub enum StreamKind {
     /// Writer: it has `accept()`, `close()` and a `local` address, and reading
     /// it is a `ValueError` like reading any stream with no read side.
     TcpListener { local: String },
+    /// A `proc.spawn` child's stdin, stdout or stderr. A type of its own for the
+    /// same reason `TcpStream` is: its size is not knowable, so `io.read(r)`
+    /// must take the chunk loop rather than the `stat`-and-allocate path a
+    /// `File` gets — a pipe that reported as a `File` would send the whole of a
+    /// gigabyte-scale stream at `read_all` and defeat the point of `spawn`.
+    /// `which` is the `<child stdout>`-style label a `repr()` shows.
+    Pipe { which: String },
 }
 
 impl StreamKind {
@@ -123,6 +131,7 @@ impl StreamKind {
             StreamKind::Buffer => TypeTag::Buffer,
             StreamKind::TcpStream { .. } => TypeTag::TcpStream,
             StreamKind::TcpListener { .. } => TypeTag::TcpListener,
+            StreamKind::Pipe { .. } => TypeTag::Pipe,
         }
     }
 }
@@ -146,6 +155,26 @@ enum Backing {
     /// A listening socket, also non-blocking. It has no read or write side at
     /// all.
     Listener(TcpListener),
+    /// The read end of a `proc.spawn` child's stdout or stderr. The child's fd
+    /// is *not* here and is *not* mio-registered — a pipe is not an mio source
+    /// the way a socket is, which is the whole reason `proc.spawn` reads it on a
+    /// helper thread (`crate::process`). That thread reads the blocking fd and
+    /// hands `BUFSIZE` chunks down this channel; the far end dropping (the thread
+    /// exiting at the child's EOF) is what this side reads as EOF.
+    ///
+    /// The channel is **bounded** at the helper-thread end, so a slow consumer
+    /// applies backpressure: the reader thread blocks on a full channel, the
+    /// child then blocks on a full pipe, and nothing buffers without limit. That
+    /// bound is what lets `io.copy(dst, p.stdout)` move a stream larger than
+    /// memory in constant space.
+    PipeRead(Receiver<Vec<u8>>),
+    /// The write end of a `proc.spawn` child's stdin. Symmetric to
+    /// [`PipeRead`](Backing::PipeRead): `write(b)` hands `b` to a helper thread
+    /// over a bounded channel, so a full channel answers `Io::Block` (the task
+    /// parks) rather than blocking the VM on a full pipe. Dropping this end —
+    /// `close()` or the handle going away — lets the thread drain what is queued
+    /// and then close the child's stdin, so the child reads EOF.
+    PipeWrite(SyncSender<Vec<u8>>),
 }
 
 /// The mutable half of a stream.
@@ -246,6 +275,33 @@ impl OroStream {
             _ => (Backing::Stdout, "w"),
         };
         OroStream::new(StreamKind::File { path: which.to_string(), mode }, back)
+    }
+
+    /// The read end of a child's stdout/stderr — a `proc.spawn` pipe fed by a
+    /// helper thread over `rx`. `which` is the `<...>` label a `repr()` or an
+    /// error shows (`<child stdout>`), the same convention `std_stream` uses.
+    ///
+    /// A [`Pipe`](StreamKind::Pipe) reads through the same lazy 8 KiB buffer, the
+    /// same short-read rule and the same `read_until` scan as every other reader
+    /// (`docs/stdlib-server-design.md` §4's "the io protocol is one
+    /// convention") — the [`Backing`] is where it differs. It is a distinct
+    /// *kind* only so `type(r)` tells `io.read` its size is unknowable, exactly
+    /// as a `TcpStream` is a distinct kind for the same reason.
+    pub fn pipe_read(rx: Receiver<Vec<u8>>, which: &str) -> OroStream {
+        OroStream::new(StreamKind::Pipe { which: which.to_string() }, Backing::PipeRead(rx))
+    }
+
+    /// The write end of a child's stdin — a `proc.spawn` pipe drained by a
+    /// helper thread reading `tx`.
+    pub fn pipe_write(tx: SyncSender<Vec<u8>>, which: &str) -> OroStream {
+        OroStream::new(StreamKind::Pipe { which: which.to_string() }, Backing::PipeWrite(tx))
+    }
+
+    /// Whether this stream is a `proc.spawn` pipe. The scheduler asks because a
+    /// pipe that would block parks on the pipe helper's waker rather than on the
+    /// mio reactor — a pipe fd is not registered with mio at all.
+    pub fn is_pipe(&self) -> bool {
+        matches!(self.inner.borrow().back, Backing::PipeRead(_) | Backing::PipeWrite(_))
     }
 
     /// A connected TCP socket — `net.dial`'s result, and `accept`'s.
@@ -470,6 +526,7 @@ impl OroStream {
             }
             StreamKind::TcpStream { peer, local } => format!("<TcpStream {local} -> {peer}>"),
             StreamKind::TcpListener { local } => format!("<TcpListener {local}>"),
+            StreamKind::Pipe { which } => format!("<Pipe {which}>"),
         }
     }
 
@@ -765,12 +822,22 @@ impl Inner {
     /// Whether this stream has a read side. A `Buffer` does, and serves it
     /// from `buf` alone.
     fn can_read(&self) -> bool {
-        matches!(self.back, Backing::Read(_) | Backing::Stdin | Backing::Mem | Backing::Socket(_))
+        matches!(
+            self.back,
+            Backing::Read(_)
+                | Backing::Stdin
+                | Backing::Mem
+                | Backing::Socket(_)
+                | Backing::PipeRead(_)
+        )
     }
 
     /// Whether an exhausted buffer can be refilled from a source.
     fn refills(&self) -> bool {
-        matches!(self.back, Backing::Read(_) | Backing::Stdin | Backing::Socket(_))
+        matches!(
+            self.back,
+            Backing::Read(_) | Backing::Stdin | Backing::Socket(_) | Backing::PipeRead(_)
+        )
     }
 
     /// One `read(2)` into `out`, from whatever this stream is over.
@@ -790,9 +857,29 @@ impl Inner {
                     Err(e) => Err(crate::net::io_error(&e)),
                 }
             }
+            // A child pipe's bytes arrive over the helper thread's channel, one
+            // chunk at a time. Nothing available yet is `Io::Block` — the task
+            // parks on the pipe waker and the scheduler retries when the thread
+            // signals — and the sender gone (the thread exited at the child's
+            // EOF) is a clean end-of-stream, the same `Io::Ready(0)` a file
+            // reports at EOF. The chunk is never larger than `out`: the thread
+            // reads into a `BUFSIZE` buffer and `out` is at least `BUFSIZE`
+            // wherever this is reached (a full buffer refill, or a large direct
+            // read), so no byte is ever dropped on the floor.
+            Backing::PipeRead(rx) => {
+                return match rx.try_recv() {
+                    Ok(chunk) => {
+                        let k = chunk.len().min(out.len());
+                        out[..k].copy_from_slice(&chunk[..k]);
+                        Ok(Io::Ready(k))
+                    }
+                    Err(TryRecvError::Empty) => Ok(Io::Block(mio::Interest::READABLE)),
+                    Err(TryRecvError::Disconnected) => Ok(Io::Ready(0)),
+                }
+            }
             // A Buffer's bytes are all in `buf`, and a writer never reads.
             Backing::Mem | Backing::Write(_) | Backing::Stdout | Backing::Stderr
-            | Backing::Listener(_) => {
+            | Backing::Listener(_) | Backing::PipeWrite(_) => {
                 return Err(runtime_error("internal: read from a stream with no source"))
             }
             _ => {}
@@ -825,9 +912,20 @@ impl Inner {
                      loop for a stream with no knowable size",
                 ))
             }
+            // A child pipe has no knowable size, exactly like a socket, so
+            // "read to EOF" is the unbounded wait green threads forbid inside one
+            // Rust call. `io.read(r)` routes it to the Oro chunk loop instead,
+            // where every `r.read(_CHUNK)` is a park point.
+            Backing::PipeRead(_) => {
+                return Err(type_error(
+                    "internal: read_all() on a pipe — io.read(r) takes the chunk \
+                     loop for a stream with no knowable size",
+                ))
+            }
             // A Buffer is already whole; `read_all` took its remainder above.
             Backing::Mem => Ok(()),
-            Backing::Write(_) | Backing::Stdout | Backing::Stderr | Backing::Listener(_) => {
+            Backing::Write(_) | Backing::Stdout | Backing::Stderr | Backing::Listener(_)
+            | Backing::PipeWrite(_) => {
                 return Err(runtime_error("internal: read from a stream with no source"))
             }
         };
@@ -879,7 +977,28 @@ impl Inner {
             Backing::Listener(_) => {
                 return Err(value_error("write() on a TcpListener, which is not a stream of bytes"))
             }
-            Backing::Read(_) | Backing::Stdin => {
+            // A child's stdin, over the writer thread's bounded channel. A full
+            // channel is `Io::Block(WRITABLE)`: the task parks and the scheduler
+            // retries when the thread drains a slot — the same backpressure a
+            // full socket send buffer gives, so a program feeding a child faster
+            // than it reads waits instead of buffering without bound. The `Rc`'d
+            // `bytes` is copied into an owned `Vec` because it crosses to the
+            // helper thread, which cannot hold a `!Send` `Rc`. The whole of `b`
+            // goes in one message or none does, so there is no partial write for
+            // the scheduler's loop to resume — `done` jumps straight to `len`.
+            Backing::PipeWrite(tx) => {
+                return match tx.try_send(b.to_vec()) {
+                    Ok(()) => Ok(Io::Ready(b.len())),
+                    Err(TrySendError::Full(_)) => Ok(Io::Block(mio::Interest::WRITABLE)),
+                    // The writer thread is gone — the child closed its stdin, or
+                    // exited. That is `write() on a closed pipe`, the same
+                    // `BrokenPipe` a dead socket peer gives.
+                    Err(TrySendError::Disconnected(_)) => {
+                        Err(broken_pipe_error("[Errno 32] Broken pipe"))
+                    }
+                }
+            }
+            Backing::Read(_) | Backing::Stdin | Backing::PipeRead(_) => {
                 return Err(value_error("write() on a stream open for reading (mode 'r')"))
             }
         };

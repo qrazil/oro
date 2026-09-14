@@ -1,0 +1,33 @@
+# INTENTIONAL DIVERGENCE. `proc.spawn(args)` starts a child and hands back a
+# live handle whose stdin/stdout/stderr are streaming pipes — the tool for
+# output too large to hold in memory, where `proc.run` captures a bounded copy.
+# CPython's nearest equivalent is `subprocess.Popen`, which this deliberately
+# does not mirror (no `communicate`, no `.poll`, no text mode).
+import proc
+import io
+
+# 4 MiB out of the child, copied straight to /dev/null in 64 KiB chunks. That is
+# sixteen times the 256 KiB the pipe holds in flight, so it can only finish if
+# backpressure works: the reader thread blocks on a full channel, the child
+# blocks on a full pipe, we drain a chunk, and round it goes. Nothing ever holds
+# the 4 MiB at once — io.copy is constant-space, which is the whole point.
+p = proc.spawn(["sh", "-c", "head -c 4194304 /dev/zero"])
+p.stdin.close()
+sink = open("/dev/null", mode="w")
+n = io.copy(sink, p.stdout)
+print("copied", n)
+print("exit", p.wait())
+
+# stdout and stderr are separate streams, each read on its own.
+p2 = proc.spawn(["sh", "-c", "printf OUT; printf ERR 1>&2"])
+p2.stdin.close()
+out = io.read(p2.stdout)
+err = io.read(p2.stderr)
+print("out", out.to_str(), "err", err.to_str(), "exit", p2.wait())
+
+# The handle names its own type and command.
+p3 = proc.spawn(["cat"])
+p3.stdin.write(b"round trip")
+p3.stdin.close()
+body = io.read(p3.stdout)
+print(type(p3), body.to_str(), p3.wait())

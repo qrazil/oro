@@ -1,0 +1,18 @@
+# INTENTIONAL DIVERGENCE. A spawn handle dropped without wait() does not leak
+# the child: its last reference reaching zero runs Drop, which kills and reaps
+# it — the same deterministic cleanup refcounting gives a file, and the reason
+# Oro has no `with`. Here the child would otherwise sleep for 30 seconds; the
+# handle going out of scope at the function's return ends it at once, so the
+# program finishes immediately rather than in half a minute.
+#
+# That no process survives is proved out of band (a `pgrep` after the run) — a
+# program cannot read the process table — so this asserts only that the drop
+# path itself neither hangs nor raises.
+import proc
+
+def spawn_and_drop():
+    p = proc.spawn(["sleep", "30"])
+    return "spawned"
+
+print(spawn_and_drop())
+print("handle dropped")

@@ -1,0 +1,18 @@
+# INTENTIONAL DIVERGENCE. A child that exits while the parent is still writing
+# its stdin must surface a clean error, not a panic and not a hang. `true` exits
+# at once without reading a byte; writing megabytes at its closed stdin fills the
+# pipe and the in-flight channel, the writer thread's write_all meets EPIPE, and
+# the next write raises BrokenPipeError — the same class a dead socket peer gives.
+import proc
+
+p = proc.spawn(["true"])
+result = "wrote all without error"
+try:
+    # 6.4 MiB — far past the 64 KiB pipe buffer plus the 256 KiB channel, so the
+    # broken pipe cannot stay hidden behind buffering.
+    for i, _ in range(200000):
+        p.stdin.write(b"0123456789abcdef0123456789abcdef")
+except BrokenPipeError:
+    result = "broken pipe"
+print(result)
+print("exit", p.wait())

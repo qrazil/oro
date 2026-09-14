@@ -468,6 +468,7 @@ os.path.splitext(p)                 (root, ext)
 
 proc.run(args, input=, cwd=, env=, timeout=, check=true, quiet=false)
                                     a Completed: .returncode .ok .truncated .stdout .stderr
+proc.spawn(args, cwd=, env=)        a live Proc: .stdin .stdout .stderr .wait()
 
 re.search/fullmatch(pattern, s)     Match or null
 re.findall(pattern, s)              list of str
@@ -1780,6 +1781,53 @@ captured — `quiet=true` drops the live tee — and `.stdout`/`.stderr` are
 `bytes`, capped at 64 MiB retained per stream, with `.truncated` saying so.
 `check=true` is the default, unlike CPython's `subprocess.run`, which is part of
 why the module has a different name.
+
+`proc.spawn(args, cwd=, env=)` returns a live `Proc` — a child whose `stdin`,
+`stdout` and `stderr` are streaming pipe streams, plus a `wait()` that reaps it
+and answers the exit code. Use it when the output does not fit in memory:
+`io.copy` moves a stream of any size in constant space, where `proc.run` holds a
+bounded copy.
+
+**run vs spawn.** `run` when you want the whole output as `bytes` (a command's
+result you will look at) — it captures, caps at 64 MiB, and reaps for you.
+`spawn` when the output should *flow* — a `git upload-pack` pack, a `tar` piped
+to a socket — where holding it whole is the bug. There is no third mode and no
+knob turning one into the other.
+
+```oro
+import proc
+import io
+
+p = proc.spawn(["cat"])
+p.stdin.write(b"stream ")
+p.stdin.write(b"me")
+p.stdin.close()          # the child now reads EOF
+print(io.read(p.stdout).to_str(), p.wait())
+```
+
+`p.stdin` is a Writer, `p.stdout` and `p.stderr` are Readers — the ordinary io
+protocol ([5.9](#59-io--streams)), so `io.copy`, `io.read` and `read_until` all
+work on them unchanged. `p.stdin.write(b)` past a slow child's capacity **parks**
+rather than buffers without bound: at most 256 KiB is ever in flight per stream,
+and past that the writer waits, the child's pipe fills, and the child blocks —
+backpressure, not a hidden buffer. Reads are symmetric. `p.wait()` blocks the
+calling task until the child exits, so drain the output first (a child whose
+stdout has hit EOF is already exiting); calling `wait()` before draining can
+deadlock, the same rule every subprocess API has. A `Proc` dropped without
+`wait()` does not leak the child — its last reference reaching zero kills and
+reaps it, the same deterministic cleanup refcounting gives a file.
+
+Each active pipe is drained or fed on **one helper OS thread** — so a spawned
+child costs up to three, the same kind of blocking-API offload the DNS resolver
+pool is (`getaddrinfo` and a child's blocking pipe fds are both waited on off the
+VM thread). Fine at modest concurrency; a design that spawns thousands of
+children at once is one this is not built for.
+
+| raises | when |
+|---|---|
+| `BrokenPipeError` | `p.stdin.write` after the child closed its stdin or exited |
+| `TypeError` | a bare string, a list whose program contains whitespace, a second positional, or `check=`/`quiet=`/`timeout=`/`input=` (those are `proc.run`'s) |
+| `FileNotFoundError` / `PermissionError` | the program is missing or not executable |
 
 #### `re` — in Rust
 

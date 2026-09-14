@@ -428,13 +428,24 @@ fn json_stringify(args: Vec<Value>) -> VResult<Value> {
 // --- proc ---------------------------------------------------------------------
 
 fn build_proc() -> Value {
-    // `run` is finished in the VM (it takes keyword args and builds a Completed);
-    // this stub is never invoked directly.
-    module("proc", vec![("run", builtin("proc.run", proc_run_stub))])
+    // Both are finished in the VM — `run` builds a `Completed`, `spawn` builds a
+    // live `Proc` with pipe streams and helper threads — so these stubs are
+    // never invoked directly.
+    module(
+        "proc",
+        vec![
+            ("run", builtin("proc.run", proc_run_stub)),
+            ("spawn", builtin("proc.spawn", proc_spawn_stub)),
+        ],
+    )
 }
 
 fn proc_run_stub(_args: Vec<Value>) -> VResult<Value> {
     Err(runtime_error("internal: proc.run must be dispatched by the VM"))
+}
+
+fn proc_spawn_stub(_args: Vec<Value>) -> VResult<Value> {
+    Err(runtime_error("internal: proc.spawn must be dispatched by the VM"))
 }
 
 // --- sys ---------------------------------------------------------------------

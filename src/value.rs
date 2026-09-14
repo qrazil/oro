@@ -374,6 +374,10 @@ pub enum Value {
     Task(Rc<crate::task::TaskHandle>),
     /// A channel, as returned by `chan`. See `crate::task`.
     Channel(Rc<crate::task::Channel>),
+    /// A spawned child process's handle, as returned by `proc.spawn`. Holds the
+    /// live child and its three pipe streams; the reaping and the kill-on-drop
+    /// are the only parts that must be Rust. See `crate::process`.
+    Proc(Rc<crate::process::Proc>),
     /// Internal sentinel for a local/cell slot that has not been assigned yet.
     /// Never reachable by user code: reading it raises a clean runtime error.
     Unbound,
@@ -430,6 +434,8 @@ pub enum TypeTag {
     Match,
     Task,
     Channel,
+    Proc,
+    Pipe,
     Unbound,
 }
 
@@ -471,6 +477,8 @@ impl TypeTag {
             TypeTag::Match => "Match",
             TypeTag::Task => "Task",
             TypeTag::Channel => "Channel",
+            TypeTag::Proc => "Proc",
+            TypeTag::Pipe => "Pipe",
             TypeTag::Unbound => "unbound",
         }
     }
@@ -1250,6 +1258,9 @@ impl Value {
             // is ever falsy, and neither answers `len()` — a channel is not a
             // buffer you inspect but an endpoint you `send`/`recv`/`close`.
             Value::Task(_) | Value::Channel(_) => true,
+            // A process handle is an object, not a container: always truthy,
+            // and reaped through `wait()` rather than inspected with `len()`.
+            Value::Proc(_) => true,
             // An instance is truthy unless its class defines a falsy __len__;
             // the VM overrides this when a __len__/__bool__ dunder is present.
             Value::Instance(_) => true,
@@ -1305,6 +1316,7 @@ impl Value {
             Value::Match(_) => TypeTag::Match,
             Value::Task(_) => TypeTag::Task,
             Value::Channel(_) => TypeTag::Channel,
+            Value::Proc(_) => TypeTag::Proc,
             Value::Unbound => TypeTag::Unbound,
         }
     }
@@ -1429,6 +1441,7 @@ impl Value {
             Value::Stream(s) => s.repr(),
             Value::Task(t) => format!("<task {}>", t.id),
             Value::Channel(c) => c.repr(),
+            Value::Proc(p) => p.repr(),
             Value::Unbound => "<unbound>".to_string(),
         }
     }
@@ -1465,6 +1478,7 @@ impl Value {
             Value::Stream(s) => Rc::as_ptr(s) as *const (),
             Value::Task(t) => Rc::as_ptr(t) as *const (),
             Value::Channel(c) => Rc::as_ptr(c) as *const (),
+            Value::Proc(p) => Rc::as_ptr(p) as *const (),
             Value::Regex(r) => Rc::as_ptr(r) as *const (),
             Value::Match(m) => Rc::as_ptr(m) as *const (),
             Value::Iter(i) => Rc::as_ptr(i) as *const (),

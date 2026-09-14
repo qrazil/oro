@@ -1127,6 +1127,13 @@ pub fn method_exists(recv: &Value, name: &str) -> bool {
             ),
             // A listener is not a stream of bytes: no `read`, no `write`.
             crate::stream::StreamKind::TcpListener { .. } => matches!(name, "accept" | "close"),
+            // A child pipe is a Reader or a Writer with the same four methods a
+            // file has; which of read/write is valid is enforced by the backing,
+            // not the kind (a `write` on stdout raises, as it does on a mode-'r'
+            // file).
+            crate::stream::StreamKind::Pipe { .. } => {
+                matches!(name, "read" | "write" | "read_until" | "close")
+            }
         },
         Value::Regex(_) => matches!(
             name,

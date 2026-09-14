@@ -98,7 +98,7 @@
 //! than in terms of how many boundaries there are, is what makes it something a
 //! reader can check against the code.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -138,6 +138,15 @@ pub(super) enum Park {
     /// lifetime. It carries an `Rc<OroStream>` and owned progress — never a
     /// `Ref`, never a `RefMut`, never a mio guard.
     Io(Box<IoWait>),
+    /// A `proc.spawn` pipe read or write that would block. It carries the same
+    /// [`IoWait`] a socket does and resumes through the same [`attempt`] — the
+    /// only difference is *what wakes it*. A pipe fd is not an mio source, so
+    /// there is no readiness event and nothing in `reactor.waiters`; instead a
+    /// helper thread signals the pipe [`Waker`](mio::Waker) and
+    /// [`drain_pipes`](Vm::drain_pipes) re-attempts every parked pipe op, the
+    /// same way [`drain_dns`](Vm::drain_dns) settles a finished lookup. The
+    /// `token`/`interest`/`seq` fields of the `IoWait` go unused here.
+    Pipe(Box<IoWait>),
     /// `time.sleep(secs)`. Carries the park's sequence number, which is how its
     /// timer entry knows it is still the one this task is waiting on.
     Sleep(u64),
@@ -187,6 +196,12 @@ impl Park {
             // which is precisely the condition that says it is not a deadlock.
             // Spelled anyway, for the same reason `Park::Yield` is.
             Park::Io(w) => format!("{} on {}", w.op.what(), w.stream.repr()),
+            // Unlike `Park::Io`, a pipe park *can* reach the deadlock diagnostic:
+            // its wake comes from a helper thread the reactor's `is_idle` counts
+            // (`no_pipes`), so it is not a deadlock while the thread is live —
+            // but a child that will never produce (blocked reading a stdin the
+            // program never writes) is a genuine one, and this is what it says.
+            Park::Pipe(w) => format!("{} on {}", w.op.what(), w.stream.repr()),
             Park::Sleep(_) => "time.sleep()".to_string(),
             // Unreachable through the deadlock diagnostic for the same reason
             // the two above are: a task waiting on a lookup has one registered
@@ -388,6 +403,10 @@ pub(super) struct Reactor {
     /// benchmark, in a program that never resolves anything. Behind a `Box` it
     /// is one null pointer until the first name is dialled.
     dns: Option<Box<Resolver>>,
+    /// The `proc.spawn` pipe hub, or `None` until the first spawn. Boxed and
+    /// lazy for exactly the reason `dns` is: a program that never spawns a child
+    /// pays one null pointer for it.
+    pipes: Option<Box<PipeHub>>,
 }
 
 /// The reserved token the resolver's [`mio::Waker`] is registered under.
@@ -409,6 +428,13 @@ const DNS_TOKEN: usize = 0;
 /// Tunable, not API: §7 puts buffer sizes and pool sizes under "deliberately
 /// left unfrozen" precisely so this number can move without breaking anyone.
 const MAX_DNS_THREADS: usize = 8;
+
+/// The longest a blocking poll will wait while a `proc.spawn` pipe op is parked,
+/// as a backstop against a missed edge on the edge-triggered pipe `Waker`. It is
+/// not the mechanism — the helper thread's wake and the pre-poll re-drain are —
+/// only the bound on how long a lost edge can delay a retry. Small enough to be
+/// imperceptible, large enough not to be a spin; tunable, not API.
+const PIPE_POLL_BACKSTOP: Duration = Duration::from_millis(20);
 
 /// A lookup on its way to a helper thread.
 struct Lookup {
@@ -491,6 +517,42 @@ struct Resolver {
     next_lookup: u64,
 }
 
+/// The `proc.spawn` pipe hub: the single [`Waker`](mio::Waker) every pipe helper
+/// thread signals, and the set of tasks parked on a pipe op.
+///
+/// **Why a hub at all, when the resolver already has a `Waker`.** A program can
+/// spawn a child without ever dialling a name, so the pipe machinery cannot
+/// borrow the resolver's `Waker` — it needs its own, created the first time a
+/// child is spawned and registered under its own token, exactly as
+/// [`start_resolver`](Reactor::start_resolver) creates the resolver's.
+///
+/// **Why the waiters are here and not just in `parked`.** [`Reactor::is_idle`]
+/// is the deadlock test, and it must answer "not idle" while a pipe read or
+/// write is outstanding — a helper thread outside the VM can still make it
+/// runnable. `is_idle` is a method on the reactor and cannot see the VM's
+/// `parked` map, so the count of parked pipe ops lives here, the same way
+/// `Resolver::waiters` is what makes a lookup count. Its emptiness is
+/// [`no_pipes`](Reactor::no_pipes).
+///
+/// **Lifetime and shutdown.** Like the resolver, never torn down and never
+/// joined: each spawned child's helper threads own an `Arc` clone of the
+/// `Waker` and a channel end, and dropping the pipe streams (their `Rc`s
+/// reaching zero, or an explicit `close()`) drops the channel ends, which is
+/// what tells a helper thread to exit. A thread blocked in a `read`/`write`
+/// syscall on the child's fd finishes when the child dies — which the
+/// kill-on-drop in [`Proc`](crate::process::Proc) guarantees.
+struct PipeHub {
+    /// Signalled by every pipe helper thread when it has moved a chunk. Carries
+    /// no data — the bytes went through the stream's own channel — and only
+    /// says "poll returned for a reason", so [`drain_pipes`](Vm::drain_pipes)
+    /// re-attempts the parked pipe ops.
+    waker: Arc<mio::Waker>,
+    /// Tasks parked on a pipe read or write. Insert on park, remove on wake; its
+    /// emptiness is what [`no_pipes`](Reactor::no_pipes) reports and thus part
+    /// of the deadlock test.
+    waiters: HashSet<TaskId>,
+}
+
 struct Os {
     poll: mio::Poll,
     events: mio::Events,
@@ -538,13 +600,55 @@ impl Reactor {
     /// arrive — and reporting that as a deadlock would be the same mistake §3
     /// records for an idle server sitting in `accept`.
     fn is_idle(&self) -> bool {
-        self.waiters.is_empty() && self.timers.is_empty() && self.no_lookups()
+        self.waiters.is_empty() && self.timers.is_empty() && self.no_lookups() && self.no_pipes()
     }
 
     /// Nothing is out with the resolver — which, for a program that never
     /// dialled a name, is a null check.
     fn no_lookups(&self) -> bool {
         self.dns.as_ref().is_none_or(|d| d.waiters.is_empty())
+    }
+
+    /// No task is parked on a pipe — a null check for a program that never
+    /// spawned a child. A pipe op outstanding means a helper thread can still
+    /// make a task runnable, so this being false keeps [`is_idle`](Self::is_idle)
+    /// from calling that a deadlock.
+    fn no_pipes(&self) -> bool {
+        self.pipes.as_ref().is_none_or(|p| p.waiters.is_empty())
+    }
+
+    /// The pipe hub's waker, creating the hub (and its `Waker`, and — via
+    /// [`os`](Self::os) — the epoll instance) the first time a child is spawned.
+    ///
+    /// The token is taken from `next_token` rather than a reserved constant like
+    /// [`DNS_TOKEN`]: there is only ever one pipe `Waker`, made once, so a fresh
+    /// token costs nothing and needs no constant carved out. It will never
+    /// collide with a socket's — `next_token` is monotonic — and it is never
+    /// looked up in `waiters`, so [`io_ready`](Vm::io_ready) ignores it exactly
+    /// as it ignores `DNS_TOKEN`.
+    pub(super) fn pipe_waker(&mut self) -> VResult<Arc<mio::Waker>> {
+        if self.pipes.is_none() {
+            self.next_token += 1;
+            let token = self.next_token;
+            let waker = mio::Waker::new(self.os()?.poll.registry(), mio::Token(token))
+                .map_err(|e| crate::net::io_error(&e))?;
+            self.pipes = Some(Box::new(PipeHub { waker: Arc::new(waker), waiters: HashSet::new() }));
+        }
+        Ok(Arc::clone(&self.pipes.as_ref().expect("just built").waker))
+    }
+
+    /// Record that `task` is parked on a pipe op (so `is_idle` counts it).
+    fn pipe_wait(&mut self, task: TaskId) {
+        if let Some(h) = self.pipes.as_mut() {
+            h.waiters.insert(task);
+        }
+    }
+
+    /// This task's pipe op has settled; it is no longer outstanding.
+    fn pipe_unwait(&mut self, task: TaskId) {
+        if let Some(h) = self.pipes.as_mut() {
+            h.waiters.remove(&task);
+        }
     }
 
     fn os(&mut self) -> VResult<&mut Os> {
@@ -691,15 +795,15 @@ impl Reactor {
     /// `timeout` of `None` blocks until something happens, which is exactly
     /// what a server sitting in `accept` should do.
     fn poll(&mut self, timeout: Option<Duration>) -> VResult<Vec<ReadyFd>> {
-        if self.waiters.is_empty() && self.no_lookups() {
+        if self.waiters.is_empty() && self.no_lookups() && self.no_pipes() {
             // Nothing but deadlines: there is no fd to wait on, so waiting on
             // one would mean creating an epoll instance to sleep in. A program
             // whose only concurrency is `time.sleep` never makes one.
             //
-            // A lookup in flight excludes this path. The resolver's `Waker` is
-            // an fd and is registered, so there *is* something to wait on, and
-            // sleeping through it instead would add the lookup's own latency to
-            // every answer.
+            // A lookup or a pipe op in flight excludes this path. Each has a
+            // `Waker` that is an fd and is registered, so there *is* something to
+            // wait on, and sleeping through it would add the child's (or the
+            // lookup's) own latency to every chunk.
             if let Some(d) = timeout {
                 std::thread::sleep(d);
             }
@@ -1125,10 +1229,32 @@ impl Vm {
         if self.reactor.is_idle() {
             return false;
         }
-        let timeout = self
-            .reactor
-            .next_deadline()
-            .map(|at| at.saturating_duration_since(Instant::now()));
+        // Re-check the pipes before committing to a blocking wait. A pipe op's
+        // wake comes from a helper thread, and there is a window between a task's
+        // `try_recv`/`try_send` answering "not yet" and its park being filed in
+        // which the thread can make progress and signal. Draining here first
+        // settles anything that landed in that window, so the wait below is only
+        // ever entered when there is genuinely nothing to do — the standard
+        // close of the lost-wakeup race for a condition read across threads.
+        self.drain_pipes();
+        if !self.ready.is_empty() {
+            return true;
+        }
+        let timeout = match self.reactor.next_deadline() {
+            Some(at) => Some(at.saturating_duration_since(Instant::now())),
+            // A backstop, and only while a pipe op is outstanding: the pipe
+            // `Waker` is edge-triggered (mio registers every fd `EPOLLET`), and
+            // an edge-triggered wake races the park it is meant to catch. The
+            // pre-poll drain above closes that race in the common case; this
+            // bounds the pathological one, so a missed edge costs a few
+            // milliseconds of latency, never a hang. `try_recv` is the source of
+            // truth, and this only decides how soon it is consulted. Nothing
+            // else in the reactor needs it — a socket's readiness is
+            // level-checked by the kernel — so a program that never spawns a
+            // child never waits on a timeout it did not ask for.
+            None if !self.reactor.no_pipes() => Some(PIPE_POLL_BACKSTOP),
+            None => None,
+        };
         match self.reactor.poll(timeout) {
             Ok(ready) => {
                 for r in ready {
@@ -1142,6 +1268,7 @@ impl Vm {
             Err(msg) => self.fail_all_io(&msg),
         }
         self.drain_dns();
+        self.drain_pipes();
         self.fire_timers();
         true
     }
@@ -1176,6 +1303,7 @@ impl Vm {
             Err(msg) => self.fail_all_io(&msg),
         }
         self.drain_dns();
+        self.drain_pipes();
         self.fire_timers();
     }
 
@@ -1264,6 +1392,69 @@ impl Vm {
                     return;
                 }
                 self.resume_failed(p, id, token, &msg)
+            }
+        }
+    }
+
+    /// A helper thread signalled the pipe `Waker`: re-attempt every task parked
+    /// on a pipe op, exactly as [`drain_dns`](Self::drain_dns) settles finished
+    /// lookups after every poll.
+    ///
+    /// It re-attempts *all* of them rather than only the one whose chunk arrived
+    /// because the `Waker` carries no id — it says "a pipe made progress", not
+    /// which. A retry that still blocks is cheap (one `try_recv`/`try_send` that
+    /// answers "empty"/"full") and re-parks, so scanning the set is the whole
+    /// cost, and the set holds one entry per *active* pipe stream, not one per
+    /// spawned child. A snapshot of the ids is taken first so the borrow of
+    /// `parked` is over before `retry_pipe` mutates it.
+    fn drain_pipes(&mut self) {
+        let Some(h) = self.reactor.pipes.as_ref() else { return };
+        if h.waiters.is_empty() {
+            return;
+        }
+        let ids: Vec<TaskId> = h.waiters.iter().copied().collect();
+        for id in ids {
+            self.retry_pipe(id);
+        }
+    }
+
+    /// Try to finish task `id`'s parked pipe op. The pipe twin of
+    /// [`retry_io`](Self::retry_io), and deliberately simpler: a pipe fd is not
+    /// registered with mio, so there is no token to arm or disarm — the whole of
+    /// re-parking is leaving the task in `parked` with the `waiter` entry
+    /// standing. `Connect` cannot occur on a pipe, so the one branch `retry_io`
+    /// keeps for it is gone too.
+    fn retry_pipe(&mut self, id: TaskId) {
+        let Some(mut p) = self.parked.remove(&id) else { return };
+        let mut w = match std::mem::replace(&mut p.park, Park::Yield) {
+            Park::Pipe(w) => w,
+            other => {
+                p.park = other;
+                self.parked.insert(id, p);
+                return;
+            }
+        };
+        match attempt(&mut w) {
+            Ok(Io::Ready(v)) => {
+                self.reactor.pipe_unwait(id);
+                p.task
+                    .frames
+                    .last_mut()
+                    .expect("a parked task always has a frame")
+                    .stack
+                    .push(v);
+                self.ready.push_back(p.task);
+            }
+            // Still nothing available (read) or no room (write): leave it parked,
+            // its `waiter` entry untouched, for the next signal.
+            Ok(Io::Block(_)) => {
+                p.park = Park::Pipe(w);
+                self.parked.insert(id, p);
+            }
+            Err(e) => {
+                self.reactor.pipe_unwait(id);
+                p.task.pending_raise = Some(self.error_to_exception(&self.err(e.clone())));
+                self.ready.push_back(p.task);
             }
         }
     }
@@ -1371,7 +1562,7 @@ impl Vm {
         let ids: Vec<TaskId> = self
             .parked
             .iter()
-            .filter(|(_, p)| matches!(p.park, Park::Io(_) | Park::Dns { .. }))
+            .filter(|(_, p)| matches!(p.park, Park::Io(_) | Park::Dns { .. } | Park::Pipe(_)))
             .map(|(id, _)| *id)
             .collect();
         for id in ids {
@@ -1381,6 +1572,11 @@ impl Vm {
         self.reactor.waiters.clear();
         if let Some(d) = self.reactor.dns.as_mut() {
             d.waiters.clear();
+        }
+        // A pipe waits on the same epoll's `Waker`; a dead reactor strands it as
+        // surely as a socket, so the pipe waiters are cleared with the rest.
+        if let Some(h) = self.reactor.pipes.as_mut() {
+            h.waiters.clear();
         }
     }
 
@@ -1913,6 +2109,34 @@ impl Vm {
                 self.wake_with_raise(id, exc);
             }
         }
+        // A pipe has no reactor token — it is not an mio fd — so a task parked
+        // on the very stream just closed cannot be found through `take_waiters`,
+        // and `close()` has already dropped the channel end that its helper
+        // thread would signal through. Left alone it would wait for a wake that
+        // can never come. So the pipe waiters are scanned for one parked on this
+        // exact stream and woken with the same closed-stream exception the
+        // socket path gives, one instruction early. Same close, same error.
+        if s.is_pipe() {
+            let hit: Vec<TaskId> = self
+                .parked
+                .iter()
+                .filter_map(|(id, p)| match &p.park {
+                    Park::Pipe(w) if Rc::ptr_eq(&w.stream, s) => Some((*id, w.op.what())),
+                    _ => None,
+                })
+                .map(|(id, _)| id)
+                .collect();
+            for id in hit {
+                let what = match self.parked.get(&id).map(|p| &p.park) {
+                    Some(Park::Pipe(w)) => w.op.what(),
+                    _ => continue,
+                };
+                self.reactor.pipe_unwait(id);
+                let msg = format!("{what} on a closed {}", s.kind.type_name());
+                let exc = self.error_to_exception(&self.err(value_error(msg)));
+                self.wake_with_raise(id, exc);
+            }
+        }
         self.push(Value::None);
         Ok(Step::Next)
     }
@@ -1938,10 +2162,33 @@ impl Vm {
             }
             Ok(Io::Block(i)) => {
                 w.interest = i;
-                self.park_io(w)
+                // A pipe would block for a reason the reactor cannot watch — no
+                // chunk yet, or no room in the writer's channel — so it parks on
+                // the pipe hub's `Waker` and a helper thread, not on an mio fd.
+                if w.stream.is_pipe() {
+                    self.park_pipe(w)
+                } else {
+                    self.park_io(w)
+                }
             }
             Err(msg) => Err(self.err(msg)),
         }
+    }
+
+    /// Suspend the running task on a pipe op. The pipe twin of
+    /// [`park_io`](Self::park_io): it ensures the pipe hub (and its `Waker`)
+    /// exists so a helper thread has something to signal, records the task as an
+    /// outstanding pipe waiter so [`is_idle`](Reactor::is_idle) does not call the
+    /// wait a deadlock, and returns the `Park`. There is no fd to register and
+    /// no deadline to arm — `set_timeout` is a socket knob — so this is the whole
+    /// of it.
+    fn park_pipe(&mut self, w: IoWait) -> Result<Step, VmError> {
+        let task = self.task.id;
+        if let Err(msg) = self.reactor.pipe_waker() {
+            return Err(self.err(msg));
+        }
+        self.reactor.pipe_wait(task);
+        Ok(Step::Park(Box::new(Park::Pipe(Box::new(w)))))
     }
 
     /// Register `w`'s stream with the reactor and suspend the running task on

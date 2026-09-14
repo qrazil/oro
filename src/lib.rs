@@ -30,6 +30,7 @@ pub mod linter;
 pub mod net;
 pub mod regexutil;
 pub mod parser;
+pub mod process;
 pub mod stream;
 pub mod task;
 pub mod value;
