@@ -1635,6 +1635,8 @@ cargo build --release          # builds the `oro` binary at target/release/oro
 
 cargo test                     # unit + integration tests
 cargo clippy --all-targets -- -D warnings
+cargo fmt                      # the Rust source is rustfmt-formatted (rustfmt.toml)
+cargo fmt --check              # CI enforces this — a build fails if it is unformatted
 
 # Inspection modes:
 ./target/release/oro --tokens file.oro   # dump the token stream

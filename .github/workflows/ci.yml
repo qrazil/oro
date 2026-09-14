@@ -31,12 +31,12 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       # --- Rust source hygiene ---
-      # NOTE: `cargo fmt --check` is deliberately NOT a gate. The Rust source is
-      # hand-formatted (no rustfmt.toml; rustfmt would rewrite 738 hunks across
-      # 41 files, including untouched ones — the same author's-line-breaks stance
-      # the Oro formatter takes). Adopting rustfmt is a whole-tree reformat
-      # decision, not a CI gate to bolt on. Oro-code formatting *is* gated below
-      # (`oro fmt --check`) and by the round-trip test in `cargo test`.
+      # The Rust source is rustfmt-formatted (config in rustfmt.toml), enforced
+      # here. This fails the build; it does not warn. Oro-code formatting is gated
+      # separately below (`oro fmt --check`) and by the round-trip test.
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
       - name: cargo clippy -D warnings
         run: cargo clippy --all-targets -- -D warnings
 
