@@ -1,0 +1,7 @@
+html.escape() takes str, not <class 'bytes'>
+html.escape() takes str, not <class 'int'>
+html.escape() takes str, not <class 'null'>
+html.escape() takes str, not <class 'list'>
+escape() got an unexpected keyword argument 'quote'
+escape() got 's' by name, but 's' has no default and is passed by position — write `escape('<b>')`
+module 'html' has no attribute 'unescape'

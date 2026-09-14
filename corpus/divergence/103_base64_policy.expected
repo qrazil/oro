@@ -1,0 +1,36 @@
+--- a character outside the alphabet
+'QU I=' -> invalid base64 character ' ' at position 2
+'QUI\n' -> invalid base64 character '\n' at position 3
+'QUJD\r\n' -> invalid base64 character '\r' at position 4
+'ab\x00d' -> invalid base64 character '\x00' at position 2
+'é===' -> invalid base64 character 'é' at position 0
+b'ab\xffd' -> invalid base64 character b'\xff' at position 2
+'QU*=' -> invalid base64 character '*' at position 2
+--- the other alphabet is refused, and named
+'QUJ-' -> invalid base64 character '-' at position 3: that is the URL-safe alphabet, which is url=true
+'QUJ_' -> invalid base64 character '_' at position 3: that is the URL-safe alphabet, which is url=true
+'ab+/' -> invalid base64 character '+' at position 2: that is the standard alphabet, and url=true is the URL-safe one
+'ab/c' -> invalid base64 character '/' at position 2: that is the standard alphabet, and url=true is the URL-safe one
+--- the length
+'A' -> base64 text length 1 is not a multiple of 4
+'QQ' -> base64 text length 2 is not a multiple of 4
+'QQ=' -> base64 text length 3 is not a multiple of 4
+'QUJDQ' -> base64 text length 5 is not a multiple of 4
+--- the padding
+'Q===' -> base64 text ends in 3 padding characters at position 1; at most 2 are allowed
+'====' -> base64 text ends in 4 padding characters at position 0; at most 2 are allowed
+'QQ=A' -> base64 padding at position 2 is followed by data at position 3
+'=QQQ' -> base64 padding at position 0 is followed by data at position 1
+'QUI=QUJD' -> base64 padding at position 3 is followed by data at position 4
+'QUJDQQ==QUJD' -> base64 padding at position 6 is followed by data at position 8
+--- reading order: the first thing wrong is the one reported
+'Q=-' -> invalid base64 character '-' at position 2: that is the URL-safe alphabet, which is url=true
+'Q==' -> base64 text length 3 is not a multiple of 4
+--- argument shapes
+base64.encode() data must be bytes or str, not <class 'int'>
+base64.decode() text must be bytes or str, not <class 'list'>
+base64.encode() url= is true or false, not <class 'int'>
+encode(): url= must be bool, not null — null does not mean "omitted"; leave url= out for the default
+decode() takes 1 positional argument but 2 were given — write `decode('QQ==', url=true)`: a parameter with a default is passed by name
+encode() got 'data' by name, but 'data' has no default and is passed by position — write `encode(b'x')`
+<class 'str'> <class 'bytes'> <class 'bytes'>

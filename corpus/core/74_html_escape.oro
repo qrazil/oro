@@ -1,0 +1,41 @@
+import html
+
+# `html.escape(s)`: the same five references as CPython's, in the same order,
+# so this file is oracled by CPython itself.
+print(html.escape("<a href='x' title=\"y\">Tom & Jerry</a>"))
+print(html.escape(""))
+print(html.escape("nothing to escape here"))
+print(html.escape("&"), html.escape("<"), html.escape(">"), html.escape('"'), html.escape("'"))
+
+# `&` goes first, so what the later replacements insert is not escaped again —
+# and an already-escaped string is escaped again, because it is text.
+print(html.escape("&lt;"), html.escape("&amp;amp;"), html.escape("&#x27;"))
+print(html.escape(html.escape("<&>")))
+print(html.escape("a&&b<<c>>d\"\"e''f"))
+print(html.escape("<<<>>>&&&"))
+
+# Non-ASCII passes through untouched.
+print(html.escape("café ☕ <日本語> & 'ü'"))
+
+# Exactly five of the first 128 characters change.
+changed = 0
+for _, i in range(128):
+    if html.escape(chr(i)) != chr(i):
+        changed += 1
+        print(i, html.escape(chr(i)))
+print("changed:", changed)
+
+# And none of the rest of the Basic Multilingual Plane's first 2048 code points.
+same = 0
+for _, i in range(2048):
+    if i >= 128 and html.escape(chr(i)) == chr(i):
+        same += 1
+print("unchanged above ASCII:", same)
+
+# A long string of every kind of run, compared by length and by content.
+s = ""
+for _, i in range(500):
+    s += "x<" + chr(65 + i % 26) + ">&'\"" + " "
+e = html.escape(s)
+print(len(s), len(e), e[0:60], e[len(e) - 40:])
+print(e.count("&amp;"), e.count("&lt;"), e.count("&gt;"), e.count("&quot;"), e.count("&#x27;"))

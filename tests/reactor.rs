@@ -472,6 +472,83 @@ print(order.recv())
     assert_eq!(out, "peer\n", "the copy loop ran to EOF without yielding — a peer was starved");
 }
 
+/// The handler sees the client's address on `req.peer`.
+///
+/// The gap: brute-force damping needs the peer, and `serve`/`serve_conn` used to
+/// hand the handler only the request, so a program grew its own accept loop just
+/// to reach `conn.peer`. Now `serve_conn` stamps it on every request. Checked
+/// end to end over a real loopback socket: the handler echoes its view of the
+/// caller, which must be a `127.0.0.1` address.
+#[test]
+fn the_handler_sees_the_client_peer_address() {
+    let out = run(
+        "peer_addr",
+        r#"
+import http
+import net
+
+ready = chan(cap=1)
+
+def server():
+    ln = ready.recv()
+    http.serve_conn(ln.accept(), req => http.Response(200, body=req.peer.to_bytes()))
+
+ln = net.listen("127.0.0.1:0")
+spawn(server)
+ready.send(ln)
+r = http.fetch("GET", f"http://{ln.local}/")
+print(r.text().startswith("127.0.0.1:"))
+"#,
+    );
+    assert_eq!(out, "true\n", "the handler did not see the client's peer address");
+}
+
+/// `static_files` serves a tree, and a directory without a trailing slash is a
+/// 301 to the slashed form. End to end over a real socket.
+#[test]
+fn static_files_serves_and_redirects_a_directory() {
+    let out = run(
+        "static_files",
+        r#"
+import http
+import net
+import os
+import proc
+
+base = "/tmp/oro_static_test"
+proc.run(["rm", "-rf", base], quiet=true, check=false)
+os.mkdir(base)
+os.mkdir(base + "/docs")
+open(base + "/docs/index.html", mode="w").write(b"<h1>docs</h1>")
+open(base + "/style.css", mode="w").write(b"body{}")
+
+ready = chan(cap=1)
+
+def server():
+    ln = ready.recv()
+    for i, _ in range(3):
+        http.serve_conn(ln.accept(), http.static_files(base))
+
+ln = net.listen("127.0.0.1:0")
+spawn(server)
+ready.send(ln)
+u = f"http://{ln.local}"
+css = http.fetch("GET", u + "/style.css")
+dir_slash = http.fetch("GET", u + "/docs/")
+dir_bare = http.fetch("GET", u + "/docs")
+print(css.status, css.header("content-type"))
+print(dir_slash.status, dir_slash.text())
+print(dir_bare.status, dir_bare.header("location"))
+proc.run(["rm", "-rf", base], quiet=true, check=false)
+"#,
+    );
+    assert_eq!(
+        out,
+        "200 text/css; charset=utf-8\n200 <h1>docs</h1>\n301 /docs/\n",
+        "static serving or the /docs -> /docs/ redirect is wrong"
+    );
+}
+
 /// A task keeps running while another one's `set_timeout` expires.
 ///
 /// Two things are being checked at once, and both were broken before M3b. The

@@ -1,0 +1,78 @@
+# INTENTIONAL DIVERGENCE: what `base64.decode` says when it refuses, and the
+# argument shapes of both functions. `96_base64.oro` holds *which* inputs are
+# refused against CPython's strict mode; the words are Oro's own, so this file
+# is reviewed by hand.
+#
+# Every refusal is a ValueError naming what was wrong and where, because a
+# handler that turns ValueError into a 400 should be able to say more than
+# "Incorrect padding" to the client that sent it.
+import base64
+
+
+def refused(text, url):
+    try:
+        base64.decode(text, url=url)
+        print(repr(text), "accepted")
+    except ValueError as e:
+        print(repr(text), "->", f"{e}")
+
+
+print("--- a character outside the alphabet")
+refused("QU I=", false)
+refused("QUI\n", false)
+refused("QUJD\r\n", false)
+refused("ab\x00d", false)
+refused("é===", false)
+refused(b"ab\xffd", false)
+refused("QU*=", false)
+
+print("--- the other alphabet is refused, and named")
+refused("QUJ-", false)
+refused("QUJ_", false)
+refused("ab+/", true)
+refused("ab/c", true)
+
+print("--- the length")
+refused("A", false)
+refused("QQ", false)
+refused("QQ=", false)
+refused("QUJDQ", false)
+
+print("--- the padding")
+refused("Q===", false)
+refused("====", false)
+refused("QQ=A", false)
+refused("=QQQ", false)
+refused("QUI=QUJD", false)
+refused("QUJDQQ==QUJD", false)
+
+print("--- reading order: the first thing wrong is the one reported")
+refused("Q=-", false)
+refused("Q==", false)
+
+print("--- argument shapes")
+try:
+    base64.encode(5)
+except TypeError as e:
+    print(f"{e}")
+try:
+    base64.decode(["QQ=="])
+except TypeError as e:
+    print(f"{e}")
+try:
+    base64.encode(b"", url=1)
+except TypeError as e:
+    print(f"{e}")
+try:
+    base64.encode(b"", url=null)
+except TypeError as e:
+    print(f"{e}")
+try:
+    base64.decode("QQ==", true)
+except TypeError as e:
+    print(f"{e}")
+try:
+    base64.encode(data=b"x")
+except TypeError as e:
+    print(f"{e}")
+print(type(base64.encode(b"x")), type(base64.decode("eA==")), type(base64.decode(b"eA==")))

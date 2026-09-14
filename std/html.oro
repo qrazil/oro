@@ -1,0 +1,45 @@
+# html.oro — escaping text for HTML, written in Oro.
+#
+# API
+# ---
+#   html.escape(s)  -> str   `&` `<` `>` `"` `'` as character references
+#
+# One function, and it is for *generating* HTML: a value a program is about to
+# put into a page — a file name, a commit message, a user's display name —
+# goes through `escape` on its way in, and then it is text and not markup.
+#
+# **All five characters, always.** `&`, `<` and `>` are what element content
+# needs; `"` and `'` are what an attribute value needs, and which quote the
+# attribute was written with is not something this function can see. So there
+# is no `quote=` flag: the one spelling is the one that is safe in element
+# content *and* inside either kind of quoted attribute, and a caller who asks
+# for less has asked for a page that breaks the first time a name contains a
+# quote. (It is not safe in an *unquoted* attribute, in a `<script>` or
+# `<style>` body, or in a URL attribute that could hold `javascript:` — those
+# are different contexts, and no escaping function makes them safe.)
+#
+# The output is CPython's `html.escape(s)`, byte for byte — `&amp;`, `&lt;`,
+# `&gt;`, `&quot;` and `&#x27;` — so `import html` and `html.escape(s)` is the
+# same program in both languages and `corpus/core/74_html_escape.oro` is
+# checked against CPython directly.
+#
+# **There is no `unescape`**, and that is the design rather than a gap. Reading
+# HTML back means decoding every named character reference HTML5 defines —
+# over two thousand of them, some without a trailing semicolon — and a decoder
+# that knows only the five above is a codec with a hole in it: it turns
+# `&eacute;` into itself and `&amp;eacute;` into `&eacute;`, silently. A
+# program that has to parse HTML needs a parser, and this module is not one.
+#
+# Pure Oro: five `str.replace` calls, each a single pass in the runtime. `&` is
+# replaced first, so the `&` in every reference the later calls insert is not
+# escaped a second time.
+
+
+# Escape `s` for use as HTML text or inside a quoted attribute value.
+#
+#     html.escape("<a href='x'>Tom & Jerry</a>")
+#         -> "&lt;a href=&#x27;x&#x27;&gt;Tom &amp; Jerry&lt;/a&gt;"
+def escape(s):
+    if type(s) != str:
+        raise TypeError(f"html.escape() takes str, not {type(s)}")
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#x27;")

@@ -1,0 +1,5 @@
+published: published
+temp gone: true
+chmod ok
+empty removed: true
+non-empty rmdir raised: true

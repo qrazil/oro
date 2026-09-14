@@ -454,6 +454,10 @@ io.buffer(b)                        an in-memory Reader+Writer; b required
 json.parse(text)                    str in, Oro values out
 json.stringify(value, indent=null)  compact by default; str keys only
 
+base64.encode(data, url=false)      bytes or str (as UTF-8) in, str out; RFC 4648, padded
+base64.decode(text, url=false)      str or bytes in, bytes out; strict, ValueError says where
+html.escape(s)                      & < > " ' as references; CPython's output, no quote= flag
+
 net.listen(addr, reuseport=false)   a TcpListener
 net.dial(addr)                      a TcpStream
 
@@ -498,6 +502,8 @@ http.serve_conn(conn, handler, max_requests=1000, watch=null)   -> requests serv
 http.read_request(r)                        -> Request, or null at a clean EOF
 http.write_response(w, req, resp, keep_alive=false)             -> null, one write
 http.should_keep_alive(req, resp)           -> bool
+http.file_response(path, status=200)        -> Response: file's bytes, content-type, content-length; 404 if no file
+http.static_files(root)                     -> handler: GET/HEAD under root; refuses .. NUL \ after decoding, 301 /dir -> /dir/
 http.Request(method, path, query, version="1.1", headers=null, body=null)
 req.header(name, default=null) / req.text() / req.json()
 http.Response(status, headers=null, body=b"", version="1.1", reason=null)
@@ -1728,6 +1734,72 @@ no `io.read_text` and no `io.write_text`. `io.read(r)` holds the whole stream in
 memory, with no size cap: the bounded reads are `r.read(n)` and
 `r.read_until(delim, limit)`.
 
+#### `base64` — written in Oro
+
+| signature | returns | raises |
+|---|---|---|
+| `base64.encode(data, url=false)` | `str` | `TypeError` unless `data` is `bytes` or `str` |
+| `base64.decode(text, url=false)` | `bytes` | `ValueError` naming the fault and its position; `TypeError` unless `text` is `str` or `bytes` |
+
+```oro
+import base64
+
+token = base64.encode("user:pässword")
+print(token, base64.decode(token).to_str(), base64.encode(b"\xfb\xff", url=true))
+print(base64.decode(b"-_8=", url=true), base64.decode("QQ==") == b"A")
+for _, bad in ["QQ=", "QQ=A", "QUJ-", "QU I="]:
+    try:
+        base64.decode(bad)
+    except ValueError as e:
+        print(f"{e}")
+```
+
+RFC 4648: `url=false` is the standard alphabet (`+` `/`, §4) and `url=true` the
+URL-safe one (`-` `_`, §5), **padded with `=` in both**. A `str` handed to
+`encode` is encoded as UTF-8 first. `decode(encode(b)) == b` for every byte
+string in either alphabet, checked against CPython's `base64` module in
+`corpus/divergence/102_base64.oro`.
+
+**CPython trap**: `encode` answers a `str`, where `b64encode` answers `bytes` —
+base64 is ASCII text by construction, and where it goes (a header, a URL, a
+JSON string) is a `str`. There is no `b64encode`/`urlsafe_b64encode` pair: the
+alphabet is `url=`.
+
+**`decode` is strict, with no lenient mode**: a character outside the chosen
+alphabet (whitespace and newlines included), a length that is not a multiple of
+4, and missing, excess or misplaced padding each raise `ValueError`. The other
+alphabet is refused, never detected — the message names `url=` instead. The one
+thing it tolerates is CPython's `validate=True` tolerance: the unused low bits
+before the padding need not be zero, so `"QR=="` decodes like `"QQ=="`.
+
+#### `html` — written in Oro
+
+| signature | returns | raises |
+|---|---|---|
+| `html.escape(s)` | `str` with `&` `<` `>` `"` `'` as `&amp;` `&lt;` `&gt;` `&quot;` `&#x27;` | `TypeError` unless `s` is a `str` |
+
+```oro
+import html
+
+name = "Tom & 'Jerry' <admin>"
+print(f"<li title=\"{html.escape(name)}\">{html.escape(name)}</li>")
+print(html.escape("&lt;"), html.escape("café"))
+```
+
+For **generating** HTML: text headed into a page goes through `escape` and comes
+out as text rather than markup. It always escapes all five characters, so the
+result is safe in element content and inside a single- *or* double-quoted
+attribute — there is no `quote=` flag, because the spelling that is safe in
+fewer places is the one that breaks the first time a value contains a quote. It
+does **not** make a value safe in an unquoted attribute, a `<script>` or
+`<style>` body, or a URL attribute (`href="javascript:…"`); those are different
+contexts. The output is CPython's `html.escape(s)` byte for byte
+(`corpus/core/74_html_escape.oro` is oracled by CPython).
+
+**There is no `unescape`**, on purpose: decoding HTML means the full table of
+two thousand-odd named character references, and a decoder that knows only these
+five silently leaves the rest alone. Parsing HTML needs a parser.
+
 #### `json` — written in Oro, codec in Rust
 
 | signature | returns | raises |
@@ -2003,7 +2075,7 @@ get a bounded `drain`, and `serve` returns its tally.
 
 | signature | returns / holds |
 |---|---|
-| `http.Request(method, path, query, version="1.1", headers=null, body=null)` | fields `.method`, `.path`, `.query` (a dict), `.version`, `.headers` (a dict, lowercased keys), `.body` (**always a Reader**), `.params` (a dict, filled by `Router`) |
+| `http.Request(method, path, query, version="1.1", headers=null, body=null)` | fields `.method`, `.path`, `.query` (a dict), `.version`, `.headers` (a dict, lowercased keys), `.body` (**always a Reader**), `.params` (a dict, filled by `Router`), `.peer` (the client address `serve`/`serve_conn` stamp on, or `null` off a socket) |
 | `req.header(name, default=null)` | the header, case-insensitively |
 | `req.text()` | the body as `str` — consumes it |
 | `req.json()` | the body parsed — consumes it |
@@ -2060,6 +2132,90 @@ print(routes.dispatch(http.read_request(io.buffer(b"GET /health HTTP/1.1\r\nHost
 print(routes.dispatch(http.read_request(io.buffer(b"GET /users/7 HTTP/1.1\r\nHost: h\r\n\r\n"))).text())
 print(routes.dispatch(http.read_request(io.buffer(b"GET /nope HTTP/1.1\r\nHost: h\r\n\r\n"))).status)
 print(routes.allowed("/health"))
+```
+
+#### Static files
+
+| signature | returns | raises |
+|---|---|---|
+| `http.file_response(path, status=200)` | `Response` with the file's bytes, a `content-type` from its extension and a `content-length`; a **404 response** if `path` is not a regular file | `TypeError` on a non-str `path`; `PermissionError` and other `OSError`s |
+| `http.static_files(root)` | a handler, `req => Response`, serving files under `root` by `req.path` | `ValueError` if `root` is not a directory; `TypeError` on a non-str |
+
+```oro
+import http
+import io
+import os
+
+root = "/tmp/oro_reference_site"
+if not os.path.exists(root):
+    os.mkdir(root)
+    os.mkdir(root + "/docs")
+f = open(root + "/index.html", mode="w")
+f.write(b"<h1>home</h1>")
+f.close()
+f = open(root + "/docs/index.html", mode="w")
+f.write(b"<h1>docs</h1>")
+f.close()
+
+r = http.file_response(root + "/index.html")
+print(r.status, r.header("content-type"), r.header("content-length"), r.bytes())
+print(http.file_response(root + "/nope.css").status)
+
+files = http.static_files(root)
+
+
+def get(target, method="GET"):
+    raw = f"{method} {target} HTTP/1.1\r\nHost: h\r\n\r\n".to_bytes()
+    return files(http.read_request(io.buffer(raw)))
+
+
+for _, target in ["/", "/docs/", "/docs", "/index.html?v=2", "/missing.png", "/../etc/passwd", "/%2e%2e/etc/passwd", "/%00", "/a%5cb"]:
+    print(target, get(target).status)
+print(get("/", method="POST").status, get("/", method="POST").header("allow"))
+```
+
+`static_files` maps the URL path onto `root` — `GET /css/site.css` is
+`root/css/site.css` — and serves a directory's `index.html` (404 if it has
+none). A directory requested without a trailing slash is a **301** to the
+slashed form (`/docs` → `/docs/`), which is what keeps relative links in the
+served `index.html` resolving correctly. `GET` and `HEAD` only; anything else is `405` with
+`allow: GET, HEAD`. The content-type table is fixed and short — `html`, `css`,
+`js`, `txt` as `text/*` with `; charset=utf-8`; `json`, `svg`, `xml`, `png`,
+`jpg`/`jpeg`, `gif`, `webp`, `ico`, `woff2`, `wasm`, `pdf`; anything else is
+`application/octet-stream` — and the extension is matched case-insensitively.
+The file is read into memory whole, which is what gives the response an exact
+`content-length`.
+
+**What it refuses.** The checks run on `req.path`, which the parser has already
+percent-decoded, so `%2e%2e` is refused as the `..` it is. A `..` segment, a NUL,
+a backslash, or a path not starting with `/` is a `400`. Empty segments are
+dropped and the file path is built under `root` by concatenation, so
+`//etc/passwd` is `root/etc/passwd` (a 404), never `/etc/passwd`. Bytes that are
+not UTF-8 are refused by the parser before the handler runs.
+`corpus/divergence/105_http_static.oro` makes every one of these requests over a
+real socket.
+
+> **Symlinks are resolved, not trusted.** After the string checks, every file is
+> checked with `os.path.is_within(path, root)`, which resolves symlinks on both
+> sides: a link whose target lands outside `root` is a **403**, and a link to
+> somewhere else inside `root` is served normally. The race is not closed — a
+> link swapped between that check and the open can still escape (see
+> [Resolving paths](#resolving-paths-and-serving-files-safely)) — so a tree that
+> untrusted code can write into is not safe to serve. For a site generated from
+> git repositories, still write blob contents as regular files and never check a
+> repository out under `root`.
+
+**Routes and files on one server** need no wildcard route: ask the router
+whether it has the path, and give everything else to the files. A 405 for a
+routed path stays the router's.
+
+```text
+files = http.static_files("public")
+def app(req):
+    if len(routes.allowed(req.path)) > 0:
+        return routes.dispatch(req)
+    return files(req)
+http.serve("0.0.0.0:8080", app)
 ```
 
 #### The client

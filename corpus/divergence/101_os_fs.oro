@@ -1,0 +1,34 @@
+# INTENTIONAL DIVERGENCE. os.rename / os.chmod / os.rmdir over a real temp tree.
+# Not oracled against CPython (it touches the filesystem and uses `proc`), and it
+# prints stable outcomes rather than errnos, which differ by platform.
+import os
+import os.path as path
+import io
+import proc
+
+base = "/tmp/oro_os_fs_test"
+proc.run(["rm", "-rf", base], quiet=true, check=false)
+os.mkdir(base)
+
+# The safe-publish pattern: write a temp, rename it over the target atomically.
+open(base + "/tmp", mode="w").write(b"published")
+os.rename(base + "/tmp", base + "/config")
+print("published:", io.read(open(base + "/config")).to_str())
+print("temp gone:", not path.exists(base + "/tmp"))
+
+# chmod runs (its effect — 0o600 — is not observable from Oro, which has no stat).
+os.chmod(base + "/config", 0o600)
+print("chmod ok")
+
+# rmdir removes an empty directory and refuses a non-empty one.
+os.mkdir(base + "/sub")
+os.rmdir(base + "/sub")
+print("empty removed:", not path.exists(base + "/sub"))
+raised = false
+try:
+    os.rmdir(base)
+except OSError:
+    raised = true
+print("non-empty rmdir raised:", raised)
+
+proc.run(["rm", "-rf", base], quiet=true, check=false)

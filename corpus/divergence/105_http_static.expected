@@ -1,0 +1,97 @@
+--- serving files
+/ is index.html: 200 true text/html; charset=utf-8
+and its length is the file's: true
+/index.html: 200 true
+/css/site.css 200 text/css; charset=utf-8 true true
+/img/logo.png 200 image/png true true
+/data.json 200 application/json true true
+/LOUD.HTML 200 text/html; charset=utf-8 true true
+/blob.bin 200 application/octet-stream true true
+/README 200 application/octet-stream true true
+/big.js 200 text/javascript; charset=utf-8 true true
+every octet of a binary file survives: true
+a percent-encoded name: b'spaced\n' b'utf-8 name\n'
+the query string is not part of the path: 200
+empty segments are dropped: 200
+--- directories
+/docs/ serves its index.html: true
+/docs is a 301 to /docs/: true /docs/
+a directory with no index.html is a 404: 404 text/plain; charset=utf-8 b'not found\n'
+a missing file is a 404: 404 404
+--- methods
+HEAD has the GET's length and no body: 200 14 text/html; charset=utf-8
+and the next response on the connection starts where HEAD's head ended: 200 200000 200 b'body { color: black }\n'
+POST -> 405 GET, HEAD b'method not allowed\n'
+PUT -> 405 GET, HEAD b'method not allowed\n'
+DELETE -> 405 GET, HEAD b'method not allowed\n'
+OPTIONS -> 405 GET, HEAD b'method not allowed\n'
+--- with a router in front
+a routed path goes to the router: b'ok\n'
+and a routed path's 405 is the router's, not the files': 405 POST
+everything else goes to the files: 200 404
+--- traversal
+/../secret.txt -> 400
+/css/../../secret.txt -> 400
+/.. -> 400
+/css/.. -> 400
+/%2e%2e/secret.txt -> 400
+/%2E%2E/secret.txt -> 400
+/.%2e/secret.txt -> 400
+/%2e./secret.txt -> 400
+/css/..%2f..%2fsecret.txt -> 400
+/css%2f..%2f..%2fsecret.txt -> 400
+/%2e%2e%2fsecret.txt -> 400
+--- decoded once, not twice
+/%252e%252e/secret.txt -> 404 (a name, not a climb)
+/%252e%252e/decoded-once.txt -> 200 (the directory literally named %2e%2e)
+--- NUL
+/index.html%00 -> 400
+/index.html%00.png -> 400
+/%00 -> 400
+/css/%00/../secret.txt -> 400
+--- backslash
+/..%5csecret.txt -> 400
+/css%5c..%5c..%5csecret.txt -> 400
+/..\secret.txt -> 400
+/css\site.css -> 400
+--- absolute paths
+//<the secret's absolute path> -> 404
+//etc/passwd -> 404
+/etc/passwd -> 404
+absolute-form, climbing -> 400
+absolute-form, absolute -> 404
+--- encodings the parser refuses first
+an overlong UTF-8 dot, %c0%ae%c0%ae -> 400 b'bytes could not be decoded as UTF-8: invalid byte 0xc0 at position 1\n'
+a malformed escape, %2 -> 400 b'invalid percent-escape in the request target\n'
+and the handler's own refusal, for comparison -> b'bad path\n'
+--- symlinks are resolved, not trusted
+a file link pointing outside the root -> 403 false
+a directory link pointing outside the root -> 403 false
+a link that stays inside the root is served -> 200 text/css; charset=utf-8
+--- a hand-built Request
+'secret.txt' -> 400
+'*' -> 400
+'' -> 400
+'/../secret.txt' -> 400
+'/a\x00b' -> 400
+'/a\\b' -> 400
+the bad-path answer says so: bad path
+
+--- file_response
+200 text/css; charset=utf-8 22 b'body { color: black }\n'
+a custom 404 page: 404 text/html; charset=utf-8 <h1>custom not found</h1>
+
+a missing file: 404 not found
+
+a directory: 404
+--- static_files refuses a root it cannot serve
+ValueError: static_files() root '' is not a directory
+ValueError: static_files() root '<root>/nope' is not a directory
+ValueError: static_files() root '<root>/index.html' is not a directory
+static_files() root must be str, not <class 'int'>
+file_response() path must be str, not <class 'bytes'>
+--- http.fetch agrees
+200 text/javascript; charset=utf-8 200000 true
+200000
+nothing was forced at shutdown: true
+cleaned up: true

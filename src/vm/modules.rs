@@ -98,6 +98,9 @@ fn build_os() -> Value {
             ("listdir", builtin("os.listdir", os_listdir)),
             ("remove", builtin("os.remove", os_remove)),
             ("mkdir", builtin("os.mkdir", os_mkdir)),
+            ("rename", builtin("os.rename", os_rename)),
+            ("rmdir", builtin("os.rmdir", os_rmdir)),
+            ("chmod", builtin("os.chmod", os_chmod)),
             ("path", build_os_path()),
         ],
     )
@@ -515,6 +518,63 @@ fn os_mkdir(args: Vec<Value>) -> VResult<Value> {
     Ok(Value::None)
 }
 
+/// `os.rename(src, dst)` — rename or replace `dst`, **atomically within one
+/// filesystem** (`rename(2)`): a reader sees either the old file or the new one,
+/// never a half-written one, which is what makes it the safe way to publish a
+/// config file (write a temp, then `rename` it over the target).
+///
+/// The atomicity does not cross filesystems. A `src` and `dst` on different
+/// mounts fail with `EXDEV` ("Invalid cross-device link"), raised as `OSError` —
+/// Oro does **not** silently fall back to copy-and-delete, because that copy is
+/// not atomic and hiding the difference is how the guarantee is quietly lost. A
+/// caller that means to move across filesystems copies and removes explicitly.
+fn os_rename(args: Vec<Value>) -> VResult<Value> {
+    let (from, to) = match args.as_slice() {
+        [Value::Str(a), Value::Str(b)] => (a.s.clone(), b.s.clone()),
+        [_, _] => return Err(type_error("rename() arguments must both be str")),
+        _ => return Err(type_error("rename() takes exactly two arguments, (src, dst)")),
+    };
+    std::fs::rename(&from, &to).map_err(|e| io_err(&e, &from))?;
+    Ok(Value::None)
+}
+
+/// `os.rmdir(path)` — remove an **empty** directory. A non-empty one is an error
+/// (`ENOTEMPTY`), not a recursive wipe: recursive delete is a footgun (one wrong
+/// path erases a tree with nothing raised), and a program that wants it can
+/// write it from `rmdir` + `listdir` where the intent is visible. This is the
+/// one way, deliberately the safe one.
+fn os_rmdir(args: Vec<Value>) -> VResult<Value> {
+    let path = one_path(&args, "rmdir")?;
+    std::fs::remove_dir(&path).map_err(|e| io_err(&e, &path))?;
+    Ok(Value::None)
+}
+
+/// `os.chmod(path, mode)` — set a file's permission bits, `mode` an integer
+/// (write it octal: `os.chmod(p, 0o600)`). The standard way to lock a config
+/// file down to its owner, rather than a README telling the reader to run
+/// `chmod` by hand.
+fn os_chmod(args: Vec<Value>) -> VResult<Value> {
+    let (path, mode) = match args.as_slice() {
+        [Value::Str(p), Value::Int(m)] => (p.s.clone(), *m),
+        [_, _] => return Err(type_error("chmod() takes (path: str, mode: int)")),
+        _ => return Err(type_error("chmod() takes exactly two arguments, (path, mode)")),
+    };
+    os_chmod_impl(&path, mode)
+}
+
+#[cfg(unix)]
+fn os_chmod_impl(path: &str, mode: i64) -> VResult<Value> {
+    use std::os::unix::fs::PermissionsExt;
+    let perm = std::fs::Permissions::from_mode(mode as u32);
+    std::fs::set_permissions(path, perm).map_err(|e| io_err(&e, path))?;
+    Ok(Value::None)
+}
+
+#[cfg(not(unix))]
+fn os_chmod_impl(_path: &str, _mode: i64) -> VResult<Value> {
+    Err(runtime_error("os.chmod() is only available on Unix"))
+}
+
 // --- os.path -----------------------------------------------------------------
 
 fn path_exists(args: Vec<Value>) -> VResult<Value> {
@@ -678,11 +738,21 @@ fn one_path(args: &[Value], who: &str) -> VResult<String> {
 /// is called.
 pub fn io_err(e: &std::io::Error, path: &str) -> VErr {
     use std::io::ErrorKind::*;
-    let (errno, msg, class) = match e.kind() {
-        NotFound => (2, "No such file or directory", Exc::FileNotFoundError),
-        PermissionDenied => (13, "Permission denied", Exc::PermissionError),
-        AlreadyExists => (17, "File exists", Exc::OSError),
-        _ => (0, "OS error", Exc::OSError),
+    let (errno, msg, class): (i32, String, Exc) = match e.kind() {
+        NotFound => (2, "No such file or directory".into(), Exc::FileNotFoundError),
+        PermissionDenied => (13, "Permission denied".into(), Exc::PermissionError),
+        AlreadyExists => (17, "File exists".into(), Exc::OSError),
+        // Everything else carries the OS's own errno and message rather than a
+        // generic placeholder — so a cross-device `rename` (EXDEV) and a
+        // non-empty `rmdir` (ENOTEMPTY) say exactly what went wrong. std renders
+        // as "message (os error N)"; the errno is taken from `raw_os_error` and
+        // the trailing "(os error N)" trimmed so it is not printed twice.
+        _ => {
+            let errno = e.raw_os_error().unwrap_or(0);
+            let full = e.to_string();
+            let msg = full.split(" (os error").next().unwrap_or(&full).to_string();
+            (errno, msg, Exc::OSError)
+        }
     };
     VErr::new(class, format!("[Errno {errno}] {msg}: '{path}'"))
 }

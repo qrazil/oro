@@ -1,0 +1,158 @@
+--- RFC 4648 section 10
+'' '' b'' 
+'f' 'Zg==' b'f' Zg==
+'fo' 'Zm8=' b'fo' Zm8=
+'foo' 'Zm9v' b'foo' Zm9v
+'foob' 'Zm9vYg==' b'foob' Zm9vYg==
+'fooba' 'Zm9vYmE=' b'fooba' Zm9vYmE=
+'foobar' 'Zm9vYmFy' b'foobar' Zm9vYmFy
+--- a str is its UTF-8
+w6k= w6k= true
+4piV 4piV true
+dXNlcjpww6Rzc3dvcmQ= dXNlcjpww6Rzc3dvcmQ= true
+5pel5pys6Kqe 5pel5pys6Kqe true
+--- decode takes str or bytes
+b'user:pass' b'user:pass'
+--- every octet, standard alphabet
+AA== AQ== Ag== Aw== BA== BQ== Bg== Bw== CA== CQ== Cg== Cw== DA== DQ== Dg== Dw==
+EA== EQ== Eg== Ew== FA== FQ== Fg== Fw== GA== GQ== Gg== Gw== HA== HQ== Hg== Hw==
+IA== IQ== Ig== Iw== JA== JQ== Jg== Jw== KA== KQ== Kg== Kw== LA== LQ== Lg== Lw==
+MA== MQ== Mg== Mw== NA== NQ== Ng== Nw== OA== OQ== Og== Ow== PA== PQ== Pg== Pw==
+QA== QQ== Qg== Qw== RA== RQ== Rg== Rw== SA== SQ== Sg== Sw== TA== TQ== Tg== Tw==
+UA== UQ== Ug== Uw== VA== VQ== Vg== Vw== WA== WQ== Wg== Ww== XA== XQ== Xg== Xw==
+YA== YQ== Yg== Yw== ZA== ZQ== Zg== Zw== aA== aQ== ag== aw== bA== bQ== bg== bw==
+cA== cQ== cg== cw== dA== dQ== dg== dw== eA== eQ== eg== ew== fA== fQ== fg== fw==
+gA== gQ== gg== gw== hA== hQ== hg== hw== iA== iQ== ig== iw== jA== jQ== jg== jw==
+kA== kQ== kg== kw== lA== lQ== lg== lw== mA== mQ== mg== mw== nA== nQ== ng== nw==
+oA== oQ== og== ow== pA== pQ== pg== pw== qA== qQ== qg== qw== rA== rQ== rg== rw==
+sA== sQ== sg== sw== tA== tQ== tg== tw== uA== uQ== ug== uw== vA== vQ== vg== vw==
+wA== wQ== wg== ww== xA== xQ== xg== xw== yA== yQ== yg== yw== zA== zQ== zg== zw==
+0A== 0Q== 0g== 0w== 1A== 1Q== 1g== 1w== 2A== 2Q== 2g== 2w== 3A== 3Q== 3g== 3w==
+4A== 4Q== 4g== 4w== 5A== 5Q== 5g== 5w== 6A== 6Q== 6g== 6w== 7A== 7Q== 7g== 7w==
+8A== 8Q== 8g== 8w== 9A== 9Q== 9g== 9w== +A== +Q== +g== +w== /A== /Q== /g== /w==
+--- every octet, url=true
+AA== AQ== Ag== Aw== BA== BQ== Bg== Bw== CA== CQ== Cg== Cw== DA== DQ== Dg== Dw==
+EA== EQ== Eg== Ew== FA== FQ== Fg== Fw== GA== GQ== Gg== Gw== HA== HQ== Hg== Hw==
+IA== IQ== Ig== Iw== JA== JQ== Jg== Jw== KA== KQ== Kg== Kw== LA== LQ== Lg== Lw==
+MA== MQ== Mg== Mw== NA== NQ== Ng== Nw== OA== OQ== Og== Ow== PA== PQ== Pg== Pw==
+QA== QQ== Qg== Qw== RA== RQ== Rg== Rw== SA== SQ== Sg== Sw== TA== TQ== Tg== Tw==
+UA== UQ== Ug== Uw== VA== VQ== Vg== Vw== WA== WQ== Wg== Ww== XA== XQ== Xg== Xw==
+YA== YQ== Yg== Yw== ZA== ZQ== Zg== Zw== aA== aQ== ag== aw== bA== bQ== bg== bw==
+cA== cQ== cg== cw== dA== dQ== dg== dw== eA== eQ== eg== ew== fA== fQ== fg== fw==
+gA== gQ== gg== gw== hA== hQ== hg== hw== iA== iQ== ig== iw== jA== jQ== jg== jw==
+kA== kQ== kg== kw== lA== lQ== lg== lw== mA== mQ== mg== mw== nA== nQ== ng== nw==
+oA== oQ== og== ow== pA== pQ== pg== pw== qA== qQ== qg== qw== rA== rQ== rg== rw==
+sA== sQ== sg== sw== tA== tQ== tg== tw== uA== uQ== ug== uw== vA== vQ== vg== vw==
+wA== wQ== wg== ww== xA== xQ== xg== xw== yA== yQ== yg== yw== zA== zQ== zg== zw==
+0A== 0Q== 0g== 0w== 1A== 1Q== 1g== 1w== 2A== 2Q== 2g== 2w== 3A== 3Q== 3g== 3w==
+4A== 4Q== 4g== 4w== 5A== 5Q== 5g== 5w== 6A== 6Q== 6g== 6w== 7A== 7Q== 7g== 7w==
+8A== 8Q== 8g== 8w== 9A== 9Q== 9g== 9w== -A== -Q== -g== -w== _A== _Q== _g== _w==
+--- all 256 octets at once
+AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w==
+AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn-AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq-wsbKztLW2t7i5uru8vb6_wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t_g4eLj5OXm5-jp6uvs7e7v8PHy8_T19vf4-fr7_P3-_w==
+true true
+--- the alphabets differ in exactly two places
+++++ ----
+//// ____
+--- the unused low bits need not be zero
+b'A' b'A' b'AB' b'AB'
+--- round trip: every two-octet string
+65536 65536
+--- round trip: pseudo-random strings of every length
+7 v7LrA3UPgQ== v7LrA3UPgQ==
+257 mUCmisLk9Vkln3P7nh1e/8jJsK8B0CUYYx47Bstf Hz-IvMpSALg=
+207 k2tNGbtXJpTgYCrDD6NFIRH8I+x1Bi8ehR+Wc05h 7H2xixQAo0KT
+157 VBTz0HsQI53aSrDVLcy3ZPBjFPZemmP2dL7/ku7b UvCvFGejYQ==
+107 kHIFPea5BvMmdNCiPR4vJ9f0rx1f8pviAtQAkKwW YdGWtrCjemI=
+57 p5wWnOJPLfezRC8ytukZm0ZopzyArlTiQGZeGCL+ WES8X9Dw19uu
+7 5e1UqH7tgw== 5e1UqH7tgw==
+257 HKFhC/+prcTarhaoab25oyefcmFS49xN5NNVlJl8 QcLLnCQWI_M=
+207 7oN/1XZKNz+RDZ9rqsgEtO43czdJ1bXQZ+BZGrNS P0Jz4uticLHV
+157 UUndbFlFCLjHFG/0NyEObgSZoTBLaKQH6DpSfnd6 7yzgnNV8Zg==
+107 UaT+l2Q61GbpUWrtKkfq6DQ2QdLT+xvokzHjJr82 _7FjTbnXdVU=
+57 cf06BOS6+2CKAHZT4ZuHiCMWym1Nv5osG6AUsgiG _K5-Q9RsrAgw
+3000 3000 602000 [3000, 0, 0, 0]
+--- strict decoding of pseudo-random short strings
+'\nQQ' null null
+'+\n+Z=Zv' null null
+'mZ9Zv+_-' null null
+'Z=+_Z ' null null
+'D/ ' null null
+'' b'' b''
+'9 ' null null
+'' b'' b''
+'DUZv_' null null
+'9J-D/vU' null null
+'m/v \nQ' null null
+'-Z' null null
+'DAZQ/Z' null null
+' \n_' null null
+'Qv\nJU' null null
+'m /+' null null
+' Zm Z\n ' null null
+'  +=' null null
+'D=_' null null
+'D\n =\nQQZ' null null
+'9Uv+' b'\xf5K\xfe' null
+' JU=A=v=' null null
+'+ A v /' null null
+'m' null null
+'v+/' null null
+'v+=UAD ' null null
+'J v9-' null null
+'=' null null
+'Q' null null
+'D_m//v=U' null null
+'J U-+/v' null null
+'==' null null
+'/U/' null null
+'AQ\n\n-D-' null null
+'' b'' b''
+'v9' null null
+' ZU' null null
+' A' null null
+' v+J' null null
+'QUD' null null
+'9_- /JU ' null null
+'9J\n-' null null
+--b-----b---------------------------s-----------------------s---bb-u-----b--s--u--b--u--------------
+-----s-------b-----b-------------------b----------s-----------b-----b---------b------------b---b----
+---------b------s-b----u-b---------b-----b------b------b----------b-b----bb---------u---------------
+bb-------b------b----b-b-b-b--------b-----b--b-----------bb-b-b-----bs--bb--b--------b-----b----s---
+-----b--------------b----------bb---b---b---------s------b-----------------b----b----b--------------
+-b---------u--sb----------b--------------u-b------b-----s-------b-----b----------b-uub----------b---
+b-----b--------b-b-b-b--b-b----------------b-------u------u-b-b---b------------b--u-bb--b---------bb
+b-b----b----u--bs-u-----u------------------b--------b--------u--u-----b--u----bb----b--------u-----u
+-----b-------------b-----b-----bb-b----b-------b--------b------ub-----b----b-------b---b-------b--b-
+--b------------------------bb----b-s-b---------------u--b--b-b-b--b-----u------b-----------b----bs--
+---bs--------------b----b---s--b----------------bbb--b-----b---------------b-b-----b------------b---
+-b------b---b-------b--bs-------------b-----b------bb--s----bu--------------b------------bb--------s
+---b-b---------b-----b--b---b--b--b-----b--bb-b------b---------bb---b-----------b--b---b-----b------
+b-------b-s-b--b---------b---u-b------bb--b------s-------b-----------------b----b----b--bb--b-------
+---------------------------bb---b------b-b-------------------------------u-bb-----------b--s-----b--
+--b-------b------b----------b-------------------bb---sb---b---b-bs--b-b----s---b-----b-------b----u-
+------------b----------------b--------------------b---u-------------u----bs-b-b-----b--bb--------b--
+--b------------b----------b-----u-----u----b-------u---------------b--u-b----------b-u--b-----b-----
+b---b----bb------b----s--b-----b---------b--b----b---b-----b---b-b-u----------b------b--------------
+------b--bb-b----------bb------b---b---ss------b---b------b-----b---bb--------------------ubbb-----b
+----------------b-------bb-------b-------b---b------s--b---b--b---b--b-bb---------b-----b-----------
+-----------u--b---------bb----b-b-----------b-------bb------s------b------bb------bb------b--b------
+b--b-------s-----s----------b---b--------b-----b----b-b-b-b------------b-------b------------us----b-
+------------------bb--b--s--------ub------s--------bb-b--------b--b-bb-b--------------bb--------bb--
+-------------sb-----------------------------b-b-------s-----sb-------ub-bbb------------------u------
+--------------bb-bsb-------------b-----b----------------b-b----u--------b--b---------b--------------
+-------b------------------------------b---b-----b----------------------------------------b-b--s---bb
+b----b-b-------b--b----------b---b-b-b---------u-----------u---------------b---b----b--------b------
+-b-------s--b------b-----------------------s--b----------------------s-----b--u-s-b-------------bbub
+b-------b-----------bu--------------------u-----b-----b--------b------bbb-s----b-------s----b---b---
+-----b--b--s-b---b-bb-b--s-----------------b-b-----sb--------b-----b----bsb-bbb--bbb---b---------b--
+-----b----------b-----b------b-b----b----------------bb---b-------------------------b----b----------
+--b---b-b-u--b----------b---------b-----b----b----u-b-b-----b---------------------b---------b-----b-
+b---b----------------------b------------------------b-s-----b-----u--------------b---b--------------
+b----b-b-------b-------------bb---b----s-------------bb-----b-----b------b-b-b--bb--b---------------
+-----------------bbb-----su-----b-----b----------b---b----b---b--s----b-b----------b---b---b---b----
+--u---s--bbb--------------b--b--b------bb--bb-b--bb---------b--b--b----------b------b--bu---b---b---
+------b-------s-b-b--bb---------u-----b---b-----b-----------u------u-----s---b----b-------b-b-----b-
+------b-----b----------------------b------------------------------------------u--bbb-b--------b--u-b
+----------------b----b-----b--u-------b----------------------------b---bb-----b-b----b--------------
+521 58 60 3361 [43868, 41873]

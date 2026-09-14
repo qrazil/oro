@@ -1,0 +1,125 @@
+# INTENTIONAL DIVERGENCE, in shape only — the octets are CPython's.
+#
+# `base64.encode` answers a `str` where CPython's `b64encode` answers `bytes`,
+# and the alphabet is `url=` rather than a second pair of functions, so this
+# cannot run under the oracle. `96_base64.twin.py` is the same program over
+# CPython's `base64` module, and its output is this file's `.expected`:
+#
+#   python3 corpus/divergence/96_base64.twin.py \
+#     | diff - corpus/divergence/96_base64.expected
+#
+# What is checked: RFC 4648 §10's vectors; every one of the 256 octets in both
+# alphabets; the round trip over all 65 536 two-octet strings and 3 000
+# pseudo-random strings of every length from 0 to 299, in both alphabets; and
+# which of 4 000 pseudo-random short strings strict decoding accepts, and what
+# it makes of the ones it does. The messages for the ones it refuses are Oro's
+# own and are in `97_base64_policy.oro`.
+import base64
+
+# A linear congruential generator both programs spell identically, so the
+# "random" inputs are the same octets on both sides of the diff.
+class Lcg:
+    def __init__(self, seed):
+        self.state = seed
+
+    def next(self, bound):
+        self.state = (self.state * 1103515245 + 12345) % 2147483648
+        return (self.state >> 8) % bound
+
+
+print("--- RFC 4648 section 10")
+for _, s in ["", "f", "fo", "foo", "foob", "fooba", "foobar"]:
+    e = base64.encode(s)
+    print(repr(s), repr(e), base64.decode(e), base64.encode(s, url=true))
+
+print("--- a str is its UTF-8")
+for _, s in ["é", "☕", "user:pässword", "日本語"]:
+    print(base64.encode(s), base64.encode(s.to_bytes()), base64.decode(base64.encode(s)).to_str() == s)
+
+print("--- decode takes str or bytes")
+print(base64.decode("dXNlcjpwYXNz"), base64.decode(b"dXNlcjpwYXNz"))
+
+print("--- every octet, standard alphabet")
+for _, row in range(256).chunk(16):
+    print(row.map(i => base64.encode([i].to_bytes())).join(" "))
+
+print("--- every octet, url=true")
+for _, row in range(256).chunk(16):
+    print(row.map(i => base64.encode([i].to_bytes(), url=true)).join(" "))
+
+print("--- all 256 octets at once")
+everything = range(256).to_list().to_bytes()
+print(base64.encode(everything))
+print(base64.encode(everything, url=true))
+print(base64.decode(base64.encode(everything)) == everything, base64.decode(base64.encode(everything, url=true), url=true) == everything)
+
+print("--- the alphabets differ in exactly two places")
+print(base64.encode(b"\xfb\xef\xbe"), base64.encode(b"\xfb\xef\xbe", url=true))
+print(base64.encode(b"\xff\xff\xff"), base64.encode(b"\xff\xff\xff", url=true))
+
+print("--- the unused low bits need not be zero")
+print(base64.decode("QQ=="), base64.decode("QR=="), base64.decode("QUI="), base64.decode("QUJ="))
+
+print("--- round trip: every two-octet string")
+ok = 0
+okurl = 0
+for _, i in range(256):
+    for _, j in range(256):
+        b = [i, j].to_bytes()
+        if base64.decode(base64.encode(b)) == b:
+            ok += 1
+        if base64.decode(base64.encode(b, url=true), url=true) == b:
+            okurl += 1
+print(ok, okurl)
+
+print("--- round trip: pseudo-random strings of every length")
+rng = Lcg(20260914)
+ok = 0
+okurl = 0
+chars = 0
+lengths = [0, 0, 0, 0]
+for _, n in range(3000):
+    size = n % 300
+    b = range(size).map(_ => rng.next(256)).to_list().to_bytes()
+    e = base64.encode(b)
+    u = base64.encode(b, url=true)
+    chars += len(e)
+    lengths[len(e) % 4] += 1
+    if base64.decode(e) == b and base64.decode(e.to_bytes()) == b:
+        ok += 1
+    if base64.decode(u, url=true) == b and u == e.replace("+", "-").replace("/", "_"):
+        okurl += 1
+    if n % 250 == 7:
+        print(size, e[0:40], u[len(u) - 12:])
+print(ok, okurl, chars, lengths)
+
+print("--- strict decoding of pseudo-random short strings")
+# One verdict letter per string, for all 4 000 of them: `b` both alphabets
+# accept it, `s` only the standard one, `u` only url=true, `-` neither. The
+# octet sums cover what the accepted ones decoded to.
+pool = "QUJDZm9v+/-_=  \nA"
+verdicts = []
+sums = [0, 0]
+for _, n in range(4000):
+    size = rng.next(9)
+    s = range(size).map(_ => pool[rng.next(len(pool))]).to_list().join("")
+    standard = null
+    url = null
+    try:
+        standard = base64.decode(s)
+    except ValueError as e:
+        standard = null
+    try:
+        url = base64.decode(s, url=true)
+    except ValueError as e:
+        url = null
+    if standard != null:
+        sums[0] += standard.to_list().sum()
+    if url != null:
+        sums[1] += url.to_list().sum()
+    verdicts.append(["-", "u", "s", "b"][(standard != null ? 2 : 0) + (url != null ? 1 : 0)])
+    if n % 97 == 0:
+        print(repr(s), standard, url)
+for _, line in verdicts.chunk(100):
+    print(line.join(""))
+print(verdicts.count(v => v == "b"), verdicts.count(v => v == "s"), verdicts.count(v => v == "u"), verdicts.count(v => v == "-"), sums)

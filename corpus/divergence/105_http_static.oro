@@ -1,0 +1,222 @@
+# INTENTIONAL DIVERGENCE.
+# `http.static_files` and `http.file_response`, served by `http.serve` on a
+# real loopback socket and attacked through it. There is nothing to diff this
+# against — CPython's `http.server.SimpleHTTPRequestHandler` is a different
+# design with different answers — so it is reviewed by hand.
+#
+# The rules 60_http_serve.oro sets hold here: ephemeral ports only, a deadline
+# on everything that blocks, and every line a claim in words. The tree lives
+# under a fresh directory in /tmp whose name is never printed.
+#
+# The attacks go over a raw socket rather than `http.fetch`, because the point
+# is the exact bytes of the request target — `..`, `%2e%2e`, a raw backslash —
+# and a client is entitled to normalise those before they leave.
+import http
+import io
+import net
+import os
+import proc
+import time
+
+_DEADLINE = 5
+
+top = f"/tmp/oro_static_{(time.time() * 1000000).to_int()}"
+root = top + "/site"
+
+
+def write(path, body):
+    f = open(path, mode="w")
+    f.write(body)
+    f.close()
+
+
+# --- the tree ---------------------------------------------------------------
+# `top/secret.txt` is the file every traversal below is trying to reach: it is
+# one directory above the root.
+os.mkdir(top)
+os.mkdir(root)
+for _, d in ["css", "img", "docs", "empty", "%2e%2e"]:
+    os.mkdir(root + "/" + d)
+write(top + "/secret.txt", b"SECRET\n")
+write(root + "/index.html", b"<h1>home</h1>\n")
+write(root + "/css/site.css", b"body { color: black }\n")
+write(root + "/img/logo.png", range(256).to_list().to_bytes())
+write(root + "/docs/index.html", b"<h1>docs</h1>\n")
+write(root + "/data.json", b'{"a": 1}\n')
+write(root + "/LOUD.HTML", b"<p>shouting</p>\n")
+write(root + "/blob.bin", b"\x00\x01")
+write(root + "/README", b"no extension\n")
+write(root + "/hello world.txt", b"spaced\n")
+write(root + "/café.txt", b"utf-8 name\n")
+write(root + "/%2e%2e/decoded-once.txt", b"a literal directory called %2e%2e\n")
+write(root + "/404.html", b"<h1>custom not found</h1>\n")
+write(root + "/big.js", b"x" * 200000)
+# Symlinks: a file link and a directory link that escape the root, and a link
+# that stays inside it — the last must still be served.
+proc.run(["ln", "-s", top + "/secret.txt", root + "/escape.txt"], quiet=true)
+proc.run(["ln", "-s", top, root + "/outdir"], quiet=true)
+proc.run(["ln", "-s", root + "/css/site.css", root + "/alias.css"], quiet=true)
+
+# --- the server -------------------------------------------------------------
+routes = http.Router().add("GET", "/api/health", req => http.text("ok\n")).add("POST", "/api/echo", req => http.text(req.text()))
+files = http.static_files(root)
+
+
+def app(req):
+    if len(routes.allowed(req.path)) > 0:
+        return routes.dispatch(req)
+    return files(req)
+
+
+ready = chan()
+srv = spawn(http.serve, "127.0.0.1:0", app, ready=ready, timeout=_DEADLINE)
+ln = ready.recv()
+
+
+# One request on its own connection: `[status, headers, body]`. HEAD is read
+# as HEAD — no body is waited for, whatever content-length says.
+def send(c, method, target):
+    c.write(f"{method} {target} HTTP/1.1\r\nHost: h\r\n\r\n".to_bytes())
+    lines = c.read_until(b"\r\n\r\n", 65536).split(sep=b"\r\n")
+    status = lines[0].split(sep=b" ")[1].to_str().to_int()
+    headers = {}
+    for _, line in lines[1:]:
+        if len(line) > 0:
+            i = line.find(b":")
+            headers[line[0:i].to_str().lower()] = line[i + 1:].strip().to_str()
+    body = b""
+    if method != "HEAD" and "content-length" in headers:
+        body = io.read(c, fixed_size=headers["content-length"].to_int())
+    return [status, headers, body]
+
+
+def request(method, target):
+    c = net.dial(ln.local)
+    c.set_timeout(_DEADLINE)
+    answer = send(c, method, target)
+    c.close()
+    return answer
+
+
+def raw_target(target):
+    return request("GET", target)[0]
+
+
+# --- serving ----------------------------------------------------------------
+print("--- serving files")
+st, h, body = request("GET", "/")
+print("/ is index.html:", st, body == b"<h1>home</h1>\n", h["content-type"])
+print("and its length is the file's:", h["content-length"] == f"{len(body)}")
+st, h, body = request("GET", "/index.html")
+print("/index.html:", st, body == b"<h1>home</h1>\n")
+for _, (path, size) in [["/css/site.css", 22], ["/img/logo.png", 256], ["/data.json", 9], ["/LOUD.HTML", 16], ["/blob.bin", 2], ["/README", 13], ["/big.js", 200000]]:
+    st, h, body = request("GET", path)
+    print(path, st, h["content-type"], h["content-length"] == f"{size}", len(body) == size)
+print("every octet of a binary file survives:", request("GET", "/img/logo.png")[2] == range(256).to_list().to_bytes())
+print("a percent-encoded name:", request("GET", "/hello%20world.txt")[2], request("GET", "/caf%C3%A9.txt")[2])
+print("the query string is not part of the path:", request("GET", "/index.html?v=3")[0])
+print("empty segments are dropped:", request("GET", "//css//site.css")[0])
+
+print("--- directories")
+print("/docs/ serves its index.html:", request("GET", "/docs/")[2] == b"<h1>docs</h1>\n")
+_docs_st, _docs_h, _docs_body = request("GET", "/docs")
+print("/docs is a 301 to /docs/:", _docs_st == 301, _docs_h.get("location", default="none"))
+st, h, body = request("GET", "/empty/")
+print("a directory with no index.html is a 404:", st, h["content-type"], body)
+print("a missing file is a 404:", request("GET", "/missing.html")[0], request("GET", "/css/missing.css")[0])
+
+print("--- methods")
+st, h, body = request("HEAD", "/index.html")
+print("HEAD has the GET's length and no body:", st, h["content-length"], h["content-type"])
+c = net.dial(ln.local)
+c.set_timeout(_DEADLINE)
+first = send(c, "HEAD", "/big.js")
+second = send(c, "GET", "/css/site.css")
+c.close()
+print("and the next response on the connection starts where HEAD's head ended:", first[0], first[1]["content-length"], second[0], second[2])
+for _, m in ["POST", "PUT", "DELETE", "OPTIONS"]:
+    st, h, body = request(m, "/index.html")
+    print(m, "->", st, h["allow"], body)
+
+print("--- with a router in front")
+print("a routed path goes to the router:", request("GET", "/api/health")[2])
+st, h, body = request("DELETE", "/api/echo")
+print("and a routed path's 405 is the router's, not the files':", st, h["allow"])
+print("everything else goes to the files:", request("GET", "/css/site.css")[0], request("GET", "/api/nope")[0])
+
+# --- attacks ----------------------------------------------------------------
+# Every one of these is a request for `top/secret.txt`, or for something else
+# outside the root, and none of them may answer 200.
+print("--- traversal")
+for _, t in ["/../secret.txt", "/css/../../secret.txt", "/..", "/css/..", "/%2e%2e/secret.txt", "/%2E%2E/secret.txt", "/.%2e/secret.txt", "/%2e./secret.txt", "/css/..%2f..%2fsecret.txt", "/css%2f..%2f..%2fsecret.txt", "/%2e%2e%2fsecret.txt"]:
+    print(t, "->", raw_target(t))
+print("--- decoded once, not twice")
+print("/%252e%252e/secret.txt ->", raw_target("/%252e%252e/secret.txt"), "(a name, not a climb)")
+print("/%252e%252e/decoded-once.txt ->", raw_target("/%252e%252e/decoded-once.txt"), "(the directory literally named %2e%2e)")
+print("--- NUL")
+for _, t in ["/index.html%00", "/index.html%00.png", "/%00", "/css/%00/../secret.txt"]:
+    print(t, "->", raw_target(t))
+print("--- backslash")
+for _, t in ["/..%5csecret.txt", "/css%5c..%5c..%5csecret.txt", "/..\\secret.txt", "/css\\site.css"]:
+    print(t, "->", raw_target(t))
+print("--- absolute paths")
+print("//<the secret's absolute path> ->", raw_target("/" + top + "/secret.txt"))
+print("//etc/passwd ->", raw_target("//etc/passwd"))
+print("/etc/passwd ->", raw_target("/etc/passwd"))
+print("absolute-form, climbing ->", raw_target("http://h/../secret.txt"))
+print("absolute-form, absolute ->", raw_target("http://h/" + top + "/secret.txt"))
+print("--- encodings the parser refuses first")
+st, h, body = request("GET", "/%c0%ae%c0%ae/secret.txt")
+print("an overlong UTF-8 dot, %c0%ae%c0%ae ->", st, body)
+st, h, body = request("GET", "/%2/secret.txt")
+print("a malformed escape, %2 ->", st, body)
+print("and the handler's own refusal, for comparison ->", request("GET", "/%2e%2e/secret.txt")[2])
+print("--- symlinks are resolved, not trusted")
+st, h, body = request("GET", "/escape.txt")
+print("a file link pointing outside the root ->", st, body == b"SECRET\n")
+st, h, body = request("GET", "/outdir/secret.txt")
+print("a directory link pointing outside the root ->", st, body == b"SECRET\n")
+st, h, body = request("GET", "/alias.css")
+print("a link that stays inside the root is served ->", st, h["content-type"])
+
+# --- the handler without a socket -------------------------------------------
+# A Request built by hand never went through the parser, so the handler's own
+# checks are all that stands between it and the filesystem.
+print("--- a hand-built Request")
+for _, p in ["secret.txt", "*", "", "/../secret.txt", "/a\x00b", "/a\\b"]:
+    print(repr(p), "->", files(http.Request("GET", p, {})).status)
+print("the bad-path answer says so:", files(http.Request("GET", "/..", {})).text())
+
+print("--- file_response")
+r = http.file_response(root + "/css/site.css")
+print(r.status, r.header("content-type"), r.header("content-length"), r.bytes())
+r = http.file_response(root + "/404.html", status=404)
+print("a custom 404 page:", r.status, r.header("content-type"), r.text())
+print("a missing file:", http.file_response(root + "/nope.html").status, http.file_response(root + "/nope.html").text())
+print("a directory:", http.file_response(root + "/docs").status)
+
+print("--- static_files refuses a root it cannot serve")
+for _, bad in ["", root + "/nope", root + "/index.html"]:
+    try:
+        http.static_files(bad)
+    except ValueError as e:
+        print("ValueError:", f"{e}".replace(root, "<root>"))
+try:
+    http.static_files(5)
+except TypeError as e:
+    print(f"{e}")
+try:
+    http.file_response(b"/x")
+except TypeError as e:
+    print(f"{e}")
+
+print("--- http.fetch agrees")
+resp = http.fetch("GET", f"http://{ln.local}/big.js")
+print(resp.status, resp.header("content-type"), len(resp.body), resp.body == b"x" * 200000)
+print(http.fetch("HEAD", f"http://{ln.local}/big.js").header("content-length"))
+
+ln.close()
+tally = srv.join()
+print("nothing was forced at shutdown:", tally["forced"] == 0)
+proc.run(["rm", "-rf", top], quiet=true)
+print("cleaned up:", not os.path.exists(top))

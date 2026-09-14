@@ -1,0 +1,36 @@
+# INTENTIONAL DIVERGENCE: what `html.escape` refuses. The output of the
+# function itself is CPython's and is checked against CPython in
+# `corpus/core/74_html_escape.oro`; the refusals are Oro's.
+#
+# CPython's `html.escape` has a `quote=True` flag and fails on a non-str with
+# whatever `.replace` raises — an AttributeError for an int, a TypeError from
+# inside `bytes.replace` for bytes. Oro's has no flag, since the five-character
+# escape is the only one safe in both text and quoted attributes, and refuses a
+# non-str up front with a message that says so.
+import html
+
+
+def refused(v):
+    try:
+        html.escape(v)
+        print(repr(v), "accepted")
+    except TypeError as e:
+        print(f"{e}")
+
+
+refused(b"<b>")
+refused(5)
+refused(null)
+refused(["<"])
+try:
+    html.escape("<b>", quote=false)
+except TypeError as e:
+    print(f"{e}")
+try:
+    html.escape(s="<b>")
+except TypeError as e:
+    print(f"{e}")
+try:
+    html.unescape("&lt;")
+except AttributeError as e:
+    print(f"{e}")

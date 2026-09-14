@@ -1,0 +1,18 @@
+&lt;a href=&#x27;x&#x27; title=&quot;y&quot;&gt;Tom &amp; Jerry&lt;/a&gt;
+
+nothing to escape here
+&amp; &lt; &gt; &quot; &#x27;
+&amp;lt; &amp;amp;amp; &amp;#x27;
+&amp;lt;&amp;amp;&amp;gt;
+a&amp;&amp;b&lt;&lt;c&gt;&gt;d&quot;&quot;e&#x27;&#x27;f
+&lt;&lt;&lt;&gt;&gt;&gt;&amp;&amp;&amp;
+café ☕ &lt;日本語&gt; &amp; &#x27;ü&#x27;
+34 &quot;
+38 &amp;
+39 &#x27;
+60 &lt;
+62 &gt;
+changed: 5
+unchanged above ASCII: 1920
+4000 14000 x&lt;A&gt;&amp;&#x27;&quot; x&lt;B&gt;&amp;&#x27;&quot; x&lt #x27;&quot; x&lt;F&gt;&amp;&#x27;&quot; 
+500 500 500 500 500

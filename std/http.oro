@@ -104,6 +104,7 @@ import _pct
 import io
 import json
 import net
+import os
 import sys
 import time
 
@@ -370,6 +371,11 @@ class Request:
         if body != null:
             self.body = body
         self.params = {}
+        # The client's address (`"1.2.3.4:5678"`), filled in by `serve_conn` from
+        # the connection. `null` when there is no socket behind the request — a
+        # Request built by hand, or read from a Buffer in a test — so a handler
+        # that damps brute force by peer checks for null rather than assuming one.
+        self.peer = null
 
     def header(self, name, default=null):
         return self.headers.get(name.lower(), default=default)
@@ -1180,10 +1186,16 @@ def _error_response(status, message):
 # that window truncates a reply that was already written.
 def serve_conn(conn, handler, max_requests=_MAX_REQUESTS_PER_CONN, watch=null):
     served = 0
+    # The peer is a property of the connection, not the request, so it is read
+    # once here and stamped on each request the connection carries. This is what
+    # a handler needs for per-client work (brute-force damping, rate limits) and
+    # is why a custom accept loop over `serve_conn` is no longer needed to get it.
+    peer = _peer_of(conn)
     while max_requests < 0 or served < max_requests:
         req = _try_read(conn)
         if req == null:
             return served
+        req.peer = peer
         if watch != null:
             watch.busy = true
         resp = _dispatch(handler, req)
@@ -1213,6 +1225,16 @@ def serve_conn(conn, handler, max_requests=_MAX_REQUESTS_PER_CONN, watch=null):
 # malformed chunk size. The same `except` around the *handler* would turn a
 # genuine bug in application code into a 400, which is a misleading answer to
 # a well-formed request.
+# A connection's peer address, or `null` for a Reader that has none — a Buffer
+# in a test, say. `peer` is a data attribute only a socket carries, so the read
+# is guarded rather than assumed.
+def _peer_of(conn):
+    try:
+        return conn.peer
+    except AttributeError:
+        return null
+
+
 def _try_read(conn):
     try:
         return read_request(conn)
@@ -1574,6 +1596,213 @@ def _match(pat, segs):
         elif p != s:
             return null
     return params
+
+
+# --- static files ---------------------------------------------------------
+#
+# Serving a directory of generated files — HTML, CSS, images — which is what a
+# small site built by a static generator is. Two functions: `file_response`
+# answers for one file a program has already chosen, and `static_files` is a
+# handler that chooses the file from the request path, and whose whole job is
+# refusing to choose one outside its root.
+#
+# The body is read into memory, whole, and sent as `bytes`. That is what gives
+# every response an exact `content-length` — a Reader body would go out
+# chunked, since this module frames by the body's type (`write_response`) —
+# and it is the right trade for what this is for: pages, stylesheets and
+# images, not a download server. A file too large to hold is not a static
+# site's asset.
+
+# Extension -> content type, and deliberately short: what a static site is
+# made of. Anything else is `application/octet-stream`, which a browser saves
+# rather than renders — the safe answer for a file nobody said was a page.
+# The `text/*` types carry the charset, because a browser left to sniff
+# one will sometimes pick the wrong one; JSON does not, because RFC 8259
+# defines no charset parameter for it (JSON is UTF-8, full stop, and
+# `json_response` says the same), and the two XML types do not, because an
+# XML document declares its own encoding and a header that disagreed with it
+# would win.
+_CONTENT_TYPES = {
+    "html": "text/html; charset=utf-8",
+    "css": "text/css; charset=utf-8",
+    "js": "text/javascript; charset=utf-8",
+    "txt": "text/plain; charset=utf-8",
+    "json": "application/json",
+    "svg": "image/svg+xml",
+    "xml": "application/xml",
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "ico": "image/vnd.microsoft.icon",
+    "woff2": "font/woff2",
+    "wasm": "application/wasm",
+    "pdf": "application/pdf",
+}
+
+_OCTET_STREAM = "application/octet-stream"
+
+# What a directory is served as.
+_INDEX = "index.html"
+
+
+# The content type for `path`, from its extension, case-insensitively.
+def _content_type(path):
+    root, ext = os.path.splitext(path)
+    return _CONTENT_TYPES.get(ext.rm_prefix(".").lower(), default=_OCTET_STREAM)
+
+
+# A `Response` carrying the file at `path`: its bytes, a `content-type` from
+# its extension, and a `content-length`. `status` is for the one other status
+# a file is commonly sent with — a site's own `404.html`, as
+# `file_response("public/404.html", status=404)`.
+#
+# A path that is not a regular file — missing, or a directory — is a 404
+# response rather than an exception, because "no such file" is the ordinary
+# answer to a request for one, and the handler that asked should not need a
+# `try` to give it. Anything else the filesystem says (a file this process may
+# not read) is not ordinary and is raised, which `serve` answers as a 500.
+#
+# `path` is used as given: this function does no containment check at all,
+# and handing it a path built from a request is exactly the bug `static_files`
+# exists to prevent. Use that for request paths.
+def file_response(path, status=200):
+    if type(path) != str:
+        raise TypeError(f"file_response() path must be str, not {type(path)}")
+    if not os.path.isfile(path):
+        return _not_found()
+    # Bound before the `try`: a name first bound inside one does not survive
+    # it. The `except` is for the file vanishing between the check and the
+    # open, which is the same answer as it never having been there.
+    body = null
+    try:
+        body = io.read(open(path))
+    except FileNotFoundError as e:
+        return _not_found()
+    return Response(status, headers={"content-type": _content_type(path), "content-length": f"{len(body)}"}, body=body)
+
+
+def _not_found():
+    return _error_response(404, "not found")
+
+
+# A handler serving the files under the directory `root`, by request path:
+# `GET /css/site.css` is `root/css/site.css`, and a path naming a directory
+# serves that directory's `index.html`, or 404.
+#
+#     http.serve("0.0.0.0:8080", http.static_files("public"))
+#
+# `GET` and `HEAD` only; anything else is a 405 with `allow: GET, HEAD`. A
+# `HEAD` gets the headers `GET` would have, including the length, and no body
+# (`write_response` does that for every handler).
+#
+# **What it refuses, and why each one.** `req.path` has already been
+# percent-decoded by the parser, and every check below runs on that decoded
+# path — which is the only order that works, since `%2e%2e` *is* `..` once
+# decoded and a check on the raw target would wave it through. Each refusal is
+# a 400: none of these can name a file, so "not found" would be a lie about
+# why.
+#
+#   - a `..` segment, however it arrived (`/../x`, `/a/%2e%2e/x`,
+#     `/a/..%2fx`), since it is the one segment that climbs out of a directory;
+#   - a NUL (`%00`), which ends the path early for any layer below this one
+#     that takes C strings;
+#   - a backslash (`%5c` or raw), which is a separator on the one platform
+#     where `/` alone is not, and has no business in a URL path here;
+#   - a path that does not start with `/`.
+#
+# Empty segments are dropped, so `//etc/passwd` is `root/etc/passwd` rather
+# than `/etc/passwd`: the file path is built by string concatenation under
+# `root`, never by `os.path.join`, whose POSIX rule lets an absolute component
+# reset the whole path. Bytes that are not UTF-8 never get this far — the
+# parser refuses them, so an overlong encoding of `.` is a 400 before this
+# handler runs.
+#
+# **Symlinks are resolved, not trusted.** The string checks stop a path from
+# *spelling* an escape; they cannot see a symbolic link inside `root` that
+# points out of it, because `/notes/passwd` looks innocent until `site/notes`
+# turns out to be a link to `/etc`. So every file is finally checked with
+# `os.path.is_within(path, root)`, which resolves both sides: a target outside
+# `root` is a 403 (a real file, but not this server's to give), and a link
+# inside `root` to somewhere else inside it is served normally. What is not
+# closed is the race: a link swapped between that check and the open can still
+# escape, so a tree that untrusted code can write into is not safe to serve —
+# a page generator should still write regular files.
+#
+# A directory requested without a trailing slash is a 301 to the slashed form
+# (`/docs` -> `/docs/`), and the slashed form serves its `index.html`. The
+# redirect is what keeps relative links in `index.html` working: a browser
+# resolves them against the URL it asked for, so `/docs` would resolve `x.html`
+# against `/` and `/docs/` resolves it against `/docs/`.
+#
+# To put routes and files on one server, ask the router whether it has the
+# path, and hand it to the files otherwise — `Router.allowed` answers exactly
+# that, and a 405 for a routed path stays the router's:
+#
+#     files = http.static_files("public")
+#     def app(req):
+#         if len(routes.allowed(req.path)) > 0:
+#             return routes.dispatch(req)
+#         return files(req)
+#
+# `root` must be a directory when the handler is made, so a typo is an error
+# at startup rather than a server that answers 404 to everything; the empty
+# string in particular is refused rather than read as the filesystem's root.
+# After that it is used as given on every request — nothing about the tree is
+# cached, so a site regenerated in place is served as it now is.
+def static_files(root):
+    if type(root) != str:
+        raise TypeError(f"static_files() root must be str, not {type(root)}")
+    if not os.path.isdir(root):
+        raise ValueError(f"static_files() root {repr(root)} is not a directory")
+    return req => _serve_static(root, req)
+
+
+def _serve_static(root, req):
+    if req.method != "GET" and req.method != "HEAD":
+        resp = _error_response(405, "method not allowed")
+        resp.headers["allow"] = "GET, HEAD"
+        return resp
+    rel = _static_path(req.path)
+    if rel == null:
+        return _error_response(400, "bad path")
+    path = root.rm_suffix("/") + "/" + rel
+    if os.path.isdir(path):
+        # A directory requested without a trailing slash is a 301 to the slashed
+        # form. Relative links in its `index.html` resolve against the URL the
+        # browser asked for, so `GET /docs` (index links pointing at `x.html`)
+        # would otherwise resolve them against `/` — the redirect is what keeps
+        # those links working. The root (`/`) already ends in a slash, so it is
+        # served, not redirected.
+        if not req.path.endswith("/"):
+            return Response(301, headers={"location": req.path + "/"}, body=b"")
+        path = path.rm_suffix("/") + "/" + _INDEX
+    # The defence the string checks above are not: resolve the candidate and
+    # the root, symlinks included, and require one inside the other. A link
+    # under `root` that points out of it spells nothing suspicious — only
+    # resolving sees where it lands. Checked on the final path, after the
+    # directory's `index.html` is chosen, since that file can be a link too.
+    inside = false
+    try:
+        inside = os.path.is_within(path, root)
+    except FileNotFoundError as e:
+        return _not_found()
+    if not inside:
+        return _error_response(403, "forbidden")
+    return file_response(path)
+
+
+# The request path as a path relative to the root — its non-empty segments
+# joined with `/` — or null for a path that must not be served. The empty
+# string is the root itself.
+def _static_path(path):
+    if not path.startswith("/") or "\x00" in path or "\\" in path:
+        return null
+    segments = path.split(sep="/").filter(seg => seg != "")
+    if ".." in segments:
+        return null
+    return segments.join("/")
 
 
 # --- the client -----------------------------------------------------------

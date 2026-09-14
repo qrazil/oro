@@ -1,0 +1,170 @@
+# base64.oro — RFC 4648 base64, in both of its alphabets, written in Oro.
+#
+# API
+# ---
+#   base64.encode(data, url=false)  -> str    data is bytes, or a str (UTF-8)
+#   base64.decode(text, url=false)  -> bytes  text is str or bytes; strict
+#
+# `url=false` is RFC 4648 §4, the standard alphabet (`+` and `/`); `url=true`
+# is §5, the URL- and filename-safe alphabet (`-` and `_`). Both are padded
+# with `=` in both directions. The alphabet is a flag on the one operation
+# rather than a second pair of names, because it is one codec with one table
+# swapped, not a second codec — the same reason `json.stringify` takes
+# `indent=` instead of shipping a `stringify_pretty`.
+#
+# **The two halves compose**: `decode(encode(b)) == b` for every byte string,
+# in either alphabet, and `corpus/divergence/96_base64.oro` checks it against
+# CPython's `base64` module over every byte value and a few thousand random
+# strings.
+#
+# **The shapes are Oro's, not CPython's.** `encode` answers a `str`, where
+# `base64.b64encode` answers `bytes`: what comes out of base64 is text by
+# construction — sixty-five ASCII characters — and the place it goes is a
+# header value, a URL or a JSON string, every one of which is a `str` here.
+# `decode` answers `bytes`, because what went in was octets and only the caller
+# knows whether they were UTF-8; `.to_str()` is the decode, in the open.
+#
+# **`decode` is strict, and there is no lenient mode.** A character outside the
+# chosen alphabet, a length that is not a multiple of four, and padding that is
+# in the wrong place or of the wrong length are each a `ValueError` saying
+# which it was and at what position. There is no whitespace skipping (base64 in
+# an `Authorization` header or a JSON string has none, and MIME's 76-column
+# lines are a MIME problem: strip them first, in the open) and no guessing the
+# alphabet from what arrived — a `-` handed to the standard decoder is refused,
+# with a message pointing at `url=true`, rather than quietly accepted. A
+# decoder that accepts more than one spelling of the same octets is one that
+# two parsers can disagree about.
+#
+# One leniency is kept, and it is CPython's: the unused low bits of the last
+# character before the padding are not required to be zero, so `"QR=="` and
+# `"QQ=="` both decode to `b"A"`. RFC 4648 §3.5 lets a decoder go either way;
+# matching `base64.b64decode(validate=True)` is what lets the twin in the
+# corpus stand behind every other line of this file, and a caller who needs
+# the canonical spelling can compare `encode(decode(t)) == t`.
+#
+# It is pure Oro, over indexing and `bytes.scan`, and not a Rust codec. Its
+# callers encode credentials and tokens a few dozen bytes long, where the loop
+# costs microseconds and there is nothing to win.
+
+# The two alphabets, written out rather than assembled, because they are
+# quotations: a reader checking this against RFC 4648's tables should read the
+# same sixty-four characters in both places.
+_STANDARD = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+_URL = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+_PAD = 61
+_EQUALS = b"="
+
+
+# Octet -> its six-bit value in `alphabet`, or -1 for an octet that is not in
+# it. Built once per alphabet at import.
+def _values(alphabet):
+    table = range(256).map(_ => -1).to_list()
+    for i, c in alphabet:
+        table[c] = i
+    return table
+
+
+_STANDARD_VALUES = _values(_STANDARD)
+_URL_VALUES = _values(_URL)
+
+
+# Encode `data` as base64 text.
+#
+#     base64.encode(b"user:pass")         -> "dXNlcjpwYXNz"
+#     base64.encode("é")                  -> "w6k="
+#     base64.encode(b"\xfb\xff", url=true) -> "-_8="
+def encode(data, url=false):
+    b = _octets(data, "encode", "data")
+    alphabet = _flag(url, "encode") ? _URL : _STANDARD
+    n = len(b)
+    whole = n - n % 3
+    out = []
+    for _, i in range(whole, step=3):
+        v = b[i] << 16 | b[i + 1] << 8 | b[i + 2]
+        out.extend([alphabet[v >> 18], alphabet[v >> 12 & 63], alphabet[v >> 6 & 63], alphabet[v & 63]])
+    if n - whole == 1:
+        v = b[whole] << 16
+        out.extend([alphabet[v >> 18], alphabet[v >> 12 & 63], _PAD, _PAD])
+    elif n - whole == 2:
+        v = b[whole] << 16 | b[whole + 1] << 8
+        out.extend([alphabet[v >> 18], alphabet[v >> 12 & 63], alphabet[v >> 6 & 63], _PAD])
+    return out.to_bytes().to_str()
+
+
+# Decode base64 text back to the octets it spells.
+#
+#     base64.decode("dXNlcjpwYXNz")       -> b"user:pass"
+#     base64.decode("-_8=", url=true)     -> b"\xfb\xff"
+#
+# The three refusals are checked in reading order — first a character that is
+# not base64 at all, then the length, then the padding — so the message names
+# the first thing wrong with the input rather than whichever check ran first.
+def decode(text, url=false):
+    b = _octets(text, "decode", "text")
+    use_url = _flag(url, "decode")
+    alphabet = use_url ? _URL : _STANDARD
+    values = use_url ? _URL_VALUES : _STANDARD_VALUES
+    n = len(b)
+    bad = b.scan(alphabet + _EQUALS)
+    if bad < n:
+        raise ValueError(_bad_character(text, b, bad, use_url))
+    if n % 4 != 0:
+        raise ValueError(f"base64 text length {n} is not a multiple of 4")
+    # Everything is now alphabet or `=`, so the first byte outside the
+    # alphabet is the first `=`, and the padding is everything from there on.
+    data = b.scan(alphabet)
+    if data < n:
+        after = data + b[data:].scan(_EQUALS)
+        if after < n:
+            raise ValueError(f"base64 padding at position {data} is followed by data at position {after}")
+        if n - data > 2:
+            raise ValueError(f"base64 text ends in {n - data} padding characters at position {data}; at most 2 are allowed")
+    pad = n - data
+    whole = pad == 0 ? n : n - 4
+    out = []
+    for _, i in range(whole, step=4):
+        v = values[b[i]] << 18 | values[b[i + 1]] << 12 | values[b[i + 2]] << 6 | values[b[i + 3]]
+        out.extend([v >> 16, v >> 8 & 255, v & 255])
+    if pad == 2:
+        v = values[b[whole]] << 18 | values[b[whole + 1]] << 12
+        out.append(v >> 16)
+    elif pad == 1:
+        v = values[b[whole]] << 18 | values[b[whole + 1]] << 12 | values[b[whole + 2]] << 6
+        out.extend([v >> 16, v >> 8 & 255])
+    return out.to_bytes()
+
+
+# The message for the character at `i`, which is in neither the alphabet nor
+# the padding. It is shown the way the caller wrote it — a character of their
+# str, or a one-byte slice of their bytes — and at the same index: every
+# octet before it is ASCII, so byte and character positions agree.
+#
+# A character from the *other* alphabet says so, because that is nearly always
+# what happened, and saying it is not the same as accepting it.
+def _bad_character(text, b, i, use_url):
+    shown = type(text) == str ? repr(text[i]) : repr(b[i:i + 1])
+    c = b[i:i + 1]
+    if use_url and c in b"+/":
+        return f"invalid base64 character {shown} at position {i}: that is the standard alphabet, and url=true is the URL-safe one"
+    if not use_url and c in b"-_":
+        return f"invalid base64 character {shown} at position {i}: that is the URL-safe alphabet, which is url=true"
+    return f"invalid base64 character {shown} at position {i}"
+
+
+# What both functions accept: bytes, or a str taken as its UTF-8 octets. For
+# `decode` a str with a non-ASCII character in it is simply one more character
+# that is not base64, and is refused as that.
+def _octets(v, who, name):
+    t = type(v)
+    if t == bytes:
+        return v
+    if t == str:
+        return v.to_bytes()
+    raise TypeError(f"base64.{who}() {name} must be bytes or str, not {t}")
+
+
+def _flag(url, who):
+    if type(url) != bool:
+        raise TypeError(f"base64.{who}() url= is true or false, not {type(url)}")
+    return url
