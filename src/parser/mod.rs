@@ -856,7 +856,16 @@ impl Parser {
                      e.g. `x => x * 2` or `(a, b) => a + b`",
                 )
             })?;
-            let body = self.parse_expr(min_bp)?;
+            // The body binds as far right as possible — `expression()`, the
+            // loosest level, not `parse_expr(min_bp)`. That is the general rule
+            // for a lambda body (it "extends to the end of what contains it"),
+            // and it is why `x => cond ? a : b` is `x => (cond ? a : b)`: the
+            // ternary lives at the `expression()` layer, so parsing the body one
+            // notch tighter would have stopped at `?` and left the ternary to
+            // wrap the whole lambda — a `(x => cond) ? a : b` that type-errors at
+            // run time. Any operator looser than a call (`or`, a ternary) after a
+            // bare lambda body belongs to the body.
+            let body = self.expression()?;
             return Ok(Expr::Lambda {
                 data: Box::new(crate::ast::LambdaData {
                     params,

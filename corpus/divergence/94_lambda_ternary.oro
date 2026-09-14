@@ -1,0 +1,16 @@
+# INTENTIONAL DIVERGENCE. A ternary is legal in a lambda body without
+# parentheses: the body binds as far right as possible, so `x => cond ? a : b`
+# is `x => (cond ? a : b)`, never `(x => cond) ? a : b` (which type-errored at
+# run time). None of this is Python (`? :` and `=>` are both Oro-only).
+
+# a ternary in a lambda in a chain
+print([-1, 2, -3, 0].map(x => x > 0 ? "pos" : "neg"))
+# nested one level (the depth-2 cap)
+print([0, 5, -5].map(x => x == 0 ? "zero" : x > 0 ? "pos" : "neg"))
+# the body still extends right for `or`, too
+print([1, 2, 3].map(x => x == 1 or x == 3))
+# in a filter, and threaded through a reduce
+print([1, 2, 3, 4, 5].filter(x => x % 2 == 0 ? true : false))
+# a ternary-in-lambda whose result feeds an f-string field with a format spec
+labels = [1, -2, 3].map(x => x > 0 ? "+" : "-")
+print(f"{labels}")

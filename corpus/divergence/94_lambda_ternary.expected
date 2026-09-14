@@ -1,0 +1,5 @@
+['neg', 'pos', 'neg', 'neg']
+['zero', 'pos', 'neg']
+[true, false, true]
+[2, 4]
+['+', '-', '+']
