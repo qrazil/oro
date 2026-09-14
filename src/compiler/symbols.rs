@@ -104,7 +104,11 @@ pub struct SymTable {
 
 impl SymTable {
     pub fn new() -> SymTable {
-        let mut t = SymTable { scopes: Vec::new(), symbols: Vec::new(), module: 0 };
+        let mut t = SymTable {
+            scopes: Vec::new(),
+            symbols: Vec::new(),
+            module: 0,
+        };
         t.module = t.new_scope(ScopeKind::Module, None, 0);
         // The module scope is its own function.
         t.scopes[t.module].func = t.module;
@@ -164,7 +168,12 @@ impl SymTable {
                         self.declare_here(m, name);
                     }
                 }
-                Stmt::If { body, elifs, orelse, .. } => {
+                Stmt::If {
+                    body,
+                    elifs,
+                    orelse,
+                    ..
+                } => {
                     self.collect_globals(func, body);
                     for (_, ebody) in elifs {
                         self.collect_globals(func, ebody);
@@ -181,7 +190,12 @@ impl SymTable {
                         self.collect_globals(func, &case.body);
                     }
                 }
-                Stmt::Try { body, handlers, finalbody, .. } => {
+                Stmt::Try {
+                    body,
+                    handlers,
+                    finalbody,
+                    ..
+                } => {
                     self.collect_globals(func, body);
                     for h in handlers {
                         self.collect_globals(func, &h.body);
@@ -259,7 +273,11 @@ impl SymTable {
         }
         let owner = self.scopes[scope_id].func;
         let sym = self.symbols.len();
-        self.symbols.push(Symbol { owner, captured: false, slot: 0 });
+        self.symbols.push(Symbol {
+            owner,
+            captured: false,
+            slot: 0,
+        });
         self.scopes[scope_id].decls.insert(name.to_string(), sym);
         self.scopes[owner].owned.push(sym);
     }
@@ -284,7 +302,12 @@ impl SymTable {
     fn build_children(&mut self, scope_id: usize, stmt: &Stmt) {
         let func = self.scopes[scope_id].func;
         match stmt {
-            Stmt::If { body, elifs, orelse, .. } => {
+            Stmt::If {
+                body,
+                elifs,
+                orelse,
+                ..
+            } => {
                 self.child_block(scope_id, func, body, &[]);
                 for (_, ebody) in elifs {
                     self.child_block(scope_id, func, ebody, &[]);
@@ -321,7 +344,12 @@ impl SymTable {
                     self.child_block(scope_id, func, &case.body, &[]);
                 }
             }
-            Stmt::Try { body, handlers, finalbody, .. } => {
+            Stmt::Try {
+                body,
+                handlers,
+                finalbody,
+                ..
+            } => {
                 // try body, each handler body (with its `as e` predeclared),
                 // then the finally body — each a block scope, in this order.
                 self.child_block(scope_id, func, body, &[]);
@@ -339,7 +367,12 @@ impl SymTable {
 
     /// Create a `Function` scope (a closure boundary) for a `def`/method body
     /// as a child of `scope_id`, with its parameters predeclared.
-    fn build_function_scope(&mut self, scope_id: usize, params: &[crate::ast::Param], body: &[Stmt]) {
+    fn build_function_scope(
+        &mut self,
+        scope_id: usize,
+        params: &[crate::ast::Param],
+        body: &[Stmt],
+    ) {
         let fid = self.new_scope(ScopeKind::Function, Some(scope_id), 0);
         self.scopes[fid].func = fid;
         self.scopes[scope_id].children.push(fid);
@@ -390,7 +423,13 @@ impl SymTable {
                 self.resolve_expr(scope_id, value);
                 self.resolve_store_target(scope_id, target);
             }
-            Stmt::If { cond, body, elifs, orelse, .. } => {
+            Stmt::If {
+                cond,
+                body,
+                elifs,
+                orelse,
+                ..
+            } => {
                 self.resolve_expr(scope_id, cond);
                 let child = self.next_child(scope_id, cursor);
                 let mut c = 0;
@@ -413,7 +452,9 @@ impl SymTable {
                 let mut c = 0;
                 self.resolve_block(child, body, &mut c);
             }
-            Stmt::For { target, iter, body, .. } => {
+            Stmt::For {
+                target, iter, body, ..
+            } => {
                 self.resolve_expr(scope_id, iter);
                 let child = self.next_child(scope_id, cursor);
                 // Store to the loop target resolves in the child block.
@@ -443,7 +484,12 @@ impl SymTable {
             Stmt::Return { value: Some(v), .. } => self.resolve_expr(scope_id, v),
             Stmt::Raise { exc: Some(e), .. } => self.resolve_expr(scope_id, e),
             Stmt::Yield { value: Some(v), .. } => self.resolve_expr(scope_id, v),
-            Stmt::Try { body, handlers, finalbody, .. } => {
+            Stmt::Try {
+                body,
+                handlers,
+                finalbody,
+                ..
+            } => {
                 let child = self.next_child(scope_id, cursor);
                 let mut c = 0;
                 self.resolve_block(child, body, &mut c);
@@ -556,12 +602,16 @@ impl SymTable {
                     self.resolve_expr(scope_id, e);
                 }
             }
-            Expr::Ternary { cond, then, orelse, .. } => {
+            Expr::Ternary {
+                cond, then, orelse, ..
+            } => {
                 self.resolve_expr(scope_id, cond);
                 self.resolve_expr(scope_id, then);
                 self.resolve_expr(scope_id, orelse);
             }
-            Expr::Call { func, args, kwargs, .. } => {
+            Expr::Call {
+                func, args, kwargs, ..
+            } => {
                 self.resolve_expr(scope_id, func);
                 for a in args {
                     self.resolve_expr(scope_id, a);
@@ -575,7 +625,13 @@ impl SymTable {
                 self.resolve_expr(scope_id, value);
                 self.resolve_expr(scope_id, index);
             }
-            Expr::Slice { value, lower, upper, step, .. } => {
+            Expr::Slice {
+                value,
+                lower,
+                upper,
+                step,
+                ..
+            } => {
                 self.resolve_expr(scope_id, value);
                 for part in [lower, upper, step].into_iter().flatten() {
                     self.resolve_expr(scope_id, part);
@@ -653,7 +709,9 @@ impl SymTable {
     }
 
     fn enclosing_function(&self, func: usize) -> usize {
-        let parent = self.scopes[func].parent.expect("only the module has no parent function");
+        let parent = self.scopes[func]
+            .parent
+            .expect("only the module has no parent function");
         self.scopes[parent].func
     }
 
@@ -704,7 +762,10 @@ impl SymTable {
                 Some(Resolution::Local(self.symbols[sym].slot))
             }
         } else {
-            let idx = self.scopes[curfunc].freevars.iter().position(|&s| s == sym)? as u16;
+            let idx = self.scopes[curfunc]
+                .freevars
+                .iter()
+                .position(|&s| s == sym)? as u16;
             Some(Resolution::Free(idx))
         }
     }

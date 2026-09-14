@@ -155,9 +155,9 @@ impl Lexer {
                         self.advance();
                     }
                     Some('\t') => {
-                        return Err(self.error(
-                            "tabs are not permitted for indentation, use spaces",
-                        ));
+                        return Err(
+                            self.error("tabs are not permitted for indentation, use spaces")
+                        );
                     }
                     _ => break,
                 }
@@ -222,8 +222,7 @@ impl Lexer {
         let c = self.peek().unwrap();
 
         // A digit, or a leading `.` immediately followed by a digit (e.g. `.5`).
-        if c.is_ascii_digit()
-            || (c == '.' && matches!(self.peek2(), Some(d) if d.is_ascii_digit()))
+        if c.is_ascii_digit() || (c == '.' && matches!(self.peek2(), Some(d) if d.is_ascii_digit()))
         {
             self.scan_number()
         } else if (c == 'f' || c == 'F') && matches!(self.peek2(), Some('\'') | Some('"')) {
@@ -365,12 +364,7 @@ impl Lexer {
     /// because the alternative is worse: `1_` would lex as `1` and the name
     /// `_`, and the program would fail later with a message about something
     /// else.
-    fn scan_digits(
-        &mut self,
-        out: &mut String,
-        radix: u32,
-        name: &str,
-    ) -> Result<(), LexError> {
+    fn scan_digits(&mut self, out: &mut String, radix: u32, name: &str) -> Result<(), LexError> {
         let mut digits = 0usize;
         loop {
             if self.peek() == Some('_') {
@@ -535,11 +529,7 @@ impl Lexer {
                                     Err(msg) => return Err(LexError::new(msg, sl, sc)),
                                 }
                             } else {
-                                return Err(LexError::new(
-                                    unknown_bytes_escape_message(e),
-                                    sl,
-                                    sc,
-                                ));
+                                return Err(LexError::new(unknown_bytes_escape_message(e), sl, sc));
                             }
                         }
                     }
@@ -764,7 +754,13 @@ impl Lexer {
             text.push(c);
             self.advance();
         }
-        self.comments.push(Comment { line: sl, col: sc, text, in_brackets, inline });
+        self.comments.push(Comment {
+            line: sl,
+            col: sc,
+            text,
+            in_brackets,
+            inline,
+        });
     }
 
     // --- Low-level cursor helpers -------------------------------------------
@@ -937,7 +933,6 @@ pub fn unknown_escape_message(e: char) -> String {
          write `\\\\{e}` for a literal backslash, or use a raw string r\"...\""
     )
 }
-
 
 /// Append one source character to a bytes literal. Non-ASCII has no octet to
 /// be, so it is rejected here with both spellings that do work.

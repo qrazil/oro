@@ -24,7 +24,9 @@ use crate::value::{
 /// interpreter, which checks the name first; it exists so every global has the
 /// same `Value::Builtin` shape.
 fn bi_vm_dispatched(_args: Vec<Value>) -> VResult<Value> {
-    Err(runtime_error("internal: this builtin is dispatched by the VM"))
+    Err(runtime_error(
+        "internal: this builtin is dispatched by the VM",
+    ))
 }
 
 /// Look up a global name. Oro's only globals are the builtins.
@@ -56,7 +58,10 @@ pub fn lookup(name: &str) -> Option<Value> {
         "apply" => bi_vm_dispatched,
         _ => return None,
     };
-    Some(Value::Builtin(Rc::new(Builtin { name: intern(name), func: f })))
+    Some(Value::Builtin(Rc::new(Builtin {
+        name: intern(name),
+        func: f,
+    })))
 }
 
 /// Map a builtin name to its `'static` spelling for the [`Builtin`] struct.
@@ -84,7 +89,10 @@ fn intern(name: &str) -> &'static str {
 
 pub(crate) fn exactly(args: &[Value], n: usize, who: &str) -> VResult<()> {
     if args.len() != n {
-        Err(type_error(format!("{who}() takes {n} argument(s) but {} were given", args.len())))
+        Err(type_error(format!(
+            "{who}() takes {n} argument(s) but {} were given",
+            args.len()
+        )))
     } else {
         Ok(())
     }
@@ -102,7 +110,9 @@ fn bind_kwargs<'a, const N: usize>(
     let mut out = [None; N];
     for (k, v) in kwargs {
         let Some(i) = names.iter().position(|n| n == k) else {
-            return Err(type_error(format!("{who}() got an unexpected keyword argument '{k}'")));
+            return Err(type_error(format!(
+                "{who}() got an unexpected keyword argument '{k}'"
+            )));
         };
         if out[i].is_some() {
             return Err(type_error(format!(
@@ -159,7 +169,10 @@ fn positional_at_most(
     };
     let given = args.len();
     let verb = if given == 1 { "was" } else { "were" };
-    Err(type_error(format!("{who}() takes {takes} but {given} {verb} given — {}", fix())))
+    Err(type_error(format!(
+        "{who}() takes {takes} but {given} {verb} given — {}",
+        fix()
+    )))
 }
 
 /// How an argument appears in a rewritten call: a scalar as its literal, so the
@@ -196,7 +209,10 @@ fn window_spelling(who: &str, args: &[Value]) -> String {
     match args {
         [sub, rest @ ..] if rest.len() <= 2 => {
             let named: Vec<(&str, &Value)> = ["start", "end"].into_iter().zip(rest).collect();
-            format!("write {}: the window is keyword-only", respell(who, &[sub], &named))
+            format!(
+                "write {}: the window is keyword-only",
+                respell(who, &[sub], &named)
+            )
         }
         _ => format!("write `{who}(sub, start=…, end=…)`"),
     }
@@ -264,11 +280,7 @@ fn range_spelling(args: &[Value]) -> String {
 
 /// A plain builtin called with keyword arguments. `round` and `open` are the
 /// two whose parameters have defaults, so they are the two that take one.
-pub fn call_builtin_kw(
-    name: &str,
-    args: Vec<Value>,
-    kwargs: &[(String, Value)],
-) -> VResult<Value> {
+pub fn call_builtin_kw(name: &str, args: Vec<Value>, kwargs: &[(String, Value)]) -> VResult<Value> {
     match name {
         "round" => round_with(args, kwargs),
         "open" => open_with(args, kwargs),
@@ -356,10 +368,12 @@ fn bi_len(args: Vec<Value>) -> VResult<Value> {
         Value::Tuple(t) => t.len(),
         Value::Dict(d) => d.borrow().len(),
         Value::Range(r) => r.len(),
-        other => return Err(type_error(format!(
-            "object of type '{}' has no len()",
-            other.type_name()
-        ))),
+        other => {
+            return Err(type_error(format!(
+                "object of type '{}' has no len()",
+                other.type_name()
+            )))
+        }
     };
     Ok(Value::Int(n as i64))
 }
@@ -368,7 +382,6 @@ fn bi_repr(args: Vec<Value>) -> VResult<Value> {
     exactly(&args, 1, "repr")?;
     Ok(Value::str(args[0].repr()))
 }
-
 
 fn bi_open(args: Vec<Value>) -> VResult<Value> {
     open_with(args, &[])
@@ -418,9 +431,11 @@ fn open_with(args: Vec<Value>, kwargs: &[(String, Value)]) -> VResult<Value> {
                 &mode[..1]
             )))
         }
-        other => return Err(value_error(format!(
-            "invalid file mode '{other}' (use 'r', 'w', or 'a')"
-        ))),
+        other => {
+            return Err(value_error(format!(
+                "invalid file mode '{other}' (use 'r', 'w', or 'a')"
+            )))
+        }
     };
     Ok(Value::Stream(Rc::new(stream)))
 }
@@ -447,7 +462,10 @@ fn bi_abs(args: Vec<Value>) -> VResult<Value> {
         }),
         Value::Big(b) => Ok(Value::from_bigint(b.abs())),
         Value::Float(f) => Ok(Value::Float(f.abs())),
-        other => Err(type_error(format!("bad operand type for abs(): '{}'", other.type_name()))),
+        other => Err(type_error(format!(
+            "bad operand type for abs(): '{}'",
+            other.type_name()
+        ))),
     }
 }
 
@@ -510,7 +528,8 @@ pub const ORD_NEEDS_VM: &str = "internal: ordering needs the VM (unrouted __lt__
 /// [`Value::try_compare`] with "the VM must decide" turned into the backstop
 /// error above, for the native orderings that have no way to suspend.
 pub fn ord_or_defer(a: &Value, b: &Value, sym: &'static str) -> VResult<std::cmp::Ordering> {
-    a.try_compare(b, sym)?.ok_or_else(|| runtime_error(ORD_NEEDS_VM))
+    a.try_compare(b, sym)?
+        .ok_or_else(|| runtime_error(ORD_NEEDS_VM))
 }
 
 /// Stable sort of `items` by the matching entry in `keys` (the classic
@@ -583,7 +602,10 @@ fn as_i64(v: &Value) -> VResult<i64> {
     match v {
         Value::Bool(b) => Ok(*b as i64),
         Value::Int(i) => Ok(*i),
-        other => Err(type_error(format!("expected an integer, got '{}'", other.type_name()))),
+        other => Err(type_error(format!(
+            "expected an integer, got '{}'",
+            other.type_name()
+        ))),
     }
 }
 
@@ -644,11 +666,15 @@ fn parse_int_base(s: &str, base: i64) -> VResult<Value> {
     };
     let cleaned: String = digits.chars().filter(|c| *c != '_').collect();
     if cleaned.is_empty() {
-        return Err(value_error(format!("invalid literal for int() with base {base}: '{s}'")));
+        return Err(value_error(format!(
+            "invalid literal for int() with base {base}: '{s}'"
+        )));
     }
     match i64::from_str_radix(&cleaned, base as u32) {
         Ok(n) => Ok(Value::Int(if neg { -n } else { n })),
-        Err(_) => Err(value_error(format!("invalid literal for int() with base {base}: '{s}'"))),
+        Err(_) => Err(value_error(format!(
+            "invalid literal for int() with base {base}: '{s}'"
+        ))),
     }
 }
 
@@ -761,7 +787,9 @@ fn round_with(args: Vec<Value>, kwargs: &[(String, Value)]) -> VResult<Value> {
     })?;
     let [nd] = bind_kwargs("round", kwargs, ["ndigits"])?;
     let Some(v) = args.first() else {
-        return Err(type_error("round() missing its required argument: the number"));
+        return Err(type_error(
+            "round() missing its required argument: the number",
+        ));
     };
     let ndigits = match nd {
         None => None,
@@ -1045,9 +1073,7 @@ fn cut_str_method_message(recv: &Value, name: &str) -> Option<&'static str> {
     Some(match name {
         "lstrip" => "`lstrip` is not in Oro — use `strip(side=\"left\")`",
         "rstrip" => "`rstrip` is not in Oro — use `strip(side=\"right\")`",
-        "rsplit" => {
-            "`rsplit` is not in Oro — use `split(sep=…, maxsplit=…, side=\"right\")`"
-        }
+        "rsplit" => "`rsplit` is not in Oro — use `split(sep=…, maxsplit=…, side=\"right\")`",
         "rfind" => "`rfind` is not in Oro — use `find(sub, reverse=true)`",
         "index" => "`index` is not in Oro — use `find(sub)`, which answers -1 rather than raising",
         "zfill" => {
@@ -1195,11 +1221,7 @@ pub fn call_method(
     }
 }
 
-fn regex_method(
-    r: &Rc<crate::value::OroRegex>,
-    name: &str,
-    args: Vec<Value>,
-) -> VResult<Value> {
+fn regex_method(r: &Rc<crate::value::OroRegex>, name: &str, args: Vec<Value>) -> VResult<Value> {
     use crate::regexutil as rx;
     let (n, missing) = match name {
         "search" | "fullmatch" | "findall" | "finditer" => (1, rx::POS),
@@ -1219,15 +1241,13 @@ fn regex_method(
             let repl = str_arg(&args, 0, "sub")?;
             Ok(rx::sub(&r.re, &repl, &str_arg(&args, 1, "sub")?))
         }
-        _ => Err(attribute_error(format!("'Pattern' object has no method '{name}'"))),
+        _ => Err(attribute_error(format!(
+            "'Pattern' object has no method '{name}'"
+        ))),
     }
 }
 
-fn match_method(
-    m: &Rc<crate::value::OroMatch>,
-    name: &str,
-    args: Vec<Value>,
-) -> VResult<Value> {
+fn match_method(m: &Rc<crate::value::OroMatch>, name: &str, args: Vec<Value>) -> VResult<Value> {
     use crate::regexutil as rx;
     // The group index is required, so `m.group(0)` says "the whole match".
     let n = match args.as_slice() {
@@ -1238,21 +1258,23 @@ fn match_method(
                 "{name}() missing its group index — m.{name}(0) is the whole match"
             )))
         }
-        _ => return Err(type_error(format!("{name}() takes one group index, an int"))),
+        _ => {
+            return Err(type_error(format!(
+                "{name}() takes one group index, an int"
+            )))
+        }
     };
     match name {
         "group" => rx::group(m, n),
         "start" => rx::start(m, n),
         "end" => rx::end(m, n),
-        _ => Err(attribute_error(format!("'Match' object has no method '{name}'"))),
+        _ => Err(attribute_error(format!(
+            "'Match' object has no method '{name}'"
+        ))),
     }
 }
 
-fn stream_method(
-    s: &Rc<crate::stream::OroStream>,
-    name: &str,
-    args: Vec<Value>,
-) -> VResult<Value> {
+fn stream_method(s: &Rc<crate::stream::OroStream>, name: &str, args: Vec<Value>) -> VResult<Value> {
     match name {
         // The five that park, or wake a parked task, live in `crate::vm::sched`
         // instead: a native method must answer with a `Value`, and the whole
@@ -1303,14 +1325,19 @@ fn stream_method(
             s.set_nodelay(on)?;
             Ok(Value::None)
         }
-        _ => Err(attribute_error(format!("'{}' object has no method '{name}'", s.kind.type_name()))),
+        _ => Err(attribute_error(format!(
+            "'{}' object has no method '{name}'",
+            s.kind.type_name()
+        ))),
     }
 }
 
 /// The type name of argument `i`, for a diagnostic. `null` when absent, so a
 /// missing argument reads the same way a wrong one does.
 pub(crate) fn type_of(args: &[Value], i: usize) -> &'static str {
-    args.get(i).map(|v| v.type_name()).unwrap_or_else(|| Value::None.type_name())
+    args.get(i)
+        .map(|v| v.type_name())
+        .unwrap_or_else(|| Value::None.type_name())
 }
 
 /// CPython's `ADJUST_INDICES`: fold a pair of Python slice bounds into offsets
@@ -1326,7 +1353,11 @@ fn adjust_indices(start: i64, end: i64, len: i64) -> (i64, i64) {
     } else {
         end
     };
-    let start = if start < 0 { start.saturating_add(len).max(0) } else { start };
+    let start = if start < 0 {
+        start.saturating_add(len).max(0)
+    } else {
+        start
+    };
     (start, end)
 }
 
@@ -1343,7 +1374,11 @@ fn search_window(
     let start = kw_int(who, "start", start, 0)?;
     let end = kw_int(who, "end", end, i64::MAX)?;
     let (start, end) = adjust_indices(start, end, len);
-    Ok(if end < start { None } else { Some((start, end)) })
+    Ok(if end < start {
+        None
+    } else {
+        Some((start, end))
+    })
 }
 
 /// Byte offsets of characters `start` and `end`, both already clamped to
@@ -1418,7 +1453,10 @@ fn strip_side(side: Option<&Value>) -> VResult<Side> {
         return Ok(Side::Both);
     };
     let Value::Str(s) = v else {
-        return Err(type_error(format!("strip(): side must be str, not '{}'", v.type_name())));
+        return Err(type_error(format!(
+            "strip(): side must be str, not '{}'",
+            v.type_name()
+        )));
     };
     Ok(match &*s.s {
         "both" => Side::Both,
@@ -1455,7 +1493,10 @@ fn split_side(side: Option<&Value>) -> VResult<Side> {
         return Ok(Side::Left);
     };
     let Value::Str(s) = v else {
-        return Err(type_error(format!("split(): side must be str, not '{}'", v.type_name())));
+        return Err(type_error(format!(
+            "split(): side must be str, not '{}'",
+            v.type_name()
+        )));
     };
     Ok(match &*s.s {
         "left" => Side::Left,
@@ -1471,7 +1512,11 @@ fn split_side(side: Option<&Value>) -> VResult<Side> {
 
 /// `strip`'s trim, with the end(s) chosen by `side`.
 fn trim_with(s: &str, side: Side, hit: impl Fn(char) -> bool + Copy) -> &str {
-    let s = if side.cuts_left() { s.trim_start_matches(hit) } else { s };
+    let s = if side.cuts_left() {
+        s.trim_start_matches(hit)
+    } else {
+        s
+    };
     if side.cuts_right() {
         s.trim_end_matches(hit)
     } else {
@@ -1621,7 +1666,10 @@ fn is_py_space(c: char) -> bool {
 /// `s.split()` with no limit, over [`is_py_space`] rather than Rust's slightly
 /// smaller whitespace set.
 fn split_whitespace_all(s: &str) -> Vec<String> {
-    s.split(is_py_space).filter(|p| !p.is_empty()).map(|p| p.to_string()).collect()
+    s.split(is_py_space)
+        .filter(|p| !p.is_empty())
+        .map(|p| p.to_string())
+        .collect()
 }
 
 /// `str.split(maxsplit=n)`: runs of whitespace separate, leading and
@@ -1801,15 +1849,9 @@ fn cast_method(
                 Value::Int(i) => Ok(Value::Float(*i as f64)),
                 Value::Big(b) => Ok(Value::Float(b.to_f64())),
                 Value::Float(_) => Ok(recv.clone()),
-                Value::Str(s) => s
-                    .s
-                    .trim()
-                    .parse::<f64>()
-                    .map(Value::Float)
-                    .map_err(|_| value_error(format!(
-                        "could not convert string to float: '{}'",
-                        s.s
-                    ))),
+                Value::Str(s) => s.s.trim().parse::<f64>().map(Value::Float).map_err(|_| {
+                    value_error(format!("could not convert string to float: '{}'", s.s))
+                }),
                 other => Err(type_error(format!(
                     "'{}' object has no conversion to float",
                     other.type_name()
@@ -1903,8 +1945,20 @@ fn cast_method(
 pub fn is_seq_native(name: &str) -> bool {
     matches!(
         name,
-        "sum" | "min" | "max" | "unique" | "take" | "drop" | "first" | "last"
-            | "flatten" | "chunk" | "zip" | "join" | "reverse" | "len"
+        "sum"
+            | "min"
+            | "max"
+            | "unique"
+            | "take"
+            | "drop"
+            | "first"
+            | "last"
+            | "flatten"
+            | "chunk"
+            | "zip"
+            | "join"
+            | "reverse"
+            | "len"
     )
 }
 
@@ -2061,7 +2115,11 @@ fn seq_native_method(
             // indistinguishable from an empty one here, exactly as it is for
             // `get`; that is the price of the asking form and it is the same
             // price in both places.
-            let pick = if name == "first" { items.first() } else { items.last() };
+            let pick = if name == "first" {
+                items.first()
+            } else {
+                items.last()
+            };
             Ok(pick.cloned().unwrap_or(Value::None))
         }
         "sum" => {
@@ -2369,7 +2427,9 @@ fn str_method(
             let parts = parts.into_iter().map(Value::str).collect::<Vec<_>>();
             Ok(Value::List(OroList::new(parts)))
         }
-        _ => Err(attribute_error(format!("'str' object has no method '{name}'"))),
+        _ => Err(attribute_error(format!(
+            "'str' object has no method '{name}'"
+        ))),
     }
 }
 
@@ -2421,7 +2481,11 @@ fn bytes_rfind(hay: &[u8], needle: &[u8]) -> Option<usize> {
 /// those insertions from the left, so `b"abc".replace(b"", b"-", 2)` is
 /// `b"-a-bc"`.
 fn bytes_replace(hay: &[u8], from: &[u8], to: &[u8], count: i64) -> Vec<u8> {
-    let limit = if count < 0 { usize::MAX } else { count as usize };
+    let limit = if count < 0 {
+        usize::MAX
+    } else {
+        count as usize
+    };
     let mut out = Vec::with_capacity(hay.len());
     let mut done = 0usize;
     if from.is_empty() {
@@ -2455,7 +2519,11 @@ fn bytes_replace(hay: &[u8], from: &[u8], to: &[u8], count: i64) -> Vec<u8> {
 /// [`split_sep_n`], with the same `maxsplit` rule (negative = unlimited) and
 /// the same `side`.
 fn split_sep_bytes(s: &[u8], sep: &[u8], maxsplit: i64, side: Side) -> Vec<Vec<u8>> {
-    let limit = if maxsplit < 0 { usize::MAX } else { maxsplit as usize };
+    let limit = if maxsplit < 0 {
+        usize::MAX
+    } else {
+        maxsplit as usize
+    };
     if side == Side::Right {
         return split_sep_bytes_right(s, sep, limit);
     }
@@ -2499,7 +2567,11 @@ fn split_sep_bytes_right(s: &[u8], sep: &[u8], limit: usize) -> Vec<Vec<u8>> {
 /// whitespace is discarded, and the remainder after `maxsplit` splits comes
 /// back verbatim, from whichever end `side` names.
 fn split_space_bytes(s: &[u8], maxsplit: i64, side: Side) -> Vec<Vec<u8>> {
-    let limit = if maxsplit < 0 { usize::MAX } else { maxsplit as usize };
+    let limit = if maxsplit < 0 {
+        usize::MAX
+    } else {
+        maxsplit as usize
+    };
     if side == Side::Right {
         return split_space_bytes_right(s, limit);
     }
@@ -2670,7 +2742,10 @@ fn bytes_method(
             let Some((start, end)) = search_window(start, end, "count", b.len() as i64)? else {
                 return Ok(Value::Int(0));
             };
-            Ok(Value::Int(count_bytes(&b[start as usize..end as usize], &sub)))
+            Ok(Value::Int(count_bytes(
+                &b[start as usize..end as usize],
+                &sub,
+            )))
         }
         "is_digit" | "is_alpha" | "is_alnum" | "is_space" => {
             exactly(&args, 0, name)?;
@@ -2683,8 +2758,7 @@ fn bytes_method(
             let Some((start, end)) = search_window(start, end, name, b.len() as i64)? else {
                 return Ok(Value::Bool(false));
             };
-            let Some(at) = tail_window(start, end, affix.len() as i64, name == "startswith")
-            else {
+            let Some(at) = tail_window(start, end, affix.len() as i64, name == "startswith") else {
                 return Ok(Value::Bool(false));
             };
             let at = at as usize;
@@ -2749,7 +2823,9 @@ fn bytes_method(
             }
             Ok(Value::str(out))
         }
-        _ => Err(attribute_error(format!("'bytes' object has no method '{name}'"))),
+        _ => Err(attribute_error(format!(
+            "'bytes' object has no method '{name}'"
+        ))),
     }
 }
 
@@ -2795,7 +2871,9 @@ fn list_method(
             }
             Ok(b.remove(adj as usize))
         }
-        _ => Err(attribute_error(format!("'list' object has no method '{name}'"))),
+        _ => Err(attribute_error(format!(
+            "'list' object has no method '{name}'"
+        ))),
     }
 }
 
@@ -2821,7 +2899,9 @@ fn dict_method(
             let Some(key) = args.first() else {
                 return Err(type_error("get() missing its required argument: the key"));
             };
-            Ok(d.borrow().get(key)?.unwrap_or_else(|| default.cloned().unwrap_or(Value::None)))
+            Ok(d.borrow()
+                .get(key)?
+                .unwrap_or_else(|| default.cloned().unwrap_or(Value::None)))
         }
         // The removal, and the reason `del` could be cut: `d.pop(k)` raises
         // `KeyError` when the key is absent, `d.pop(k, default=v)` answers `v`.
@@ -2858,7 +2938,8 @@ fn dict_method(
             exactly(&args, 0, "values")?;
             Ok(Value::List(OroList::new(d.borrow().values())))
         }
-        _ => Err(attribute_error(format!("'dict' object has no method '{name}'"))),
+        _ => Err(attribute_error(format!(
+            "'dict' object has no method '{name}'"
+        ))),
     }
 }
-

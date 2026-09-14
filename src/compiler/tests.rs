@@ -30,9 +30,7 @@ fn forward_reference_between_functions_resolves() {
     // `a` calls `b`, defined later: the pre-pass must have numbered `b` before
     // `a`'s body is compiled. `b` is captured by `a`, so the module holds it in
     // a cell.
-    let code = compile_src(
-        "def a():\n    return b()\n\ndef b():\n    return 1\n\nresult = a()\n",
-    );
+    let code = compile_src("def a():\n    return b()\n\ndef b():\n    return 1\n\nresult = a()\n");
     assert!(code.ncells >= 1, "b must be a module cell captured by a");
     let a_proto = first_proto(&code);
     assert_eq!(a_proto.code.nfree, 1, "a captures b as a free variable");
@@ -187,8 +185,14 @@ fn every_binding_form_refuses_a_type_keyword() {
         ("def f(dict):\n    return dict\n", "a parameter name"),
         ("f = (str) => 1\n", "a parameter name"),
         ("import re as dict\n", "an imported name"),
-        ("try:\n    pass\nexcept ValueError as bytes:\n    pass\n", "an `except ... as` name"),
-        ("def f():\n    global int\n    int = 2\n", "a `global` declaration"),
+        (
+            "try:\n    pass\nexcept ValueError as bytes:\n    pass\n",
+            "an `except ... as` name",
+        ),
+        (
+            "def f():\n    global int\n    int = 2\n",
+            "a `global` declaration",
+        ),
         ("Task = 1\n", "a variable"),
         ("File = 1\n", "a variable"),
     ];
@@ -208,12 +212,28 @@ fn every_binding_form_refuses_a_type_keyword() {
 #[test]
 fn a_for_target_must_be_a_pair() {
     let single = compile_err("for x in [1, 2]:\n    pass\n");
-    assert!(single.message.contains("binds an (index, value) pair"), "got {}", single.message);
-    assert!(single.message.contains("for _, x in xs"), "got {}", single.message);
+    assert!(
+        single.message.contains("binds an (index, value) pair"),
+        "got {}",
+        single.message
+    );
+    assert!(
+        single.message.contains("for _, x in xs"),
+        "got {}",
+        single.message
+    );
 
     let three = compile_err("for a, b, c in [(1, 2, 3)]:\n    pass\n");
-    assert!(three.message.contains("this target has 3 names"), "got {}", three.message);
-    assert!(three.message.contains("for _, (…) in xs"), "got {}", three.message);
+    assert!(
+        three.message.contains("this target has 3 names"),
+        "got {}",
+        three.message
+    );
+    assert!(
+        three.message.contains("for _, (…) in xs"),
+        "got {}",
+        three.message
+    );
 
     // The pair forms all compile.
     compile_src("for i, v in [1, 2]:\n    pass\n");
@@ -235,7 +255,11 @@ fn a_counting_while_is_refused() {
         "i = 10\nwhile i > 0:\n    i = i - 1\n",
     ] {
         let e = compile_err(src);
-        assert!(e.message.contains("counts `i` by a constant"), "{src:?} gave {}", e.message);
+        assert!(
+            e.message.contains("counts `i` by a constant"),
+            "{src:?} gave {}",
+            e.message
+        );
     }
     // Genuine conditions — all compile.
     compile_src("while true:\n    break\n");
@@ -277,7 +301,9 @@ fn a_type_keyword_is_still_a_member_name() {
 fn a_type_keyword_compiles_to_a_constant() {
     let code = compile_src("x = type(1) == int\n");
     assert!(
-        code.consts.iter().any(|c| matches!(c, Value::Type(crate::value::TypeTag::Int))),
+        code.consts
+            .iter()
+            .any(|c| matches!(c, Value::Type(crate::value::TypeTag::Int))),
         "`int` should be in the constant pool"
     );
     assert!(

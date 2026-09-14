@@ -29,7 +29,10 @@ fn main() -> ExitCode {
     // `--version`/`-V` as the first argument short-circuits before any file
     // handling. Only the first arg: `oro script.oro -V` passes `-V` to the
     // script (in sys.argv), matching CPython.
-    if matches!(args.get(1).map(String::as_str), Some("--version") | Some("-V")) {
+    if matches!(
+        args.get(1).map(String::as_str),
+        Some("--version") | Some("-V")
+    ) {
         println!("oro {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }

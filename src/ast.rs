@@ -166,7 +166,11 @@ pub struct ExceptHandler {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     /// A bare expression used for its side effects.
-    Expr { value: Expr, line: usize, col: usize },
+    Expr {
+        value: Expr,
+        line: usize,
+        col: usize,
+    },
     /// `a = b`, `a = b = c` (chained; `targets` holds every left-hand side).
     Assign {
         targets: Vec<Expr>,
@@ -228,9 +232,18 @@ pub enum Stmt {
         line: usize,
         col: usize,
     },
-    Break { line: usize, col: usize },
-    Continue { line: usize, col: usize },
-    Pass { line: usize, col: usize },
+    Break {
+        line: usize,
+        col: usize,
+    },
+    Continue {
+        line: usize,
+        col: usize,
+    },
+    Pass {
+        line: usize,
+        col: usize,
+    },
     /// `try` / `except` / `finally`.
     Try {
         body: Vec<Stmt>,
@@ -304,28 +317,62 @@ pub enum Pattern {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     /// Integer literal, raw source text (e.g. `"42"`).
-    Int { value: String, line: usize, col: usize },
+    Int {
+        value: String,
+        line: usize,
+        col: usize,
+    },
     /// Float literal, raw source text (e.g. `"3.14"`).
-    Float { value: String, line: usize, col: usize },
+    Float {
+        value: String,
+        line: usize,
+        col: usize,
+    },
     /// String literal (escapes already decoded by the lexer).
     /// String literal (escapes already decoded). `raw` records whether the
     /// source wrote `r"..."`; it does not affect the value, only how the
     /// formatter reprints it.
-    Str { value: String, raw: bool, line: usize, col: usize },
+    Str {
+        value: String,
+        raw: bool,
+        line: usize,
+        col: usize,
+    },
     /// Bytes literal (escapes already decoded to octets). `raw` records whether
     /// the source wrote `rb"..."`; it does not affect the value, only how the
     /// formatter reprints it.
-    Bytes { value: Vec<u8>, raw: bool, line: usize, col: usize },
+    Bytes {
+        value: Vec<u8>,
+        raw: bool,
+        line: usize,
+        col: usize,
+    },
     /// f-string literal (raw inner text; interpolation parsed later).
-    FString { value: String, line: usize, col: usize },
+    FString {
+        value: String,
+        line: usize,
+        col: usize,
+    },
     /// `true` / `false`.
-    Bool { value: bool, line: usize, col: usize },
+    Bool {
+        value: bool,
+        line: usize,
+        col: usize,
+    },
     /// `null`. (The variant keeps the old name; only the spelling moved.)
     NoneLit { line: usize, col: usize },
     /// `x => expr` — an anonymous single-expression function.
-    Lambda { data: Box<LambdaData>, line: usize, col: usize },
+    Lambda {
+        data: Box<LambdaData>,
+        line: usize,
+        col: usize,
+    },
     /// A bare identifier used as a value.
-    Name { name: String, line: usize, col: usize },
+    Name {
+        name: String,
+        line: usize,
+        col: usize,
+    },
     /// A unary prefix operation.
     Unary {
         op: UnaryOp,
@@ -403,9 +450,17 @@ pub enum Expr {
         col: usize,
     },
     /// List literal `[...]`.
-    List { elements: Vec<Expr>, line: usize, col: usize },
+    List {
+        elements: Vec<Expr>,
+        line: usize,
+        col: usize,
+    },
     /// Tuple literal (parenthesised or bare).
-    Tuple { elements: Vec<Expr>, line: usize, col: usize },
+    Tuple {
+        elements: Vec<Expr>,
+        line: usize,
+        col: usize,
+    },
     /// Dict literal `{k: v}`.
     Dict {
         entries: Vec<(Expr, Expr)>,

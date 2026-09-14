@@ -171,7 +171,10 @@ pub struct VErr {
 
 impl VErr {
     pub fn new(class: Exc, message: impl Into<String>) -> VErr {
-        VErr { class, message: message.into() }
+        VErr {
+            class,
+            message: message.into(),
+        }
     }
 }
 

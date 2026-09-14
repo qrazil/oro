@@ -59,9 +59,16 @@ fn the_read_buffer_is_allocated_on_first_read_not_at_construction() {
     // of buffers holding nothing.
     let path = scratch("lazy", b"hello");
     let f = OroStream::open_read(&path).unwrap();
-    assert_eq!(f.inner.borrow().buf.capacity(), 0, "buffer allocated before any read");
+    assert_eq!(
+        f.inner.borrow().buf.capacity(),
+        0,
+        "buffer allocated before any read"
+    );
     rd(&f, 1).unwrap();
-    assert!(f.inner.borrow().buf.capacity() >= BUFSIZE, "buffer not allocated on first read");
+    assert!(
+        f.inner.borrow().buf.capacity() >= BUFSIZE,
+        "buffer not allocated on first read"
+    );
     std::fs::remove_file(&path).unwrap();
 }
 

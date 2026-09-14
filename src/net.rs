@@ -317,7 +317,9 @@ pub(crate) fn resolve(addr: &str, who: &str) -> VResult<Vec<std::net::SocketAddr
         })?
         .collect();
     if addrs.is_empty() {
-        return Err(os_error(format!("[Errno -2] Name or service not known: '{addr}'")));
+        return Err(os_error(format!(
+            "[Errno -2] Name or service not known: '{addr}'"
+        )));
     }
     Ok(addrs)
 }

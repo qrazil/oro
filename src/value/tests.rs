@@ -36,21 +36,37 @@ fn reference_types_are_equal_to_themselves_and_hashable() {
     let a = module();
     let b = module();
     assert_eq!(a.try_equals(&a), Some(true), "an object must equal itself");
-    assert_eq!(a.try_equals(&a.clone()), Some(true), "a clone is a refcount bump, not a new object");
-    assert_eq!(a.try_equals(&b), Some(false), "two objects with identical contents are two objects");
+    assert_eq!(
+        a.try_equals(&a.clone()),
+        Some(true),
+        "a clone is a refcount bump, not a new object"
+    );
+    assert_eq!(
+        a.try_equals(&b),
+        Some(false),
+        "two objects with identical contents are two objects"
+    );
 
     let mut d = OroDict::new();
     d.insert(a.clone(), Value::Int(1)).unwrap();
     d.insert(b.clone(), Value::Int(2)).unwrap();
     assert_eq!(d.len(), 2, "two distinct objects are two keys");
-    assert_eq!(d.get(&a).unwrap().unwrap().try_equals(&Value::Int(1)), Some(true));
-    assert_eq!(d.get(&b).unwrap().unwrap().try_equals(&Value::Int(2)), Some(true));
+    assert_eq!(
+        d.get(&a).unwrap().unwrap().try_equals(&Value::Int(1)),
+        Some(true)
+    );
+    assert_eq!(
+        d.get(&b).unwrap().unwrap().try_equals(&Value::Int(2)),
+        Some(true)
+    );
 
     // Identity is by allocation, and a value type never has one.
     assert!(a.identity().is_some());
     assert!(Value::Int(1).identity().is_none());
     assert!(Value::str("s").identity().is_none());
-    assert!(Value::Tuple(OroTuple::new(vec![Value::Int(1)])).identity().is_none());
+    assert!(Value::Tuple(OroTuple::new(vec![Value::Int(1)]))
+        .identity()
+        .is_none());
 }
 
 /// A `range` is a sequence, and CPython compares it as one: same length, same
@@ -73,8 +89,20 @@ fn ranges_compare_and_hash_as_the_sequence_they_denote() {
     d.insert(r(2, 2, 7), Value::Int(2)).unwrap();
     d.insert(r(0, 0, 1), Value::Int(3)).unwrap();
     assert_eq!(d.len(), 2, "the two empty ranges are one key");
-    assert_eq!(d.get(&r(0, 3, 1)).unwrap().unwrap().try_equals(&Value::Int(1)), Some(true));
-    assert_eq!(d.get(&r(0, 0, 1)).unwrap().unwrap().try_equals(&Value::Int(3)), Some(true));
+    assert_eq!(
+        d.get(&r(0, 3, 1))
+            .unwrap()
+            .unwrap()
+            .try_equals(&Value::Int(1)),
+        Some(true)
+    );
+    assert_eq!(
+        d.get(&r(0, 0, 1))
+            .unwrap()
+            .unwrap()
+            .try_equals(&Value::Int(3)),
+        Some(true)
+    );
 }
 
 /// A range's repr is a call the language takes back: the end is the one
@@ -99,7 +127,9 @@ fn mutable_containers_stay_unhashable() {
     let list = Value::List(OroList::new(vec![Value::Int(1)]));
     let dict = Value::Dict(Rc::new(RefCell::new(OroDict::new())));
     for v in [list, dict] {
-        let e = d.insert(v.clone(), Value::Int(0)).expect_err("must not be a key");
+        let e = d
+            .insert(v.clone(), Value::Int(0))
+            .expect_err("must not be a key");
         assert!(e.message.contains("unhashable type"), "got: {e}");
     }
 }
@@ -114,19 +144,36 @@ fn dict_remove_keeps_insertion_order_and_the_index_honest() {
     for i in 0..5 {
         d.insert(Value::Int(i), Value::Int(i * 10)).unwrap();
     }
-    assert_eq!(d.remove(&Value::Int(2)).unwrap().unwrap().try_equals(&Value::Int(20)), Some(true));
+    assert_eq!(
+        d.remove(&Value::Int(2))
+            .unwrap()
+            .unwrap()
+            .try_equals(&Value::Int(20)),
+        Some(true)
+    );
     assert_eq!(d.len(), 4);
     // Every surviving key still resolves to its own value, including the three
     // that moved down a slot.
     for i in [0, 1, 3, 4] {
-        let got = d.get(&Value::Int(i)).unwrap().expect("key survived the removal");
+        let got = d
+            .get(&Value::Int(i))
+            .unwrap()
+            .expect("key survived the removal");
         assert_eq!(got.try_equals(&Value::Int(i * 10)), Some(true), "key {i}");
     }
-    let order: Vec<i64> = d.items().iter().map(|(k, _)| match k {
-        Value::Int(i) => *i,
-        other => panic!("expected int key, got {}", other.repr()),
-    }).collect();
-    assert_eq!(order, vec![0, 1, 3, 4], "insertion order survives a removal from the middle");
+    let order: Vec<i64> = d
+        .items()
+        .iter()
+        .map(|(k, _)| match k {
+            Value::Int(i) => *i,
+            other => panic!("expected int key, got {}", other.repr()),
+        })
+        .collect();
+    assert_eq!(
+        order,
+        vec![0, 1, 3, 4],
+        "insertion order survives a removal from the middle"
+    );
 
     // A miss answers `None` rather than erroring, which is what lets the
     // two-argument `pop` hand back its default.
@@ -141,26 +188,47 @@ fn bytes_repr_matches_cpython() {
     // Printable ASCII stays literal; everything else is \xNN, including the
     // escapes `str` spells \a and \v.
     assert_eq!(Value::bytes(&b"ab c"[..]).repr(), "b'ab c'");
-    assert_eq!(Value::bytes(&b"\x07\x0b\x00\x7f\x80\xff"[..]).repr(), "b'\\x07\\x0b\\x00\\x7f\\x80\\xff'");
-    assert_eq!(Value::bytes(&b"tab\tnl\ncr\rbs\\"[..]).repr(), "b'tab\\tnl\\ncr\\rbs\\\\'");
+    assert_eq!(
+        Value::bytes(&b"\x07\x0b\x00\x7f\x80\xff"[..]).repr(),
+        "b'\\x07\\x0b\\x00\\x7f\\x80\\xff'"
+    );
+    assert_eq!(
+        Value::bytes(&b"tab\tnl\ncr\rbs\\"[..]).repr(),
+        "b'tab\\tnl\\ncr\\rbs\\\\'"
+    );
     // A `'` alone flips the quote; both quotes present keeps `'` and escapes it.
     assert_eq!(Value::bytes(&b"it's"[..]).repr(), "b\"it's\"");
     assert_eq!(Value::bytes(&b"say \"hi\""[..]).repr(), "b'say \"hi\"'");
-    assert_eq!(Value::bytes(&b"both ' and \""[..]).repr(), "b'both \\' and \"'");
+    assert_eq!(
+        Value::bytes(&b"both ' and \""[..]).repr(),
+        "b'both \\' and \"'"
+    );
 }
 
 #[test]
 fn bytes_order_and_equality_are_lexicographic() {
-    assert_eq!(Value::bytes(&b"abc"[..]).try_equals(&Value::bytes(&b"abc"[..])), Some(true));
-    // A `bytes` never equals the `str` that would decode to it.
-    assert_eq!(Value::bytes(&b"abc"[..]).try_equals(&Value::str("abc")), Some(false));
     assert_eq!(
-        Value::bytes(&b"abc"[..]).try_compare(&Value::bytes(&b"abd"[..]), "<").unwrap().unwrap(),
+        Value::bytes(&b"abc"[..]).try_equals(&Value::bytes(&b"abc"[..])),
+        Some(true)
+    );
+    // A `bytes` never equals the `str` that would decode to it.
+    assert_eq!(
+        Value::bytes(&b"abc"[..]).try_equals(&Value::str("abc")),
+        Some(false)
+    );
+    assert_eq!(
+        Value::bytes(&b"abc"[..])
+            .try_compare(&Value::bytes(&b"abd"[..]), "<")
+            .unwrap()
+            .unwrap(),
         std::cmp::Ordering::Less
     );
     // Ordering is by octet, so the whole non-ASCII range sorts above ASCII.
     assert_eq!(
-        Value::bytes(&b"\xff"[..]).try_compare(&Value::bytes(&b"a"[..]), "<").unwrap().unwrap(),
+        Value::bytes(&b"\xff"[..])
+            .try_compare(&Value::bytes(&b"a"[..]), "<")
+            .unwrap()
+            .unwrap(),
         std::cmp::Ordering::Greater
     );
 }
@@ -171,7 +239,13 @@ fn bytes_hash_as_dict_keys_and_never_collide_with_str() {
     d.insert(Value::bytes(&b"k"[..]), Value::Int(1)).unwrap();
     d.insert(Value::str("k"), Value::Int(2)).unwrap();
     assert_eq!(d.len(), 2);
-    assert_eq!(d.get(&Value::bytes(&b"k"[..])).unwrap().unwrap().try_equals(&Value::Int(1)), Some(true));
+    assert_eq!(
+        d.get(&Value::bytes(&b"k"[..]))
+            .unwrap()
+            .unwrap()
+            .try_equals(&Value::Int(1)),
+        Some(true)
+    );
 }
 
 /// Freeing a value must not recurse in Rust, for *any* nesting depth.
@@ -245,7 +319,10 @@ fn freeing_deeply_nested_values_never_recurses() {
         for _ in 0..DEEP {
             let mut fields = Fields::new();
             fields.insert(Rc::from("next"), v);
-            v = Value::Instance(Rc::new(Instance { class: class.clone(), fields: RefCell::new(fields) }));
+            v = Value::Instance(Rc::new(Instance {
+                class: class.clone(),
+                fields: RefCell::new(fields),
+            }));
         }
         drop(v);
     });
@@ -276,14 +353,22 @@ fn teardown_only_unlinks_the_last_reference() {
     let a = Value::List(shared.clone());
     let b = Value::List(shared.clone());
     drop(a);
-    assert_eq!(shared.borrow().len(), 2, "dropping one reference emptied the list");
+    assert_eq!(
+        shared.borrow().len(),
+        2,
+        "dropping one reference emptied the list"
+    );
     match &b {
         Value::List(l) => assert_eq!(l.borrow()[1].repr(), "2"),
         _ => unreachable!(),
     }
     drop(b);
     assert_eq!(Rc::strong_count(&shared), 1);
-    assert_eq!(shared.borrow().len(), 2, "the last *Value* went, but the Rc here still holds it");
+    assert_eq!(
+        shared.borrow().len(),
+        2,
+        "the last *Value* went, but the Rc here still holds it"
+    );
 
     // A dict entry is a pair, and *both* halves have to be released: a teardown
     // that unlinked only the values would leave keys to the recursive glue.
@@ -292,10 +377,15 @@ fn teardown_only_unlinks_the_last_reference() {
     // change does not touch (see the note in `mod teardown`).
     let key_items = OroTuple::new(vec![Value::Int(7)]);
     let mut d = OroDict::new();
-    d.insert(Value::Tuple(key_items.clone()), Value::None).expect("a tuple of ints hashes");
+    d.insert(Value::Tuple(key_items.clone()), Value::None)
+        .expect("a tuple of ints hashes");
     assert_eq!(Rc::strong_count(&key_items), 2);
     drop(Value::Dict(Rc::new(RefCell::new(d))));
-    assert_eq!(Rc::strong_count(&key_items), 1, "the key half of the entry was not released");
+    assert_eq!(
+        Rc::strong_count(&key_items),
+        1,
+        "the key half of the entry was not released"
+    );
 
     // Cycles are collected by neither scheme — Oro has no GC — but tearing one
     // down must still terminate rather than spin or recurse.
@@ -303,6 +393,10 @@ fn teardown_only_unlinks_the_last_reference() {
     cycle.borrow_mut().push(Value::List(cycle.clone()));
     let outer = Value::List(OroList::new(vec![Value::List(cycle.clone())]));
     drop(outer);
-    assert_eq!(Rc::strong_count(&cycle), 2, "the self-reference is what keeps it alive");
+    assert_eq!(
+        Rc::strong_count(&cycle),
+        2,
+        "the self-reference is what keeps it alive"
+    );
     cycle.borrow_mut().clear();
 }

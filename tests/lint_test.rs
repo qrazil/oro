@@ -33,10 +33,22 @@ fn lint_dir(dir: &str) {
         // shipped code must also *compile*.
         compile(&program, Rc::from("test")).expect("compile");
         for f in lint(&program) {
-            hits.push(format!("{}:{}:{}: [{}] {}", path.display(), f.line, f.col, f.rule, f.message));
+            hits.push(format!(
+                "{}:{}:{}: [{}] {}",
+                path.display(),
+                f.line,
+                f.col,
+                f.rule,
+                f.message
+            ));
         }
     }
-    assert!(hits.is_empty(), "oro lint found {} hit(s) in {dir}:\n{}", hits.len(), hits.join("\n"));
+    assert!(
+        hits.is_empty(),
+        "oro lint found {} hit(s) in {dir}:\n{}",
+        hits.len(),
+        hits.join("\n")
+    );
 }
 
 #[test]

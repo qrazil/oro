@@ -45,9 +45,14 @@ fn oro_blocks(md: &str) -> Vec<String> {
 
 /// Compile and run one snippet, mapping any failure to its message.
 fn run_snippet(src: &str) -> Result<(), String> {
-    let tokens = Lexer::new(src).tokenize().map_err(|e| format!("lex: {}", e.message))?;
-    let program = Parser::new(tokens).parse().map_err(|e| format!("parse: {}", e.message))?;
-    let code = compile(&program, Rc::from("<doc>")).map_err(|e| format!("compile: {}", e.message))?;
+    let tokens = Lexer::new(src)
+        .tokenize()
+        .map_err(|e| format!("lex: {}", e.message))?;
+    let program = Parser::new(tokens)
+        .parse()
+        .map_err(|e| format!("parse: {}", e.message))?;
+    let code =
+        compile(&program, Rc::from("<doc>")).map_err(|e| format!("compile: {}", e.message))?;
     // `run_main` with an argv, as the binary runs a script: a snippet may read
     // `sys.argv[0]` (one does), and `sys.exit` is a clean exit code here rather
     // than an escaping error.

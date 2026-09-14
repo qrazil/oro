@@ -60,7 +60,11 @@ fn all_oro_files() -> Vec<PathBuf> {
     for dir in ORO_DIRS {
         files.extend(oro_files(&root.join(dir)));
     }
-    assert!(files.len() > 30, "expected to find a good number of .oro files, found {}", files.len());
+    assert!(
+        files.len() > 30,
+        "expected to find a good number of .oro files, found {}",
+        files.len()
+    );
     files
 }
 
@@ -113,7 +117,11 @@ fn idempotent_across_every_corpus_file() {
             // Find the first differing line for a useful failure message.
             let a: Vec<&str> = once.lines().collect();
             let b: Vec<&str> = twice.lines().collect();
-            let idx = a.iter().zip(b.iter()).position(|(x, y)| x != y).unwrap_or(a.len().min(b.len()));
+            let idx = a
+                .iter()
+                .zip(b.iter())
+                .position(|(x, y)| x != y)
+                .unwrap_or(a.len().min(b.len()));
             failures.push(format!(
                 "{}: not idempotent at line {}: {:?} vs {:?}",
                 path.display(),
@@ -123,7 +131,11 @@ fn idempotent_across_every_corpus_file() {
             ));
         }
     }
-    assert!(failures.is_empty(), "idempotence failures:\n{}", failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "idempotence failures:\n{}",
+        failures.join("\n")
+    );
 }
 
 /// Formatting must never change what a program does: for every
@@ -151,7 +163,10 @@ fn semantics_preserved_for_core_corpus() {
 
         let run = |p: &Path| {
             let out = Command::new(oro_bin()).arg(p).output().expect("launch oro");
-            (out.status.code(), String::from_utf8_lossy(&out.stdout).into_owned())
+            (
+                out.status.code(),
+                String::from_utf8_lossy(&out.stdout).into_owned(),
+            )
         };
         let (orig_code, orig_out) = run(&path);
         let (fmt_code, fmt_out) = run(&formatted_path);
@@ -168,7 +183,11 @@ fn semantics_preserved_for_core_corpus() {
         }
     }
     let _ = std::fs::remove_dir_all(&out_dir);
-    assert!(failures.is_empty(), "semantics-preservation failures:\n{}", failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "semantics-preservation failures:\n{}",
+        failures.join("\n")
+    );
 }
 
 fn truncate(s: &str) -> String {
@@ -224,7 +243,11 @@ fn bytes_literals_reprint_as_octets() {
         ("x = rb\"\\d+\"\n", "x = rb\"\\d+\"\n"),
     ];
     for (src, want) in cases {
-        assert_eq!(format_source(src).expect("should format"), want, "source: {src:?}");
+        assert_eq!(
+            format_source(src).expect("should format"),
+            want,
+            "source: {src:?}"
+        );
     }
 }
 
@@ -251,7 +274,11 @@ fn numeric_literals_reprint_in_the_authors_spelling() {
         "x = 0\n",
         "x = 000\n",
     ] {
-        assert_eq!(format_source(src).expect("should format"), src, "source: {src:?}");
+        assert_eq!(
+            format_source(src).expect("should format"),
+            src,
+            "source: {src:?}"
+        );
     }
 }
 
@@ -273,14 +300,20 @@ fn only_the_documented_files_are_unformatted() {
             .unwrap_or_else(|e| panic!("{}: expected format to succeed: {e}", path.display()));
         if formatted != source {
             dirty.push(
-                path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/"),
+                path.strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/"),
             );
         }
     }
     dirty.sort();
     let mut want: Vec<String> = EXPECTED_UNFORMATTED.iter().map(|s| s.to_string()).collect();
     want.sort();
-    assert_eq!(dirty, want, "`oro fmt --check` disagrees with EXPECTED_UNFORMATTED");
+    assert_eq!(
+        dirty, want,
+        "`oro fmt --check` disagrees with EXPECTED_UNFORMATTED"
+    );
 }
 
 /// The author's line breaks survive a round trip through the formatter, over
@@ -333,9 +366,7 @@ fn authored_line_breaks_survive_formatting() {
             // `{...}` postfix); `[` is a list only in prefix position.
             let is_literal = match t.kind {
                 TokenKind::LBrace => true,
-                TokenKind::LBracket => {
-                    i == 0 || !ends_an_expression(&tokens[i - 1].kind)
-                }
+                TokenKind::LBracket => i == 0 || !ends_an_expression(&tokens[i - 1].kind),
                 _ => false,
             };
             if !is_literal {
@@ -367,5 +398,9 @@ fn authored_line_breaks_survive_formatting() {
             ));
         }
     }
-    assert!(failures.is_empty(), "line breaks were not preserved:\n{}", failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "line breaks were not preserved:\n{}",
+        failures.join("\n")
+    );
 }

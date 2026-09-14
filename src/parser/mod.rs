@@ -243,7 +243,11 @@ impl Parser {
             TokenKind::Raise => {
                 self.advance();
                 if self.at_line_end() {
-                    return Ok(Stmt::Raise { exc: None, line, col });
+                    return Ok(Stmt::Raise {
+                        exc: None,
+                        line,
+                        col,
+                    });
                 }
                 let exc = self.expression()?;
                 if matches!(self.cur_kind(), TokenKind::Ident(n) if n == "from") {
@@ -251,7 +255,11 @@ impl Parser {
                         "`raise X from Y` is not supported in Oro — raise the exception on its own",
                     ));
                 }
-                Ok(Stmt::Raise { exc: Some(exc), line, col })
+                Ok(Stmt::Raise {
+                    exc: Some(exc),
+                    line,
+                    col,
+                })
             }
             TokenKind::Ident(n) if n == "global" => self.global_stmt(line, col),
             TokenKind::Import => self.import_stmt(line, col),
@@ -274,7 +282,10 @@ impl Parser {
         self.advance(); // `global`
         let mut names = vec![self.expect_ident("a name after `global`")?.0];
         while self.eat(&TokenKind::Comma) {
-            names.push(self.expect_ident("a name after `,` in a `global` statement")?.0);
+            names.push(
+                self.expect_ident("a name after `,` in a `global` statement")?
+                    .0,
+            );
         }
         Ok(Stmt::Global { names, line, col })
     }
@@ -282,14 +293,16 @@ impl Parser {
     fn import_stmt(&mut self, line: usize, col: usize) -> PResult<Stmt> {
         self.advance(); // `import`
         if self.check(&TokenKind::Star) {
-            return Err(self.error("`import *` is not supported in Oro — name the modules you need"));
+            return Err(
+                self.error("`import *` is not supported in Oro — name the modules you need")
+            );
         }
         let mut path = vec![self.expect_ident("a module name after `import`")?.0];
         while self.eat(&TokenKind::Dot) {
             if self.check(&TokenKind::Star) {
-                return Err(self.error(
-                    "`import *` is not supported in Oro — name the modules you need",
-                ));
+                return Err(
+                    self.error("`import *` is not supported in Oro — name the modules you need")
+                );
             }
             path.push(self.expect_ident("a name after `.` in the import path")?.0);
         }
@@ -313,7 +326,12 @@ impl Parser {
                 last = path.last().unwrap(),
             )));
         }
-        Ok(Stmt::Import { path, alias, line, col })
+        Ok(Stmt::Import {
+            path,
+            alias,
+            line,
+            col,
+        })
     }
 
     /// A bare expression, or an assignment / augmented assignment.
@@ -345,7 +363,12 @@ impl Parser {
                 if self.check(&TokenKind::Eq) {
                     return Err(self.error(CHAINED_ASSIGN_CUT));
                 }
-                Ok(Stmt::Assign { targets, value, line, col })
+                Ok(Stmt::Assign {
+                    targets,
+                    value,
+                    line,
+                    col,
+                })
             }
             TokenKind::PlusEq => self.aug_assign(first, AugOp::Add, line, col),
             TokenKind::MinusEq => self.aug_assign(first, AugOp::Sub, line, col),
@@ -359,14 +382,24 @@ impl Parser {
             TokenKind::CaretEq => self.aug_assign(first, AugOp::BitXor, line, col),
             TokenKind::ShlEq => self.aug_assign(first, AugOp::Shl, line, col),
             TokenKind::ShrEq => self.aug_assign(first, AugOp::Shr, line, col),
-            _ => Ok(Stmt::Expr { value: first, line, col }),
+            _ => Ok(Stmt::Expr {
+                value: first,
+                line,
+                col,
+            }),
         }
     }
 
     fn aug_assign(&mut self, target: Expr, op: AugOp, line: usize, col: usize) -> PResult<Stmt> {
         self.advance(); // the += / -= / *= / /= token
         let value = self.expr_list()?;
-        Ok(Stmt::AugAssign { target, op, value, line, col })
+        Ok(Stmt::AugAssign {
+            target,
+            op,
+            value,
+            line,
+            col,
+        })
     }
 
     // --- Compound statements -------------------------------------------------
@@ -391,7 +424,14 @@ impl Parser {
             None
         };
 
-        Ok(Stmt::If { cond, body, elifs, orelse, line, col })
+        Ok(Stmt::If {
+            cond,
+            body,
+            elifs,
+            orelse,
+            line,
+            col,
+        })
     }
 
     /// `match SUBJECT:` followed by an indented block of `case` clauses.
@@ -433,7 +473,12 @@ impl Parser {
                 ));
             }
         }
-        Ok(Stmt::Match { subject, cases, line, col })
+        Ok(Stmt::Match {
+            subject,
+            cases,
+            line,
+            col,
+        })
     }
 
     /// `case PATTERN:` and its block. `case` is a soft keyword recognised only
@@ -444,7 +489,12 @@ impl Parser {
         let pattern = self.case_pattern()?;
         // `case_pattern` stops on the `:`; `block` consumes it.
         let body = self.block()?;
-        Ok(MatchCase { pattern, body, line, col })
+        Ok(MatchCase {
+            pattern,
+            body,
+            line,
+            col,
+        })
     }
 
     /// Parse one case pattern — the value-only subset — leaving the cursor on
@@ -543,7 +593,12 @@ impl Parser {
                     )))
                 }
             };
-            return Ok(Expr::Unary { op: UnaryOp::Neg, operand: Box::new(operand), line, col });
+            return Ok(Expr::Unary {
+                op: UnaryOp::Neg,
+                operand: Box::new(operand),
+                line,
+                col,
+            });
         }
         // A plain literal atom.
         self.atom()
@@ -552,11 +607,20 @@ impl Parser {
     /// A dotted-name pattern: `A.B`, `A.B.C`, … matched by value at runtime.
     fn pattern_dotted(&mut self) -> PResult<Pattern> {
         let (line, col) = self.cur_pos();
-        let name = self.expect_ident("a name at the start of a dotted pattern")?.0;
+        let name = self
+            .expect_ident("a name at the start of a dotted pattern")?
+            .0;
         let mut expr = Expr::Name { name, line, col };
         while self.eat(&TokenKind::Dot) {
-            let attr = self.expect_ident("an attribute name after `.` in a case pattern")?.0;
-            expr = Expr::Attribute { value: Box::new(expr), attr, line, col };
+            let attr = self
+                .expect_ident("an attribute name after `.` in a case pattern")?
+                .0;
+            expr = Expr::Attribute {
+                value: Box::new(expr),
+                attr,
+                line,
+                col,
+            };
         }
         Ok(Pattern::Dotted(expr))
     }
@@ -566,7 +630,12 @@ impl Parser {
         self.advance(); // `while`
         let cond = self.expression()?;
         let body = self.block()?;
-        Ok(Stmt::While { cond, body, line, col })
+        Ok(Stmt::While {
+            cond,
+            body,
+            line,
+            col,
+        })
     }
 
     fn for_stmt(&mut self) -> PResult<Stmt> {
@@ -576,7 +645,13 @@ impl Parser {
         self.expect(&TokenKind::In, "`in` after the loop variable")?;
         let iter = self.expr_list()?;
         let body = self.block()?;
-        Ok(Stmt::For { target, iter, body, line, col })
+        Ok(Stmt::For {
+            target,
+            iter,
+            body,
+            line,
+            col,
+        })
     }
 
     /// A `for` loop target: a name/attribute/subscript, or a tuple of them.
@@ -595,7 +670,11 @@ impl Parser {
             }
             elements.push(self.parse_postfix_atom()?);
         }
-        Ok(Expr::Tuple { elements, line, col })
+        Ok(Expr::Tuple {
+            elements,
+            line,
+            col,
+        })
     }
 
     fn def_stmt(&mut self) -> PResult<Stmt> {
@@ -609,7 +688,13 @@ impl Parser {
             return Err(self.error(ANNOTATION_CUT));
         }
         let body = self.block()?;
-        Ok(Stmt::Def { name, params, body, line, col })
+        Ok(Stmt::Def {
+            name,
+            params,
+            body,
+            line,
+            col,
+        })
     }
 
     /// Parse a `def` parameter list, enforcing the one ordering rule left:
@@ -630,7 +715,12 @@ impl Parser {
             // its own, how each parameter is passed.
             if self.check(&TokenKind::Star) || self.check(&TokenKind::DoubleStar) {
                 let (spelling, take, call, forward) = if self.check(&TokenKind::DoubleStar) {
-                    ("`**kwargs`", "a dict parameter", "f({\"retries\": 3})", "kwargs=opts")
+                    (
+                        "`**kwargs`",
+                        "a dict parameter",
+                        "f({\"retries\": 3})",
+                        "kwargs=opts",
+                    )
                 } else {
                     ("`*args`", "a list parameter", "f([a, b])", "args=items")
                 };
@@ -662,7 +752,12 @@ impl Parser {
                 }
                 None
             };
-            params.push(Param { name, default, line, col });
+            params.push(Param {
+                name,
+                default,
+                line,
+                col,
+            });
 
             if !self.eat(&TokenKind::Comma) {
                 break;
@@ -704,7 +799,13 @@ impl Parser {
         };
 
         let body = self.block()?;
-        Ok(Stmt::Class { name, base, body, line, col })
+        Ok(Stmt::Class {
+            name,
+            base,
+            body,
+            line,
+            col,
+        })
     }
 
     fn try_stmt(&mut self) -> PResult<Stmt> {
@@ -751,12 +852,18 @@ impl Parser {
         };
 
         if handlers.is_empty() && finalbody.is_none() {
-            return Err(self.error(
-                "`try` must be followed by at least one `except` or a `finally` block",
-            ));
+            return Err(
+                self.error("`try` must be followed by at least one `except` or a `finally` block")
+            );
         }
 
-        Ok(Stmt::Try { body, handlers, finalbody, line, col })
+        Ok(Stmt::Try {
+            body,
+            handlers,
+            finalbody,
+            line,
+            col,
+        })
     }
 
     // --- Blocks --------------------------------------------------------------
@@ -801,10 +908,13 @@ impl Parser {
         }
         let (line, col) = cond.pos();
         self.advance(); // `?`
-        // The middle is a full expression; the else branch recurses, so the
-        // operator is right-associative: `a ? b : c ? d : e` is `a ? b : (c ? d : e)`.
+                        // The middle is a full expression; the else branch recurses, so the
+                        // operator is right-associative: `a ? b : c ? d : e` is `a ? b : (c ? d : e)`.
         let then = self.expression()?;
-        self.expect(&TokenKind::Colon, "`:` between the two branches of a `? :` conditional")?;
+        self.expect(
+            &TokenKind::Colon,
+            "`:` between the two branches of a `? :` conditional",
+        )?;
         let orelse = self.expression()?;
         // The depth-2 cap is enforced as a compile error (see `compiler`), not
         // here: keeping the parse total lets the formatter reprint even an
@@ -835,7 +945,11 @@ impl Parser {
             }
             elements.push(self.expression()?);
         }
-        Ok(Expr::Tuple { elements, line, col })
+        Ok(Expr::Tuple {
+            elements,
+            line,
+            col,
+        })
     }
 
     /// The Pratt core: parse an expression whose operators all bind at least as
@@ -899,7 +1013,12 @@ impl Parser {
                     let rhs = self.parse_expr(CMP_BP + 1)?;
                     rest.push((op, rhs));
                 }
-                left = Expr::Compare { first: Box::new(left), rest, line, col };
+                left = Expr::Compare {
+                    first: Box::new(left),
+                    rest,
+                    line,
+                    col,
+                };
                 continue;
             }
 
@@ -933,25 +1052,45 @@ impl Parser {
                 let (line, col) = self.cur_pos();
                 self.advance();
                 let operand = self.parse_expr(NOT_BP)?;
-                Ok(Expr::Unary { op: UnaryOp::Not, operand: Box::new(operand), line, col })
+                Ok(Expr::Unary {
+                    op: UnaryOp::Not,
+                    operand: Box::new(operand),
+                    line,
+                    col,
+                })
             }
             TokenKind::Minus => {
                 let (line, col) = self.cur_pos();
                 self.advance();
                 let operand = self.parse_expr(UNARY_BP)?;
-                Ok(Expr::Unary { op: UnaryOp::Neg, operand: Box::new(operand), line, col })
+                Ok(Expr::Unary {
+                    op: UnaryOp::Neg,
+                    operand: Box::new(operand),
+                    line,
+                    col,
+                })
             }
             TokenKind::Plus => {
                 let (line, col) = self.cur_pos();
                 self.advance();
                 let operand = self.parse_expr(UNARY_BP)?;
-                Ok(Expr::Unary { op: UnaryOp::Pos, operand: Box::new(operand), line, col })
+                Ok(Expr::Unary {
+                    op: UnaryOp::Pos,
+                    operand: Box::new(operand),
+                    line,
+                    col,
+                })
             }
             TokenKind::Tilde => {
                 let (line, col) = self.cur_pos();
                 self.advance();
                 let operand = self.parse_expr(UNARY_BP)?;
-                Ok(Expr::Unary { op: UnaryOp::Invert, operand: Box::new(operand), line, col })
+                Ok(Expr::Unary {
+                    op: UnaryOp::Invert,
+                    operand: Box::new(operand),
+                    line,
+                    col,
+                })
             }
             TokenKind::Is => Err(self.cut_is()),
             _ => self.parse_postfix_atom(),
@@ -969,7 +1108,12 @@ impl Parser {
                     self.advance();
                     let (attr, _, _) = self.expect_ident("an attribute name after `.`")?;
                     let (line, col) = expr.pos();
-                    expr = Expr::Attribute { value: Box::new(expr), attr, line, col };
+                    expr = Expr::Attribute {
+                        value: Box::new(expr),
+                        attr,
+                        line,
+                        col,
+                    };
                 }
                 TokenKind::LBracket => expr = self.finish_subscript(expr)?,
                 _ => break,
@@ -1000,8 +1144,7 @@ impl Parser {
                      {binds}"
                 )));
             }
-            if matches!(self.cur_kind(), TokenKind::Ident(_))
-                && *self.peek_kind() == TokenKind::Eq
+            if matches!(self.cur_kind(), TokenKind::Ident(_)) && *self.peek_kind() == TokenKind::Eq
             {
                 // Keyword argument: `name = value`, distinguished from `==`.
                 let (name, _, _) = self.expect_ident("a keyword argument name")?;
@@ -1010,9 +1153,7 @@ impl Parser {
                 kwargs.push((name, value));
             } else {
                 if !kwargs.is_empty() {
-                    return Err(self.error(
-                        "positional arguments cannot follow keyword arguments",
-                    ));
+                    return Err(self.error("positional arguments cannot follow keyword arguments"));
                 }
                 args.push(self.expression()?);
             }
@@ -1021,7 +1162,13 @@ impl Parser {
             }
         }
         self.expect(&TokenKind::RParen, "`)` to close the argument list")?;
-        Ok(Expr::Call { func: Box::new(func), args, kwargs, line, col })
+        Ok(Expr::Call {
+            func: Box::new(func),
+            args,
+            kwargs,
+            line,
+            col,
+        })
     }
 
     fn finish_subscript(&mut self, value: Expr) -> PResult<Expr> {
@@ -1051,14 +1198,26 @@ impl Parser {
                 None
             };
             self.expect(&TokenKind::RBracket, "`]` to close the slice")?;
-            Ok(Expr::Slice { value: Box::new(value), lower, upper, step, line, col })
+            Ok(Expr::Slice {
+                value: Box::new(value),
+                lower,
+                upper,
+                step,
+                line,
+                col,
+            })
         } else {
             let index = match lower {
                 Some(e) => e,
                 None => return Err(self.error("expected an index expression inside `[ ]`")),
             };
             self.expect(&TokenKind::RBracket, "`]` to close the subscript")?;
-            Ok(Expr::Subscript { value: Box::new(value), index, line, col })
+            Ok(Expr::Subscript {
+                value: Box::new(value),
+                index,
+                line,
+                col,
+            })
         }
     }
 
@@ -1078,11 +1237,21 @@ impl Parser {
             }
             TokenKind::Str(value, raw) => {
                 self.advance();
-                Ok(Expr::Str { value, raw, line, col })
+                Ok(Expr::Str {
+                    value,
+                    raw,
+                    line,
+                    col,
+                })
             }
             TokenKind::Bytes(value, raw) => {
                 self.advance();
-                Ok(Expr::Bytes { value, raw, line, col })
+                Ok(Expr::Bytes {
+                    value,
+                    raw,
+                    line,
+                    col,
+                })
             }
             TokenKind::FString(value) => {
                 self.advance();
@@ -1090,11 +1259,19 @@ impl Parser {
             }
             TokenKind::True => {
                 self.advance();
-                Ok(Expr::Bool { value: true, line, col })
+                Ok(Expr::Bool {
+                    value: true,
+                    line,
+                    col,
+                })
             }
             TokenKind::False => {
                 self.advance();
-                Ok(Expr::Bool { value: false, line, col })
+                Ok(Expr::Bool {
+                    value: false,
+                    line,
+                    col,
+                })
             }
             TokenKind::None => {
                 self.advance();
@@ -1120,7 +1297,11 @@ impl Parser {
     fn group_or_tuple(&mut self, line: usize, col: usize) -> PResult<Expr> {
         self.advance(); // `(`
         if self.eat(&TokenKind::RParen) {
-            return Ok(Expr::Tuple { elements: Vec::new(), line, col }); // `()`
+            return Ok(Expr::Tuple {
+                elements: Vec::new(),
+                line,
+                col,
+            }); // `()`
         }
 
         let first = self.expression()?;
@@ -1143,11 +1324,18 @@ impl Parser {
                 elements.push(self.expression()?);
             }
             self.expect(&TokenKind::RParen, "`)` to close the tuple")?;
-            Ok(Expr::Tuple { elements, line, col })
+            Ok(Expr::Tuple {
+                elements,
+                line,
+                col,
+            })
         } else {
             // A single parenthesised expression is just that expression; the
             // grouping introduces no node of its own.
-            self.expect(&TokenKind::RParen, "`)` to close the parenthesised expression")?;
+            self.expect(
+                &TokenKind::RParen,
+                "`)` to close the parenthesised expression",
+            )?;
             Ok(first)
         }
     }
@@ -1155,7 +1343,11 @@ impl Parser {
     fn list_literal(&mut self, line: usize, col: usize) -> PResult<Expr> {
         self.advance(); // `[`
         if self.eat(&TokenKind::RBracket) {
-            return Ok(Expr::List { elements: Vec::new(), line, col });
+            return Ok(Expr::List {
+                elements: Vec::new(),
+                line,
+                col,
+            });
         }
         let first = self.expression()?;
         if self.check(&TokenKind::For) {
@@ -1169,7 +1361,11 @@ impl Parser {
             elements.push(self.expression()?);
         }
         self.expect(&TokenKind::RBracket, "`]` to close the list")?;
-        Ok(Expr::List { elements, line, col })
+        Ok(Expr::List {
+            elements,
+            line,
+            col,
+        })
     }
 
     /// `{ ... }` is always a dict — sets are cut, so there is no ambiguity and
@@ -1177,7 +1373,11 @@ impl Parser {
     fn dict_stmt(&mut self, line: usize, col: usize) -> PResult<Expr> {
         self.advance(); // `{`
         if self.eat(&TokenKind::RBrace) {
-            return Ok(Expr::Dict { entries: Vec::new(), line, col });
+            return Ok(Expr::Dict {
+                entries: Vec::new(),
+                line,
+                col,
+            });
         }
 
         let first = self.expression()?;
@@ -1314,7 +1514,10 @@ impl Parser {
         if self.check(kind) {
             Ok(self.advance())
         } else {
-            Err(self.error(format!("expected {what}, found {}", describe(self.cur_kind()))))
+            Err(self.error(format!(
+                "expected {what}, found {}",
+                describe(self.cur_kind())
+            )))
         }
     }
 
@@ -1362,11 +1565,19 @@ impl Parser {
 
     fn error(&self, message: impl Into<String>) -> ParseError {
         let (line, col) = self.cur_pos();
-        ParseError { message: message.into(), line, col }
+        ParseError {
+            message: message.into(),
+            line,
+            col,
+        }
     }
 
     fn error_at(&self, message: impl Into<String>, line: usize, col: usize) -> ParseError {
-        ParseError { message: message.into(), line, col }
+        ParseError {
+            message: message.into(),
+            line,
+            col,
+        }
     }
 }
 
@@ -1376,11 +1587,23 @@ fn build_infix(op: &TokenKind, left: Expr, right: Expr, line: usize, col: usize)
     match op {
         TokenKind::Or => {
             let (left, right) = boxed(left, right);
-            Expr::BoolOp { op: BoolOp::Or, left, right, line, col }
+            Expr::BoolOp {
+                op: BoolOp::Or,
+                left,
+                right,
+                line,
+                col,
+            }
         }
         TokenKind::And => {
             let (left, right) = boxed(left, right);
-            Expr::BoolOp { op: BoolOp::And, left, right, line, col }
+            Expr::BoolOp {
+                op: BoolOp::And,
+                left,
+                right,
+                line,
+                col,
+            }
         }
         _ => {
             let bin = match op {
@@ -1399,7 +1622,13 @@ fn build_infix(op: &TokenKind, left: Expr, right: Expr, line: usize, col: usize)
                 _ => unreachable!("build_infix called on a non-infix token"),
             };
             let (left, right) = boxed(left, right);
-            Expr::Binary { op: bin, left, right, line, col }
+            Expr::Binary {
+                op: bin,
+                left,
+                right,
+                line,
+                col,
+            }
         }
     }
 }
@@ -1410,9 +1639,12 @@ fn build_infix(op: &TokenKind, left: Expr, right: Expr, line: usize, col: usize)
 fn lambda_params(left: &Expr) -> Option<Vec<crate::ast::Param>> {
     fn one(e: &Expr) -> Option<crate::ast::Param> {
         match e {
-            Expr::Name { name, line, col } => {
-                Some(crate::ast::Param { name: name.clone(), default: None, line: *line, col: *col })
-            }
+            Expr::Name { name, line, col } => Some(crate::ast::Param {
+                name: name.clone(),
+                default: None,
+                line: *line,
+                col: *col,
+            }),
             _ => None,
         }
     }

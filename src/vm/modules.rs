@@ -39,7 +39,10 @@ fn module(name: &str, members: Vec<(&str, Value)>) -> Value {
     for (k, v) in members {
         map.insert(Rc::from(k), v);
     }
-    Value::Module(Rc::new(Module { name: Rc::from(name), members: RefCell::new(map) }))
+    Value::Module(Rc::new(Module {
+        name: Rc::from(name),
+        members: RefCell::new(map),
+    }))
 }
 
 fn builtin(name: &'static str, func: fn(Vec<Value>) -> VResult<Value>) -> Value {
@@ -155,7 +158,9 @@ fn time_time(args: Vec<Value>) -> VResult<Value> {
 /// content of this one is the `Step` it answers with, so this stub is never
 /// invoked directly — the same arrangement `proc.run` has.
 fn time_sleep(_args: Vec<Value>) -> VResult<Value> {
-    Err(runtime_error("internal: time.sleep must be dispatched by the VM (it parks)"))
+    Err(runtime_error(
+        "internal: time.sleep must be dispatched by the VM (it parks)",
+    ))
 }
 
 /// Monotonic seconds from a fixed reference — only ever increases. Use it for
@@ -210,30 +215,51 @@ fn re_search(args: Vec<Value>) -> VResult<Value> {
 fn re_findall(args: Vec<Value>) -> VResult<Value> {
     crate::regexutil::no_extra(&args, 2, "re", "findall", crate::regexutil::FLAGS)?;
     let re = crate::regexutil::compile(&str_at(&args, 0, "findall")?)?;
-    Ok(crate::regexutil::findall(&re, &str_at(&args, 1, "findall")?))
+    Ok(crate::regexutil::findall(
+        &re,
+        &str_at(&args, 1, "findall")?,
+    ))
 }
 
 fn re_finditer(args: Vec<Value>) -> VResult<Value> {
     crate::regexutil::no_extra(&args, 2, "re", "finditer", crate::regexutil::FLAGS)?;
     let re = crate::regexutil::compile(&str_at(&args, 0, "finditer")?)?;
-    Ok(crate::regexutil::finditer(&re, &str_at(&args, 1, "finditer")?))
+    Ok(crate::regexutil::finditer(
+        &re,
+        &str_at(&args, 1, "finditer")?,
+    ))
 }
 
 fn re_fullmatch(args: Vec<Value>) -> VResult<Value> {
     crate::regexutil::no_extra(&args, 2, "re", "fullmatch", crate::regexutil::FLAGS)?;
     let re = crate::regexutil::compile(&str_at(&args, 0, "fullmatch")?)?;
-    Ok(crate::regexutil::fullmatch(&re, &str_at(&args, 1, "fullmatch")?))
+    Ok(crate::regexutil::fullmatch(
+        &re,
+        &str_at(&args, 1, "fullmatch")?,
+    ))
 }
 
 fn re_sub(args: Vec<Value>) -> VResult<Value> {
-    crate::regexutil::no_extra(&args, 3, "re", "sub", "CPython's count and flags are not supported")?;
+    crate::regexutil::no_extra(
+        &args,
+        3,
+        "re",
+        "sub",
+        "CPython's count and flags are not supported",
+    )?;
     let re = crate::regexutil::compile(&str_at(&args, 0, "sub")?)?;
     let repl = str_at(&args, 1, "sub")?;
     Ok(crate::regexutil::sub(&re, &repl, &str_at(&args, 2, "sub")?))
 }
 
 fn re_split(args: Vec<Value>) -> VResult<Value> {
-    crate::regexutil::no_extra(&args, 2, "re", "split", "CPython's maxsplit and flags are not supported")?;
+    crate::regexutil::no_extra(
+        &args,
+        2,
+        "re",
+        "split",
+        "CPython's maxsplit and flags are not supported",
+    )?;
     let re = crate::regexutil::compile(&str_at(&args, 0, "split")?)?;
     Ok(crate::regexutil::split(&re, &str_at(&args, 1, "split")?))
 }
@@ -300,7 +326,9 @@ pub(super) fn net_listen_kw(args: Vec<Value>, kwargs: &[(String, Value)]) -> VRe
     let mut reuseport = false;
     for (k, v) in kwargs {
         if k != "reuseport" {
-            return Err(type_error(format!("listen() got an unexpected keyword argument '{k}'")));
+            return Err(type_error(format!(
+                "listen() got an unexpected keyword argument '{k}'"
+            )));
         }
         match v {
             Value::Bool(b) => reuseport = *b,
@@ -312,7 +340,9 @@ pub(super) fn net_listen_kw(args: Vec<Value>, kwargs: &[(String, Value)]) -> VRe
             }
         }
     }
-    Ok(Value::Stream(Rc::new(crate::net::listen(&addr, reuseport)?)))
+    Ok(Value::Stream(Rc::new(crate::net::listen(
+        &addr, reuseport,
+    )?)))
 }
 
 /// `net.dial` is finished in the VM: it *parks* the calling task, first on the
@@ -320,7 +350,9 @@ pub(super) fn net_listen_kw(args: Vec<Value>, kwargs: &[(String, Value)]) -> VRe
 /// with a `Value`. This entry exists so the name resolves and is callable; the
 /// dispatch in [`super::Vm::invoke`] takes it before it can ever run.
 fn net_dial(_args: Vec<Value>) -> VResult<Value> {
-    Err(runtime_error("internal: net.dial must be dispatched by the VM (it parks)"))
+    Err(runtime_error(
+        "internal: net.dial must be dispatched by the VM (it parks)",
+    ))
 }
 
 /// The one *positional* argument both constructors take: an address, as a
@@ -427,7 +459,9 @@ fn json_stringify(args: Vec<Value>) -> VResult<Value> {
             };
             crate::json::stringify(value, indent).map(Value::str)
         }
-        _ => Err(type_error("internal: _json.stringify takes a value and an indent")),
+        _ => Err(type_error(
+            "internal: _json.stringify takes a value and an indent",
+        )),
     }
 }
 
@@ -447,11 +481,15 @@ fn build_proc() -> Value {
 }
 
 fn proc_run_stub(_args: Vec<Value>) -> VResult<Value> {
-    Err(runtime_error("internal: proc.run must be dispatched by the VM"))
+    Err(runtime_error(
+        "internal: proc.run must be dispatched by the VM",
+    ))
 }
 
 fn proc_spawn_stub(_args: Vec<Value>) -> VResult<Value> {
-    Err(runtime_error("internal: proc.spawn must be dispatched by the VM"))
+    Err(runtime_error(
+        "internal: proc.spawn must be dispatched by the VM",
+    ))
 }
 
 // --- sys ---------------------------------------------------------------------
@@ -472,8 +510,16 @@ fn sys_exit(args: Vec<Value>) -> VResult<Value> {
         [Value::None] => 0,
         [Value::Int(n)] => *n,
         [Value::Bool(b)] => *b as i64,
-        [] => return Err(type_error("sys.exit() missing its exit code — sys.exit(0) for success")),
-        [_] => return Err(type_error("sys.exit() code must be an int or null in this build")),
+        [] => {
+            return Err(type_error(
+                "sys.exit() missing its exit code — sys.exit(0) for success",
+            ))
+        }
+        [_] => {
+            return Err(type_error(
+                "sys.exit() code must be an int or null in this build",
+            ))
+        }
         _ => {
             return Err(type_error(format!(
                 "sys.exit() takes 1 argument(s) but {} were given",
@@ -532,7 +578,11 @@ fn os_rename(args: Vec<Value>) -> VResult<Value> {
     let (from, to) = match args.as_slice() {
         [Value::Str(a), Value::Str(b)] => (a.s.clone(), b.s.clone()),
         [_, _] => return Err(type_error("rename() arguments must both be str")),
-        _ => return Err(type_error("rename() takes exactly two arguments, (src, dst)")),
+        _ => {
+            return Err(type_error(
+                "rename() takes exactly two arguments, (src, dst)",
+            ))
+        }
     };
     std::fs::rename(&from, &to).map_err(|e| io_err(&e, &from))?;
     Ok(Value::None)
@@ -557,7 +607,11 @@ fn os_chmod(args: Vec<Value>) -> VResult<Value> {
     let (path, mode) = match args.as_slice() {
         [Value::Str(p), Value::Int(m)] => (p.s.clone(), *m),
         [_, _] => return Err(type_error("chmod() takes (path: str, mode: int)")),
-        _ => return Err(type_error("chmod() takes exactly two arguments, (path, mode)")),
+        _ => {
+            return Err(type_error(
+                "chmod() takes exactly two arguments, (path, mode)",
+            ))
+        }
     };
     os_chmod_impl(&path, mode)
 }
@@ -683,7 +737,10 @@ fn path_islink(args: Vec<Value>) -> VResult<Value> {
 /// module, which a locked decision forbids.
 fn path_is_within(args: Vec<Value>) -> VResult<Value> {
     let (child, parent) = match args.as_slice() {
-        [c, p] => (as_str(c, "is_within")?.to_string(), as_str(p, "is_within")?.to_string()),
+        [c, p] => (
+            as_str(c, "is_within")?.to_string(),
+            as_str(p, "is_within")?.to_string(),
+        ),
         _ => {
             return Err(type_error(
                 "os.path.is_within() takes exactly two arguments, (child, parent)".to_string(),
@@ -707,7 +764,10 @@ fn path_splitext(args: Vec<Value>) -> VResult<Value> {
         Some(i) => (path[..i].to_string(), path[i..].to_string()),
         None => (path.clone(), String::new()),
     };
-    Ok(Value::Tuple(OroTuple::new(vec![Value::str(root), Value::str(ext)])))
+    Ok(Value::Tuple(OroTuple::new(vec![
+        Value::str(root),
+        Value::str(ext),
+    ])))
 }
 
 // --- helpers -----------------------------------------------------------------
@@ -739,7 +799,11 @@ fn one_path(args: &[Value], who: &str) -> VResult<String> {
 pub fn io_err(e: &std::io::Error, path: &str) -> VErr {
     use std::io::ErrorKind::*;
     let (errno, msg, class): (i32, String, Exc) = match e.kind() {
-        NotFound => (2, "No such file or directory".into(), Exc::FileNotFoundError),
+        NotFound => (
+            2,
+            "No such file or directory".into(),
+            Exc::FileNotFoundError,
+        ),
         PermissionDenied => (13, "Permission denied".into(), Exc::PermissionError),
         AlreadyExists => (17, "File exists".into(), Exc::OSError),
         // Everything else carries the OS's own errno and message rather than a

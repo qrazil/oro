@@ -62,52 +62,52 @@ pub enum TokenKind {
     Pass,
 
     // --- Operators & punctuation ---
-    Plus,        // +
-    Minus,       // -
-    Star,        // *
-    Slash,       // /
-    DoubleSlash, // //
-    Percent,     // %
-    DoubleStar,  // **
-    Amp,         // &
-    Caret,       // ^
-    Tilde,       // ~
-    Shl,         // <<
-    Shr,         // >>
-    Eq,          // =
-    PlusEq,      // +=
-    MinusEq,     // -=
-    StarEq,      // *=
-    SlashEq,     // /=
+    Plus,          // +
+    Minus,         // -
+    Star,          // *
+    Slash,         // /
+    DoubleSlash,   // //
+    Percent,       // %
+    DoubleStar,    // **
+    Amp,           // &
+    Caret,         // ^
+    Tilde,         // ~
+    Shl,           // <<
+    Shr,           // >>
+    Eq,            // =
+    PlusEq,        // +=
+    MinusEq,       // -=
+    StarEq,        // *=
+    SlashEq,       // /=
     DoubleSlashEq, // //=
-    PercentEq,   // %=
-    DoubleStarEq, // **=
-    AmpEq,       // &=
-    PipeEq,      // |=
-    CaretEq,     // ^=
-    ShlEq,       // <<=
-    ShrEq,       // >>=
-    EqEq,        // ==
-    FatArrow,    // => (lambda)
-    NotEq,       // !=
-    Lt,          // <
-    Gt,          // >
-    LtEq,        // <=
-    GtEq,        // >=
-    LParen,      // (
-    RParen,      // )
-    LBracket,    // [
-    RBracket,    // ]
-    LBrace,      // {
-    RBrace,      // }
-    Pipe,        // |
-    Question,    // ? (ternary)
-    Comma,       // ,
-    Dot,         // .
-    Colon,       // :
-    Semicolon,   // ;
-    Arrow,       // ->
-    At,          // @
+    PercentEq,     // %=
+    DoubleStarEq,  // **=
+    AmpEq,         // &=
+    PipeEq,        // |=
+    CaretEq,       // ^=
+    ShlEq,         // <<=
+    ShrEq,         // >>=
+    EqEq,          // ==
+    FatArrow,      // => (lambda)
+    NotEq,         // !=
+    Lt,            // <
+    Gt,            // >
+    LtEq,          // <=
+    GtEq,          // >=
+    LParen,        // (
+    RParen,        // )
+    LBracket,      // [
+    RBracket,      // ]
+    LBrace,        // {
+    RBrace,        // }
+    Pipe,          // |
+    Question,      // ? (ternary)
+    Comma,         // ,
+    Dot,           // .
+    Colon,         // :
+    Semicolon,     // ;
+    Arrow,         // ->
+    At,            // @
 
     // --- Structural ---
     Newline,

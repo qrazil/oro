@@ -50,19 +50,31 @@ fn a_fused_chain_allocates_no_intermediate() {
          b = a.filter(x => x > 4)\n\
          r = b.reduce(0, (acc, x) => acc + x)\n",
     );
-    assert!(fused < split, "fused {fused} must allocate fewer lists than split {split}");
-    assert_eq!(fused, 1, "the fused chain built {fused} lists; expected only the source literal");
+    assert!(
+        fused < split,
+        "fused {fused} must allocate fewer lists than split {split}"
+    );
+    assert_eq!(
+        fused, 1,
+        "the fused chain built {fused} lists; expected only the source literal"
+    );
 }
 
 /// Run `src` and return the value bound to the first module variable (slot 0).
 fn eval(src: &str) -> Value {
-    run_locals(src).into_iter().next().expect("at least one local")
+    run_locals(src)
+        .into_iter()
+        .next()
+        .expect("at least one local")
 }
 
 /// Run `src` and return the highest-numbered module local — handy when a `def`
 /// or earlier binding occupies the low slots and the result variable is last.
 fn eval_last(src: &str) -> Value {
-    run_locals(src).into_iter().next_back().expect("at least one local")
+    run_locals(src)
+        .into_iter()
+        .next_back()
+        .expect("at least one local")
 }
 
 /// Run `src` and return the module variable called `name`.
@@ -163,16 +175,30 @@ fn boolean_short_circuit() {
     assert!(matches!(eval("r = not false\n"), Value::Bool(true)));
     // Short-circuit still holds: the right operand is not evaluated when the
     // left decides the answer, so a fault on the right is not reached.
-    assert!(matches!(eval("r = true or (1 // 0 == 0)\n"), Value::Bool(true)));
-    assert!(matches!(eval("r = false and (1 // 0 == 0)\n"), Value::Bool(false)));
+    assert!(matches!(
+        eval("r = true or (1 // 0 == 0)\n"),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        eval("r = false and (1 // 0 == 0)\n"),
+        Value::Bool(false)
+    ));
 
     // A non-bool operand is a TypeError naming the explicit test — on the left
     // (checked by the short-circuit jump) and on the right (checked after it).
-    assert!(run_err("r = 5 or true\n").message.starts_with("TypeError: "));
-    assert!(run_err("r = true and 5\n").message.contains("must be a bool"));
-    assert!(run_err("r = not 0\n").message.contains("the operand of `not`"));
+    assert!(run_err("r = 5 or true\n")
+        .message
+        .starts_with("TypeError: "));
+    assert!(run_err("r = true and 5\n")
+        .message
+        .contains("must be a bool"));
+    assert!(run_err("r = not 0\n")
+        .message
+        .contains("the operand of `not`"));
     // The condition path (`if`/`while`) faults the same way.
-    assert!(run_err("if [1]:\n    r = 1\n").message.contains("a condition must be a bool"));
+    assert!(run_err("if [1]:\n    r = 1\n")
+        .message
+        .contains("a condition must be a bool"));
 }
 
 #[test]
@@ -251,17 +277,29 @@ fn subscript_and_slice() {
 #[test]
 fn unit_step_slices_clamp_like_python() {
     let s = "s = \"a\u{e9}\u{4e2d}\u{1f600}b\"\n";
-    assert_eq!(eval_last(&format!("{s}r = s[1:3]\n")).repr(), "'\u{e9}\u{4e2d}'");
-    assert_eq!(eval_last(&format!("{s}r = s[2:]\n")).repr(), "'\u{4e2d}\u{1f600}b'");
+    assert_eq!(
+        eval_last(&format!("{s}r = s[1:3]\n")).repr(),
+        "'\u{e9}\u{4e2d}'"
+    );
+    assert_eq!(
+        eval_last(&format!("{s}r = s[2:]\n")).repr(),
+        "'\u{4e2d}\u{1f600}b'"
+    );
     assert_eq!(eval_last(&format!("{s}r = s[:2]\n")).repr(), "'a\u{e9}'");
-    assert_eq!(eval_last(&format!("{s}r = s[-2:]\n")).repr(), "'\u{1f600}b'");
+    assert_eq!(
+        eval_last(&format!("{s}r = s[-2:]\n")).repr(),
+        "'\u{1f600}b'"
+    );
     assert_eq!(eval_last(&format!("{s}r = s[:-3]\n")).repr(), "'a\u{e9}'");
     // Out of range in both directions, and an inverted range, are all empty
     // or clamped rather than an error — Python's rule, and the one the general
     // path already implemented.
     assert_eq!(eval_last(&format!("{s}r = s[3:1]\n")).repr(), "''");
     assert_eq!(eval_last(&format!("{s}r = s[9:99]\n")).repr(), "''");
-    assert_eq!(eval_last(&format!("{s}r = s[-99:99]\n")).repr(), "'a\u{e9}\u{4e2d}\u{1f600}b'");
+    assert_eq!(
+        eval_last(&format!("{s}r = s[-99:99]\n")).repr(),
+        "'a\u{e9}\u{4e2d}\u{1f600}b'"
+    );
     assert_eq!(eval_last(&format!("{s}r = s[5:5]\n")).repr(), "''");
     assert_eq!(eval("r = \"\"[0:5]\n").repr(), "''");
     assert_eq!(eval("r = [1, 2, 3][2:99]\n").repr(), "[3]");
@@ -285,8 +323,16 @@ r = d[\"x\"]
 
 #[test]
 fn functions_defaults_and_recursion() {
-    assert_eq!(int(&eval_last("def f(a, b=10):\n    return a + b\nr = f(5)\n")), 15);
-    assert_eq!(int(&eval_last("def f(a, b=10):\n    return a + b\nr = f(5, b=20)\n")), 25);
+    assert_eq!(
+        int(&eval_last("def f(a, b=10):\n    return a + b\nr = f(5)\n")),
+        15
+    );
+    assert_eq!(
+        int(&eval_last(
+            "def f(a, b=10):\n    return a + b\nr = f(5, b=20)\n"
+        )),
+        25
+    );
     let fib = "\
 def fib(n):
     if n < 2:
@@ -437,10 +483,13 @@ fn global_lets_a_function_mutate_module_state() {
     // count, bump, r1, r2 — inspect module `count` (slot 0, a cell).
     let locals = run_locals(src);
     // After two bumps the module count is 2; r2 is 2, r1 is 1.
-    let vals: Vec<i64> = locals.iter().filter_map(|v| match v {
-        Value::Int(i) => Some(*i),
-        _ => None,
-    }).collect();
+    let vals: Vec<i64> = locals
+        .iter()
+        .filter_map(|v| match v {
+            Value::Int(i) => Some(*i),
+            _ => None,
+        })
+        .collect();
     assert!(vals.contains(&2), "expected count/r2 == 2, got {vals:?}");
     assert!(vals.contains(&1), "expected r1 == 1, got {vals:?}");
 }
@@ -478,11 +527,17 @@ fn assignment_without_global_stays_local() {
 
 #[test]
 fn unbound_local_shadowing_module_teaches_global() {
-    let err = run_err("count = 0\n\
+    let err = run_err(
+        "count = 0\n\
                        def bump():\n    count = count + 1\n    return count\n\
-                       bump()\n");
+                       bump()\n",
+    );
     assert!(err.message.contains("global count"), "got: {}", err.message);
-    assert!(err.message.contains("shadows the module-level"), "got: {}", err.message);
+    assert!(
+        err.message.contains("shadows the module-level"),
+        "got: {}",
+        err.message
+    );
 }
 
 // --- match: value-only switch ---------------------------------------------
@@ -494,11 +549,17 @@ fn match_literal_jump_table() {
                case \"b\":\n            return 2\n        case _:\n            return 0\n\
                r1 = f(\"a\")\nr2 = f(\"b\")\nr3 = f(\"z\")\n";
     let locals = run_locals(src);
-    let got: Vec<i64> = locals.iter().filter_map(|v| match v {
-        Value::Int(i) => Some(*i),
-        _ => None,
-    }).collect();
-    assert!(got.contains(&1) && got.contains(&2) && got.contains(&0), "got {got:?}");
+    let got: Vec<i64> = locals
+        .iter()
+        .filter_map(|v| match v {
+            Value::Int(i) => Some(*i),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        got.contains(&1) && got.contains(&2) && got.contains(&0),
+        "got {got:?}"
+    );
 }
 
 #[test]
@@ -507,10 +568,13 @@ fn match_no_default_is_noop() {
                \n    return x\n\
                hit = f(1)\nmiss = f(9)\n";
     let locals = run_locals(src);
-    let got: Vec<i64> = locals.iter().filter_map(|v| match v {
-        Value::Int(i) => Some(*i),
-        _ => None,
-    }).collect();
+    let got: Vec<i64> = locals
+        .iter()
+        .filter_map(|v| match v {
+            Value::Int(i) => Some(*i),
+            _ => None,
+        })
+        .collect();
     assert!(got.contains(&1), "expected a hit==1, got {got:?}");
     assert!(got.contains(&10), "expected a miss==10, got {got:?}");
 }
@@ -556,10 +620,13 @@ fn class_instantiation_and_methods() {
                def inc(self):\n        self.n = self.n + 1\n        return self.n\n\
                c = Counter(10)\nr1 = c.inc()\nr2 = c.inc()\n";
     let locals = run_locals(src);
-    let ints: Vec<i64> = locals.iter().filter_map(|v| match v {
-        Value::Int(i) => Some(*i),
-        _ => None,
-    }).collect();
+    let ints: Vec<i64> = locals
+        .iter()
+        .filter_map(|v| match v {
+            Value::Int(i) => Some(*i),
+            _ => None,
+        })
+        .collect();
     assert!(ints.contains(&11) && ints.contains(&12), "got {ints:?}");
 }
 
@@ -592,7 +659,11 @@ fn unsupported_class_dunder_is_rejected() {
 fn hash_dunder_is_rejected() {
     let err = compile_err("class X:\n    def __hash__(self):\n        return 0\n");
     assert!(err.message.contains("__hash__"), "got: {}", err.message);
-    assert!(err.message.contains("d[(self.row, self.col)]"), "got: {}", err.message);
+    assert!(
+        err.message.contains("d[(self.row, self.col)]"),
+        "got: {}",
+        err.message
+    );
 }
 
 // --- exceptions -----------------------------------------------------------
@@ -617,7 +688,8 @@ fn exception_base_catches_subclass() {
 
 #[test]
 fn runtime_error_is_catchable_with_right_type() {
-    let src = "def f():\n    try:\n        return [][0]\n    except IndexError:\n        return 7\n\
+    let src =
+        "def f():\n    try:\n        return [][0]\n    except IndexError:\n        return 7\n\
                r = f()\n";
     assert_eq!(int(&eval_last(src)), 7);
     let src2 = "def f():\n    try:\n        return 1 // 0\n    except ZeroDivisionError:\n        return 9\n\
@@ -667,13 +739,20 @@ fn import_binds_last_segment() {
 #[test]
 fn os_path_functions() {
     assert_eq!(fstr("import os\nr = os.path.join(\"a\", \"b\")\n"), "a/b");
-    assert_eq!(fstr("import os\nr = os.path.basename(\"/x/y/z.txt\")\n"), "z.txt");
+    assert_eq!(
+        fstr("import os\nr = os.path.basename(\"/x/y/z.txt\")\n"),
+        "z.txt"
+    );
 }
 
 #[test]
 fn unknown_module_raises_module_not_found() {
     let err = run_err("import nonexistent_module\n");
-    assert!(err.message.contains("No module named"), "got: {}", err.message);
+    assert!(
+        err.message.contains("No module named"),
+        "got: {}",
+        err.message
+    );
 }
 
 // --- generators -----------------------------------------------------------
@@ -684,7 +763,10 @@ fn generator_basic_iteration() {
                total = 0\nfor _, v in up(5):\n    total = total + v\n";
     // total is a module local; sum 0..4 = 10
     let locals = run_locals(src);
-    assert!(locals.iter().any(|v| matches!(v, Value::Int(10))), "expected 10 in {locals:?}");
+    assert!(
+        locals.iter().any(|v| matches!(v, Value::Int(10))),
+        "expected 10 in {locals:?}"
+    );
 }
 
 #[test]
@@ -693,10 +775,21 @@ fn generator_consumes_generator() {
                def evens(n):\n    for _, x in up(n):\n        if x % 2 == 0:\n            yield x\n\
                got = []\nfor _, v in evens(10):\n    got.append(v)\n";
     let locals = run_locals(src);
-    let list = locals.iter().find_map(|v| match v {
-        Value::List(l) => Some(l.borrow().iter().map(|x| match x { Value::Int(i)=>*i, _=>-1 }).collect::<Vec<_>>()),
-        _ => None,
-    }).expect("a list local");
+    let list = locals
+        .iter()
+        .find_map(|v| match v {
+            Value::List(l) => Some(
+                l.borrow()
+                    .iter()
+                    .map(|x| match x {
+                        Value::Int(i) => *i,
+                        _ => -1,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        })
+        .expect("a list local");
     assert_eq!(list, vec![0, 2, 4, 6, 8]);
 }
 
@@ -707,7 +800,10 @@ fn calling_generator_does_not_run_body() {
                it = g()\nn = len(log)\n";
     let locals = run_locals(src);
     // n == 0 proves the body has not executed yet.
-    assert!(locals.iter().any(|v| matches!(v, Value::Int(0))), "gen body ran too early: {locals:?}");
+    assert!(
+        locals.iter().any(|v| matches!(v, Value::Int(0))),
+        "gen body ran too early: {locals:?}"
+    );
 }
 
 #[test]
@@ -725,7 +821,14 @@ fn break_runs_enclosing_finally() {
     let src = "log = []\ndef f():\n    global log\n    for _, i in range(3):\n        try:\n            if i == 1:\n                break\n            log.append(i)\n        finally:\n            log.append(10 + i)\nf()\nout = log\n";
     let v = eval_last(src);
     let got: Vec<i64> = match v {
-        Value::List(l) => l.borrow().iter().map(|x| match x { Value::Int(i)=>*i, _=>-1 }).collect(),
+        Value::List(l) => l
+            .borrow()
+            .iter()
+            .map(|x| match x {
+                Value::Int(i) => *i,
+                _ => -1,
+            })
+            .collect(),
         _ => panic!("expected list"),
     };
     // i=0: append 0, finally 10; i=1: break but finally 11 still runs.
@@ -736,7 +839,14 @@ fn break_runs_enclosing_finally() {
 fn continue_runs_enclosing_finally() {
     let src = "log = []\ndef f():\n    global log\n    for _, i in range(3):\n        try:\n            if i == 1:\n                continue\n            log.append(i)\n        finally:\n            log.append(10 + i)\nf()\nout = log\n";
     let got: Vec<i64> = match eval_last(src) {
-        Value::List(l) => l.borrow().iter().map(|x| match x { Value::Int(i)=>*i, _=>-1 }).collect(),
+        Value::List(l) => l
+            .borrow()
+            .iter()
+            .map(|x| match x {
+                Value::Int(i) => *i,
+                _ => -1,
+            })
+            .collect(),
         _ => panic!("expected list"),
     };
     // Every iteration runs its finally, even the one that continues.
@@ -779,9 +889,15 @@ fn re_finditer_positions() {
     let got: Vec<i64> = run_locals(src)
         .iter()
         .find_map(|v| match v {
-            Value::List(l) => {
-                Some(l.borrow().iter().map(|x| match x { Value::Int(i) => *i, _ => -1 }).collect())
-            }
+            Value::List(l) => Some(
+                l.borrow()
+                    .iter()
+                    .map(|x| match x {
+                        Value::Int(i) => *i,
+                        _ => -1,
+                    })
+                    .collect(),
+            ),
             _ => None,
         })
         .expect("a list local");
@@ -791,20 +907,31 @@ fn re_finditer_positions() {
 #[test]
 fn re_match_is_cut() {
     let err = run_err("import re\nre.match(r\"x\", \"x\")\n");
-    assert!(err.message.contains("re.match is not supported"), "got: {}", err.message);
+    assert!(
+        err.message.contains("re.match is not supported"),
+        "got: {}",
+        err.message
+    );
 }
 
 #[test]
 fn re_backreference_rejected() {
     let err = run_err("import re\nre.search(r\"(a)\\1\", \"aa\")\n");
-    assert!(err.message.contains("backreference") || err.message.contains("linear-time"),
-        "got: {}", err.message);
+    assert!(
+        err.message.contains("backreference") || err.message.contains("linear-time"),
+        "got: {}",
+        err.message
+    );
 }
 
 #[test]
 fn proc_rejects_bare_string() {
     let err = run_err("import proc\nproc.run(\"echo hi\")\n");
-    assert!(err.message.contains("list of separate string"), "got: {}", err.message);
+    assert!(
+        err.message.contains("list of separate string"),
+        "got: {}",
+        err.message
+    );
 }
 
 #[test]
@@ -818,7 +945,11 @@ fn proc_runs_and_captures() {
 #[test]
 fn proc_raises_on_nonzero_exit_by_default() {
     let err = run_err("import proc\nproc.run([\"sh\", \"-c\", \"exit 4\"], quiet=true)\n");
-    assert!(err.message.contains("command failed"), "got: {}", err.message);
+    assert!(
+        err.message.contains("command failed"),
+        "got: {}",
+        err.message
+    );
 }
 
 #[test]
@@ -829,10 +960,12 @@ fn proc_check_false_allows_nonzero_exit() {
 
 #[test]
 fn proc_rejects_cpython_capture_kwargs() {
-    let err = run_err(
-        "import proc\nproc.run([\"echo\", \"hi\"], capture_output=true)\n",
+    let err = run_err("import proc\nproc.run([\"echo\", \"hi\"], capture_output=true)\n");
+    assert!(
+        err.message.contains("always captures"),
+        "got: {}",
+        err.message
     );
-    assert!(err.message.contains("always captures"), "got: {}", err.message);
 }
 
 #[test]
@@ -968,7 +1101,10 @@ g = orders.group_by(o => o["r"]).to_list().map((r, rows) => (r, rows.len())).fil
 h = gen().map((p, q) => p * q)
 out = f"{a} {b} {c} {g} {h}"
 "#;
-    assert_eq!(fstr(src), "['a', 'ccc'] ['bb', 'ccc'] [(1, 'x')] [('eu', 2)] [2, 12]");
+    assert_eq!(
+        fstr(src),
+        "['a', 'ccc'] ['bb', 'ccc'] [(1, 'x')] [('eu', 2)] [2, 12]"
+    );
 }
 
 /// Every step that takes a callback, as the terminal of a fused chain over
@@ -1060,7 +1196,10 @@ g = d.filter(p => true).map(p => p).count(p => p[1] > 0)
 h = range(3).map(x => x * 2).filter(x => x > 0)
 out = f"{a} {b} {c} {e} {f} {g} {h}"
 "#;
-    assert_eq!(fstr(src), "[3, 7] ((3, 4),) {'a': 10, 'b': 20} {'b': 2} 3 2 [2, 4]");
+    assert_eq!(
+        fstr(src),
+        "[3, 7] ((3, 4),) {'a': 10, 'b': 20} {'b': 2} 3 2 [2, 4]"
+    );
 }
 
 /// A dict receiver is an instance of the rule, not a special case: every
@@ -1137,13 +1276,22 @@ out = f"{a} {b} {g} {h} {i} {j} {k}"
 #[test]
 fn a_destructuring_mismatch_is_fors_error() {
     let cases = [
-        ("x = [(1, 2)].map((a, b, c) => a)\n", "for _, (a, b, c) in [(1, 2)]:\n    pass\n"),
-        ("x = [(1, 2, 3)].map((a, b) => a)\n", "for _, (a, b) in [(1, 2, 3)]:\n    pass\n"),
+        (
+            "x = [(1, 2)].map((a, b, c) => a)\n",
+            "for _, (a, b, c) in [(1, 2)]:\n    pass\n",
+        ),
+        (
+            "x = [(1, 2, 3)].map((a, b) => a)\n",
+            "for _, (a, b) in [(1, 2, 3)]:\n    pass\n",
+        ),
         (
             "x = [(1, 2)].filter(p => true).map((a, b, c) => a).first()\n",
             "for _, (a, b, c) in [(1, 2)]:\n    pass\n",
         ),
-        ("x = [1].map((a, b) => a)\n", "for _, (a, b) in [1]:\n    pass\n"),
+        (
+            "x = [1].map((a, b) => a)\n",
+            "for _, (a, b) in [1]:\n    pass\n",
+        ),
         (
             "x = {1: 2}.reduce(0, (acc, a, b, c) => acc)\n",
             "for _, (a, b, c) in {1: 2}.to_list():\n    pass\n",
@@ -1152,11 +1300,18 @@ fn a_destructuring_mismatch_is_fors_error() {
     for (chain, stmt) in cases {
         let got = run_err(chain);
         let want = run_err(stmt);
-        assert_eq!((got.class, &*got.message), (want.class, &*want.message), "{chain}");
+        assert_eq!(
+            (got.class, &*got.message),
+            (want.class, &*want.message),
+            "{chain}"
+        );
     }
     // Uncaught, it reaches the top level named by its class.
     let e = run_err("x = [(1, 2)].map((a, b, c) => a)\n");
-    assert_eq!(&*e.message, "ValueError: not enough values to unpack (expected 3, got 2)");
+    assert_eq!(
+        &*e.message,
+        "ValueError: not enough values to unpack (expected 3, got 2)"
+    );
 }
 
 /// Reported where the step is written. By the second element the VM's own
@@ -1165,11 +1320,17 @@ fn a_destructuring_mismatch_is_fors_error() {
 #[test]
 fn a_destructuring_mismatch_names_the_step() {
     let head = "def first(a, b):\n    return a\n\nxs = [(1, 2), (3,)]\n";
-    for step in ["y = xs.map(first)\n", "y = xs.map(first).filter(x => true)\n"] {
+    for step in [
+        "y = xs.map(first)\n",
+        "y = xs.map(first).filter(x => true)\n",
+    ] {
         let e = run_err(&format!("{head}{step}"));
         assert_eq!(
             (e.line, &*e.message),
-            (5, "ValueError: not enough values to unpack (expected 2, got 1)"),
+            (
+                5,
+                "ValueError: not enough values to unpack (expected 2, got 1)"
+            ),
             "{step}"
         );
     }
@@ -1212,7 +1373,11 @@ out = f"{a} {c} {d}"
 fn the_six_duplicate_builtins_are_cut_naming_their_methods() {
     for (name, call, want) in [
         ("sum", "r = sum([1, 2])\n", "`sum` is not defined in Oro"),
-        ("sorted", "r = sorted([2, 1])\n", "`sorted` is not defined in Oro"),
+        (
+            "sorted",
+            "r = sorted([2, 1])\n",
+            "`sorted` is not defined in Oro",
+        ),
         ("any", "r = any([true])\n", "`any` is not defined in Oro"),
         ("all", "r = all([true])\n", "`all` is not defined in Oro"),
         ("zip", "r = zip([1], [2])\n", "`zip` is not defined in Oro"),
@@ -1220,12 +1385,20 @@ fn the_six_duplicate_builtins_are_cut_naming_their_methods() {
         let e = run_err(call);
         assert!(e.message.contains(want), "{name}: got {}", e.message);
         // The replacement is named, which is the whole convention.
-        assert!(e.message.contains("collection method"), "{name}: got {}", e.message);
+        assert!(
+            e.message.contains("collection method"),
+            "{name}: got {}",
+            e.message
+        );
     }
     // `enumerate` is not "a builtin that became a method" — it is gone entirely,
     // because every `for` yields (index, value). Its message names that form.
     let e = run_err("r = enumerate([1])\n");
-    assert!(e.message.contains("`enumerate` is not in Oro"), "got {}", e.message);
+    assert!(
+        e.message.contains("`enumerate` is not in Oro"),
+        "got {}",
+        e.message
+    );
     assert!(e.message.contains("for i, x in xs"), "got {}", e.message);
 }
 
@@ -1239,7 +1412,11 @@ fn min_and_max_reduce_and_the_scalar_form_is_cut() {
     // The two-argument scalar form is cut; the message names both replacements.
     for call in ["r = min(3, 1)\n", "r = max(3, 1)\n"] {
         let e = run_err(call);
-        assert!(e.message.contains("clamp"), "names clamp for a bound: {}", e.message);
+        assert!(
+            e.message.contains("clamp"),
+            "names clamp for a bound: {}",
+            e.message
+        );
         assert!(
             e.message.contains(".min()") || e.message.contains(".max()"),
             "names the reduction method: {}",
@@ -1255,7 +1432,9 @@ fn min_and_max_reduce_and_the_scalar_form_is_cut() {
     assert_eq!(int(&eval("r = clamp(-5, min=0)\n")), 0);
     assert_eq!(int(&eval("r = clamp(150, max=100)\n")), 100);
     assert_eq!(int(&eval("r = clamp(50, min=0, max=100)\n")), 50);
-    assert!(run_err("r = clamp(5)\n").message.contains("at least one of min= or max="));
+    assert!(run_err("r = clamp(5)\n")
+        .message
+        .contains("at least one of min= or max="));
 }
 
 /// `len` is the single exception, and both spellings still work.
@@ -1275,8 +1454,14 @@ fn len_survives_on_both_sides_of_the_line() {
 /// return a new collection — there is no in-place form.
 #[test]
 fn sort_keeps_reverse_stable() {
-    assert_eq!(eval("r = [3, 1, 2].sort(x => x, reverse=true)\n").repr(), "[3, 2, 1]");
-    assert_eq!(eval("r = (3, 1, 2).sort(x => x, reverse=true)\n").repr(), "(3, 2, 1)");
+    assert_eq!(
+        eval("r = [3, 1, 2].sort(x => x, reverse=true)\n").repr(),
+        "[3, 2, 1]"
+    );
+    assert_eq!(
+        eval("r = (3, 1, 2).sort(x => x, reverse=true)\n").repr(),
+        "(3, 2, 1)"
+    );
     let src = "def snd(p):\n    return p[1]\n\nties = [(\"a\", 2), (\"b\", 1), (\"c\", 2), (\"d\", 1)]\nr = ties.sort(snd, reverse=true)\n";
     assert_eq!(
         eval_var(src, "r").repr(),
@@ -1307,28 +1492,60 @@ fn sort_returns_a_new_collection_and_does_not_mutate() {
 #[test]
 fn the_cut_sorts_name_their_replacement() {
     let e = run_err("r = [3, 1, 2].sorted()\n");
-    assert!(e.message.contains("`sorted` is not in Oro"), "got: {}", e.message);
+    assert!(
+        e.message.contains("`sorted` is not in Oro"),
+        "got: {}",
+        e.message
+    );
     assert!(e.message.contains("xs.sort(x => x)"), "got: {}", e.message);
     let e = run_err("r = [3, 1, 2].sort_in_place(x => x)\n");
-    assert!(e.message.contains("`sort_in_place` is not in Oro"), "got: {}", e.message);
+    assert!(
+        e.message.contains("`sort_in_place` is not in Oro"),
+        "got: {}",
+        e.message
+    );
     assert!(e.message.contains("xs = xs.sort(f)"), "got: {}", e.message);
     let e = run_err("r = [3, 1, 2].reversed()\n");
-    assert!(e.message.contains("`reversed` is spelled `reverse`"), "got: {}", e.message);
+    assert!(
+        e.message.contains("`reversed` is spelled `reverse`"),
+        "got: {}",
+        e.message
+    );
     // The arity and the keyword on the surviving `sort`.
     let e = run_err("r = [1].sort()\n");
-    assert!(e.message.contains("sort() takes exactly 1 argument"), "got: {}", e.message);
+    assert!(
+        e.message.contains("sort() takes exactly 1 argument"),
+        "got: {}",
+        e.message
+    );
     let e = run_err("r = [1].sort(x => x, reverse=1)\n");
-    assert!(e.message.contains("reverse must be a bool"), "got: {}", e.message);
+    assert!(
+        e.message.contains("reverse must be a bool"),
+        "got: {}",
+        e.message
+    );
 }
 
 /// `any`, `all` and `count` each need their predicate: truthiness is a
 /// predicate like any other, and `[0, 1, 2, ""].count()` read as a length.
 #[test]
 fn any_all_and_count_require_their_predicate() {
-    for (call, who) in [("[1].any()", "any"), ("[1].all()", "all"), ("[1].count()", "count")] {
+    for (call, who) in [
+        ("[1].any()", "any"),
+        ("[1].all()", "all"),
+        ("[1].count()", "count"),
+    ] {
         let e = run_err(&format!("r = {call}\n"));
-        assert!(e.message.contains(&format!("{who}() needs a predicate")), "got: {}", e.message);
-        assert!(e.message.contains(&format!("xs.{who}(x => x)")), "got: {}", e.message);
+        assert!(
+            e.message.contains(&format!("{who}() needs a predicate")),
+            "got: {}",
+            e.message
+        );
+        assert!(
+            e.message.contains(&format!("xs.{who}(x => x)")),
+            "got: {}",
+            e.message
+        );
     }
     // `count` also names the call that *is* a length.
     let e = run_err("r = [1].count()\n");
@@ -1344,25 +1561,56 @@ fn any_all_and_count_require_their_predicate() {
 fn take_drop_and_chunk_require_an_int_count() {
     for call in ["[1, 2].take()", "[1, 2].drop()", "[1, 2].chunk()"] {
         let e = run_err(&format!("r = {call}\n"));
-        assert!(e.message.contains("argument(s) but 0 were given"), "got: {}", e.message);
+        assert!(
+            e.message.contains("argument(s) but 0 were given"),
+            "got: {}",
+            e.message
+        );
     }
     let e = run_err("r = [1, 2].take(1, 99)\n");
-    assert!(e.message.contains("takes 1 argument(s) but 2 were given"), "got: {}", e.message);
-    for call in ["[1, 2].take(\"two\")", "[1, 2].take(true)", "[1, 2].chunk(null)"] {
+    assert!(
+        e.message.contains("takes 1 argument(s) but 2 were given"),
+        "got: {}",
+        e.message
+    );
+    for call in [
+        "[1, 2].take(\"two\")",
+        "[1, 2].take(true)",
+        "[1, 2].chunk(null)",
+    ] {
         let e = run_err(&format!("r = {call}\n"));
-        assert!(e.message.contains("argument must be int"), "got: {}", e.message);
+        assert!(
+            e.message.contains("argument must be int"),
+            "got: {}",
+            e.message
+        );
     }
     // A negative count is still the ValueError it was: the count is there and
     // is an int, and what is wrong with it is its value.
     let e = run_err("r = [1, 2].take(-1)\n");
-    assert!(e.message.contains("needs a count >= 0"), "got: {}", e.message);
+    assert!(
+        e.message.contains("needs a count >= 0"),
+        "got: {}",
+        e.message
+    );
     // Fused, the same two shapes now raise instead of answering `[1]` and
     // `[1, 2]` — the unmapped elements of the receiver.
     let e = run_err("r = [1, 2, 3].map(x => x * 10).take(true)\n");
-    assert!(e.message.contains("argument must be int"), "got: {}", e.message);
+    assert!(
+        e.message.contains("argument must be int"),
+        "got: {}",
+        e.message
+    );
     let e = run_err("r = [1, 2, 3].map(x => x * 10).take(2, 99)\n");
-    assert!(e.message.contains("takes 1 argument(s) but 2 were given"), "got: {}", e.message);
-    assert_eq!(eval("r = [1, 2, 3].map(x => x * 10).take(2)\n").repr(), "[10, 20]");
+    assert!(
+        e.message.contains("takes 1 argument(s) but 2 were given"),
+        "got: {}",
+        e.message
+    );
+    assert_eq!(
+        eval("r = [1, 2, 3].map(x => x * 10).take(2)\n").repr(),
+        "[10, 20]"
+    );
 }
 
 /// `sum` takes its start by name. The number in `xs.sum(10)` said nothing about
@@ -1372,12 +1620,20 @@ fn take_drop_and_chunk_require_an_int_count() {
 fn sum_takes_its_start_by_name() {
     assert_eq!(eval("r = [1, 2].sum(start=10)\n").repr(), "13");
     let e = run_err("r = [1, 2].sum(10)\n");
-    assert!(e.message.contains("takes no positional arguments"), "got: {}", e.message);
+    assert!(
+        e.message.contains("takes no positional arguments"),
+        "got: {}",
+        e.message
+    );
     assert!(e.message.contains("start="), "got: {}", e.message);
     let e = run_err("r = [1, 2].sum(start=null)\n");
     assert!(e.message.contains("must not be null"), "got: {}", e.message);
     let e = run_err("r = [1, 2].sum(base=10)\n");
-    assert!(e.message.contains("unexpected keyword argument 'base'"), "got: {}", e.message);
+    assert!(
+        e.message.contains("unexpected keyword argument 'base'"),
+        "got: {}",
+        e.message
+    );
 }
 
 /// The undecorate step both sorts finish with: every element moves once, by
@@ -1411,12 +1667,23 @@ fn apply_permutation_reorders_in_place() {
 #[test]
 fn a_str_is_not_a_collection_and_the_message_names_the_bridge() {
     let e = run_err("r = \"ba\".sort(x => x)\n");
-    assert!(e.message.contains("not a collection in Oro"), "got: {}", e.message);
+    assert!(
+        e.message.contains("not a collection in Oro"),
+        "got: {}",
+        e.message
+    );
     assert!(e.message.contains("to_list()"), "got: {}", e.message);
     let e = run_err("r = b\"ba\".min()\n");
-    assert!(e.message.contains("not a collection in Oro"), "got: {}", e.message);
+    assert!(
+        e.message.contains("not a collection in Oro"),
+        "got: {}",
+        e.message
+    );
     // And the bridge works.
-    assert_eq!(eval("r = \"ba\".to_list().sort(x => x)\n").repr(), "['a', 'b']");
+    assert_eq!(
+        eval("r = \"ba\".to_list().sort(x => x)\n").repr(),
+        "['a', 'b']"
+    );
 }
 
 /// `str.join`/`bytes.join` are cut, and say so. Both halves were byte-for-byte
@@ -1424,13 +1691,25 @@ fn a_str_is_not_a_collection_and_the_message_names_the_bridge() {
 #[test]
 fn str_and_bytes_join_are_cut_naming_the_collection_form() {
     let e = run_err("r = \", \".join([\"a\", \"b\"])\n");
-    assert!(e.message.contains("`str.join` is not in Oro"), "got: {}", e.message);
+    assert!(
+        e.message.contains("`str.join` is not in Oro"),
+        "got: {}",
+        e.message
+    );
     assert!(e.message.contains("xs.join(sep)"), "got: {}", e.message);
     let e = run_err("r = b\",\".join([b\"a\"])\n");
-    assert!(e.message.contains("`bytes.join` is not in Oro"), "got: {}", e.message);
+    assert!(
+        e.message.contains("`bytes.join` is not in Oro"),
+        "got: {}",
+        e.message
+    );
     // One separator, and only one: the extra argument used to be ignored.
     let e = run_err("r = [\"a\"].join(\"-\", 2)\n");
-    assert!(e.message.contains("join() takes 1 argument"), "got: {}", e.message);
+    assert!(
+        e.message.contains("join() takes 1 argument"),
+        "got: {}",
+        e.message
+    );
 }
 
 #[test]
@@ -1438,7 +1717,11 @@ fn lambda_in_fstring_is_rejected_clearly() {
     // f-string fields are parsed at codegen time, so the symbol pass never
     // assigns the lambda a scope. That must be a clear error, not an internal one.
     let e = compile_err("out = f\"{[1].map(x => x)}\"\n");
-    assert!(e.message.contains("cannot appear inside an f-string"), "got: {}", e.message);
+    assert!(
+        e.message.contains("cannot appear inside an f-string"),
+        "got: {}",
+        e.message
+    );
 }
 
 // --- json: the embedded-Oro-stdlib module (src/vm/stdlib.rs) --------------
@@ -1458,7 +1741,10 @@ import json
 a = json.parse('{"n": 3, "f": 2.5, "s": "hi", "b": true, "z": null, "xs": [1, 2, 3]}')
 out = f"{a['n']} {type(a['n'])} {a['f']} {type(a['f'])} {a['s']} {a['b']} {a['z']} {a['xs']}"
 "#;
-    assert_eq!(fstr(src), "3 <class 'int'> 2.5 <class 'float'> hi true null [1, 2, 3]");
+    assert_eq!(
+        fstr(src),
+        "3 <class 'int'> 2.5 <class 'float'> hi true null [1, 2, 3]"
+    );
 }
 
 #[test]
@@ -1500,7 +1786,11 @@ fn json_stringify_indent_pretty_prints() {
 fn json_stringify_rejects_non_str_keys_and_non_finite_floats() {
     let err1 = run_err("import json\njson.stringify({1: \"a\"})\n");
     assert!(err1.message.contains("TypeError"), "got: {}", err1.message);
-    assert!(err1.message.contains("keys must be str"), "got: {}", err1.message);
+    assert!(
+        err1.message.contains("keys must be str"),
+        "got: {}",
+        err1.message
+    );
 
     let err2 = run_err("import json\njson.stringify(\"nan\".to_float())\n");
     assert!(err2.message.contains("ValueError"), "got: {}", err2.message);
@@ -1511,7 +1801,11 @@ fn json_parse_malformed_input_names_the_offset() {
     // Mirrors the README's own example shape: "unexpected 'X' at position N".
     let err = run_err("import json\njson.parse('{\"a\": 1,}')\n");
     assert!(err.message.contains("ValueError"), "got: {}", err.message);
-    assert!(err.message.contains("at position 8"), "got: {}", err.message);
+    assert!(
+        err.message.contains("at position 8"),
+        "got: {}",
+        err.message
+    );
 }
 
 #[test]
@@ -1525,9 +1819,17 @@ fn ord_raises_type_error_and_chr_raises_value_error() {
     // CPython's exception types, not just its messages: ord() on the wrong
     // shape of value is a TypeError, chr() out of range is a ValueError.
     let e = run_err("ord(\"ab\")\n");
-    assert!(e.message.contains("expected a character"), "got: {}", e.message);
+    assert!(
+        e.message.contains("expected a character"),
+        "got: {}",
+        e.message
+    );
     let e2 = run_err("chr(1114112)\n");
-    assert!(e2.message.contains("arg not in range"), "got: {}", e2.message);
+    assert!(
+        e2.message.contains("arg not in range"),
+        "got: {}",
+        e2.message
+    );
 }
 
 /// The sequence protocol on `bytes`, all of it matching CPython (the corpus
@@ -1546,7 +1848,10 @@ fn bytes_sequence_protocol() {
     assert_eq!(eval("r = b\"ab\" * 3\n").repr(), "b'ababab'");
     assert_eq!(eval("r = b\"ab\" * -1\n").repr(), "b''");
     // Iteration yields ints, so a sum over bytes is a sum of octets.
-    assert_eq!(int(&eval("r = 0\nfor _, x in b\"abc\":\n    r = r + x\n")), 294);
+    assert_eq!(
+        int(&eval("r = 0\nfor _, x in b\"abc\":\n    r = r + x\n")),
+        294
+    );
 }
 
 #[test]
@@ -1558,8 +1863,14 @@ fn bytes_membership_ordering_and_hashing() {
     // A byte string never equals the str that would decode to it, and the two
     // are distinct dict keys.
     assert!(!eval("r = b\"abc\" == \"abc\"\n").truthy());
-    assert_eq!(eval_last("d = {b\"k\": 1, \"k\": 2}\nr = len(d)\n").repr(), "2");
-    assert_eq!(eval_last("d = {b\"k\": 1, \"k\": 2}\nr = d[b\"k\"]\n").repr(), "1");
+    assert_eq!(
+        eval_last("d = {b\"k\": 1, \"k\": 2}\nr = len(d)\n").repr(),
+        "2"
+    );
+    assert_eq!(
+        eval_last("d = {b\"k\": 1, \"k\": 2}\nr = d[b\"k\"]\n").repr(),
+        "1"
+    );
     // `in` on bytes means subsequence; an int asks a different question, so it
     // is refused rather than silently answered.
     let e = run_err("r = 97 in b\"abc\"\n");
@@ -1580,25 +1891,52 @@ fn bytes_methods_mirror_the_str_set() {
     assert_eq!(eval("r = b\"AbC\\xff\".lower()\n").repr(), "b'abc\\xff'");
     assert_eq!(eval("r = b\"AbC\".upper()\n").repr(), "b'ABC'");
     // Vertical tab and form feed count as whitespace, as they do in CPython.
-    assert_eq!(eval("r = b\" \\x0b a b \\t\\n\".strip()\n").repr(), "b'a b'");
-    assert_eq!(eval("r = b\"  ab  \".strip(side=\"left\")\n").repr(), "b'ab  '");
-    assert_eq!(eval("r = b\"  ab  \".strip(side=\"right\")\n").repr(), "b'  ab'");
-    assert_eq!(eval("r = b\"a,b,,c\".split(sep=b\",\")\n").repr(), "[b'a', b'b', b'', b'c']");
-    assert_eq!(eval("r = b\"a,b,c\".split(sep=b\",\", maxsplit=1)\n").repr(), "[b'a', b'b,c']");
-    assert_eq!(eval("r = b\"a b\\x0bc\".split()\n").repr(), "[b'a', b'b', b'c']");
+    assert_eq!(
+        eval("r = b\" \\x0b a b \\t\\n\".strip()\n").repr(),
+        "b'a b'"
+    );
+    assert_eq!(
+        eval("r = b\"  ab  \".strip(side=\"left\")\n").repr(),
+        "b'ab  '"
+    );
+    assert_eq!(
+        eval("r = b\"  ab  \".strip(side=\"right\")\n").repr(),
+        "b'  ab'"
+    );
+    assert_eq!(
+        eval("r = b\"a,b,,c\".split(sep=b\",\")\n").repr(),
+        "[b'a', b'b', b'', b'c']"
+    );
+    assert_eq!(
+        eval("r = b\"a,b,c\".split(sep=b\",\", maxsplit=1)\n").repr(),
+        "[b'a', b'b,c']"
+    );
+    assert_eq!(
+        eval("r = b\"a b\\x0bc\".split()\n").repr(),
+        "[b'a', b'b', b'c']"
+    );
     assert_eq!(eval("r = [b\"a\", b\"b\"].join(b\"-\")\n").repr(), "b'a-b'");
     assert_eq!(int(&eval("r = b\"abc\".find(b\"b\")\n")), 1);
     assert_eq!(int(&eval("r = b\"abc\".find(b\"z\")\n")), -1);
     // The empty needle is found at 0, as it is for `str`.
     assert_eq!(int(&eval("r = b\"abc\".find(b\"\")\n")), 0);
-    assert_eq!(eval("r = b\"abc\".replace(b\"b\", b\"XY\")\n").repr(), "b'aXYc'");
+    assert_eq!(
+        eval("r = b\"abc\".replace(b\"b\", b\"XY\")\n").repr(),
+        "b'aXYc'"
+    );
     assert!(eval("r = b\"abc\".startswith(b\"ab\")\n").truthy());
     assert!(eval("r = b\"abc\".endswith(b\"bc\")\n").truthy());
     // `find(sub, reverse=true)` is the whole of what `rfind` used to be.
-    assert_eq!(int(&eval("r = b\"abcabc\".find(b\"bc\", reverse=true)\n")), 4);
+    assert_eq!(
+        int(&eval("r = b\"abcabc\".find(b\"bc\", reverse=true)\n")),
+        4
+    );
     assert_eq!(int(&eval("r = b\"abc\".count(b\"\")\n")), 4);
     assert_eq!(eval("r = b\"a.png\".rm_suffix(b\".png\")\n").repr(), "b'a'");
-    assert_eq!(eval("r = b\"a.png\".rm_suffix(b\".gif\")\n").repr(), "b'a.png'");
+    assert_eq!(
+        eval("r = b\"a.png\".rm_suffix(b\".gif\")\n").repr(),
+        "b'a.png'"
+    );
     assert!(eval("r = b\"12\".is_digit()\n").truthy());
     assert!(!eval("r = b\"\".is_digit()\n").truthy());
     assert_eq!(eval("r = b\"\\xff\\x00A\".hex()\n").repr(), "'ff0041'");
@@ -1618,17 +1956,34 @@ fn bytes_scan_measures_the_prefix_inside_a_byte_class() {
     assert_eq!(int(&eval("r = b\"\".scan(b\"abc\")\n")), 0);
     // The whole octet range, high bytes and NUL included — this is a set of
     // numbers, not of characters.
-    assert_eq!(int(&eval("r = b\"\\xff\\x00\\x80\".scan(b\"\\x00\\x80\\xff\")\n")), 3);
+    assert_eq!(
+        int(&eval(
+            "r = b\"\\xff\\x00\\x80\".scan(b\"\\x00\\x80\\xff\")\n"
+        )),
+        3
+    );
     assert_eq!(int(&eval("r = b\"\\xff\\x00\".scan(b\"\\xff\")\n")), 1);
     // A repeated member is still one member.
     assert_eq!(int(&eval("r = b\"aaa\".scan(b\"aaaa\")\n")), 3);
     // `== len(b)` is "every byte is in the class", which is the question a
     // grammar asks; anything less is where the first offending byte is.
-    assert_eq!(int(&eval("r = b\"Content Type\".scan(b\"ContenTyp\")\n")), 7);
+    assert_eq!(
+        int(&eval("r = b\"Content Type\".scan(b\"ContenTyp\")\n")),
+        7
+    );
     let e = run_err("r = b\"a\".scan(\"a\")\n");
-    assert!(e.message.contains("scan() argument must be bytes, not 'str'"), "got: {}", e.message);
+    assert!(
+        e.message
+            .contains("scan() argument must be bytes, not 'str'"),
+        "got: {}",
+        e.message
+    );
     let e = run_err("r = \"a\".scan(b\"a\")\n");
-    assert!(e.message.contains("has no attribute 'scan'"), "got: {}", e.message);
+    assert!(
+        e.message.contains("has no attribute 'scan'"),
+        "got: {}",
+        e.message
+    );
 }
 
 /// The `str` surface after the strip/find fold: one `strip` with a `side=`
@@ -1639,23 +1994,47 @@ fn bytes_scan_measures_the_prefix_inside_a_byte_class() {
 #[test]
 fn str_strip_takes_a_side_and_find_takes_a_reverse() {
     assert_eq!(eval("r = \"  ab  \".strip()\n").repr(), "'ab'");
-    assert_eq!(eval("r = \"  ab  \".strip(side=\"left\")\n").repr(), "'ab  '");
-    assert_eq!(eval("r = \"  ab  \".strip(side=\"right\")\n").repr(), "'  ab'");
+    assert_eq!(
+        eval("r = \"  ab  \".strip(side=\"left\")\n").repr(),
+        "'ab  '"
+    );
+    assert_eq!(
+        eval("r = \"  ab  \".strip(side=\"right\")\n").repr(),
+        "'  ab'"
+    );
     assert_eq!(eval("r = \"  ab  \".strip(side=\"both\")\n").repr(), "'ab'");
     // `chars` is a cut set, and it composes with `side` rather than replacing it.
     assert_eq!(eval("r = \"xyaxy\".strip(chars=\"xy\")\n").repr(), "'a'");
-    assert_eq!(eval("r = \"xyaxy\".strip(chars=\"xy\", side=\"left\")\n").repr(), "'axy'");
-    assert_eq!(eval("r = \"xyaxy\".strip(chars=\"xy\", side=\"right\")\n").repr(), "'xya'");
+    assert_eq!(
+        eval("r = \"xyaxy\".strip(chars=\"xy\", side=\"left\")\n").repr(),
+        "'axy'"
+    );
+    assert_eq!(
+        eval("r = \"xyaxy\".strip(chars=\"xy\", side=\"right\")\n").repr(),
+        "'xya'"
+    );
     // Anything but the three is a ValueError that names the three.
     let e = run_err("r = \"x\".strip(side=\"middle\")\n");
     assert!(e.message.contains("ValueError"), "got: {}", e.message);
-    assert!(e.message.contains("\"both\", \"left\" or \"right\""), "got: {}", e.message);
+    assert!(
+        e.message.contains("\"both\", \"left\" or \"right\""),
+        "got: {}",
+        e.message
+    );
 
     assert_eq!(int(&eval("r = \"abcabc\".find(\"bc\")\n")), 1);
     assert_eq!(int(&eval("r = \"abcabc\".find(\"bc\", reverse=true)\n")), 4);
     // The positional window still applies, from whichever end.
-    assert_eq!(int(&eval("r = \"abcabc\".find(\"bc\", start=0, end=4, reverse=true)\n")), 1);
-    assert_eq!(int(&eval("r = \"abcabc\".find(\"zz\", reverse=true)\n")), -1);
+    assert_eq!(
+        int(&eval(
+            "r = \"abcabc\".find(\"bc\", start=0, end=4, reverse=true)\n"
+        )),
+        1
+    );
+    assert_eq!(
+        int(&eval("r = \"abcabc\".find(\"zz\", reverse=true)\n")),
+        -1
+    );
     assert_eq!(int(&eval("r = \"abc\".find(\"\", reverse=true)\n")), 3);
 }
 
@@ -1665,21 +2044,51 @@ fn str_strip_takes_a_side_and_find_takes_a_reverse() {
 /// and these pin the shape of the call.
 #[test]
 fn split_takes_a_side() {
-    assert_eq!(eval("r = \"a.b.c\".split(sep=\".\", maxsplit=1)\n").repr(), "['a', 'b.c']");
-    assert_eq!(eval("r = \"a.b.c\".split(sep=\".\", maxsplit=1, side=\"left\")\n").repr(), "['a', 'b.c']");
-    assert_eq!(eval("r = \"a.b.c\".split(sep=\".\", maxsplit=1, side=\"right\")\n").repr(), "['a.b', 'c']");
+    assert_eq!(
+        eval("r = \"a.b.c\".split(sep=\".\", maxsplit=1)\n").repr(),
+        "['a', 'b.c']"
+    );
+    assert_eq!(
+        eval("r = \"a.b.c\".split(sep=\".\", maxsplit=1, side=\"left\")\n").repr(),
+        "['a', 'b.c']"
+    );
+    assert_eq!(
+        eval("r = \"a.b.c\".split(sep=\".\", maxsplit=1, side=\"right\")\n").repr(),
+        "['a.b', 'c']"
+    );
     // Unlimited splits: the two ends agree, and `side` is a no-op rather than
     // an error. See `split_side` for why an error could not be honest here.
-    assert_eq!(eval("r = \"a.b.c\".split(sep=\".\", side=\"right\")\n").repr(), "['a', 'b', 'c']");
+    assert_eq!(
+        eval("r = \"a.b.c\".split(sep=\".\", side=\"right\")\n").repr(),
+        "['a', 'b', 'c']"
+    );
     // Whitespace splitting keeps the remainder verbatim at the far end.
-    assert_eq!(eval("r = \" a  b  c \".split(maxsplit=1, side=\"right\")\n").repr(), "[' a  b', 'c']");
-    assert_eq!(eval("r = \" a  b \".split(maxsplit=0, side=\"right\")\n").repr(), "[' a  b']");
-    assert_eq!(eval("r = \"   \".split(maxsplit=1, side=\"right\")\n").repr(), "[]");
+    assert_eq!(
+        eval("r = \" a  b  c \".split(maxsplit=1, side=\"right\")\n").repr(),
+        "[' a  b', 'c']"
+    );
+    assert_eq!(
+        eval("r = \" a  b \".split(maxsplit=0, side=\"right\")\n").repr(),
+        "[' a  b']"
+    );
+    assert_eq!(
+        eval("r = \"   \".split(maxsplit=1, side=\"right\")\n").repr(),
+        "[]"
+    );
     // Empty fields survive from either end.
-    assert_eq!(eval("r = \"a..b\".split(sep=\".\", maxsplit=1, side=\"right\")\n").repr(), "['a.', 'b']");
-    assert_eq!(eval("r = \".a.\".split(sep=\".\", maxsplit=1, side=\"right\")\n").repr(), "['.a', '']");
+    assert_eq!(
+        eval("r = \"a..b\".split(sep=\".\", maxsplit=1, side=\"right\")\n").repr(),
+        "['a.', 'b']"
+    );
+    assert_eq!(
+        eval("r = \".a.\".split(sep=\".\", maxsplit=1, side=\"right\")\n").repr(),
+        "['.a', '']"
+    );
     // And on bytes, the same sixteen names meaning the same sixteen things.
-    assert_eq!(eval("r = b\"a.b.c\".split(sep=b\".\", maxsplit=1, side=\"right\")\n").repr(), "[b'a.b', b'c']");
+    assert_eq!(
+        eval("r = b\"a.b.c\".split(sep=b\".\", maxsplit=1, side=\"right\")\n").repr(),
+        "[b'a.b', b'c']"
+    );
     assert_eq!(
         eval("r = b\" a  b  c \".split(maxsplit=1, side=\"right\")\n").repr(),
         "[b' a  b', b'c']"
@@ -1688,11 +2097,19 @@ fn split_takes_a_side() {
     // A split has no "both" end, so the error names two values, not three.
     let e = run_err("r = \"x\".split(sep=\".\", maxsplit=1, side=\"both\")\n");
     assert!(e.message.contains("ValueError"), "got: {}", e.message);
-    assert!(e.message.contains("\"left\" or \"right\""), "got: {}", e.message);
+    assert!(
+        e.message.contains("\"left\" or \"right\""),
+        "got: {}",
+        e.message
+    );
     let e = run_err("r = \"x\".split(sep=\".\", maxsplit=1, side=1)\n");
     assert!(e.message.contains("TypeError"), "got: {}", e.message);
     let e = run_err("r = \"x\".split(sep=\".\", bogus=1)\n");
-    assert!(e.message.contains("unexpected keyword argument"), "got: {}", e.message);
+    assert!(
+        e.message.contains("unexpected keyword argument"),
+        "got: {}",
+        e.message
+    );
 }
 
 /// `rm_prefix`/`rm_suffix` exist because `strip(chars)` is a character *set*
@@ -1700,10 +2117,22 @@ fn split_takes_a_side() {
 /// its answer, side by side.
 #[test]
 fn rm_prefix_and_rm_suffix_are_literal() {
-    assert_eq!(eval("r = \"ping.png\".strip(chars=\".png\", side=\"right\")\n").repr(), "'pi'");
-    assert_eq!(eval("r = \"ping.png\".rm_suffix(\".png\")\n").repr(), "'ping'");
-    assert_eq!(eval("r = \"ping.png\".rm_suffix(\".gif\")\n").repr(), "'ping.png'");
-    assert_eq!(eval("r = \"ping.png\".rm_prefix(\"ping\")\n").repr(), "'.png'");
+    assert_eq!(
+        eval("r = \"ping.png\".strip(chars=\".png\", side=\"right\")\n").repr(),
+        "'pi'"
+    );
+    assert_eq!(
+        eval("r = \"ping.png\".rm_suffix(\".png\")\n").repr(),
+        "'ping'"
+    );
+    assert_eq!(
+        eval("r = \"ping.png\".rm_suffix(\".gif\")\n").repr(),
+        "'ping.png'"
+    );
+    assert_eq!(
+        eval("r = \"ping.png\".rm_prefix(\"ping\")\n").repr(),
+        "'.png'"
+    );
     assert_eq!(eval("r = \"abc\".rm_prefix(\"\")\n").repr(), "'abc'");
 }
 
@@ -1721,13 +2150,21 @@ fn count_and_the_is_predicates() {
     assert_eq!(int(&eval("r = \"aaa\".count(\"aa\")\n")), 1);
     assert_eq!(int(&eval("r = \"abc\".count(\"\")\n")), 4);
     assert_eq!(int(&eval("r = \"abcabc\".count(\"bc\", start=2)\n")), 1);
-    assert_eq!(int(&eval("r = \"abcabc\".count(\"bc\", start=0, end=4)\n")), 1);
+    assert_eq!(
+        int(&eval("r = \"abcabc\".count(\"bc\", start=0, end=4)\n")),
+        1
+    );
     assert_eq!(int(&eval("r = \"abcabc\".count(\"bc\", start=-3)\n")), 1);
     assert_eq!(int(&eval("r = \"abc\".count(\"\", start=1, end=2)\n")), 2);
     assert_eq!(int(&eval("r = \"abc\".count(\"\", start=3)\n")), 1);
     assert_eq!(int(&eval("r = \"abc\".count(\"\", start=99)\n")), 0);
     // Character indices, not byte offsets — the same rule `find` follows.
-    assert_eq!(int(&eval("r = \"ha\u{e9}\u{e9}ha\".count(\"\u{e9}\", start=3)\n")), 1);
+    assert_eq!(
+        int(&eval(
+            "r = \"ha\u{e9}\u{e9}ha\".count(\"\u{e9}\", start=3)\n"
+        )),
+        1
+    );
     assert_eq!(int(&eval("r = b\"abcabc\".count(b\"bc\", start=2)\n")), 1);
     assert_eq!(int(&eval("r = b\"abc\".count(b\"\", start=99)\n")), 0);
     assert!(eval("r = \"123\".is_digit()\n").truthy());
@@ -1737,7 +2174,10 @@ fn count_and_the_is_predicates() {
     assert!(eval("r = \" \\t\\n\".is_space()\n").truthy());
     for m in ["is_digit", "is_alpha", "is_alnum", "is_space"] {
         assert!(!eval(&format!("r = \"\".{m}()\n")).truthy(), "empty {m}");
-        assert!(!eval(&format!("r = b\"\".{m}()\n")).truthy(), "empty bytes {m}");
+        assert!(
+            !eval(&format!("r = b\"\".{m}()\n")).truthy(),
+            "empty bytes {m}"
+        );
     }
 }
 
@@ -1748,7 +2188,10 @@ fn removed_string_methods_name_their_replacement() {
     let cases = [
         ("\"x\".lstrip()", "strip(side=\"left\")"),
         ("\"x\".rstrip()", "strip(side=\"right\")"),
-        ("\"x\".rsplit(\",\")", "split(sep=…, maxsplit=…, side=\"right\")"),
+        (
+            "\"x\".rsplit(\",\")",
+            "split(sep=…, maxsplit=…, side=\"right\")",
+        ),
         ("\"x\".rfind(\"a\")", "find(sub, reverse=true)"),
         ("\"x\".zfill(3)", "f\"{n:05d}\""),
         ("\"x\".index(\"a\")", "find(sub)"),
@@ -1762,7 +2205,11 @@ fn removed_string_methods_name_their_replacement() {
     for (src, want) in cases {
         let e = run_err(&format!("r = {src}\n"));
         assert!(e.message.contains("AttributeError"), "{src}: {}", e.message);
-        assert!(e.message.contains(want), "{src} should name {want}, got: {}", e.message);
+        assert!(
+            e.message.contains(want),
+            "{src} should name {want}, got: {}",
+            e.message
+        );
     }
 }
 
@@ -1770,11 +2217,23 @@ fn removed_string_methods_name_their_replacement() {
 #[test]
 fn other_methods_refuse_keywords() {
     let e = run_err("r = \"x\".upper(side=\"left\")\n");
-    assert!(e.message.contains("takes no keyword arguments"), "got: {}", e.message);
+    assert!(
+        e.message.contains("takes no keyword arguments"),
+        "got: {}",
+        e.message
+    );
     let e = run_err("r = \"x\".strip(bogus=1)\n");
-    assert!(e.message.contains("unexpected keyword argument 'bogus'"), "got: {}", e.message);
+    assert!(
+        e.message.contains("unexpected keyword argument 'bogus'"),
+        "got: {}",
+        e.message
+    );
     let e = run_err("r = \"x\".find(\"x\", bogus=1)\n");
-    assert!(e.message.contains("unexpected keyword argument 'bogus'"), "got: {}", e.message);
+    assert!(
+        e.message.contains("unexpected keyword argument 'bogus'"),
+        "got: {}",
+        e.message
+    );
 }
 
 /// The argument rule on the native builtins: a parameter with a default is
@@ -1789,8 +2248,14 @@ fn old_positional_spellings_name_the_keyword_that_replaced_them() {
         ("\"abcabc\".find(\"bc\", 2)", "find('bc', start=2)"),
         ("\"abcabc\".count(\"bc\", 2)", "count('bc', start=2)"),
         ("\"abc\".startswith(\"b\", 1)", "startswith('b', start=1)"),
-        ("\"abc\".endswith(\"b\", 0, 2)", "endswith('b', start=0, end=2)"),
-        ("\"aaa\".replace(\"a\", \"b\", 2)", "replace('a', 'b', count=2)"),
+        (
+            "\"abc\".endswith(\"b\", 0, 2)",
+            "endswith('b', start=0, end=2)",
+        ),
+        (
+            "\"aaa\".replace(\"a\", \"b\", 2)",
+            "replace('a', 'b', count=2)",
+        ),
         ("\"xyaxy\".strip(\"xy\")", "strip(chars='xy')"),
         ("\"a,b\".split(\",\")", "split(sep=',')"),
         ("\"a b\".split(null)", "split()"),
@@ -1809,7 +2274,11 @@ fn old_positional_spellings_name_the_keyword_that_replaced_them() {
     for (src, want) in cases {
         let e = run_err(&format!("r = {src}\n"));
         assert!(e.message.contains("TypeError"), "{src}: {}", e.message);
-        assert!(e.message.contains(want), "{src} should name {want}, got: {}", e.message);
+        assert!(
+            e.message.contains(want),
+            "{src} should name {want}, got: {}",
+            e.message
+        );
     }
 }
 
@@ -1836,10 +2305,20 @@ fn null_is_not_a_second_spelling_of_omitted() {
         "[1].pop(index=null)",
     ] {
         let e = run_err(&format!("r = {src}\n"));
-        assert!(e.message.contains("null does not mean"), "{src}: {}", e.message);
+        assert!(
+            e.message.contains("null does not mean"),
+            "{src}: {}",
+            e.message
+        );
     }
-    assert!(matches!(eval("r = {\"a\": 1}.get(\"zz\", default=null)\n"), Value::None));
-    assert!(matches!(eval("r = {\"a\": 1}.pop(\"zz\", default=null)\n"), Value::None));
+    assert!(matches!(
+        eval("r = {\"a\": 1}.get(\"zz\", default=null)\n"),
+        Value::None
+    ));
+    assert!(matches!(
+        eval("r = {\"a\": 1}.pop(\"zz\", default=null)\n"),
+        Value::None
+    ));
 }
 
 /// `range(end, start=0, step=1)`: the one positional argument is always the
@@ -1848,8 +2327,14 @@ fn null_is_not_a_second_spelling_of_omitted() {
 #[test]
 fn range_is_end_first_with_named_bounds() {
     assert_eq!(eval("r = range(5).to_list()\n").repr(), "[0, 1, 2, 3, 4]");
-    assert_eq!(eval("r = range(10, start=2, step=3).to_list()\n").repr(), "[2, 5, 8]");
-    assert_eq!(eval("r = range(0, start=3, step=-1).to_list()\n").repr(), "[3, 2, 1]");
+    assert_eq!(
+        eval("r = range(10, start=2, step=3).to_list()\n").repr(),
+        "[2, 5, 8]"
+    );
+    assert_eq!(
+        eval("r = range(0, start=3, step=-1).to_list()\n").repr(),
+        "[3, 2, 1]"
+    );
     assert_eq!(int(&eval("r = len(range(10, start=2))\n")), 8);
     let e = run_err("r = range(5, step=0)\n");
     assert!(e.message.contains("must not be zero"), "got: {}", e.message);
@@ -1861,8 +2346,14 @@ fn range_is_end_first_with_named_bounds() {
 #[test]
 fn split_picks_its_algorithm_by_keyword() {
     assert_eq!(eval("r = \"  a  b  \".split()\n").repr(), "['a', 'b']");
-    assert_eq!(eval("r = \"a,,b\".split(sep=\",\")\n").repr(), "['a', '', 'b']");
-    assert_eq!(eval("r = \" a  b  c \".split(maxsplit=1)\n").repr(), "['a', 'b  c ']");
+    assert_eq!(
+        eval("r = \"a,,b\".split(sep=\",\")\n").repr(),
+        "['a', '', 'b']"
+    );
+    assert_eq!(
+        eval("r = \" a  b  c \".split(maxsplit=1)\n").repr(),
+        "['a', 'b  c ']"
+    );
     assert_eq!(eval("r = b\"  a b \".split()\n").repr(), "[b'a', b'b']");
 }
 
@@ -1871,9 +2362,16 @@ fn split_picks_its_algorithm_by_keyword() {
 #[test]
 fn find_reverse_requires_a_bool() {
     assert_eq!(int(&eval("r = \"abcabc\".find(\"bc\", reverse=true)\n")), 4);
-    for src in ["\"abcabc\".find(\"bc\", reverse=1)", "\"abcabc\".find(\"bc\", reverse=\"yes\")"] {
+    for src in [
+        "\"abcabc\".find(\"bc\", reverse=1)",
+        "\"abcabc\".find(\"bc\", reverse=\"yes\")",
+    ] {
         let e = run_err(&format!("r = {src}\n"));
-        assert!(e.message.contains("reverse= must be bool"), "{src}: {}", e.message);
+        assert!(
+            e.message.contains("reverse= must be bool"),
+            "{src}: {}",
+            e.message
+        );
     }
 }
 
@@ -1885,9 +2383,17 @@ fn to_int_takes_a_named_base_only_on_a_str() {
     assert_eq!(int(&eval("r = \"ff\".to_int(base=16)\n")), 255);
     assert_eq!(int(&eval("r = \"777\".to_int(base=8)\n")), 511);
     let e = run_err("r = \"10\".to_int(16, 2)\n");
-    assert!(e.message.contains("takes no positional arguments"), "got: {}", e.message);
+    assert!(
+        e.message.contains("takes no positional arguments"),
+        "got: {}",
+        e.message
+    );
     let e = run_err("r = (5).to_int(base=16)\n");
-    assert!(e.message.contains("only applies to a str"), "got: {}", e.message);
+    assert!(
+        e.message.contains("only applies to a str"),
+        "got: {}",
+        e.message
+    );
 }
 
 /// `d.pop(k)` raises and `d.pop(k, default=v)` does not, so the keyword's
@@ -1895,13 +2401,20 @@ fn to_int_takes_a_named_base_only_on_a_str() {
 /// to `pop` meaning one thing: a dict key.
 #[test]
 fn pop_takes_its_default_and_its_index_by_name() {
-    assert_eq!(eval("r = {\"a\": 1}.pop(\"zz\", default=\"fallback\")\n").repr(), "'fallback'");
+    assert_eq!(
+        eval("r = {\"a\": 1}.pop(\"zz\", default=\"fallback\")\n").repr(),
+        "'fallback'"
+    );
     let e = run_err("r = {\"a\": 1}.pop(\"zz\")\n");
     assert!(e.message.contains("KeyError"), "got: {}", e.message);
     assert_eq!(int(&eval("r = [1, 2, 3].pop(index=0)\n")), 1);
     assert_eq!(int(&eval("r = [1, 2, 3].pop()\n")), 3);
     let e = run_err("r = [].pop(index=0)\n");
-    assert!(e.message.contains("pop from empty list"), "got: {}", e.message);
+    assert!(
+        e.message.contains("pop from empty list"),
+        "got: {}",
+        e.message
+    );
 }
 
 /// `round(x)` answers an int and `round(x, ndigits=0)` a float, so omitting
@@ -1913,7 +2426,11 @@ fn round_and_open_take_their_keyword() {
     assert_eq!(eval("r = round(2.5, ndigits=0)\n").repr(), "2.0");
     assert_eq!(eval("r = round(2.675, ndigits=2)\n").repr(), "2.67");
     let e = run_err("r = open(\"/tmp/oro_no_such_file\", mode=\"q\")\n");
-    assert!(e.message.contains("invalid file mode"), "got: {}", e.message);
+    assert!(
+        e.message.contains("invalid file mode"),
+        "got: {}",
+        e.message
+    );
 }
 
 /// The two conversions at the wire/program boundary. `to_bytes` cannot fail
@@ -1923,18 +2440,28 @@ fn round_and_open_take_their_keyword() {
 /// `ValueError` is caught by the same `except`.
 #[test]
 fn bytes_and_str_convert_explicitly() {
-    assert_eq!(eval("r = \"h\u{e9}llo\".to_bytes()\n").repr(), "b'h\\xc3\\xa9llo'");
+    assert_eq!(
+        eval("r = \"h\u{e9}llo\".to_bytes()\n").repr(),
+        "b'h\\xc3\\xa9llo'"
+    );
     // A character is one `str` element and two octets — the whole reason these
     // are two types.
     assert_eq!(int(&eval("r = len(\"h\u{e9}llo\".to_bytes())\n")), 6);
     assert_eq!(int(&eval("r = len(\"h\u{e9}llo\")\n")), 5);
-    assert_eq!(eval("r = \"h\u{e9}\".to_bytes().to_str()\n").repr(), "'h\u{e9}'");
+    assert_eq!(
+        eval("r = \"h\u{e9}\".to_bytes().to_str()\n").repr(),
+        "'h\u{e9}'"
+    );
     // Each conversion is a no-op on its own type.
     assert_eq!(eval("r = b\"ab\".to_bytes()\n").repr(), "b'ab'");
 
     let e = run_err("r = b\"\\xff\".to_str()\n");
     assert!(e.message.contains("ValueError"), "got: {}", e.message);
-    assert!(e.message.contains("invalid byte 0xff at position 0"), "got: {}", e.message);
+    assert!(
+        e.message.contains("invalid byte 0xff at position 0"),
+        "got: {}",
+        e.message
+    );
 }
 
 // --- the io protocol ---------------------------------------------------------
@@ -1974,11 +2501,13 @@ fn io_read_with_a_count_loops_over_short_reads() {
 
     // A stream that ends short of `n` is an EOFError — the case a hand-rolled
     // read loop gets wrong when a request spans two packets.
-    let e = run_err(
-        "import io\nr = io.read(io.buffer(b\"ab\"), fixed_size=5)\n",
-    );
+    let e = run_err("import io\nr = io.read(io.buffer(b\"ab\"), fixed_size=5)\n");
     assert!(e.message.contains("EOFError"), "got: {}", e.message);
-    assert!(e.message.contains("stream ended after 2 bytes"), "got: {}", e.message);
+    assert!(
+        e.message.contains("stream ended after 2 bytes"),
+        "got: {}",
+        e.message
+    );
 }
 
 #[test]
@@ -2005,9 +2534,17 @@ fn a_buffer_reads_what_was_written_to_it() {
 #[test]
 fn private_native_modules_resolve_only_inside_the_stdlib() {
     let e = run_err("import _io\n");
-    assert!(e.message.contains("No module named '_io'"), "got: {}", e.message);
+    assert!(
+        e.message.contains("No module named '_io'"),
+        "got: {}",
+        e.message
+    );
     let e = run_err("import _json\n");
-    assert!(e.message.contains("No module named '_json'"), "got: {}", e.message);
+    assert!(
+        e.message.contains("No module named '_json'"),
+        "got: {}",
+        e.message
+    );
     // ...and the module in front of it is reachable, so the rule is hiding the
     // primitive rather than the feature.
     assert_eq!(
@@ -2024,14 +2561,21 @@ fn private_native_modules_resolve_only_inside_the_stdlib() {
 fn a_list_of_ints_converts_to_bytes() {
     assert_eq!(eval("r = [97, 98, 99].to_bytes()\n").repr(), "b'abc'");
     assert_eq!(eval("r = [].to_bytes()\n").repr(), "b''");
-    assert_eq!(eval("r = (0, 200, 255).to_bytes()\n").repr(), "b'\\x00\\xc8\\xff'");
+    assert_eq!(
+        eval("r = (0, 200, 255).to_bytes()\n").repr(),
+        "b'\\x00\\xc8\\xff'"
+    );
     // A bool is an int everywhere else in the language, so it is one here.
     assert_eq!(eval("r = [true, 98].to_bytes()\n").repr(), "b'\\x01b'");
     // The whole point is the octet a `str` cannot reach.
     assert_eq!(int(&eval("r = len([200].to_bytes())\n")), 1);
     assert_eq!(int(&eval("r = len(f\"{200:c}\".to_bytes())\n")), 2);
 
-    for src in ["r = [256].to_bytes()\n", "r = [-1].to_bytes()\n", "r = [b\"a\"].to_bytes()\n"] {
+    for src in [
+        "r = [256].to_bytes()\n",
+        "r = [-1].to_bytes()\n",
+        "r = [b\"a\"].to_bytes()\n",
+    ] {
         let e = run_err(src);
         assert!(e.message.contains("ValueError"), "{src}: got {}", e.message);
     }
@@ -2057,7 +2601,10 @@ fn two_tasks_coexist_in_one_vm() {
     let parked = std::mem::replace(&mut vm.task, Task::new());
 
     // Task B runs to completion in the same VM, with its own everything.
-    assert!(vm.task.frames.is_empty(), "a fresh task starts with no stack segment");
+    assert!(
+        vm.task.frames.is_empty(),
+        "a fresh task starts with no stack segment"
+    );
     vm.push_module_frame(compile_module("import json\nc = 40 + 2\n"));
     vm.run_loop().expect("task B runs");
     assert_eq!(int(&vm.task.last_locals[1]), 42);
@@ -2079,8 +2626,15 @@ fn two_tasks_coexist_in_one_vm() {
 
     // Process-wide state is genuinely shared, not duplicated: `import json`
     // ran once and the second task's import was a cache hit.
-    assert_eq!(vm.module_cache.len(), 1, "the module cache is per-VM, not per-task");
-    assert!(!vm.frame_pool.is_empty(), "retired frames are pooled across tasks");
+    assert_eq!(
+        vm.module_cache.len(),
+        1,
+        "the module cache is per-VM, not per-task"
+    );
+    assert!(
+        !vm.frame_pool.is_empty(),
+        "retired frames are pooled across tasks"
+    );
 }
 
 /// Per-execution state really is per-execution: a task parked mid-`finally`,
@@ -2382,7 +2936,10 @@ r = out
 ",
         "r",
     );
-    assert_eq!(v.repr(), "['generator already executing', 'owner ended at close']");
+    assert_eq!(
+        v.repr(),
+        "['generator already executing', 'owner ended at close']"
+    );
 }
 
 /// A generator sent down a channel arrives as a generator — it must not be
@@ -2417,7 +2974,11 @@ r = c.join()
 fn a_deadlock_is_reported() {
     let e = run_err("ch = chan()\nx = ch.recv()\n");
     assert!(e.message.starts_with("deadlock:"), "got {}", e.message);
-    assert!(e.message.contains("recv"), "the diagnostic names what is waited on: {}", e.message);
+    assert!(
+        e.message.contains("recv"),
+        "the diagnostic names what is waited on: {}",
+        e.message
+    );
     // A task left parked forever after main returns is the same failure.
     let e = run_err("ch = chan()\ndef stuck():\n    ch.recv()\nspawn(stuck)\n");
     assert!(e.message.starts_with("deadlock:"), "got {}", e.message);
@@ -2437,7 +2998,11 @@ box.append(t)
 t.join()
 ",
     );
-    assert!(e.message.contains("cannot join itself"), "got {}", e.message);
+    assert!(
+        e.message.contains("cannot join itself"),
+        "got {}",
+        e.message
+    );
 }
 
 /// `spawn` needs something that can suspend, which means an Oro frame.
@@ -2489,7 +3054,11 @@ r = [spawn(f, 1, c=9).join(), spawn(f, 5).join(), apply(spawn, args=[f, 3], kwar
         let d = run_err(&format!("{def}{direct}\n"));
         let s = run_err(&format!("{def}{spawned}\n"));
         // Uncaught, both arrive rendered as `Class: message`.
-        assert!(d.message.starts_with("TypeError: "), "{direct}: {}", d.message);
+        assert!(
+            d.message.starts_with("TypeError: "),
+            "{direct}: {}",
+            d.message
+        );
         assert_eq!((&d.message, d.line), (&s.message, s.line), "{spawned}");
     }
 
@@ -2553,8 +3122,12 @@ for _, x in g():
     assert_eq!(v.repr(), "[0, 1]");
 
     // It takes nothing, and says so rather than discarding an argument.
-    assert!(run_err("yield_now(1)\n").message.contains("takes 0 argument(s)"));
-    assert!(run_err("yield_now(x=1)\n").message.contains("no keyword arguments"));
+    assert!(run_err("yield_now(1)\n")
+        .message
+        .contains("takes 0 argument(s)"));
+    assert!(run_err("yield_now(x=1)\n")
+        .message
+        .contains("no keyword arguments"));
 }
 
 /// `chan(cap=0)` is the default spelled out, not an error; a negative or
@@ -2566,11 +3139,17 @@ fn chan_capacity_is_checked() {
     assert_eq!(eval("r = chan(cap=0)\n").repr(), "<channel cap=0>");
     assert_eq!(eval("r = chan()\n").repr(), "<channel cap=0>");
     assert_eq!(eval("r = chan(cap=4)\n").repr(), "<channel cap=4>");
-    assert!(run_err("r = chan(cap=-1)\n").message.contains("must not be negative"));
-    assert!(run_err("r = chan(cap=\"x\")\n").message.contains("must be an int"));
+    assert!(run_err("r = chan(cap=-1)\n")
+        .message
+        .contains("must not be negative"));
+    assert!(run_err("r = chan(cap=\"x\")\n")
+        .message
+        .contains("must be an int"));
     assert!(run_err("r = chan(4)\n").message.contains("chan(cap=4)"));
     assert!(run_err("r = chan(cap=null)\n").message.contains("not null"));
-    assert!(run_err("r = chan(size=4)\n").message.contains("unexpected keyword argument 'size'"));
+    assert!(run_err("r = chan(size=4)\n")
+        .message
+        .contains("unexpected keyword argument 'size'"));
 }
 
 /// The concurrency surface's misuse diagnostics are ordinary typed exceptions,
@@ -2595,7 +3174,10 @@ r = out
 ",
         "r",
     );
-    assert_eq!(v.repr(), "['ValueError', 'TypeError', 'TypeError', 'TypeError']");
+    assert_eq!(
+        v.repr(),
+        "['ValueError', 'TypeError', 'TypeError', 'TypeError']"
+    );
 }
 
 /// Two tasks importing one module is a rendezvous, not a cycle — but a module
@@ -2611,7 +3193,10 @@ fn concurrent_imports_rendezvous_but_real_cycles_still_raise() {
         matches!(vm.await_import("m", 7), Step::Raise(_)),
         "the task already running the body sees a cycle"
     );
-    assert!(vm.import_waiters.is_empty(), "a cycle does not queue anybody");
+    assert!(
+        vm.import_waiters.is_empty(),
+        "a cycle does not queue anybody"
+    );
     vm.task.id = 9;
     assert!(
         matches!(vm.await_import("m", 7), Step::Park(_)),
@@ -2632,7 +3217,10 @@ fn a_failed_module_body_releases_its_path() {
     vm.import_waiters.insert("m".to_string(), vec![]);
     let exc = vm.make_exception_instance(vm.excs["ValueError"].clone(), Vec::new());
     vm.release_import("m", Err(exc));
-    assert!(vm.importing.is_empty(), "the path must not survive a failed body");
+    assert!(
+        vm.importing.is_empty(),
+        "the path must not survive a failed body"
+    );
     assert!(vm.import_waiters.is_empty());
 }
 
@@ -2655,7 +3243,11 @@ fn resolving_only_happens_for_a_name() {
     // unrelated reason. Loopback only, and the port is the kernel's.
     let ln = crate::net::listen("127.0.0.1:0", false).expect("bind an ephemeral port");
     let addr = ln.addr_attr("local").expect("read the port back");
-    let port = addr.rsplit(':').next().expect("an address has a port").to_string();
+    let port = addr
+        .rsplit(':')
+        .next()
+        .expect("an address has a port")
+        .to_string();
 
     fn resolver_threads(src: &str) -> usize {
         let mut vm = Vm::new(Vec::new());
@@ -2765,7 +3357,10 @@ fn the_file_and_the_line_always_come_from_the_same_frame() {
          \x20   x = 1\n",
     );
     assert_eq!(&*err.source, "test.oro", "got: {}", err.source);
-    assert_eq!(err.line, 2, "the raise inside boom, preserved through the finally");
+    assert_eq!(
+        err.line, 2,
+        "the raise inside boom, preserved through the finally"
+    );
 }
 
 /// `apply(f, args=[…], kwargs={…})` calls `f` with the list bound by position
@@ -2834,7 +3429,10 @@ fn apply_refuses_what_the_written_call_refuses() {
 
     for (src, want) in [
         ("apply()", "missing required argument: 'f'"),
-        ("apply(f, [1])", "takes 1 positional argument but 2 were given"),
+        (
+            "apply(f, [1])",
+            "takes 1 positional argument but 2 were given",
+        ),
         ("apply(f, bogus=1)", "unexpected keyword argument 'bogus'"),
         ("apply(f, args=null)", "null does not mean \"omitted\""),
         ("apply(f, kwargs=null)", "null does not mean \"omitted\""),
@@ -2951,7 +3549,11 @@ r = [K().tags == K().tags, k.push(), k.push(), gen().to_list(), gen().to_list()]
 fn every_exception_class_exists() {
     let registry = super::exceptions::build_registry();
     for e in crate::exc::Exc::ALL {
-        assert!(registry.contains_key(e.name()), "{} is not in the registry", e.name());
+        assert!(
+            registry.contains_key(e.name()),
+            "{} is not in the registry",
+            e.name()
+        );
     }
 }
 

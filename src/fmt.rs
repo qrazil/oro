@@ -98,9 +98,7 @@
 use std::collections::HashSet;
 use std::fmt;
 
-use crate::ast::{
-    AugOp, BinOp, BoolOp, CmpOp, ExceptHandler, Expr, Param, Pattern, Stmt, UnaryOp,
-};
+use crate::ast::{AugOp, BinOp, BoolOp, CmpOp, ExceptHandler, Expr, Param, Pattern, Stmt, UnaryOp};
 use crate::lexer::{Comment, LexError, Lexer, Token, TokenKind};
 use crate::parser::{ParseError, Parser};
 
@@ -216,7 +214,10 @@ impl LineBreaks {
     fn new(tokens: &[Token]) -> Self {
         let mut opens = HashSet::new();
         for (i, t) in tokens.iter().enumerate() {
-            if !matches!(t.kind, TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace) {
+            if !matches!(
+                t.kind,
+                TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace
+            ) {
                 continue;
             }
             // The lexer emits no `Newline`/`Indent`/`Dedent` while a bracket is
@@ -378,7 +379,10 @@ impl Printer {
     /// line of it, not just the first.
     fn write_line(&mut self, line: usize, text: &str, trailing: Option<String>) {
         if self.last_line != 0 {
-            let gap = line.saturating_sub(self.last_line).saturating_sub(1).min(MAX_BLANK_RUN);
+            let gap = line
+                .saturating_sub(self.last_line)
+                .saturating_sub(1)
+                .min(MAX_BLANK_RUN);
             for _ in 0..gap {
                 self.out.push('\n');
             }
@@ -450,7 +454,12 @@ impl Printer {
                 let text = expr_bare(&self.breaks, value);
                 self.emit_code(*line, &text);
             }
-            Stmt::Assign { targets, value, line, .. } => {
+            Stmt::Assign {
+                targets,
+                value,
+                line,
+                ..
+            } => {
                 // The AST cannot distinguish `t = (1, 2, 3)` (a single name
                 // bound to a tuple *value*) from `a, b = 1, 2` (unpacking into
                 // multiple targets) — both are just `Expr::Tuple`. Mirror the
@@ -471,7 +480,13 @@ impl Printer {
                 }
                 self.emit_code(*line, &text);
             }
-            Stmt::AugAssign { target, op, value, line, .. } => {
+            Stmt::AugAssign {
+                target,
+                op,
+                value,
+                line,
+                ..
+            } => {
                 let text = format!(
                     "{} {} {}",
                     expr_bare(&self.breaks, target),
@@ -480,7 +495,14 @@ impl Printer {
                 );
                 self.emit_code(*line, &text);
             }
-            Stmt::If { cond, body, elifs, orelse, line, .. } => {
+            Stmt::If {
+                cond,
+                body,
+                elifs,
+                orelse,
+                line,
+                ..
+            } => {
                 let text = format!("if {}:", expr(&self.breaks, cond, 0));
                 self.emit_code(*line, &text);
                 self.body(body)?;
@@ -497,12 +519,20 @@ impl Printer {
                     self.body(orelse.as_ref().unwrap())?;
                 }
             }
-            Stmt::While { cond, body, line, .. } => {
+            Stmt::While {
+                cond, body, line, ..
+            } => {
                 let text = format!("while {}:", expr(&self.breaks, cond, 0));
                 self.emit_code(*line, &text);
                 self.body(body)?;
             }
-            Stmt::For { target, iter, body, line, .. } => {
+            Stmt::For {
+                target,
+                iter,
+                body,
+                line,
+                ..
+            } => {
                 let text = format!(
                     "for {} in {}:",
                     expr_bare(&self.breaks, target),
@@ -511,13 +541,25 @@ impl Printer {
                 self.emit_code(*line, &text);
                 self.body(body)?;
             }
-            Stmt::Def { name, params, body, line, .. } => {
+            Stmt::Def {
+                name,
+                params,
+                body,
+                line,
+                ..
+            } => {
                 let mut text = format!("def {name}({})", def_params_str(&self.breaks, params));
                 text.push(':');
                 self.emit_code(*line, &text);
                 self.body(body)?;
             }
-            Stmt::Class { name, base, body, line, .. } => {
+            Stmt::Class {
+                name,
+                base,
+                body,
+                line,
+                ..
+            } => {
                 let mut text = format!("class {name}");
                 if let Some(b) = base {
                     text.push_str(&format!("({})", expr(&self.breaks, b, 0)));
@@ -536,7 +578,13 @@ impl Printer {
             Stmt::Break { line, .. } => self.emit_code(*line, "break"),
             Stmt::Continue { line, .. } => self.emit_code(*line, "continue"),
             Stmt::Pass { line, .. } => self.emit_code(*line, "pass"),
-            Stmt::Try { body, handlers, finalbody, line, .. } => {
+            Stmt::Try {
+                body,
+                handlers,
+                finalbody,
+                line,
+                ..
+            } => {
                 self.emit_code(*line, "try:");
                 self.body(body)?;
                 for h in handlers {
@@ -559,7 +607,9 @@ impl Printer {
                 };
                 self.emit_code(*line, &text);
             }
-            Stmt::Import { path, alias, line, .. } => {
+            Stmt::Import {
+                path, alias, line, ..
+            } => {
                 let mut text = format!("import {}", path.join("."));
                 if let Some(a) = alias {
                     text.push_str(&format!(" as {a}"));
@@ -576,7 +626,12 @@ impl Printer {
             Stmt::Global { names, line, .. } => {
                 self.emit_code(*line, &format!("global {}", names.join(", ")));
             }
-            Stmt::Match { subject, cases, line, .. } => {
+            Stmt::Match {
+                subject,
+                cases,
+                line,
+                ..
+            } => {
                 let text = format!("match {}:", expr(&self.breaks, subject, 0));
                 self.emit_code(*line, &text);
                 // `case` clauses are a genuine nested block under `match`
@@ -756,7 +811,9 @@ fn expr_inner(lb: &LineBreaks, e: &Expr) -> (String, u8) {
             let body = expr(lb, &data.body, 0);
             (format!("{params} => {body}"), LAMBDA_PREC)
         }
-        Expr::Ternary { cond, then, orelse, .. } => {
+        Expr::Ternary {
+            cond, then, orelse, ..
+        } => {
             // The condition binds at `or`-level, so a ternary used as another
             // ternary's condition is parenthesised; the branches print bare,
             // matching the greedy middle and right-associative else the parser
@@ -766,31 +823,52 @@ fn expr_inner(lb: &LineBreaks, e: &Expr) -> (String, u8) {
             let e = expr(lb, orelse, 0);
             (format!("{c} ? {t} : {e}"), TERNARY_PREC)
         }
-        Expr::Unary { op: UnaryOp::Not, operand, .. } => {
-            (format!("not {}", expr(lb, operand, NOT_BP)), NOT_PREC)
-        }
-        Expr::Unary { op: UnaryOp::Neg, operand, .. } => {
-            (format!("-{}", expr(lb, operand, UNARY_BP)), UNARY_PREC)
-        }
-        Expr::Unary { op: UnaryOp::Pos, operand, .. } => {
-            (format!("+{}", expr(lb, operand, UNARY_BP)), UNARY_PREC)
-        }
-        Expr::Unary { op: UnaryOp::Invert, operand, .. } => {
-            (format!("~{}", expr(lb, operand, UNARY_BP)), UNARY_PREC)
-        }
-        Expr::Binary { op, left, right, .. } => {
+        Expr::Unary {
+            op: UnaryOp::Not,
+            operand,
+            ..
+        } => (format!("not {}", expr(lb, operand, NOT_BP)), NOT_PREC),
+        Expr::Unary {
+            op: UnaryOp::Neg,
+            operand,
+            ..
+        } => (format!("-{}", expr(lb, operand, UNARY_BP)), UNARY_PREC),
+        Expr::Unary {
+            op: UnaryOp::Pos,
+            operand,
+            ..
+        } => (format!("+{}", expr(lb, operand, UNARY_BP)), UNARY_PREC),
+        Expr::Unary {
+            op: UnaryOp::Invert,
+            operand,
+            ..
+        } => (format!("~{}", expr(lb, operand, UNARY_BP)), UNARY_PREC),
+        Expr::Binary {
+            op, left, right, ..
+        } => {
             let (lmin, rmin, prec) = binop_bp(*op);
-            let text =
-                format!("{} {} {}", expr(lb, left, lmin), binop_str(*op), expr(lb, right, rmin));
+            let text = format!(
+                "{} {} {}",
+                expr(lb, left, lmin),
+                binop_str(*op),
+                expr(lb, right, rmin)
+            );
             (text, prec)
         }
-        Expr::BoolOp { op, left, right, .. } => {
+        Expr::BoolOp {
+            op, left, right, ..
+        } => {
             let (lmin, rmin, prec) = boolop_bp(*op);
             let word = match op {
                 BoolOp::And => "and",
                 BoolOp::Or => "or",
             };
-            let text = format!("{} {} {}", expr(lb, left, lmin), word, expr(lb, right, rmin));
+            let text = format!(
+                "{} {} {}",
+                expr(lb, left, lmin),
+                word,
+                expr(lb, right, rmin)
+            );
             (text, prec)
         }
         Expr::Compare { first, rest, .. } => {
@@ -803,17 +881,26 @@ fn expr_inner(lb: &LineBreaks, e: &Expr) -> (String, u8) {
             }
             (text, CMP_PREC)
         }
-        Expr::Call { func, args, kwargs, .. } => {
+        Expr::Call {
+            func, args, kwargs, ..
+        } => {
             let f = postfix_base(lb, func);
             (format!("{f}({})", call_args_str(lb, args, kwargs)), ATOM)
         }
         Expr::Attribute { value, attr, .. } => {
             (format!("{}.{attr}", postfix_base(lb, value)), ATOM)
         }
-        Expr::Subscript { value, index, .. } => {
-            (format!("{}[{}]", postfix_base(lb, value), expr(lb, index, 0)), ATOM)
-        }
-        Expr::Slice { value, lower, upper, step, .. } => {
+        Expr::Subscript { value, index, .. } => (
+            format!("{}[{}]", postfix_base(lb, value), expr(lb, index, 0)),
+            ATOM,
+        ),
+        Expr::Slice {
+            value,
+            lower,
+            upper,
+            step,
+            ..
+        } => {
             let l = lower.as_deref().map(|e| expr(lb, e, 0)).unwrap_or_default();
             let u = upper.as_deref().map(|e| expr(lb, e, 0)).unwrap_or_default();
             let text = match step {
@@ -822,13 +909,19 @@ fn expr_inner(lb: &LineBreaks, e: &Expr) -> (String, u8) {
             };
             (text, ATOM)
         }
-        Expr::List { elements, line, col } => {
+        Expr::List {
+            elements,
+            line,
+            col,
+        } => {
             let parts: Vec<String> = elements.iter().map(|e| expr(lb, e, 0)).collect();
             (collection('[', ']', &parts, lb.broken(*line, *col)), ATOM)
         }
-        Expr::Tuple { elements, line, col } => {
-            (parenthesized_tuple(lb, elements, *line, *col), ATOM)
-        }
+        Expr::Tuple {
+            elements,
+            line,
+            col,
+        } => (parenthesized_tuple(lb, elements, *line, *col), ATOM),
         Expr::Dict { entries, line, col } => {
             let parts: Vec<String> = entries
                 .iter()
@@ -921,7 +1014,11 @@ fn lambda_params_str(params: &[Param]) -> String {
 /// A `def` header's parameter list, always on one line — see the module docs
 /// for why the author's-line-breaks rule stops at collection literals.
 fn def_params_str(lb: &LineBreaks, params: &[Param]) -> String {
-    params.iter().map(|p| def_param_str(lb, p)).collect::<Vec<_>>().join(", ")
+    params
+        .iter()
+        .map(|p| def_param_str(lb, p))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn def_param_str(lb: &LineBreaks, p: &Param) -> String {
@@ -988,7 +1085,11 @@ fn can_be_raw(value: &str) -> bool {
 /// escape — so `"\0" + "7"` would reprint as `"\07"` and read back there as
 /// U+0007. `\x00` is the one spelling both agree on.
 fn quote_str(value: &str) -> String {
-    let quote = if value.contains('"') && !value.contains('\'') { '\'' } else { '"' };
+    let quote = if value.contains('"') && !value.contains('\'') {
+        '\''
+    } else {
+        '"'
+    };
     let mut out = String::with_capacity(value.len() + 2);
     out.push(quote);
     for c in value.chars() {
@@ -1025,8 +1126,11 @@ fn quote_bytes_maybe_raw(value: &[u8], raw: bool) -> String {
 }
 
 fn quote_bytes(value: &[u8]) -> String {
-    let quote =
-        if value.contains(&b'"') && !value.contains(&b'\'') { '\'' } else { '"' };
+    let quote = if value.contains(&b'"') && !value.contains(&b'\'') {
+        '\''
+    } else {
+        '"'
+    };
     let mut out = String::with_capacity(value.len() + 3);
     out.push('b');
     out.push(quote);
@@ -1118,7 +1222,10 @@ mod tests {
         // Broken *between* elements but not after `[` — one line, per gofmt.
         check("xs = [1,\n    2,\n    3]\n", "xs = [1, 2, 3]\n");
         // Broken after `[`, joined after that — many lines.
-        check("xs = [\n    1, 2, 3]\n", "xs = [\n    1,\n    2,\n    3,\n]\n");
+        check(
+            "xs = [\n    1, 2, 3]\n",
+            "xs = [\n    1,\n    2,\n    3,\n]\n",
+        );
     }
 
     #[test]
@@ -1153,9 +1260,15 @@ mod tests {
     #[test]
     fn a_nested_literal_decides_from_its_own_source() {
         // Broken inside one-line.
-        check("xs = [{\n    \"a\": 1,\n}]\n", "xs = [{\n    \"a\": 1,\n}]\n");
+        check(
+            "xs = [{\n    \"a\": 1,\n}]\n",
+            "xs = [{\n    \"a\": 1,\n}]\n",
+        );
         // One-line inside broken.
-        check("xs = [\n    {\"a\": 1},\n]\n", "xs = [\n    {\"a\": 1},\n]\n");
+        check(
+            "xs = [\n    {\"a\": 1},\n]\n",
+            "xs = [\n    {\"a\": 1},\n]\n",
+        );
         // Both broken: the inner one indents relative to the outer.
         check(
             "d = {\n    \"a\": [\n        1,\n    ],\n}\n",
@@ -1176,7 +1289,10 @@ mod tests {
         // The rule stops at literals — but a literal *argument* still carries
         // its own break, which is what makes that sufficient.
         check("f(\n    1,\n    2,\n)\n", "f(1, 2)\n");
-        check("def g(\n    a,\n    b,\n):\n    pass\n", "def g(a, b):\n    pass\n");
+        check(
+            "def g(\n    a,\n    b,\n):\n    pass\n",
+            "def g(a, b):\n    pass\n",
+        );
         check("f({\n    \"a\": 1,\n})\n", "f({\n    \"a\": 1,\n})\n");
     }
 
@@ -1192,7 +1308,10 @@ mod tests {
 
     #[test]
     fn blank_lines_inside_a_literal_are_not_reproduced() {
-        check("xs = [\n    1,\n\n    2,\n]\n", "xs = [\n    1,\n    2,\n]\n");
+        check(
+            "xs = [\n    1,\n\n    2,\n]\n",
+            "xs = [\n    1,\n    2,\n]\n",
+        );
     }
 
     #[test]

@@ -25,7 +25,10 @@ pub struct BigInt {
 impl BigInt {
     /// The additive identity.
     pub fn zero() -> BigInt {
-        BigInt { negative: false, mag: Vec::new() }
+        BigInt {
+            negative: false,
+            mag: Vec::new(),
+        }
     }
 
     /// Build from an `i64`, handling `i64::MIN` without overflow.
@@ -60,7 +63,10 @@ impl BigInt {
             add_small_inplace(&mut mag, d);
         }
         normalize(&mut mag);
-        Some(BigInt { negative: false, mag })
+        Some(BigInt {
+            negative: false,
+            mag,
+        })
     }
 
     pub fn is_zero(&self) -> bool {
@@ -117,12 +123,18 @@ impl BigInt {
         if self.is_zero() {
             self.clone()
         } else {
-            BigInt { negative: !self.negative, mag: self.mag.clone() }
+            BigInt {
+                negative: !self.negative,
+                mag: self.mag.clone(),
+            }
         }
     }
 
     pub fn abs(&self) -> BigInt {
-        BigInt { negative: false, mag: self.mag.clone() }
+        BigInt {
+            negative: false,
+            mag: self.mag.clone(),
+        }
     }
 
     pub fn add(&self, other: &BigInt) -> BigInt {
@@ -176,8 +188,16 @@ impl BigInt {
         let (q_mag, r_mag) = divmod_mag(&self.mag, &other.mag);
         // Truncated (toward-zero) quotient/remainder in sign-magnitude form.
         let q_neg = self.negative != other.negative;
-        let mut q = BigInt { negative: q_neg, mag: q_mag }.normalized();
-        let mut r = BigInt { negative: self.negative, mag: r_mag }.normalized();
+        let mut q = BigInt {
+            negative: q_neg,
+            mag: q_mag,
+        }
+        .normalized();
+        let mut r = BigInt {
+            negative: self.negative,
+            mag: r_mag,
+        }
+        .normalized();
 
         // Adjust from truncation toward zero to flooring toward -inf: when the
         // remainder is non-zero and its sign differs from the divisor's, nudge.
@@ -292,7 +312,10 @@ impl BigInt {
             }
         }
         normalize(&mut mag);
-        BigInt { negative: self.negative, mag }
+        BigInt {
+            negative: self.negative,
+            mag,
+        }
     }
 
     /// `self >> n`, which Python defines as `self // 2**n` — floored, so a
@@ -303,7 +326,11 @@ impl BigInt {
         if whole >= self.mag.len() {
             // Everything shifted out. Flooring makes that -1 for a negative
             // value and 0 for a non-negative one.
-            return if self.negative { BigInt::from_i64(-1) } else { BigInt::zero() };
+            return if self.negative {
+                BigInt::from_i64(-1)
+            } else {
+                BigInt::zero()
+            };
         }
         // Whether a 1 bit fell off the bottom, which is what decides the floor
         // adjustment below.
@@ -320,7 +347,11 @@ impl BigInt {
             }
         }
         normalize(&mut mag);
-        let out = BigInt { negative: self.negative, mag }.normalized();
+        let out = BigInt {
+            negative: self.negative,
+            mag,
+        }
+        .normalized();
         if self.negative && lost {
             // Truncation toward zero gave -(m >> n); the floor is one below it.
             out.sub(&BigInt::from_i64(1))
@@ -596,7 +627,14 @@ mod tests {
 
     #[test]
     fn parse_and_display_roundtrip() {
-        for s in ["0", "1", "9", "10", "4294967296", "123456789012345678901234567890"] {
+        for s in [
+            "0",
+            "1",
+            "9",
+            "10",
+            "4294967296",
+            "123456789012345678901234567890",
+        ] {
             assert_eq!(big(s).to_string(), s);
         }
     }
@@ -612,12 +650,21 @@ mod tests {
 
     #[test]
     fn add_sub_mul() {
-        assert_eq!(big("999999999999999999").add(&big("1")).to_string(), "1000000000000000000");
-        assert_eq!(big("1000000000000000000").sub(&big("1")).to_string(), "999999999999999999");
+        assert_eq!(
+            big("999999999999999999").add(&big("1")).to_string(),
+            "1000000000000000000"
+        );
+        assert_eq!(
+            big("1000000000000000000").sub(&big("1")).to_string(),
+            "999999999999999999"
+        );
         assert_eq!(big("-5").add(&big("3")).to_string(), "-2");
         assert_eq!(big("5").add(&big("-8")).to_string(), "-3");
         let f = big("100000000000000000000");
-        assert_eq!(f.mul(&f).to_string(), "10000000000000000000000000000000000000000");
+        assert_eq!(
+            f.mul(&f).to_string(),
+            "10000000000000000000000000000000000000000"
+        );
     }
 
     #[test]
@@ -646,7 +693,10 @@ mod tests {
     #[test]
     fn pow_and_demote() {
         assert_eq!(BigInt::from_i64(2).pow_u64(10).to_i64(), Some(1024));
-        assert_eq!(BigInt::from_i64(2).pow_u64(64).to_string(), "18446744073709551616");
+        assert_eq!(
+            BigInt::from_i64(2).pow_u64(64).to_string(),
+            "18446744073709551616"
+        );
     }
 
     #[test]

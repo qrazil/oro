@@ -40,7 +40,10 @@ const GUARD: Duration = Duration::from_secs(20);
 /// deadlock in the scheduler a failing test rather than a hung run.
 fn run(name: &str, src: &str) -> String {
     let (out, err, ok) = run_raw(name, src);
-    assert!(ok, "{name} exited with failure\n--- stdout ---\n{out}\n--- stderr ---\n{err}");
+    assert!(
+        ok,
+        "{name} exited with failure\n--- stdout ---\n{out}\n--- stderr ---\n{err}"
+    );
     out
 }
 
@@ -72,7 +75,9 @@ fn run_raw(name: &str, src: &str) -> (String, String, bool) {
             None => std::thread::sleep(Duration::from_millis(2)),
         }
     }
-    let out = child.wait_with_output().expect("collect the child's output");
+    let out = child
+        .wait_with_output()
+        .expect("collect the child's output");
     let _ = std::fs::remove_file(&path);
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -389,7 +394,10 @@ spawn(fast)
 print(order.recv(), order.recv())
 "#,
     );
-    assert_eq!(out, "fast waiter\n", "the fast task did not run while wait() was parked");
+    assert_eq!(
+        out, "fast waiter\n",
+        "the fast task did not run while wait() was parked"
+    );
     // The child is 400 ms; overlapped, the whole thing is ~that. Blocked, it is
     // still ~400 ms but `fast` could not have gone first. Timing is the weak
     // check, the order above is the real one.
@@ -469,7 +477,10 @@ spawn(peer)
 print(order.recv())
 "#,
     );
-    assert_eq!(out, "peer\n", "the copy loop ran to EOF without yielding — a peer was starved");
+    assert_eq!(
+        out, "peer\n",
+        "the copy loop ran to EOF without yielding — a peer was starved"
+    );
 }
 
 /// The handler sees the client's address on `req.peer`.
@@ -500,7 +511,10 @@ r = http.fetch("GET", f"http://{ln.local}/")
 print(r.text().startswith("127.0.0.1:"))
 "#,
     );
-    assert_eq!(out, "true\n", "the handler did not see the client's peer address");
+    assert_eq!(
+        out, "true\n",
+        "the handler did not see the client's peer address"
+    );
 }
 
 /// `static_files` serves a tree, and a directory without a trailing slash is a
@@ -543,8 +557,7 @@ proc.run(["rm", "-rf", base], quiet=true, check=false)
 "#,
     );
     assert_eq!(
-        out,
-        "200 text/css; charset=utf-8\n200 <h1>docs</h1>\n301 /docs/\n",
+        out, "200 text/css; charset=utf-8\n200 <h1>docs</h1>\n301 /docs/\n",
         "static serving or the /docs -> /docs/ redirect is wrong"
     );
 }
@@ -641,7 +654,10 @@ conn.close()
 ln.close()
 "#,
     );
-    assert_eq!(out, "victim: timed out\ngave up rather than being held open\n");
+    assert_eq!(
+        out,
+        "victim: timed out\ngave up rather than being held open\n"
+    );
     // Ten dribbles at 100 ms is a second; the deadline is 250 ms and has to
     // win. The spawned dribbler is abandoned when main returns.
     assert!(took < Duration::from_millis(900), "took {took:?}");
@@ -817,8 +833,7 @@ for _, line in log:
 "#,
     );
     assert_eq!(
-        out,
-        "lookup started\nworker 0\nworker 1\nworker 2\nworker 3\nlookup finished\n",
+        out, "lookup started\nworker 0\nworker 1\nworker 2\nworker 3\nlookup finished\n",
         "the lookup did not park — `lookup finished` should come after every turn the \
          peer took, and with a blocking resolve it comes second"
     );
@@ -868,8 +883,7 @@ ln.close()
         ),
     );
     assert_eq!(
-        out,
-        "raised [Errno -2] Name or service not known\ndialled 127.0.0.1\n",
+        out, "raised [Errno -2] Name or service not known\ndialled 127.0.0.1\n",
         "a failed lookup must raise OSError in its own task and nowhere else"
     );
 }

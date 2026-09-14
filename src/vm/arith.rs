@@ -18,7 +18,10 @@ pub fn neg(v: &Value) -> VResult<Value> {
         }),
         Some(Number::Big(b)) => Ok(Value::from_bigint(b.neg())),
         Some(Number::Float(f)) => Ok(Value::Float(-f)),
-        None => Err(type_error(format!("bad operand type for unary -: '{}'", v.type_name()))),
+        None => Err(type_error(format!(
+            "bad operand type for unary -: '{}'",
+            v.type_name()
+        ))),
     }
 }
 
@@ -27,7 +30,10 @@ pub fn pos(v: &Value) -> VResult<Value> {
         Some(Number::Int(i)) => Ok(Value::Int(i)),
         Some(Number::Big(b)) => Ok(Value::from_bigint(b)),
         Some(Number::Float(f)) => Ok(Value::Float(f)),
-        None => Err(type_error(format!("bad operand type for unary +: '{}'", v.type_name()))),
+        None => Err(type_error(format!(
+            "bad operand type for unary +: '{}'",
+            v.type_name()
+        ))),
     }
 }
 
@@ -38,7 +44,10 @@ pub fn invert(v: &Value) -> VResult<Value> {
         Some(Number::Int(i)) => Ok(Value::Int(!i)),
         Some(Number::Big(b)) => Ok(Value::from_bigint(b.not())),
         // A float has no bits to complement, which is CPython's rule too.
-        _ => Err(type_error(format!("bad operand type for unary ~: '{}'", v.type_name()))),
+        _ => Err(type_error(format!(
+            "bad operand type for unary ~: '{}'",
+            v.type_name()
+        ))),
     }
 }
 
@@ -143,7 +152,11 @@ fn shift(a: &Value, b: &Value, sym: &str, left: bool) -> VResult<Value> {
         }
     }
     let p = x.to_bigint();
-    Ok(Value::from_bigint(if left { p.shl(count) } else { p.shr(count) }))
+    Ok(Value::from_bigint(if left {
+        p.shl(count)
+    } else {
+        p.shr(count)
+    }))
 }
 
 /// The two integer operands of a bitwise operator.

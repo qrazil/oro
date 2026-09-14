@@ -1,6 +1,6 @@
 //! Unit tests for the Oro lexer, with an emphasis on the INDENT/DEDENT engine.
 
-use super::{Lexer, LexError, TokenKind};
+use super::{LexError, Lexer, TokenKind};
 use TokenKind::*;
 
 /// Lex `src`, asserting success, and return just the token kinds.
@@ -55,9 +55,7 @@ fn no_trailing_newline_still_terminates_line() {
 fn keywords_are_recognised() {
     assert_eq!(
         kinds("if true and not false:\n    pass\n"),
-        vec![
-            If, True, And, Not, False, Colon, Newline, Indent, Pass, Newline, Dedent, Eof
-        ]
+        vec![If, True, And, Not, False, Colon, Newline, Indent, Pass, Newline, Dedent, Eof]
     );
 }
 
@@ -68,9 +66,18 @@ fn keywords_are_recognised() {
 #[test]
 fn pythons_capitalised_literals_are_rejected_by_name() {
     for (src, want) in [
-        ("x = True\n", "`True` is not a keyword in Oro — the literal is spelled `true`"),
-        ("x = False\n", "`False` is not a keyword in Oro — the literal is spelled `false`"),
-        ("x = None\n", "`None` is not a keyword in Oro — the literal is spelled `null`"),
+        (
+            "x = True\n",
+            "`True` is not a keyword in Oro — the literal is spelled `true`",
+        ),
+        (
+            "x = False\n",
+            "`False` is not a keyword in Oro — the literal is spelled `false`",
+        ),
+        (
+            "x = None\n",
+            "`None` is not a keyword in Oro — the literal is spelled `null`",
+        ),
         ("if True:\n    pass\n", "the literal is spelled `true`"),
     ] {
         let e = Lexer::new(src).tokenize().expect_err("should be rejected");
@@ -102,16 +109,42 @@ fn multichar_operators() {
     assert_eq!(
         kinds("a & b | c ^ ~ d << e >> f\n"),
         vec![
-            ident("a"), Amp, ident("b"), Pipe, ident("c"), Caret, Tilde, ident("d"),
-            Shl, ident("e"), Shr, ident("f"), Newline, Eof
+            ident("a"),
+            Amp,
+            ident("b"),
+            Pipe,
+            ident("c"),
+            Caret,
+            Tilde,
+            ident("d"),
+            Shl,
+            ident("e"),
+            Shr,
+            ident("f"),
+            Newline,
+            Eof
         ]
     );
     assert_eq!(
         kinds("a %= b **= c &= d |= e ^= f <<= g >>= h\n"),
         vec![
-            ident("a"), PercentEq, ident("b"), DoubleStarEq, ident("c"), AmpEq, ident("d"),
-            PipeEq, ident("e"), CaretEq, ident("f"), ShlEq, ident("g"), ShrEq, ident("h"),
-            Newline, Eof
+            ident("a"),
+            PercentEq,
+            ident("b"),
+            DoubleStarEq,
+            ident("c"),
+            AmpEq,
+            ident("d"),
+            PipeEq,
+            ident("e"),
+            CaretEq,
+            ident("f"),
+            ShlEq,
+            ident("g"),
+            ShrEq,
+            ident("h"),
+            Newline,
+            Eof
         ]
     );
     assert_eq!(
@@ -146,7 +179,15 @@ fn multichar_operators() {
 fn trailing_dot_is_method_access_not_a_float() {
     assert_eq!(
         kinds("42.to_str()\n"),
-        vec![Int("42".into()), Dot, ident("to_str"), LParen, RParen, Newline, Eof]
+        vec![
+            Int("42".into()),
+            Dot,
+            ident("to_str"),
+            LParen,
+            RParen,
+            Newline,
+            Eof
+        ]
     );
     // A leading-dot float still lexes as one.
     assert_eq!(kinds(".5\n"), vec![Float(".5".into()), Newline, Eof]);
@@ -205,7 +246,15 @@ fn radix_prefixes_and_separators() {
     // A method call on a hex literal still reads as one.
     assert_eq!(
         kinds("0xff.to_str()\n"),
-        vec![Int("0xff".into()), Dot, ident("to_str"), LParen, RParen, Newline, Eof]
+        vec![
+            Int("0xff".into()),
+            Dot,
+            ident("to_str"),
+            LParen,
+            RParen,
+            Newline,
+            Eof
+        ]
     );
 }
 
@@ -242,7 +291,11 @@ fn malformed_numeric_literals_are_refused_at_the_literal() {
         ("007\n", "leading zeros in decimal integer"),
     ] {
         let e = err(src);
-        assert!(e.message.contains(want), "{src:?}: wanted {want:?}, got {:?}", e.message);
+        assert!(
+            e.message.contains(want),
+            "{src:?}: wanted {want:?}, got {:?}",
+            e.message
+        );
     }
     // All-zero decimals are legal, as CPython's are, and `_1` is a name.
     assert_eq!(kinds("000\n"), vec![Int("000".into()), Newline, Eof]);
@@ -570,14 +623,21 @@ fn raw_strings_record_their_spelling() {
 fn bytes_literals_decode_to_octets() {
     assert_eq!(
         kinds("b\"a\\tb\\x00\\xff\"\n"),
-        vec![Bytes(vec![b'a', 0x09, b'b', 0x00, 0xff], false), Newline, Eof]
+        vec![
+            Bytes(vec![b'a', 0x09, b'b', 0x00, 0xff], false),
+            Newline,
+            Eof
+        ]
     );
     assert_eq!(
         kinds("rb\"\\d+\"\n"),
         vec![Bytes(b"\\d+".to_vec(), true), Newline, Eof]
     );
     // A bytes literal is a separate token kind, never a string one.
-    assert_eq!(kinds("B'hi'\n"), vec![Bytes(b"hi".to_vec(), false), Newline, Eof]);
+    assert_eq!(
+        kinds("B'hi'\n"),
+        vec![Bytes(b"hi".to_vec(), false), Newline, Eof]
+    );
 }
 
 /// Everything a bytes literal cannot hold is rejected at the point it is
@@ -585,14 +645,26 @@ fn bytes_literals_decode_to_octets() {
 #[test]
 fn bytes_literal_rejects_what_it_cannot_hold() {
     let e = err("b\"café\"\n");
-    assert!(e.message.contains("non-ASCII character `é`"), "got: {}", e.message);
+    assert!(
+        e.message.contains("non-ASCII character `é`"),
+        "got: {}",
+        e.message
+    );
     assert!(e.message.contains("to_bytes()"), "got: {}", e.message);
 
     let e = err("b\"\\u00e9\"\n");
-    assert!(e.message.contains("names a character"), "got: {}", e.message);
+    assert!(
+        e.message.contains("names a character"),
+        "got: {}",
+        e.message
+    );
 
     let e = err("b\"\\q\"\n");
-    assert!(e.message.contains("unknown escape `\\q`"), "got: {}", e.message);
+    assert!(
+        e.message.contains("unknown escape `\\q`"),
+        "got: {}",
+        e.message
+    );
 
     // One spelling for a raw bytes literal, and the other one says so.
     let e = err("br\"x\"\n");

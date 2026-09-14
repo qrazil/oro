@@ -29,18 +29,18 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::ast::CmpOp;
+use crate::compiler::{CaptureSource, ClassSpec, CodeObject, Op, VarTarget};
 use crate::exc::{
     attribute_error, command_error, index_error, key_error, name_error, recursion_error,
     runtime_error, timeout_error, type_error, value_error, Exc, VErr,
 };
-use crate::compiler::{CaptureSource, ClassSpec, CodeObject, Op, VarTarget};
 use crate::task::{TaskHandle, TaskId};
 use crate::value::{
     BoundMethod, Class, Fields, Function, Instance, IterState, MethodKind, OroDict, OroList,
     OroTuple, RangeVal, SuperProxy, VResult, Value,
 };
-use std::collections::{HashMap, VecDeque};
 use std::cell::Cell;
+use std::collections::{HashMap, VecDeque};
 
 /// A runtime error carrying the full source position of the faulting
 /// instruction — **file, line and column**, not line and column alone.
@@ -87,7 +87,11 @@ pub struct RuntimeError {
 
 impl std::fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}:{}: {}", self.source, self.line, self.col, self.message)
+        write!(
+            f,
+            "{}:{}:{}: {}",
+            self.source, self.line, self.col, self.message
+        )
     }
 }
 
@@ -403,8 +407,13 @@ impl SeqOp {
     fn preserves_shape(self) -> bool {
         matches!(
             self,
-            SeqOp::Map | SeqOp::Filter | SeqOp::SortBy | SeqOp::UniqueBy
-                | SeqOp::TakeWhile | SeqOp::DropWhile | SeqOp::Collect
+            SeqOp::Map
+                | SeqOp::Filter
+                | SeqOp::SortBy
+                | SeqOp::UniqueBy
+                | SeqOp::TakeWhile
+                | SeqOp::DropWhile
+                | SeqOp::Collect
         )
     }
 
@@ -607,7 +616,10 @@ fn unpack_exact(seq: &Value, n: usize) -> VResult<Vec<Value>> {
         return Ok(items);
     }
     Err(value_error(if items.len() < n {
-        format!("not enough values to unpack (expected {n}, got {})", items.len())
+        format!(
+            "not enough values to unpack (expected {n}, got {})",
+            items.len()
+        )
     } else {
         format!("too many values to unpack (expected {n})")
     }))
@@ -620,8 +632,12 @@ fn unpack_exact(seq: &Value, n: usize) -> VResult<Vec<Value>> {
 /// `!= 0` for a number, `!= null` for anything that might be absent.
 fn not_bool(v: &Value, ctx: &str) -> VErr {
     let suggestion = match v {
-        Value::Str(_) | Value::Bytes(_) | Value::List(_) | Value::Tuple(_)
-        | Value::Dict(_) | Value::Range(_) => "len(x) != 0",
+        Value::Str(_)
+        | Value::Bytes(_)
+        | Value::List(_)
+        | Value::Tuple(_)
+        | Value::Dict(_)
+        | Value::Range(_) => "len(x) != 0",
         Value::Int(_) | Value::Big(_) | Value::Float(_) => "x != 0",
         _ => "x != null",
     };
@@ -657,7 +673,11 @@ fn declared_spread(func: &Value, leading: usize) -> Option<Spread> {
         .filter(|p| !p.has_default)
         .count()
         .saturating_sub(leading);
-    Some(if asked >= 2 { Spread::Unpack(asked as u32) } else { Spread::Whole })
+    Some(if asked >= 2 {
+        Spread::Unpack(asked as u32)
+    } else {
+        Spread::Whole
+    })
 }
 
 /// [`declared_spread`] for a collection step over elements of `shape`. A
@@ -731,13 +751,27 @@ enum CmpLevel {
     /// Two sequences, element by element. For `==` every pair must match; for
     /// an ordering the first pair that does *not* match decides the whole
     /// answer by `op`, which is CPython's `list_richcompare` exactly.
-    Seq { a: Vec<Value>, b: Vec<Value>, i: usize, op: CmpOp, deciding: bool },
+    Seq {
+        a: Vec<Value>,
+        b: Vec<Value>,
+        i: usize,
+        op: CmpOp,
+        deciding: bool,
+    },
     /// Two dicts' values, paired up by key. The keys were matched by `HKey`
     /// before this level existed and never dispatch `__eq__` — that is the
     /// decision `docs/hash-and-equality.md` argues, and this honours it.
-    Vals { a: Vec<Value>, b: Vec<Value>, i: usize },
+    Vals {
+        a: Vec<Value>,
+        b: Vec<Value>,
+        i: usize,
+    },
     /// `item in items`: scan for an element equal to `item`.
-    Contains { items: Vec<Value>, item: Value, i: usize },
+    Contains {
+        items: Vec<Value>,
+        item: Value,
+        i: usize,
+    },
 }
 
 /// What a finished [`CmpJob`] answer is for.
@@ -1131,13 +1165,16 @@ impl Vm {
                 f.code = code;
                 f.pc = 0;
                 f.locals.resize(nlocals, Value::Unbound);
-                f.cells.extend((0..ncells).map(|_| Rc::new(RefCell::new(Value::Unbound))));
+                f.cells
+                    .extend((0..ncells).map(|_| Rc::new(RefCell::new(Value::Unbound))));
                 f.free.extend_from_slice(free);
                 f
             }
             None => Frame {
                 locals: vec![Value::Unbound; nlocals],
-                cells: (0..ncells).map(|_| Rc::new(RefCell::new(Value::Unbound))).collect(),
+                cells: (0..ncells)
+                    .map(|_| Rc::new(RefCell::new(Value::Unbound)))
+                    .collect(),
                 free: free.to_vec(),
                 stack: Vec::new(),
                 pc: 0,
@@ -1172,7 +1209,9 @@ impl Vm {
         self.main_source = code.source.clone();
         let frame = Frame {
             locals: vec![Value::Unbound; code.nlocals],
-            cells: (0..code.ncells).map(|_| Rc::new(RefCell::new(Value::Unbound))).collect(),
+            cells: (0..code.ncells)
+                .map(|_| Rc::new(RefCell::new(Value::Unbound)))
+                .collect(),
             free: Vec::new(),
             stack: Vec::new(),
             pc: 0,
@@ -1484,9 +1523,11 @@ impl Vm {
                     // one it always did first — before going on.
                     let frame = self.task.frames.last_mut().expect("no active frame");
                     let hit = match frame.stack.last() {
-                        Some(Value::Instance(inst)) => {
-                            inst.fields.borrow().get(&frame.code.names[n as usize]).cloned()
-                        }
+                        Some(Value::Instance(inst)) => inst
+                            .fields
+                            .borrow()
+                            .get(&frame.code.names[n as usize])
+                            .cloned(),
                         _ => None,
                     };
                     if let Some(v) = hit {
@@ -1660,638 +1701,667 @@ impl Vm {
 
     /// Execute a single instruction, reporting how the loop should proceed.
     fn step(&mut self, op: Op) -> Result<Step, VmError> {
-            match op {
-                Op::LoadConst(i) => {
-                    let v = self.task.frames.last().unwrap().code.consts[i as usize].clone();
-                    self.push(v);
+        match op {
+            Op::LoadConst(i) => {
+                let v = self.task.frames.last().unwrap().code.consts[i as usize].clone();
+                self.push(v);
+            }
+            Op::LoadNone => self.push(Value::None),
+            Op::LoadFast(s) => {
+                let v = self.top().locals[s as usize].clone();
+                if matches!(v, Value::Unbound) {
+                    return Err(self.err(self.unbound_local_err(s)));
                 }
-                Op::LoadNone => self.push(Value::None),
-                Op::LoadFast(s) => {
-                    let v = self.top().locals[s as usize].clone();
-                    if matches!(v, Value::Unbound) {
-                        return Err(self.err(self.unbound_local_err(s)));
-                    }
-                    self.push(v);
+                self.push(v);
+            }
+            Op::StoreFast(s) => {
+                let v = self.pop();
+                self.top().locals[s as usize] = v;
+            }
+            Op::LoadCell(s) => {
+                let v = self.top().cells[s as usize].borrow().clone();
+                if matches!(v, Value::Unbound) {
+                    return Err(self.err(name_error("local variable referenced before assignment")));
                 }
-                Op::StoreFast(s) => {
-                    let v = self.pop();
-                    self.top().locals[s as usize] = v;
+                self.push(v);
+            }
+            Op::StoreCell(s) => {
+                let v = self.pop();
+                *self.top().cells[s as usize].borrow_mut() = v;
+            }
+            Op::LoadFree(s) => {
+                let v = self.top().free[s as usize].borrow().clone();
+                if matches!(v, Value::Unbound) {
+                    return Err(self.err(name_error("free variable referenced before assignment")));
                 }
-                Op::LoadCell(s) => {
-                    let v = self.top().cells[s as usize].borrow().clone();
-                    if matches!(v, Value::Unbound) {
-                        return Err(self.err(name_error(
-                            "local variable referenced before assignment",
-                        )));
-                    }
-                    self.push(v);
-                }
-                Op::StoreCell(s) => {
-                    let v = self.pop();
-                    *self.top().cells[s as usize].borrow_mut() = v;
-                }
-                Op::LoadFree(s) => {
-                    let v = self.top().free[s as usize].borrow().clone();
-                    if matches!(v, Value::Unbound) {
-                        return Err(self.err(name_error(
-                            "free variable referenced before assignment",
-                        )));
-                    }
-                    self.push(v);
-                }
-                Op::StoreFree(s) => {
-                    let v = self.pop();
-                    *self.top().free[s as usize].borrow_mut() = v;
-                }
-                Op::LoadGlobal(n) => {
-                    // Globals are the builtin functions plus the exception
-                    // classes. Builtins resolve straight out of this call site's
-                    // cache; see `CodeObject::builtin_cache` for why they are
-                    // the only half that is cached.
-                    let idx = n as usize;
-                    let frame = self.task.frames.last().expect("no active frame");
-                    let hit = frame.code.builtin_cache.borrow()[idx].clone();
-                    match hit {
-                        Some(v) => self.push(v),
-                        None => {
-                            let name = frame.code.names[idx].clone();
-                            let resolved = exceptions::lookup(&self.excs, &name)
-                                .or_else(|| crate::builtins::lookup(&name));
-                            match resolved {
-                                Some(v) => {
-                                    if matches!(v, Value::Builtin(_)) {
-                                        frame.code.builtin_cache.borrow_mut()[idx] =
-                                            Some(v.clone());
-                                    }
-                                    self.push(v);
+                self.push(v);
+            }
+            Op::StoreFree(s) => {
+                let v = self.pop();
+                *self.top().free[s as usize].borrow_mut() = v;
+            }
+            Op::LoadGlobal(n) => {
+                // Globals are the builtin functions plus the exception
+                // classes. Builtins resolve straight out of this call site's
+                // cache; see `CodeObject::builtin_cache` for why they are
+                // the only half that is cached.
+                let idx = n as usize;
+                let frame = self.task.frames.last().expect("no active frame");
+                let hit = frame.code.builtin_cache.borrow()[idx].clone();
+                match hit {
+                    Some(v) => self.push(v),
+                    None => {
+                        let name = frame.code.names[idx].clone();
+                        let resolved = exceptions::lookup(&self.excs, &name)
+                            .or_else(|| crate::builtins::lookup(&name));
+                        match resolved {
+                            Some(v) => {
+                                if matches!(v, Value::Builtin(_)) {
+                                    frame.code.builtin_cache.borrow_mut()[idx] = Some(v.clone());
                                 }
-                                None => {
-                                    // A global that used to exist says what
-                                    // replaced it. The rule the whole language
-                                    // runs on: reject with an error that names
-                                    // the replacement, never leave the reader
-                                    // to guess where a name went.
-                                    let msg = crate::builtins::cut_global_message(&name)
-                                        .map(str::to_string)
-                                        .unwrap_or_else(|| {
-                                            format!("name '{name}' is not defined")
-                                        });
-                                    return Err(self.err(name_error(msg)));
-                                }
+                                self.push(v);
                             }
-                        }
-                    }
-                }
-                Op::Pop => {
-                    self.pop();
-                }
-                Op::Dup => {
-                    let v = self.top().stack.last().expect("dup on empty stack").clone();
-                    self.push(v);
-                }
-                Op::DupTwo => {
-                    let n = self.top().stack.len();
-                    let a = self.top().stack[n - 2].clone();
-                    let b = self.top().stack[n - 1].clone();
-                    self.push(a);
-                    self.push(b);
-                }
-                Op::RotTwo => {
-                    let s = &mut self.top().stack;
-                    let n = s.len();
-                    s.swap(n - 1, n - 2);
-                }
-                Op::RotThree => {
-                    // [a, b, c] -> [c, a, b]
-                    let s = &mut self.top().stack;
-                    let n = s.len();
-                    s[n - 3..].rotate_right(1);
-                }
-                Op::UnaryNeg => {
-                    let v = self.pop();
-                    let r = self.wrap(arith::neg(&v))?;
-                    self.push(r);
-                }
-                Op::UnaryPos => {
-                    let v = self.pop();
-                    let r = self.wrap(arith::pos(&v))?;
-                    self.push(r);
-                }
-                Op::UnaryNot => {
-                    let v = self.pop();
-                    match v {
-                        Value::Bool(b) => self.push(Value::Bool(!b)),
-                        _ => return Err(self.err(not_bool(&v, "the operand of `not`"))),
-                    }
-                }
-                Op::UnaryInvert => {
-                    let v = self.pop();
-                    let r = self.wrap(arith::invert(&v))?;
-                    self.push(r);
-                }
-                Op::AssertBool => {
-                    let ok = matches!(self.top().stack.last(), Some(Value::Bool(_)));
-                    if !ok {
-                        let v = self.top().stack.last().expect("operand stack underflow").clone();
-                        return Err(self.err(not_bool(&v, "the operands of `and`/`or`")));
-                    }
-                }
-                Op::BinAdd
-                | Op::BinSub
-                | Op::BinMul
-                | Op::BinDiv
-                | Op::BinFloorDiv
-                | Op::BinMod
-                | Op::BinPow
-                | Op::BinBitAnd
-                | Op::BinBitOr
-                | Op::BinBitXor
-                | Op::BinShl
-                | Op::BinShr => {
-                    let b = self.pop();
-                    let a = self.pop();
-                    // `None` for a bitwise operator: Oro's dunder set stops at
-                    // the arithmetic ones, so there is no `__and__` to look for
-                    // and an instance operand falls to the type error below
-                    // rather than to a call.
-                    let dunder = arith_dunder(&op);
-                    match dunder.and_then(|d| instance_method(&a, d)) {
-                        Some((f, defclass)) => {
-                            self.invoke_user(f, a, defclass, vec![b], Vec::new(), ReturnAction::Normal)?;
-                        }
-                        None if matches!(a, Value::Instance(_)) => {
-                            return Err(self.err(type_error(format!(
-                                "unsupported operand type(s) for {}: '{}' and '{}'",
-                                arith_symbol(&op),
-                                a.type_label(),
-                                b.type_label()
-                            ))));
-                        }
-                        None => {
-                            let r = self.wrap(arith::binary(&op, &a, &b))?;
-                            self.push(r);
-                        }
-                    }
-                }
-                Op::Compare(cmp) => {
-                    let b = self.pop();
-                    let a = self.pop();
-                    // The native answer, which is every comparison in a program
-                    // with no user `__eq__`/`__lt__` under either operand.
-                    match self.wrap(try_compare_op(cmp, &a, &b))? {
-                        Some(r) => self.push(Value::Bool(r)),
-                        // Some pair in there needs Oro code. A dunder on the
-                        // operands themselves is dispatched straight from here,
-                        // so that its value reaches the program unconverted
-                        // (CPython's `a == b` is whatever `__eq__` returned, not
-                        // its truthiness); anything deeper goes to the machine.
-                        None => self.compare_slow(cmp, a, b)?,
-                    }
-                }
-                Op::Jump(t) => self.top().pc = t as usize,
-                // A defaulted parameter's prologue. The binder left the slot
-                // `Unbound` when the call omitted the argument and its default
-                // is not a constant; the expression that follows is evaluated
-                // then, in this frame, on this call. A bound slot jumps over
-                // it, which is every call that passed the argument.
-                Op::DefaultIfBound(pair) => {
-                    let frame = self.top();
-                    let (param, target) = frame.code.pairs[pair as usize];
-                    let bound = match frame.code.params[param as usize].target {
-                        VarTarget::Local(s) => {
-                            !matches!(frame.locals[s as usize], Value::Unbound)
-                        }
-                        VarTarget::Cell(s) => {
-                            !matches!(*frame.cells[s as usize].borrow(), Value::Unbound)
-                        }
-                    };
-                    if bound {
-                        frame.pc = target as usize;
-                    }
-                }
-                Op::PopJumpIfFalse(t) => {
-                    let v = self.pop();
-                    match v {
-                        Value::Bool(b) => {
-                            if !b {
-                                self.top().pc = t as usize;
-                            }
-                        }
-                        _ => return Err(self.err(not_bool(&v, "a condition"))),
-                    }
-                }
-                Op::PopJumpIfTrue(t) => {
-                    let v = self.pop();
-                    match v {
-                        Value::Bool(b) => {
-                            if b {
-                                self.top().pc = t as usize;
-                            }
-                        }
-                        _ => return Err(self.err(not_bool(&v, "a condition"))),
-                    }
-                }
-                Op::JumpIfFalseOrPop(t) => {
-                    match self.top().stack.last() {
-                        Some(Value::Bool(true)) => {
-                            self.pop();
-                        }
-                        Some(Value::Bool(false)) => {
-                            self.top().pc = t as usize;
-                        }
-                        _ => {
-                            let v = self.top().stack.last().unwrap().clone();
-                            return Err(self.err(not_bool(&v, "the operands of `and`/`or`")));
-                        }
-                    }
-                }
-                Op::JumpIfTrueOrPop(t) => {
-                    match self.top().stack.last() {
-                        Some(Value::Bool(true)) => {
-                            self.top().pc = t as usize;
-                        }
-                        Some(Value::Bool(false)) => {
-                            self.pop();
-                        }
-                        _ => {
-                            let v = self.top().stack.last().unwrap().clone();
-                            return Err(self.err(not_bool(&v, "the operands of `and`/`or`")));
-                        }
-                    }
-                }
-                Op::BuildList(n) => {
-                    let items = self.popn(n as usize);
-                    self.push(Value::List(OroList::new(items)));
-                }
-                Op::BuildTuple(n) => {
-                    let items = self.popn(n as usize);
-                    self.push(Value::Tuple(OroTuple::new(items)));
-                }
-                Op::BuildMap(n) => {
-                    let items = self.popn(2 * n as usize);
-                    let mut dict = OroDict::new();
-                    let mut it = items.into_iter();
-                    while let (Some(k), Some(v)) = (it.next(), it.next()) {
-                        self.wrap(dict.insert(k, v))?;
-                    }
-                    self.push(Value::Dict(Rc::new(RefCell::new(dict))));
-                }
-                Op::ListAppend => {
-                    let v = self.pop();
-                    let list = self.expect_list_tos("ListAppend")?;
-                    list.borrow_mut().push(v);
-                }
-                Op::MapSetItem => {
-                    let v = self.pop();
-                    let k = self.pop();
-                    let dict = self.expect_dict_tos("MapSetItem")?;
-                    self.wrap(dict.borrow_mut().insert(k, v))?;
-                }
-                Op::LoadSubscript => {
-                    let index = self.pop();
-                    let obj = self.pop();
-                    let r = self.wrap(subscript_get(&obj, &index))?;
-                    self.push(r);
-                }
-                Op::StoreSubscript => {
-                    let index = self.pop();
-                    let obj = self.pop();
-                    let value = self.pop();
-                    self.wrap(subscript_set(&obj, &index, value))?;
-                }
-                Op::LoadSlice => {
-                    let step = self.pop();
-                    let upper = self.pop();
-                    let lower = self.pop();
-                    let obj = self.pop();
-                    let r = self.wrap(slice_get(&obj, &lower, &upper, &step))?;
-                    self.push(r);
-                }
-                Op::LoadAttr(n) => {
-                    let name = self.task.frames.last().unwrap().code.names[n as usize].clone();
-                    let obj = self.pop();
-                    let r = self.wrap(get_attr(&obj, &name))?;
-                    self.push(r);
-                }
-                Op::StoreAttr(n) => {
-                    let name = self.task.frames.last().unwrap().code.names[n as usize].clone();
-                    let obj = self.pop();
-                    let value = self.pop();
-                    match &obj {
-                        Value::Instance(inst) => {
-                            inst.fields.borrow_mut().insert(name.clone(), value);
-                        }
-                        other => {
-                            // Only an instance has settable attributes; a class,
-                            // module, or scalar does not. An `AttributeError`,
-                            // the type an attribute operation raises, rather than
-                            // a bare `RuntimeError`.
-                            let msg = format!(
-                                "cannot set attribute '{}' on a '{}' — only an instance has \
-                                 settable attributes",
-                                name,
-                                other.type_label()
-                            );
-                            return Err(self.err(attribute_error(msg)));
-                        }
-                    }
-                }
-                Op::BuildClass(i) => {
-                    let spec = self.task.frames.last().unwrap().code.classes[i as usize].clone();
-                    self.build_class(&spec)?;
-                }
-                Op::ImportModule(n) => {
-                    let path = self.task.frames.last().unwrap().code.names[n as usize].clone();
-                    return self.import_module(&path);
-                }
-                Op::LoadSuper => {
-                    let sup = match self.top().super_ctx.clone() {
-                        Some((defclass, instance)) => Value::Super(Rc::new(SuperProxy {
-                            start: defclass.base.clone(),
-                            instance,
-                        })),
-                        None => {
-                            return Err(
-                                self.err(runtime_error("super() is only valid inside a method"))
-                            )
-                        }
-                    };
-                    self.push(sup);
-                }
-                Op::UnpackSequence(n) => {
-                    let seq = self.pop();
-                    // Shared with a destructuring collection callback, which is
-                    // defined to unpack exactly as this does.
-                    let items = self.wrap(unpack_exact(&seq, n as usize))?;
-                    for v in items.into_iter().rev() {
-                        self.push(v);
-                    }
-                }
-                Op::FormatValue(conv) => {
-                    let spec = self.pop();
-                    let value = self.pop();
-                    let spec_str = match &spec {
-                        Value::Str(s) => s.s.clone(),
-                        other => {
-                            let msg = format!(
-                                "format spec must be a string, not '{}'",
-                                other.type_name()
-                            );
-                            return Err(self.err(type_error(msg)));
-                        }
-                    };
-                    // An instance renders via __str__/__repr__ (which run on a
-                    // frame); the format spec is then applied to the result.
-                    if matches!(value, Value::Instance(_)) {
-                        let want_repr = conv == crate::format::CONV_REPR;
-                        let names: [&str; 2] =
-                            if want_repr { ["__repr__", "__str__"] } else { ["__str__", "__repr__"] };
-                        let mut dispatched = false;
-                        for nm in names {
-                            if let Some((f, defclass)) = instance_method(&value, nm) {
-                                self.invoke_user(
-                                    f,
-                                    value.clone(),
-                                    defclass,
-                                    Vec::new(),
-                                    Vec::new(),
-                                    ReturnAction::FormatSpec(spec_str.clone()),
-                                )?;
-                                dispatched = true;
-                                break;
-                            }
-                        }
-                        if dispatched {
-                            return Ok(Step::Next);
-                        }
-                    }
-                    // A container is rendered element-by-element (element
-                    // __repr__ dunders, cycle-safe), then the spec is applied.
-                    if is_container(&value) {
-                        self.begin_stringify(value, StrCont::FormatSpec(spec_str))?;
-                        return Ok(Step::Next);
-                    }
-                    let out = self.wrap(crate::format::format_value(&value, conv, &spec_str))?;
-                    self.push(Value::str(out));
-                }
-                Op::BuildString(n) => {
-                    let parts = self.popn(n as usize);
-                    let mut s = String::new();
-                    for p in parts {
-                        s.push_str(&p.display());
-                    }
-                    self.push(Value::str(s));
-                }
-                Op::MatchDispatch(pair) => {
-                    let (table, default) = self.top().code.pairs[pair as usize];
-                    let subject = self.pop();
-                    let dict = match &self.top().code.consts[table as usize] {
-                        Value::Dict(d) => d.clone(),
-                        _ => unreachable!("MatchDispatch table is always a dict const"),
-                    };
-                    // An unhashable subject cannot equal any literal key, so it
-                    // takes the default — matching the compare-chain path.
-                    let target = match dict.borrow().get(&subject) {
-                        Ok(Some(Value::Int(t))) => t as usize,
-                        _ => default as usize,
-                    };
-                    self.top().pc = target;
-                }
-                Op::GetIter => {
-                    let v = self.pop();
-                    let it = self.wrap(get_iter(&v))?;
-                    self.push(it);
-                }
-                Op::ForIter(target) => {
-                    let target = target as usize;
-                    let it = self.top().stack.last().expect("ForIter on empty stack").clone();
-                    // A channel is its own iterator, and `for msg in ch` is a
-                    // `recv` that ends the loop instead of raising when the
-                    // channel closes and drains (§3). It can block, so this is
-                    // a parking site.
-                    if let Value::Channel(ch) = &it {
-                        return self.chan_iter_next(ch.clone(), target);
-                    }
-                    // A generator is advanced by resuming its frame; the value
-                    // (or exhaustion) arrives via Yield/Return, not inline.
-                    if let Value::Generator(gen) = &it {
-                        // Three states, not two: finished (`None`), suspended
-                        // and ours to resume (`Some(Some(_))`), and *already
-                        // being advanced* somewhere else (`Some(None)`) — its
-                        // frame is on some task's frame stack right now. The
-                        // last one used to be indistinguishable from finished,
-                        // so the loop ended silently; two tasks driving one
-                        // generator would have corrupted it outright.
-                        let taken = {
-                            let mut g = gen.borrow_mut();
-                            if g.done {
-                                None
-                            } else {
-                                Some(take_gen_frame(&mut g))
-                            }
-                        };
-                        match taken {
-                            Some(Some(frame)) => {
-                                self.task.gen_stack.push((gen.clone(), GenDriver::ForLoop(target)));
-                                self.task.frames.push(frame);
-                            }
-                            Some(None) => return Ok(Step::Raise(self.generator_busy())),
                             None => {
-                                self.pop();
-                                self.top().pc = target;
+                                // A global that used to exist says what
+                                // replaced it. The rule the whole language
+                                // runs on: reject with an error that names
+                                // the replacement, never leave the reader
+                                // to guess where a name went.
+                                let msg = crate::builtins::cut_global_message(&name)
+                                    .map(str::to_string)
+                                    .unwrap_or_else(|| format!("name '{name}' is not defined"));
+                                return Err(self.err(name_error(msg)));
                             }
                         }
-                    } else {
-                        let next = self.wrap(iter_next_pair(&it))?;
-                        match next {
-                            Some((i, v)) => self.push(Value::Tuple(OroTuple::new(vec![i, v]))),
-                            None => {
-                                self.pop(); // discard the exhausted iterator
-                                self.top().pc = target;
-                            }
-                        }
-                    }
-                }
-                Op::MakeFunction(idx) => self.make_function(idx as usize)?,
-                Op::Call(n) => return self.do_call(n as usize),
-                Op::CallKw(site) => return self.do_call_kw(site as usize),
-                Op::LoadMethod(n) => {
-                    let name = self.task.frames.last().unwrap().code.names[n as usize].clone();
-                    let obj = self.pop();
-                    match self.wrap(resolve_method(&obj, &name))? {
-                        MethodRef::User { recv, func, defclass } => {
-                            self.push(Value::Class(defclass));
-                            self.push(Value::Func(func));
-                            self.push(recv);
-                        }
-                        MethodRef::Native(recv) => {
-                            self.push(Value::Unbound);
-                            self.push(Value::None);
-                            self.push(recv);
-                        }
-                        MethodRef::Plain(v) => {
-                            self.push(Value::None);
-                            self.push(Value::None);
-                            self.push(v);
-                        }
-                    }
-                }
-                Op::CallMethod(pair) => return self.do_call_method(pair as usize),
-                Op::Return => {
-                    // A generator body reaching return (including the implicit
-                    // one at the end) is exhausted: StopIteration for its driver.
-                    if self.top().code.is_generator {
-                        return self.generator_stop();
-                    }
-                    let value = self.pop();
-                    return self.do_return(value);
-                }
-                Op::Yield => {
-                    let value = self.pop();
-                    // Suspend this generator frame back into its GenBox and hand
-                    // the value to whatever is driving it.
-                    let frame = self.task.frames.pop().expect("yield with no frame");
-                    let (gen, driver) = self.task.gen_stack.pop().expect("yield outside a generator");
-                    put_gen_frame(&mut gen.borrow_mut(), frame);
-                    match driver {
-                        GenDriver::ForLoop(_) => {
-                            // Every `for` yields (index, value); a generator's
-                            // index is a 0-based counter held on the GenBox.
-                            let idx = {
-                                let mut g = gen.borrow_mut();
-                                let i = g.for_index;
-                                g.for_index += 1;
-                                i
-                            };
-                            self.push(Value::Tuple(OroTuple::new(vec![Value::Int(idx), value])));
-                        }
-                        GenDriver::Materialize => {
-                            self.task.mat_jobs.last_mut().expect("materialise job").items.push(value);
-                            return self.drive_materialize();
-                        }
-                    }
-                }
-                Op::SetupExcept(target) => {
-                    let target = target as usize;
-                    let jobs = self.job_depths();
-                    let stack_len = self.top().stack.len();
-                    self.top()
-                        .blocks
-                        .push(Block { kind: BlockKind::Except, target, stack_len, jobs });
-                }
-                Op::SetupFinally(target) => {
-                    let target = target as usize;
-                    let jobs = self.job_depths();
-                    let stack_len = self.top().stack.len();
-                    self.top()
-                        .blocks
-                        .push(Block { kind: BlockKind::Finally, target, stack_len, jobs });
-                }
-                Op::PopBlock => {
-                    self.top().blocks.pop();
-                }
-                Op::SetupLoop(pair) => {
-                    let (brk, cont) = self.top().code.pairs[pair as usize];
-                    let jobs = self.job_depths();
-                    let stack_len = self.top().stack.len();
-                    self.top().blocks.push(Block {
-                        kind: BlockKind::Loop { cont: cont as usize },
-                        target: brk as usize,
-                        stack_len,
-                        jobs,
-                    });
-                }
-                Op::Break => return Ok(self.do_break()),
-                Op::Continue => return Ok(self.do_continue()),
-                Op::Raise => {
-                    let v = self.pop();
-                    let exc = self.normalize_raise(v)?;
-                    return Ok(Step::Raise(exc));
-                }
-                Op::Reraise => {
-                    // Bare `raise` / no matching except: re-raise the exception
-                    // currently being handled.
-                    match self.task.handling.pop() {
-                        Some(exc) => return Ok(Step::Raise(exc)),
-                        None => {
-                            return Err(self.err(runtime_error("No active exception to re-raise")))
-                        }
-                    }
-                }
-                Op::LoadHandling => {
-                    let exc = self
-                        .task
-                        .handling
-                        .last()
-                        .cloned()
-                        .expect("LoadHandling with no active exception");
-                    self.push(exc);
-                }
-                Op::EndHandler => {
-                    self.task.handling.pop();
-                }
-                Op::ExcMatch => {
-                    let class = self.pop();
-                    let exc = self.pop();
-                    let matched = self.exc_matches(&exc, &class)?;
-                    self.push(Value::Bool(matched));
-                }
-                Op::BeginFinally => {
-                    // The normal fall-through into a finally body: nothing was
-                    // suspended.
-                    self.task.finally_why.push(Why::Normal);
-                }
-                Op::EndFinally => {
-                    // Resume whatever was suspended to run this finally.
-                    match self.task.finally_why.pop().expect("finally without a reason") {
-                        Why::Normal => {}
-                        Why::Raise(exc) => return Ok(Step::Raise(exc)),
-                        Why::Return(v) => return self.do_return(v),
-                        Why::Break => return Ok(self.do_break()),
-                        Why::Continue => return Ok(self.do_continue()),
                     }
                 }
             }
+            Op::Pop => {
+                self.pop();
+            }
+            Op::Dup => {
+                let v = self.top().stack.last().expect("dup on empty stack").clone();
+                self.push(v);
+            }
+            Op::DupTwo => {
+                let n = self.top().stack.len();
+                let a = self.top().stack[n - 2].clone();
+                let b = self.top().stack[n - 1].clone();
+                self.push(a);
+                self.push(b);
+            }
+            Op::RotTwo => {
+                let s = &mut self.top().stack;
+                let n = s.len();
+                s.swap(n - 1, n - 2);
+            }
+            Op::RotThree => {
+                // [a, b, c] -> [c, a, b]
+                let s = &mut self.top().stack;
+                let n = s.len();
+                s[n - 3..].rotate_right(1);
+            }
+            Op::UnaryNeg => {
+                let v = self.pop();
+                let r = self.wrap(arith::neg(&v))?;
+                self.push(r);
+            }
+            Op::UnaryPos => {
+                let v = self.pop();
+                let r = self.wrap(arith::pos(&v))?;
+                self.push(r);
+            }
+            Op::UnaryNot => {
+                let v = self.pop();
+                match v {
+                    Value::Bool(b) => self.push(Value::Bool(!b)),
+                    _ => return Err(self.err(not_bool(&v, "the operand of `not`"))),
+                }
+            }
+            Op::UnaryInvert => {
+                let v = self.pop();
+                let r = self.wrap(arith::invert(&v))?;
+                self.push(r);
+            }
+            Op::AssertBool => {
+                let ok = matches!(self.top().stack.last(), Some(Value::Bool(_)));
+                if !ok {
+                    let v = self
+                        .top()
+                        .stack
+                        .last()
+                        .expect("operand stack underflow")
+                        .clone();
+                    return Err(self.err(not_bool(&v, "the operands of `and`/`or`")));
+                }
+            }
+            Op::BinAdd
+            | Op::BinSub
+            | Op::BinMul
+            | Op::BinDiv
+            | Op::BinFloorDiv
+            | Op::BinMod
+            | Op::BinPow
+            | Op::BinBitAnd
+            | Op::BinBitOr
+            | Op::BinBitXor
+            | Op::BinShl
+            | Op::BinShr => {
+                let b = self.pop();
+                let a = self.pop();
+                // `None` for a bitwise operator: Oro's dunder set stops at
+                // the arithmetic ones, so there is no `__and__` to look for
+                // and an instance operand falls to the type error below
+                // rather than to a call.
+                let dunder = arith_dunder(&op);
+                match dunder.and_then(|d| instance_method(&a, d)) {
+                    Some((f, defclass)) => {
+                        self.invoke_user(
+                            f,
+                            a,
+                            defclass,
+                            vec![b],
+                            Vec::new(),
+                            ReturnAction::Normal,
+                        )?;
+                    }
+                    None if matches!(a, Value::Instance(_)) => {
+                        return Err(self.err(type_error(format!(
+                            "unsupported operand type(s) for {}: '{}' and '{}'",
+                            arith_symbol(&op),
+                            a.type_label(),
+                            b.type_label()
+                        ))));
+                    }
+                    None => {
+                        let r = self.wrap(arith::binary(&op, &a, &b))?;
+                        self.push(r);
+                    }
+                }
+            }
+            Op::Compare(cmp) => {
+                let b = self.pop();
+                let a = self.pop();
+                // The native answer, which is every comparison in a program
+                // with no user `__eq__`/`__lt__` under either operand.
+                match self.wrap(try_compare_op(cmp, &a, &b))? {
+                    Some(r) => self.push(Value::Bool(r)),
+                    // Some pair in there needs Oro code. A dunder on the
+                    // operands themselves is dispatched straight from here,
+                    // so that its value reaches the program unconverted
+                    // (CPython's `a == b` is whatever `__eq__` returned, not
+                    // its truthiness); anything deeper goes to the machine.
+                    None => self.compare_slow(cmp, a, b)?,
+                }
+            }
+            Op::Jump(t) => self.top().pc = t as usize,
+            // A defaulted parameter's prologue. The binder left the slot
+            // `Unbound` when the call omitted the argument and its default
+            // is not a constant; the expression that follows is evaluated
+            // then, in this frame, on this call. A bound slot jumps over
+            // it, which is every call that passed the argument.
+            Op::DefaultIfBound(pair) => {
+                let frame = self.top();
+                let (param, target) = frame.code.pairs[pair as usize];
+                let bound = match frame.code.params[param as usize].target {
+                    VarTarget::Local(s) => !matches!(frame.locals[s as usize], Value::Unbound),
+                    VarTarget::Cell(s) => {
+                        !matches!(*frame.cells[s as usize].borrow(), Value::Unbound)
+                    }
+                };
+                if bound {
+                    frame.pc = target as usize;
+                }
+            }
+            Op::PopJumpIfFalse(t) => {
+                let v = self.pop();
+                match v {
+                    Value::Bool(b) => {
+                        if !b {
+                            self.top().pc = t as usize;
+                        }
+                    }
+                    _ => return Err(self.err(not_bool(&v, "a condition"))),
+                }
+            }
+            Op::PopJumpIfTrue(t) => {
+                let v = self.pop();
+                match v {
+                    Value::Bool(b) => {
+                        if b {
+                            self.top().pc = t as usize;
+                        }
+                    }
+                    _ => return Err(self.err(not_bool(&v, "a condition"))),
+                }
+            }
+            Op::JumpIfFalseOrPop(t) => match self.top().stack.last() {
+                Some(Value::Bool(true)) => {
+                    self.pop();
+                }
+                Some(Value::Bool(false)) => {
+                    self.top().pc = t as usize;
+                }
+                _ => {
+                    let v = self.top().stack.last().unwrap().clone();
+                    return Err(self.err(not_bool(&v, "the operands of `and`/`or`")));
+                }
+            },
+            Op::JumpIfTrueOrPop(t) => match self.top().stack.last() {
+                Some(Value::Bool(true)) => {
+                    self.top().pc = t as usize;
+                }
+                Some(Value::Bool(false)) => {
+                    self.pop();
+                }
+                _ => {
+                    let v = self.top().stack.last().unwrap().clone();
+                    return Err(self.err(not_bool(&v, "the operands of `and`/`or`")));
+                }
+            },
+            Op::BuildList(n) => {
+                let items = self.popn(n as usize);
+                self.push(Value::List(OroList::new(items)));
+            }
+            Op::BuildTuple(n) => {
+                let items = self.popn(n as usize);
+                self.push(Value::Tuple(OroTuple::new(items)));
+            }
+            Op::BuildMap(n) => {
+                let items = self.popn(2 * n as usize);
+                let mut dict = OroDict::new();
+                let mut it = items.into_iter();
+                while let (Some(k), Some(v)) = (it.next(), it.next()) {
+                    self.wrap(dict.insert(k, v))?;
+                }
+                self.push(Value::Dict(Rc::new(RefCell::new(dict))));
+            }
+            Op::ListAppend => {
+                let v = self.pop();
+                let list = self.expect_list_tos("ListAppend")?;
+                list.borrow_mut().push(v);
+            }
+            Op::MapSetItem => {
+                let v = self.pop();
+                let k = self.pop();
+                let dict = self.expect_dict_tos("MapSetItem")?;
+                self.wrap(dict.borrow_mut().insert(k, v))?;
+            }
+            Op::LoadSubscript => {
+                let index = self.pop();
+                let obj = self.pop();
+                let r = self.wrap(subscript_get(&obj, &index))?;
+                self.push(r);
+            }
+            Op::StoreSubscript => {
+                let index = self.pop();
+                let obj = self.pop();
+                let value = self.pop();
+                self.wrap(subscript_set(&obj, &index, value))?;
+            }
+            Op::LoadSlice => {
+                let step = self.pop();
+                let upper = self.pop();
+                let lower = self.pop();
+                let obj = self.pop();
+                let r = self.wrap(slice_get(&obj, &lower, &upper, &step))?;
+                self.push(r);
+            }
+            Op::LoadAttr(n) => {
+                let name = self.task.frames.last().unwrap().code.names[n as usize].clone();
+                let obj = self.pop();
+                let r = self.wrap(get_attr(&obj, &name))?;
+                self.push(r);
+            }
+            Op::StoreAttr(n) => {
+                let name = self.task.frames.last().unwrap().code.names[n as usize].clone();
+                let obj = self.pop();
+                let value = self.pop();
+                match &obj {
+                    Value::Instance(inst) => {
+                        inst.fields.borrow_mut().insert(name.clone(), value);
+                    }
+                    other => {
+                        // Only an instance has settable attributes; a class,
+                        // module, or scalar does not. An `AttributeError`,
+                        // the type an attribute operation raises, rather than
+                        // a bare `RuntimeError`.
+                        let msg = format!(
+                            "cannot set attribute '{}' on a '{}' — only an instance has \
+                                 settable attributes",
+                            name,
+                            other.type_label()
+                        );
+                        return Err(self.err(attribute_error(msg)));
+                    }
+                }
+            }
+            Op::BuildClass(i) => {
+                let spec = self.task.frames.last().unwrap().code.classes[i as usize].clone();
+                self.build_class(&spec)?;
+            }
+            Op::ImportModule(n) => {
+                let path = self.task.frames.last().unwrap().code.names[n as usize].clone();
+                return self.import_module(&path);
+            }
+            Op::LoadSuper => {
+                let sup = match self.top().super_ctx.clone() {
+                    Some((defclass, instance)) => Value::Super(Rc::new(SuperProxy {
+                        start: defclass.base.clone(),
+                        instance,
+                    })),
+                    None => {
+                        return Err(self.err(runtime_error("super() is only valid inside a method")))
+                    }
+                };
+                self.push(sup);
+            }
+            Op::UnpackSequence(n) => {
+                let seq = self.pop();
+                // Shared with a destructuring collection callback, which is
+                // defined to unpack exactly as this does.
+                let items = self.wrap(unpack_exact(&seq, n as usize))?;
+                for v in items.into_iter().rev() {
+                    self.push(v);
+                }
+            }
+            Op::FormatValue(conv) => {
+                let spec = self.pop();
+                let value = self.pop();
+                let spec_str = match &spec {
+                    Value::Str(s) => s.s.clone(),
+                    other => {
+                        let msg =
+                            format!("format spec must be a string, not '{}'", other.type_name());
+                        return Err(self.err(type_error(msg)));
+                    }
+                };
+                // An instance renders via __str__/__repr__ (which run on a
+                // frame); the format spec is then applied to the result.
+                if matches!(value, Value::Instance(_)) {
+                    let want_repr = conv == crate::format::CONV_REPR;
+                    let names: [&str; 2] = if want_repr {
+                        ["__repr__", "__str__"]
+                    } else {
+                        ["__str__", "__repr__"]
+                    };
+                    let mut dispatched = false;
+                    for nm in names {
+                        if let Some((f, defclass)) = instance_method(&value, nm) {
+                            self.invoke_user(
+                                f,
+                                value.clone(),
+                                defclass,
+                                Vec::new(),
+                                Vec::new(),
+                                ReturnAction::FormatSpec(spec_str.clone()),
+                            )?;
+                            dispatched = true;
+                            break;
+                        }
+                    }
+                    if dispatched {
+                        return Ok(Step::Next);
+                    }
+                }
+                // A container is rendered element-by-element (element
+                // __repr__ dunders, cycle-safe), then the spec is applied.
+                if is_container(&value) {
+                    self.begin_stringify(value, StrCont::FormatSpec(spec_str))?;
+                    return Ok(Step::Next);
+                }
+                let out = self.wrap(crate::format::format_value(&value, conv, &spec_str))?;
+                self.push(Value::str(out));
+            }
+            Op::BuildString(n) => {
+                let parts = self.popn(n as usize);
+                let mut s = String::new();
+                for p in parts {
+                    s.push_str(&p.display());
+                }
+                self.push(Value::str(s));
+            }
+            Op::MatchDispatch(pair) => {
+                let (table, default) = self.top().code.pairs[pair as usize];
+                let subject = self.pop();
+                let dict = match &self.top().code.consts[table as usize] {
+                    Value::Dict(d) => d.clone(),
+                    _ => unreachable!("MatchDispatch table is always a dict const"),
+                };
+                // An unhashable subject cannot equal any literal key, so it
+                // takes the default — matching the compare-chain path.
+                let target = match dict.borrow().get(&subject) {
+                    Ok(Some(Value::Int(t))) => t as usize,
+                    _ => default as usize,
+                };
+                self.top().pc = target;
+            }
+            Op::GetIter => {
+                let v = self.pop();
+                let it = self.wrap(get_iter(&v))?;
+                self.push(it);
+            }
+            Op::ForIter(target) => {
+                let target = target as usize;
+                let it = self
+                    .top()
+                    .stack
+                    .last()
+                    .expect("ForIter on empty stack")
+                    .clone();
+                // A channel is its own iterator, and `for msg in ch` is a
+                // `recv` that ends the loop instead of raising when the
+                // channel closes and drains (§3). It can block, so this is
+                // a parking site.
+                if let Value::Channel(ch) = &it {
+                    return self.chan_iter_next(ch.clone(), target);
+                }
+                // A generator is advanced by resuming its frame; the value
+                // (or exhaustion) arrives via Yield/Return, not inline.
+                if let Value::Generator(gen) = &it {
+                    // Three states, not two: finished (`None`), suspended
+                    // and ours to resume (`Some(Some(_))`), and *already
+                    // being advanced* somewhere else (`Some(None)`) — its
+                    // frame is on some task's frame stack right now. The
+                    // last one used to be indistinguishable from finished,
+                    // so the loop ended silently; two tasks driving one
+                    // generator would have corrupted it outright.
+                    let taken = {
+                        let mut g = gen.borrow_mut();
+                        if g.done {
+                            None
+                        } else {
+                            Some(take_gen_frame(&mut g))
+                        }
+                    };
+                    match taken {
+                        Some(Some(frame)) => {
+                            self.task
+                                .gen_stack
+                                .push((gen.clone(), GenDriver::ForLoop(target)));
+                            self.task.frames.push(frame);
+                        }
+                        Some(None) => return Ok(Step::Raise(self.generator_busy())),
+                        None => {
+                            self.pop();
+                            self.top().pc = target;
+                        }
+                    }
+                } else {
+                    let next = self.wrap(iter_next_pair(&it))?;
+                    match next {
+                        Some((i, v)) => self.push(Value::Tuple(OroTuple::new(vec![i, v]))),
+                        None => {
+                            self.pop(); // discard the exhausted iterator
+                            self.top().pc = target;
+                        }
+                    }
+                }
+            }
+            Op::MakeFunction(idx) => self.make_function(idx as usize)?,
+            Op::Call(n) => return self.do_call(n as usize),
+            Op::CallKw(site) => return self.do_call_kw(site as usize),
+            Op::LoadMethod(n) => {
+                let name = self.task.frames.last().unwrap().code.names[n as usize].clone();
+                let obj = self.pop();
+                match self.wrap(resolve_method(&obj, &name))? {
+                    MethodRef::User {
+                        recv,
+                        func,
+                        defclass,
+                    } => {
+                        self.push(Value::Class(defclass));
+                        self.push(Value::Func(func));
+                        self.push(recv);
+                    }
+                    MethodRef::Native(recv) => {
+                        self.push(Value::Unbound);
+                        self.push(Value::None);
+                        self.push(recv);
+                    }
+                    MethodRef::Plain(v) => {
+                        self.push(Value::None);
+                        self.push(Value::None);
+                        self.push(v);
+                    }
+                }
+            }
+            Op::CallMethod(pair) => return self.do_call_method(pair as usize),
+            Op::Return => {
+                // A generator body reaching return (including the implicit
+                // one at the end) is exhausted: StopIteration for its driver.
+                if self.top().code.is_generator {
+                    return self.generator_stop();
+                }
+                let value = self.pop();
+                return self.do_return(value);
+            }
+            Op::Yield => {
+                let value = self.pop();
+                // Suspend this generator frame back into its GenBox and hand
+                // the value to whatever is driving it.
+                let frame = self.task.frames.pop().expect("yield with no frame");
+                let (gen, driver) = self
+                    .task
+                    .gen_stack
+                    .pop()
+                    .expect("yield outside a generator");
+                put_gen_frame(&mut gen.borrow_mut(), frame);
+                match driver {
+                    GenDriver::ForLoop(_) => {
+                        // Every `for` yields (index, value); a generator's
+                        // index is a 0-based counter held on the GenBox.
+                        let idx = {
+                            let mut g = gen.borrow_mut();
+                            let i = g.for_index;
+                            g.for_index += 1;
+                            i
+                        };
+                        self.push(Value::Tuple(OroTuple::new(vec![Value::Int(idx), value])));
+                    }
+                    GenDriver::Materialize => {
+                        self.task
+                            .mat_jobs
+                            .last_mut()
+                            .expect("materialise job")
+                            .items
+                            .push(value);
+                        return self.drive_materialize();
+                    }
+                }
+            }
+            Op::SetupExcept(target) => {
+                let target = target as usize;
+                let jobs = self.job_depths();
+                let stack_len = self.top().stack.len();
+                self.top().blocks.push(Block {
+                    kind: BlockKind::Except,
+                    target,
+                    stack_len,
+                    jobs,
+                });
+            }
+            Op::SetupFinally(target) => {
+                let target = target as usize;
+                let jobs = self.job_depths();
+                let stack_len = self.top().stack.len();
+                self.top().blocks.push(Block {
+                    kind: BlockKind::Finally,
+                    target,
+                    stack_len,
+                    jobs,
+                });
+            }
+            Op::PopBlock => {
+                self.top().blocks.pop();
+            }
+            Op::SetupLoop(pair) => {
+                let (brk, cont) = self.top().code.pairs[pair as usize];
+                let jobs = self.job_depths();
+                let stack_len = self.top().stack.len();
+                self.top().blocks.push(Block {
+                    kind: BlockKind::Loop {
+                        cont: cont as usize,
+                    },
+                    target: brk as usize,
+                    stack_len,
+                    jobs,
+                });
+            }
+            Op::Break => return Ok(self.do_break()),
+            Op::Continue => return Ok(self.do_continue()),
+            Op::Raise => {
+                let v = self.pop();
+                let exc = self.normalize_raise(v)?;
+                return Ok(Step::Raise(exc));
+            }
+            Op::Reraise => {
+                // Bare `raise` / no matching except: re-raise the exception
+                // currently being handled.
+                match self.task.handling.pop() {
+                    Some(exc) => return Ok(Step::Raise(exc)),
+                    None => return Err(self.err(runtime_error("No active exception to re-raise"))),
+                }
+            }
+            Op::LoadHandling => {
+                let exc = self
+                    .task
+                    .handling
+                    .last()
+                    .cloned()
+                    .expect("LoadHandling with no active exception");
+                self.push(exc);
+            }
+            Op::EndHandler => {
+                self.task.handling.pop();
+            }
+            Op::ExcMatch => {
+                let class = self.pop();
+                let exc = self.pop();
+                let matched = self.exc_matches(&exc, &class)?;
+                self.push(Value::Bool(matched));
+            }
+            Op::BeginFinally => {
+                // The normal fall-through into a finally body: nothing was
+                // suspended.
+                self.task.finally_why.push(Why::Normal);
+            }
+            Op::EndFinally => {
+                // Resume whatever was suspended to run this finally.
+                match self
+                    .task
+                    .finally_why
+                    .pop()
+                    .expect("finally without a reason")
+                {
+                    Why::Normal => {}
+                    Why::Raise(exc) => return Ok(Step::Raise(exc)),
+                    Why::Return(v) => return self.do_return(v),
+                    Why::Break => return Ok(self.do_break()),
+                    Why::Continue => return Ok(self.do_continue()),
+                }
+            }
+        }
         Ok(Step::Next)
     }
 
@@ -2338,7 +2408,10 @@ impl Vm {
                 CaptureSource::Free(i) => frame.free[*i as usize].clone(),
             })
             .collect();
-        let func = Function { code: proto.code.clone(), freevars };
+        let func = Function {
+            code: proto.code.clone(),
+            freevars,
+        };
         self.push(Value::Func(Rc::new(func)));
         Ok(())
     }
@@ -2449,8 +2522,7 @@ impl Vm {
                         let code = &f.code;
                         // `n + 1` counts the receiver, which is the first
                         // parameter and never has a default.
-                        !code.is_generator
-                            && n + 1 == code.params.len() - code.defaults.len()
+                        !code.is_generator && n + 1 == code.params.len() - code.defaults.len()
                     }
                     _ => false,
                 }
@@ -2468,7 +2540,9 @@ impl Vm {
             Value::Class(defclass) => {
                 let func = match aux {
                     Value::Func(f) => f,
-                    other => unreachable!("LoadMethod pushed a non-function: {}", other.type_name()),
+                    other => {
+                        unreachable!("LoadMethod pushed a non-function: {}", other.type_name())
+                    }
                 };
                 // A method with a `yield` in it produces a generator, the same
                 // as a plain generator `def` — this is an ordinary `obj.m()`,
@@ -2495,9 +2569,9 @@ impl Vm {
                 .map(|()| Step::Next)
             }
             Value::Unbound => {
-                let name =
-                    self.task.frames.last().expect("no active frame").code.names[name_idx as usize]
-                        .clone();
+                let name = self.task.frames.last().expect("no active frame").code.names
+                    [name_idx as usize]
+                    .clone();
                 self.invoke_native_method(
                     recv_or_callee,
                     &name,
@@ -2567,14 +2641,26 @@ impl Vm {
             return Ok(self.call_kw_fast(plan));
         }
         let (npos, nkw) = {
-            let s = &self.task.frames.last().expect("no active frame").code.kwsites[site];
+            let s = &self
+                .task
+                .frames
+                .last()
+                .expect("no active frame")
+                .code
+                .kwsites[site];
             (s.npos as usize, s.names.len())
         };
         let values = self.popn(nkw);
         let args = self.popn(npos);
         let callee = self.pop();
         let kwargs: Vec<(String, Value)> = {
-            let s = &self.task.frames.last().expect("no active frame").code.kwsites[site];
+            let s = &self
+                .task
+                .frames
+                .last()
+                .expect("no active frame")
+                .code
+                .kwsites[site];
             s.names.iter().map(|n| n.to_string()).zip(values).collect()
         };
         self.invoke(callee, args, kwargs)
@@ -2624,7 +2710,12 @@ impl Vm {
             }
             slots[i] = code.params[pos].target;
         }
-        Some(KwPlan { func: f.clone(), npos, nkw, slots })
+        Some(KwPlan {
+            func: f.clone(),
+            npos,
+            nkw,
+            slots,
+        })
     }
 
     /// Bind what [`Vm::kw_fast_plan`] resolved: positional arguments into the
@@ -2634,7 +2725,12 @@ impl Vm {
     /// prologue, which decides by whether the slot is bound, so the default is
     /// written first and the keyword second.
     fn call_kw_fast(&mut self, plan: KwPlan) -> Step {
-        let KwPlan { func, npos, nkw, slots } = plan;
+        let KwPlan {
+            func,
+            npos,
+            nkw,
+            slots,
+        } = plan;
         let mut frame = self.take_frame(func.code.clone(), &func.freevars);
         let params = &func.code.params;
         let defaults = &func.code.defaults;
@@ -2739,7 +2835,9 @@ impl Vm {
             None => Vec::new(),
             Some(Value::List(l)) => l.borrow().clone(),
             Some(Value::None) => {
-                return Err(self.err(crate::builtins::null_is_not_omitted("apply", "args", "a list")))
+                return Err(self.err(crate::builtins::null_is_not_omitted(
+                    "apply", "args", "a list",
+                )))
             }
             Some(other) => {
                 return Err(self.err(type_error(format!(
@@ -2768,8 +2866,9 @@ impl Vm {
                 out
             }
             Some(Value::None) => {
-                return Err(self
-                    .err(crate::builtins::null_is_not_omitted("apply", "kwargs", "a dict")))
+                return Err(self.err(crate::builtins::null_is_not_omitted(
+                    "apply", "kwargs", "a dict",
+                )))
             }
             Some(other) => {
                 return Err(self.err(type_error(format!(
@@ -2837,9 +2936,7 @@ impl Vm {
         // from being a call into a cold function. Measured — it is
         // worth about a point on the method-heavy benchmarks.
         if matches!(receiver, Value::Stream(_)) {
-            if let Some(step) =
-                self.stream_io_method(&receiver, name, &args, &kwargs)?
-            {
+            if let Some(step) = self.stream_io_method(&receiver, name, &args, &kwargs)? {
                 return Ok(step);
             }
         }
@@ -2860,8 +2957,8 @@ impl Vm {
         }
         // map/filter run Oro callbacks, so they are driven from the
         // VM rather than executed as native methods.
-        if let Some(op) = SeqOp::from_name(name)
-            .filter(|_| crate::builtins::is_collection(&receiver))
+        if let Some(op) =
+            SeqOp::from_name(name).filter(|_| crate::builtins::is_collection(&receiver))
         {
             // A generator receiver has to be drained first; the
             // retry arrives back here with a list in its place.
@@ -2870,13 +2967,13 @@ impl Vm {
                 let with_recv = std::iter::once(receiver.clone())
                     .chain(args.iter().cloned())
                     .collect::<Vec<_>>();
-                if let Some(step) =
-                    self.materialize_receiver(&callee, with_recv, kwargs.clone())?
-                {
+                if let Some(step) = self.materialize_receiver(&callee, with_recv, kwargs.clone())? {
                     return Ok(step);
                 }
             }
-            return self.do_seq_op(op, &receiver, args, kwargs, hint, flush).map(|()| Step::Next);
+            return self
+                .do_seq_op(op, &receiver, args, kwargs, hint, flush)
+                .map(|()| Step::Next);
         }
         // `first()` / `take(n)` closing a fused chain. See `Vm::chain_tail`:
         // they take no callback, so the pipeline runs to `Collect` under a
@@ -2901,8 +2998,13 @@ impl Vm {
             let (_, items) = self.seq_receiver(name, &receiver)?;
             let keys = items.clone();
             let want_min = &**name == "min";
-            let kind = OrdKind::Extreme { want_min, who: if want_min { "min" } else { "max" } };
-            return self.begin_order(kind, items, keys, false).map(|()| Step::Next);
+            let kind = OrdKind::Extreme {
+                want_min,
+                who: if want_min { "min" } else { "max" },
+            };
+            return self
+                .begin_order(kind, items, keys, false)
+                .map(|()| Step::Next);
         }
         // A generator *receiver* is drained the same way a generator argument
         // is, for the same reason: the native method below iterates it, and
@@ -2914,8 +3016,9 @@ impl Vm {
             && crate::builtins::drains_generator_receiver(name)
         {
             let callee = Self::rebound_method(&receiver, name);
-            let with_recv =
-                std::iter::once(receiver.clone()).chain(args.iter().cloned()).collect::<Vec<_>>();
+            let with_recv = std::iter::once(receiver.clone())
+                .chain(args.iter().cloned())
+                .collect::<Vec<_>>();
             if let Some(step) = self.materialize_receiver(&callee, with_recv, kwargs.clone())? {
                 return Ok(step);
             }
@@ -2938,8 +3041,7 @@ impl Vm {
                 return Ok(step);
             }
         }
-        let r =
-            self.wrap(crate::builtins::call_method(&receiver, name, args, kwargs))?;
+        let r = self.wrap(crate::builtins::call_method(&receiver, name, args, kwargs))?;
         self.push(r);
         Ok(Step::Next)
     }
@@ -3022,7 +3124,9 @@ impl Vm {
                     // this, `str("x")` raised "not callable" while
                     // `str(some_instance)` quietly worked — one name, two
                     // answers, decided by the argument.
-                    "repr" if matches!(args.first(), Some(Value::Instance(_))) && args.len() == 1 => {
+                    "repr"
+                        if matches!(args.first(), Some(Value::Instance(_))) && args.len() == 1 =>
+                    {
                         return self
                             .stringify_instance(args.into_iter().next().unwrap(), true)
                             .map(|()| Step::Next);
@@ -3034,8 +3138,12 @@ impl Vm {
                             .begin_stringify(args.into_iter().next().unwrap(), StrCont::Push)
                             .map(|()| Step::Next);
                     }
-                    "len" if matches!(args.first(), Some(Value::Instance(_))) && args.len() == 1 => {
-                        return self.dunder_len(args.into_iter().next().unwrap()).map(|()| Step::Next);
+                    "len"
+                        if matches!(args.first(), Some(Value::Instance(_))) && args.len() == 1 =>
+                    {
+                        return self
+                            .dunder_len(args.into_iter().next().unwrap())
+                            .map(|()| Step::Next);
                     }
                     _ => {}
                 }
@@ -3099,8 +3207,11 @@ impl Vm {
                 if f.code.is_generator {
                     // Calling a generator function does not run it; it produces a
                     // generator holding the suspended (unstarted) frame.
-                    let gen =
-                        crate::value::GenBox { done: false, for_index: 0, frame: Some(Box::new(Some(frame))) };
+                    let gen = crate::value::GenBox {
+                        done: false,
+                        for_index: 0,
+                        frame: Some(Box::new(Some(frame))),
+                    };
                     self.push(Value::Generator(Rc::new(RefCell::new(gen))));
                 } else {
                     self.task.frames.push(frame);
@@ -3144,9 +3255,10 @@ impl Vm {
             _ => return Ok(None),
         };
         if !kwargs.is_empty() {
-            return Ok(Some(
-                self.raise(Exc::TypeError, format!("{name}() takes no keyword arguments")),
-            ));
+            return Ok(Some(self.raise(
+                Exc::TypeError,
+                format!("{name}() takes no keyword arguments"),
+            )));
         }
         let arity = |vm: &Self, want: usize| -> Result<(), Step> {
             if args.len() == want {
@@ -3157,10 +3269,10 @@ impl Vm {
                 1 => "exactly 1 argument".to_string(),
                 n => format!("exactly {n} arguments"),
             };
-            Err(vm.raise(Exc::TypeError, format!(
-                "{name}() takes {expected} ({} given)",
-                args.len()
-            )))
+            Err(vm.raise(
+                Exc::TypeError,
+                format!("{name}() takes {expected} ({} given)", args.len()),
+            ))
         };
         if let Some(handle) = task_recv {
             if name != "join" {
@@ -3198,14 +3310,18 @@ impl Vm {
         args: &[Value],
         kwargs: &[(String, Value)],
     ) -> Result<Option<Step>, VmError> {
-        let Value::Proc(p) = receiver else { return Ok(None) };
+        let Value::Proc(p) = receiver else {
+            return Ok(None);
+        };
         // `stdin`/`stdout`/`stderr` are data attributes, read through `get_attr`,
         // not methods; the only method is `wait`.
         if name != "wait" {
             return Ok(None);
         }
         if !kwargs.is_empty() {
-            return Ok(Some(self.raise(Exc::TypeError, "wait() takes no keyword arguments")));
+            return Ok(Some(
+                self.raise(Exc::TypeError, "wait() takes no keyword arguments"),
+            ));
         }
         if !args.is_empty() {
             return Ok(Some(self.raise(
@@ -3246,8 +3362,11 @@ impl Vm {
         }
         let mut frame = self.bind_call(func, Some(receiver.clone()), args, kwargs)?;
         frame.super_ctx = Some((defclass, receiver));
-        let gen =
-            crate::value::GenBox { done: false, for_index: 0, frame: Some(Box::new(Some(frame))) };
+        let gen = crate::value::GenBox {
+            done: false,
+            for_index: 0,
+            frame: Some(Box::new(Some(frame))),
+        };
         self.push(Value::Generator(Rc::new(RefCell::new(gen))));
         Ok(Step::Next)
     }
@@ -3307,7 +3426,14 @@ impl Vm {
                 // Leave the instance as the eventual result; __init__ returns
                 // None (checked) and its frame is dropped.
                 self.push(inst.clone());
-                self.invoke_user(init, inst, defclass, args, kwargs, ReturnAction::DropForInit)
+                self.invoke_user(
+                    init,
+                    inst,
+                    defclass,
+                    args,
+                    kwargs,
+                    ReturnAction::DropForInit,
+                )
             }
             Some(_) => Err(self.err(type_error(format!(
                 "{}.__init__ is not a function",
@@ -3328,10 +3454,9 @@ impl Vm {
             }
             None => {
                 if !args.is_empty() || !kwargs.is_empty() {
-                    return Err(self.err(type_error(format!(
-                        "{}() takes no arguments",
-                        class.name
-                    ))));
+                    return Err(
+                        self.err(type_error(format!("{}() takes no arguments", class.name)))
+                    );
                 }
                 self.push(inst);
                 Ok(())
@@ -3353,12 +3478,23 @@ impl Vm {
         };
         for name in order {
             if let Some((Value::Func(f), defclass)) = Class::find(&inst.class, name) {
-                return self.invoke_user(f, value, defclass, Vec::new(), Vec::new(), ReturnAction::Normal);
+                return self.invoke_user(
+                    f,
+                    value,
+                    defclass,
+                    Vec::new(),
+                    Vec::new(),
+                    ReturnAction::Normal,
+                );
             }
         }
         // No dunder: str() uses display() (an exception's message), repr() uses
         // repr() (its Name(args) form).
-        let out = if want_repr { value.repr() } else { value.display() };
+        let out = if want_repr {
+            value.repr()
+        } else {
+            value.display()
+        };
         self.push(Value::str(out));
         Ok(())
     }
@@ -3369,9 +3505,14 @@ impl Vm {
             _ => unreachable!(),
         };
         match Class::find(&inst.class, "__len__") {
-            Some((Value::Func(f), defclass)) => {
-                self.invoke_user(f, value, defclass, Vec::new(), Vec::new(), ReturnAction::Normal)
-            }
+            Some((Value::Func(f), defclass)) => self.invoke_user(
+                f,
+                value,
+                defclass,
+                Vec::new(),
+                Vec::new(),
+                ReturnAction::Normal,
+            ),
             _ => Err(self.err(type_error(format!(
                 "object of type '{}' has no len()",
                 inst.class.name
@@ -3411,9 +3552,8 @@ impl Vm {
             }
             _ => false,
         };
-        let callable = |v: &Value| {
-            matches!(v, Value::Func(_) | Value::Builtin(_) | Value::Method(_))
-        };
+        let callable =
+            |v: &Value| matches!(v, Value::Func(_) | Value::Builtin(_) | Value::Method(_));
         // Arity: reduce takes (initial, f); everything else takes exactly one
         // function. `any`/`all`/`count` once tested truthiness with none, and
         // `[0, 1, 2, ""].count()` read as a length and was 2; truthiness is a
@@ -3429,14 +3569,18 @@ impl Vm {
                     ))))
                 }
                 _ => {
-                    return Err(self.err(
-                        type_error("reduce() takes an initial value and a function, e.g. \
-                         xs.reduce(0, (acc, x) => acc + x)",)
-                    ))
+                    return Err(self.err(type_error(
+                        "reduce() takes an initial value and a function, e.g. \
+                         xs.reduce(0, (acc, x) => acc + x)",
+                    )))
                 }
             },
             SeqOp::Any | SeqOp::All | SeqOp::Count if args.is_empty() => {
-                let len = if op == SeqOp::Count { "; `xs.len()` is the length" } else { "" };
+                let len = if op == SeqOp::Count {
+                    "; `xs.len()` is the length"
+                } else {
+                    ""
+                };
                 return Err(self.err(type_error(format!(
                     "{who}() needs a predicate — truthiness is `xs.{who}(x => x)`{len}"
                 ))));
@@ -3457,7 +3601,11 @@ impl Vm {
         // step that deferred them was deferring against *this* receiver. The
         // identity check is what keeps a pipeline from being flushed into some
         // other collection that happens to reach a chain method first.
-        let pending = if flush { self.take_chain(receiver) } else { None };
+        let pending = if flush {
+            self.take_chain(receiver)
+        } else {
+            None
+        };
         let shape = match &pending {
             Some(p) => p.shape,
             None => self.seq_shape(who, receiver)?,
@@ -3729,7 +3877,11 @@ impl Vm {
                 } else if let Some(w) = job.work.pop() {
                     Some(w)
                 } else {
-                    let src = if job.stages.is_empty() { &job.items } else { &job.src };
+                    let src = if job.stages.is_empty() {
+                        &job.items
+                    } else {
+                        &job.src
+                    };
                     if job.next < src.len() {
                         let v = src[job.next].clone();
                         job.next += 1;
@@ -3790,7 +3942,14 @@ impl Vm {
                     // Reduce hands over the accumulator it is threading first.
                     let acc = (job.op == SeqOp::Reduce)
                         .then(|| job.results.last().cloned().unwrap_or(Value::None));
-                    (job.op.name(), (job.line, job.col), Some(f), job.spread, item, acc)
+                    (
+                        job.op.name(),
+                        (job.line, job.col),
+                        Some(f),
+                        job.spread,
+                        item,
+                        acc,
+                    )
                 }
             };
 
@@ -3867,9 +4026,12 @@ impl Vm {
                 Value::Method(m) => {
                     let call_args = self.seq_unpacked(Self::seq_args(spread, item, acc), at)?;
                     let r = match &m.kind {
-                        MethodKind::Native(name) => {
-                            self.wrap(crate::builtins::call_method(&m.receiver, name, call_args, Vec::new()))?
-                        }
+                        MethodKind::Native(name) => self.wrap(crate::builtins::call_method(
+                            &m.receiver,
+                            name,
+                            call_args,
+                            Vec::new(),
+                        ))?,
                         MethodKind::User { func, defclass } => {
                             if self.task.frames.len() >= MAX_FRAMES {
                                 return Err(
@@ -3947,7 +4109,14 @@ impl Vm {
             self.push(job.items.into_iter().next().unwrap_or(Value::None));
             return Ok(());
         }
-        let SeqJob { op, shape, items, results, reverse, .. } = job;
+        let SeqJob {
+            op,
+            shape,
+            items,
+            results,
+            reverse,
+            ..
+        } = job;
 
         // Scalar answers first — these do not rebuild a collection at all.
         match op {
@@ -3975,7 +4144,9 @@ impl Vm {
                 return Ok(());
             }
             SeqOp::Count => {
-                self.push(Value::Int(results.iter().filter(|r| r.truthy()).count() as i64));
+                self.push(Value::Int(
+                    results.iter().filter(|r| r.truthy()).count() as i64
+                ));
                 return Ok(());
             }
             SeqOp::MinBy | SeqOp::MaxBy => {
@@ -3985,12 +4156,7 @@ impl Vm {
                 // extreme in the language.
                 let want_min = op == SeqOp::MinBy;
                 let who = op.name();
-                return self.begin_order(
-                    OrdKind::Extreme { want_min, who },
-                    items,
-                    results,
-                    false,
-                );
+                return self.begin_order(OrdKind::Extreme { want_min, who }, items, results, false);
             }
             SeqOp::GroupBy => {
                 let mut d = crate::value::OroDict::new();
@@ -4047,7 +4213,9 @@ impl Vm {
             }
             // `sort_by` is finished by the ordering machine rather than
             // rebuilt here, because its keys may need `__lt__`.
-            SeqOp::SortBy => return self.begin_order(OrdKind::Sort(shape), items, results, reverse),
+            SeqOp::SortBy => {
+                return self.begin_order(OrdKind::Sort(shape), items, results, reverse)
+            }
             SeqOp::UniqueBy => {
                 let mut seen = crate::value::OroDict::new();
                 let mut out = Vec::new();
@@ -4074,7 +4242,11 @@ impl Vm {
             other => unreachable!("scalar op {} handled above", other.name()),
         };
 
-        let shape = if op.preserves_shape() { shape } else { SeqShape::List };
+        let shape = if op.preserves_shape() {
+            shape
+        } else {
+            SeqShape::List
+        };
         let out = self.wrap(Self::rebuild_shape(shape, kept))?;
         self.push(out);
         Ok(())
@@ -4297,15 +4469,10 @@ impl Vm {
         Ok(reverse)
     }
 
-
     /// Drive an in-flight `print`: render remaining args left to right, calling
     /// `__str__` (through a frame) for instances that define one. When the last
     /// argument is rendered, join with spaces, emit, and push `None`.
-    fn do_print(
-        &mut self,
-        args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
-    ) -> Result<(), VmError> {
+    fn do_print(&mut self, args: Vec<Value>, kwargs: Vec<(String, Value)>) -> Result<(), VmError> {
         // print() accepts sep= and end=; both must be str or None (None means
         // "use the default"), matching CPython. `file=` and `flush=` are not
         // accepted — Oro has no writable stream objects to point them at.
@@ -4316,11 +4483,9 @@ impl Vm {
                 "sep" => &mut sep,
                 "end" => &mut end,
                 other => {
-                    return Err(
-                        self.err(type_error(format!(
-                            "print() got an unexpected keyword argument '{other}'"
-                        )))
-                    )
+                    return Err(self.err(type_error(format!(
+                        "print() got an unexpected keyword argument '{other}'"
+                    ))))
                 }
             };
             match v {
@@ -4334,7 +4499,13 @@ impl Vm {
                 }
             }
         }
-        self.task.prints.push(PrintJob { rendered: Vec::new(), remaining: args, next: 0, sep, end });
+        self.task.prints.push(PrintJob {
+            rendered: Vec::new(),
+            remaining: args,
+            next: 0,
+            sep,
+            end,
+        });
         self.drive_print()
     }
 
@@ -4390,7 +4561,13 @@ impl Vm {
         let mut instances = Vec::new();
         let mut path = Vec::new();
         collect_repr_instances(&value, &mut instances, &mut path);
-        self.task.str_jobs.push(StrJob { value, instances, results: Vec::new(), next: 0, cont });
+        self.task.str_jobs.push(StrJob {
+            value,
+            instances,
+            results: Vec::new(),
+            next: 0,
+            cont,
+        });
         self.drive_str()
     }
 
@@ -4407,7 +4584,14 @@ impl Vm {
             // criterion), so this always dispatches a frame.
             let (f, defclass) =
                 instance_method(&inst, "__repr__").expect("collected instance has __repr__");
-            return self.invoke_user(f, inst, defclass, Vec::new(), Vec::new(), ReturnAction::DriveStr);
+            return self.invoke_user(
+                f,
+                inst,
+                defclass,
+                Vec::new(),
+                Vec::new(),
+                ReturnAction::DriveStr,
+            );
         }
         // All element reprs are ready: rebuild the string and run the cont.
         let job = self.task.str_jobs.pop().unwrap();
@@ -4417,7 +4601,12 @@ impl Vm {
         match job.cont {
             StrCont::Push => self.push(Value::str(s)),
             StrCont::Print => {
-                self.task.prints.last_mut().expect("print job").rendered.push(s);
+                self.task
+                    .prints
+                    .last_mut()
+                    .expect("print job")
+                    .rendered
+                    .push(s);
                 self.drive_print()?;
             }
             StrCont::FormatSpec(spec) => {
@@ -4454,13 +4643,27 @@ impl Vm {
             return Ok(false);
         };
         if let Some((f, defclass)) = instance_method(a, name) {
-            self.invoke_user(f, a.clone(), defclass, vec![b.clone()], Vec::new(), ReturnAction::Normal)?;
+            self.invoke_user(
+                f,
+                a.clone(),
+                defclass,
+                vec![b.clone()],
+                Vec::new(),
+                ReturnAction::Normal,
+            )?;
             return Ok(true);
         }
         // `!=` falls back to the negation of `__eq__`.
         if matches!(cmp, CmpOp::NotEq) {
             if let Some((f, defclass)) = instance_method(a, "__eq__") {
-                self.invoke_user(f, a.clone(), defclass, vec![b.clone()], Vec::new(), ReturnAction::NegateBool)?;
+                self.invoke_user(
+                    f,
+                    a.clone(),
+                    defclass,
+                    vec![b.clone()],
+                    Vec::new(),
+                    ReturnAction::NegateBool,
+                )?;
                 return Ok(true);
             }
         }
@@ -4471,12 +4674,26 @@ impl Vm {
         // the case above having fallen through.
         let reflected = reflect_dunder(cmp);
         if let Some((f, defclass)) = instance_method(b, reflected) {
-            self.invoke_user(f, b.clone(), defclass, vec![a.clone()], Vec::new(), ReturnAction::Normal)?;
+            self.invoke_user(
+                f,
+                b.clone(),
+                defclass,
+                vec![a.clone()],
+                Vec::new(),
+                ReturnAction::Normal,
+            )?;
             return Ok(true);
         }
         if matches!(cmp, CmpOp::NotEq) {
             if let Some((f, defclass)) = instance_method(b, "__eq__") {
-                self.invoke_user(f, b.clone(), defclass, vec![a.clone()], Vec::new(), ReturnAction::NegateBool)?;
+                self.invoke_user(
+                    f,
+                    b.clone(),
+                    defclass,
+                    vec![a.clone()],
+                    Vec::new(),
+                    ReturnAction::NegateBool,
+                )?;
                 return Ok(true);
             }
         }
@@ -4518,19 +4735,25 @@ impl Vm {
         b: Value,
         negate: bool,
     ) -> Result<(), VmError> {
-        self.task.cmp_jobs.push(CmpJob { levels: Vec::new(), cont: CmpCont::Push { negate } });
-        let next = match op {
-            CmpOp::In | CmpOp::NotIn => {
-                let items = self.wrap(membership_items(&b, &a))?;
-                self.task.cmp_jobs.last_mut().expect("cmp job").levels.push(CmpLevel::Contains {
-                    items,
-                    item: a,
-                    i: 0,
-                });
-                self.advance_top(None)?
-            }
-            _ => CmpNext::Ask(a, b, op),
-        };
+        self.task.cmp_jobs.push(CmpJob {
+            levels: Vec::new(),
+            cont: CmpCont::Push { negate },
+        });
+        let next =
+            match op {
+                CmpOp::In | CmpOp::NotIn => {
+                    let items = self.wrap(membership_items(&b, &a))?;
+                    self.task.cmp_jobs.last_mut().expect("cmp job").levels.push(
+                        CmpLevel::Contains {
+                            items,
+                            item: a,
+                            i: 0,
+                        },
+                    );
+                    self.advance_top(None)?
+                }
+                _ => CmpNext::Ask(a, b, op),
+            };
         self.drive_cmp(next)
     }
 
@@ -4547,7 +4770,14 @@ impl Vm {
                     PairStep::Dispatched => return Ok(()),
                 },
                 CmpNext::Give(v) => {
-                    if self.task.cmp_jobs.last().expect("cmp job").levels.is_empty() {
+                    if self
+                        .task
+                        .cmp_jobs
+                        .last()
+                        .expect("cmp job")
+                        .levels
+                        .is_empty()
+                    {
                         let job = self.task.cmp_jobs.pop().expect("cmp job");
                         return self.finish_cmp(job.cont, v);
                     }
@@ -4582,14 +4812,22 @@ impl Vm {
         // returned value is taken for its truthiness.
         if let Some(name) = rich_dunder(op) {
             if let Some((f, defclass)) = instance_method(&a, name) {
-                self.task.cmp_jobs.last_mut().expect("cmp job")
-                    .levels.push(CmpLevel::Dunder);
+                self.task
+                    .cmp_jobs
+                    .last_mut()
+                    .expect("cmp job")
+                    .levels
+                    .push(CmpLevel::Dunder);
                 self.invoke_user(f, a, defclass, vec![b], Vec::new(), ReturnAction::DriveCmp)?;
                 return Ok(PairStep::Dispatched);
             }
             if let Some((f, defclass)) = instance_method(&b, reflect_dunder(op)) {
-                self.task.cmp_jobs.last_mut().expect("cmp job")
-                    .levels.push(CmpLevel::Dunder);
+                self.task
+                    .cmp_jobs
+                    .last_mut()
+                    .expect("cmp job")
+                    .levels
+                    .push(CmpLevel::Dunder);
                 self.invoke_user(f, b, defclass, vec![a], Vec::new(), ReturnAction::DriveCmp)?;
                 return Ok(PairStep::Dispatched);
             }
@@ -4599,15 +4837,25 @@ impl Vm {
         // does. Descending is what grows the level stack, so it is where the
         // cycle guard sits.
         if self.task.cmp_jobs.last().expect("cmp job").levels.len() >= CMP_DEPTH_LIMIT {
-            return Err(self.err(recursion_error("maximum recursion depth exceeded in comparison")));
+            return Err(self.err(recursion_error(
+                "maximum recursion depth exceeded in comparison",
+            )));
         }
         let level = match (&a, &b) {
-            (Value::List(x), Value::List(y)) => {
-                CmpLevel::Seq { a: x.borrow().clone(), b: y.borrow().clone(), i: 0, op, deciding: false }
-            }
-            (Value::Tuple(x), Value::Tuple(y)) => {
-                CmpLevel::Seq { a: (**x).clone(), b: (**y).clone(), i: 0, op, deciding: false }
-            }
+            (Value::List(x), Value::List(y)) => CmpLevel::Seq {
+                a: x.borrow().clone(),
+                b: y.borrow().clone(),
+                i: 0,
+                op,
+                deciding: false,
+            },
+            (Value::Tuple(x), Value::Tuple(y)) => CmpLevel::Seq {
+                a: (**x).clone(),
+                b: (**y).clone(),
+                i: 0,
+                op,
+                deciding: false,
+            },
             (Value::Dict(x), Value::Dict(y)) => {
                 let (x, y) = (x.borrow(), y.borrow());
                 if x.len() != y.len() {
@@ -4631,7 +4879,11 @@ impl Vm {
             // Two bound methods with the same function reduce to their
             // receivers, which may themselves be instances with `__eq__`.
             (Value::Method(x), Value::Method(y)) => {
-                return Ok(PairStep::Ask(x.receiver.clone(), y.receiver.clone(), CmpOp::Eq))
+                return Ok(PairStep::Ask(
+                    x.receiver.clone(),
+                    y.receiver.clone(),
+                    CmpOp::Eq,
+                ))
             }
             // No dunder and no structure. For an ordering that is the
             // `TypeError`; for equality, identity, which is where an instance
@@ -4643,7 +4895,12 @@ impl Vm {
                 }
             }
         };
-        self.task.cmp_jobs.last_mut().expect("cmp job").levels.push(level);
+        self.task
+            .cmp_jobs
+            .last_mut()
+            .expect("cmp job")
+            .levels
+            .push(level);
         Ok(PairStep::Pushed)
     }
 
@@ -4673,7 +4930,13 @@ impl Vm {
             // A dunder level is popped by the `DriveCmp` return action, which
             // is the only thing that can answer it.
             CmpLevel::Dunder => unreachable!("a dunder level is resumed by its frame"),
-            CmpLevel::Seq { a, b, i, op, deciding } => {
+            CmpLevel::Seq {
+                a,
+                b,
+                i,
+                op,
+                deciding,
+            } => {
                 if *deciding {
                     // The deciding pair was asked with the original operator,
                     // so its answer is the sequence's answer.
@@ -4802,7 +5065,14 @@ impl Vm {
                 j: 1.min(n),
             },
         };
-        self.task.ord_jobs.push(OrdJob { kind, cont, keys, items, reverse, state });
+        self.task.ord_jobs.push(OrdJob {
+            kind,
+            cont,
+            keys,
+            items,
+            reverse,
+            state,
+        });
         self.drive_ord(None)
     }
 
@@ -4818,8 +5088,11 @@ impl Vm {
     ) -> Result<(), VmError> {
         match kind {
             OrdKind::Extreme { want_min, who } => {
-                let want =
-                    if want_min { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater };
+                let want = if want_min {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                };
                 let sym = if want_min { "<" } else { ">" };
                 let mut best = 0;
                 if items.is_empty() {
@@ -4891,10 +5164,17 @@ impl Vm {
         }
         let keys = args.clone();
         let kind = match name {
-            "min" => OrdKind::Extreme { want_min: true, who: "min" },
-            _ => OrdKind::Extreme { want_min: false, who: "max" },
+            "min" => OrdKind::Extreme {
+                want_min: true,
+                who: "min",
+            },
+            _ => OrdKind::Extreme {
+                want_min: false,
+                who: "max",
+            },
         };
-        self.begin_order_to(kind, args, keys, false, cont).map(|()| None)
+        self.begin_order_to(kind, args, keys, false, cont)
+            .map(|()| None)
     }
 
     /// The ordering machine's loop: run until the ordering is finished, or
@@ -4931,7 +5211,10 @@ impl Vm {
             match self.wrap(try_compare_op(op, &lhs, &rhs))? {
                 Some(v) => answer = Some(v),
                 None => {
-                    self.task.cmp_jobs.push(CmpJob { levels: Vec::new(), cont: CmpCont::Order });
+                    self.task.cmp_jobs.push(CmpJob {
+                        levels: Vec::new(),
+                        cont: CmpCont::Order,
+                    });
                     return self.drive_cmp(CmpNext::Ask(lhs, rhs, op));
                 }
             }
@@ -4966,7 +5249,17 @@ impl Vm {
     fn step_merge(job: &mut OrdJob, answer: Option<bool>) -> Option<(usize, usize)> {
         let reverse = job.reverse;
         let n = job.keys.len();
-        let OrdState::Merge { src, dst, width, lo, mid, hi, i, j } = &mut job.state else {
+        let OrdState::Merge {
+            src,
+            dst,
+            width,
+            lo,
+            mid,
+            hi,
+            i,
+            j,
+        } = &mut job.state
+        else {
             unreachable!("step_merge on a fold")
         };
         if let Some(take_right) = answer {
@@ -5108,11 +5401,11 @@ impl Vm {
         let list = match args.first() {
             Some(Value::List(l)) => l.borrow().clone(),
             Some(Value::Str(_)) => {
-                return Err(self.err(
-                    type_error("proc.run() needs a list of separate string arguments, e.g. \
+                return Err(self.err(type_error(
+                    "proc.run() needs a list of separate string arguments, e.g. \
                      [\"git\", \"status\"], not a single string — Oro will not split it (that \
-                     would mean reimplementing shell quoting) and there is no shell=True.",)
-                ))
+                     would mean reimplementing shell quoting) and there is no shell=True.",
+                )))
             }
             _ => return Err(self.err(type_error("proc.run() takes a list of strings"))),
         };
@@ -5358,7 +5651,9 @@ impl Vm {
             }
         }
 
-        let mut child = cmd.spawn().map_err(|e| self.err(modules::io_err(&e, &parts[0])))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| self.err(modules::io_err(&e, &parts[0])))?;
         // Piped above, so all three are present; taken so the helper threads own
         // them and the child struct keeps only what `wait()`/kill need.
         let cin = child.stdin.take().expect("stdin was piped");
@@ -5464,7 +5759,9 @@ impl Vm {
         self.importing.insert(path.to_string(), self.task.id);
         let mut frame = Frame {
             locals: vec![Value::Unbound; code.nlocals],
-            cells: (0..code.ncells).map(|_| Rc::new(RefCell::new(Value::Unbound))).collect(),
+            cells: (0..code.ncells)
+                .map(|_| Rc::new(RefCell::new(Value::Unbound)))
+                .collect(),
             free: Vec::new(),
             stack: Vec::new(),
             pc: 0,
@@ -5552,7 +5849,10 @@ impl Vm {
     fn make_exception_instance(&self, class: Rc<Class>, args: Vec<Value>) -> Value {
         let mut fields = Fields::new();
         fields.insert(Rc::from("args"), Value::Tuple(OroTuple::new(args)));
-        Value::Instance(Rc::new(Instance { class, fields: RefCell::new(fields) }))
+        Value::Instance(Rc::new(Instance {
+            class,
+            fields: RefCell::new(fields),
+        }))
     }
 
     /// Whether `exc` is an instance of the exception class `class` (or a
@@ -5598,9 +5898,11 @@ impl Vm {
         // A KeyError's message is the missing key's repr, not a sentence, so
         // str(KeyError) matches CPython ("'z'").
         let msg = match e.class {
-            Exc::KeyError => {
-                e.message.strip_prefix("key error: ").unwrap_or(&e.message).to_string()
-            }
+            Exc::KeyError => e
+                .message
+                .strip_prefix("key error: ")
+                .unwrap_or(&e.message)
+                .to_string(),
             _ => e.message.to_string(),
         };
         let exc = self.make_exception_instance(class, vec![Value::str(msg)]);
@@ -5660,7 +5962,12 @@ impl Vm {
                     Value::Str(s) => s.s.clone(),
                     other => other.display(),
                 };
-                self.task.prints.last_mut().expect("print job").rendered.push(s);
+                self.task
+                    .prints
+                    .last_mut()
+                    .expect("print job")
+                    .rendered
+                    .push(s);
                 self.drive_print()?;
             }
             ReturnAction::DriveStr => {
@@ -5668,7 +5975,12 @@ impl Vm {
                     Value::Str(s) => s.s.clone(),
                     other => other.display(),
                 };
-                self.task.str_jobs.last_mut().expect("str job").results.push(s);
+                self.task
+                    .str_jobs
+                    .last_mut()
+                    .expect("str job")
+                    .results
+                    .push(s);
                 self.drive_str()?;
             }
             ReturnAction::DriveSeq => {
@@ -5688,8 +6000,11 @@ impl Vm {
             }
 
             ReturnAction::FormatSpec(spec) => {
-                let out =
-                    self.wrap(crate::format::format_value(&value, crate::format::CONV_NONE, &spec))?;
+                let out = self.wrap(crate::format::format_value(
+                    &value,
+                    crate::format::CONV_NONE,
+                    &spec,
+                ))?;
                 self.push(Value::str(out));
             }
             ReturnAction::BuildModule(_) => unreachable!("handled before the frame retired"),
@@ -5765,7 +6080,11 @@ impl Vm {
         if let Some(frame) = self.task.frames.pop() {
             self.recycle(frame);
         }
-        let (gen, driver) = self.task.gen_stack.pop().expect("generator stop outside a driver");
+        let (gen, driver) = self
+            .task
+            .gen_stack
+            .pop()
+            .expect("generator stop outside a driver");
         {
             let mut g = gen.borrow_mut();
             g.done = true;
@@ -5913,19 +6232,21 @@ impl Vm {
     /// time an exception is known to be uncaught, its frame is gone.
     fn uncaught_error(&self, exc: &Value, source: Rc<str>) -> VmError {
         let (name, msg) = match exc {
-            Value::Instance(i) => {
-                (i.class.name.to_string(), crate::value::exception_message(i))
-            }
+            Value::Instance(i) => (i.class.name.to_string(), crate::value::exception_message(i)),
             other => ("Exception".to_string(), other.display()),
         };
-        let message = if msg.is_empty() { name } else { format!("{name}: {msg}") };
+        let message = if msg.is_empty() {
+            name
+        } else {
+            format!("{name}: {msg}")
+        };
         // Report at the raise site if one was recorded — an exception that
         // unwound through a non-matching `except` has `task.line`/`col` pointing
         // at that clause, not where it was raised. `unwind` stamps the origin on
         // the way in, so this recovers it.
-        let (source, line, col) = self
-            .origin_of(exc)
-            .unwrap_or((source, self.task.line, self.task.col));
+        let (source, line, col) =
+            self.origin_of(exc)
+                .unwrap_or((source, self.task.line, self.task.col));
         Box::new(RuntimeError {
             // The rendering is `Class: message` already; nothing re-raises a
             // diagnostic built here, so the class field only has to be honest.
@@ -5959,7 +6280,9 @@ impl Vm {
     fn origin_of(&self, exc: &Value) -> Option<(Rc<str>, u32, u32)> {
         let Value::Instance(i) = exc else { return None };
         let f = i.fields.borrow();
-        let Some(Value::Tuple(t)) = f.get(crate::value::RAISE_ORIGIN) else { return None };
+        let Some(Value::Tuple(t)) = f.get(crate::value::RAISE_ORIGIN) else {
+            return None;
+        };
         match (t.first(), t.get(1), t.get(2)) {
             (Some(Value::Str(s)), Some(Value::Int(l)), Some(Value::Int(c))) => {
                 Some((Rc::from(s.s.as_str()), *l as u32, *c as u32))
@@ -6104,9 +6427,7 @@ impl Vm {
                     Value::Unbound => "a value",
                     other => other.type_name(),
                 };
-                return Err(
-                    self.err(crate::builtins::null_is_not_omitted(&code.name, name, want))
-                );
+                return Err(self.err(crate::builtins::null_is_not_omitted(&code.name, name, want)));
             }
         }
 
@@ -6116,7 +6437,8 @@ impl Vm {
         if args.len() < first_defaulted {
             return Err(self.err(type_error(format!(
                 "{}() missing required argument: '{}'",
-                code.name, params[args.len()].name
+                code.name,
+                params[args.len()].name
             ))));
         }
 
@@ -6127,7 +6449,11 @@ impl Vm {
             store_param(&mut frame, p.target, value);
         }
         for (i, p) in params.iter().enumerate().skip(first_defaulted) {
-            store_param(&mut frame, p.target, code.defaults[i - first_defaulted].clone());
+            store_param(
+                &mut frame,
+                p.target,
+                code.defaults[i - first_defaulted].clone(),
+            );
         }
         for (name, value) in kwargs {
             let pos = params
@@ -6152,7 +6478,11 @@ impl Vm {
 /// `None` here means the generator is *running* — its frame is on some task's
 /// frame stack right now — which is exactly what an empty box meant before.
 fn take_gen_frame(g: &mut crate::value::GenBox) -> Option<Frame> {
-    g.frame.as_mut()?.downcast_mut::<Option<Frame>>().expect("gen frame").take()
+    g.frame
+        .as_mut()?
+        .downcast_mut::<Option<Frame>>()
+        .expect("gen frame")
+        .take()
 }
 
 /// Suspend `frame` back into `g`'s box, reusing it if it is still there.
@@ -6197,7 +6527,10 @@ fn respelled_call(
     if slots[skip..required].iter().any(Option::is_none) {
         return None;
     }
-    let fixed: Vec<&Value> = slots[skip..required].iter().map(|s| s.expect("checked")).collect();
+    let fixed: Vec<&Value> = slots[skip..required]
+        .iter()
+        .map(|s| s.expect("checked"))
+        .collect();
     let named: Vec<(&str, &Value)> = code.params[required..]
         .iter()
         .zip(&slots[required..])
@@ -6207,7 +6540,12 @@ fn respelled_call(
 }
 
 /// " — write `f(1, c=2)`", or nothing when the call cannot be rewritten.
-fn write_it_as(code: &CodeObject, skip: usize, args: &[Value], kwargs: &[(String, Value)]) -> String {
+fn write_it_as(
+    code: &CodeObject,
+    skip: usize,
+    args: &[Value],
+    kwargs: &[(String, Value)],
+) -> String {
     match respelled_call(code, skip, args, kwargs) {
         Some(call) => format!(" — write {call}"),
         None => String::new(),
@@ -6225,26 +6563,47 @@ fn store_param(frame: &mut Frame, target: VarTarget, value: Value) {
 
 fn get_iter(v: &Value) -> VResult<Value> {
     let state = match v {
-        Value::Range(r) => IterState::Range { cur: r.start, stop: r.stop, step: r.step, n: 0 },
-        Value::List(l) => {
-            IterState::List { list: l.clone(), idx: 0, orig_len: l.borrow().len() }
-        }
-        Value::Tuple(t) => IterState::Tuple { tuple: t.clone(), idx: 0 },
+        Value::Range(r) => IterState::Range {
+            cur: r.start,
+            stop: r.stop,
+            step: r.step,
+            n: 0,
+        },
+        Value::List(l) => IterState::List {
+            list: l.clone(),
+            idx: 0,
+            orig_len: l.borrow().len(),
+        },
+        Value::Tuple(t) => IterState::Tuple {
+            tuple: t.clone(),
+            idx: 0,
+        },
         Value::Str(s) => {
             let chars = s.s.chars().map(|c| c.to_string()).collect();
             IterState::Str { chars, idx: 0 }
         }
-        Value::Bytes(b) => IterState::Bytes { bytes: b.clone(), idx: 0 },
+        Value::Bytes(b) => IterState::Bytes {
+            bytes: b.clone(),
+            idx: 0,
+        },
         // Iterating a dict yields `(key, value)`, not the key — the pair shape
         // the rest of the collection protocol already uses for a dict. `.keys()`
         // and `.values()` are how you ask for one half.
-        Value::Dict(d) => IterState::DictPairs { items: d.borrow().items().to_vec(), idx: 0 },
+        Value::Dict(d) => IterState::DictPairs {
+            items: d.borrow().items().to_vec(),
+            idx: 0,
+        },
         // A generator is its own iterator; ForIter resumes it directly.
         Value::Generator(_) => return Ok(v.clone()),
         // So is a channel: `ForIter` recvs from it (and may park).
         Value::Channel(_) => return Ok(v.clone()),
         Value::Iter(_) => return Ok(v.clone()),
-        other => return Err(type_error(format!("'{}' object is not iterable", other.type_name()))),
+        other => {
+            return Err(type_error(format!(
+                "'{}' object is not iterable",
+                other.type_name()
+            )))
+        }
     };
     Ok(Value::Iter(Rc::new(RefCell::new(state))))
 }
@@ -6256,8 +6615,14 @@ fn iter_next(it: &Value) -> VResult<Option<Value>> {
     };
     let mut st = it.borrow_mut();
     match &mut *st {
-        IterState::Range { cur, stop, step, .. } => {
-            let go = if *step > 0 { *cur < *stop } else { *cur > *stop };
+        IterState::Range {
+            cur, stop, step, ..
+        } => {
+            let go = if *step > 0 {
+                *cur < *stop
+            } else {
+                *cur > *stop
+            };
             if go {
                 let v = *cur;
                 *cur += *step;
@@ -6266,7 +6631,11 @@ fn iter_next(it: &Value) -> VResult<Option<Value>> {
                 Ok(None)
             }
         }
-        IterState::List { list, idx, orig_len } => {
+        IterState::List {
+            list,
+            idx,
+            orig_len,
+        } => {
             let cur_len = list.borrow().len();
             if cur_len != *orig_len {
                 return Err(runtime_error("list changed size during iteration"));
@@ -6331,7 +6700,11 @@ fn iter_next_pair(it: &Value) -> VResult<Option<(Value, Value)>> {
     let mut st = it.borrow_mut();
     match &mut *st {
         IterState::Range { cur, stop, step, n } => {
-            let go = if *step > 0 { *cur < *stop } else { *cur > *stop };
+            let go = if *step > 0 {
+                *cur < *stop
+            } else {
+                *cur > *stop
+            };
             if go {
                 let v = *cur;
                 let idx = *n;
@@ -6342,7 +6715,11 @@ fn iter_next_pair(it: &Value) -> VResult<Option<(Value, Value)>> {
                 Ok(None)
             }
         }
-        IterState::List { list, idx, orig_len } => {
+        IterState::List {
+            list,
+            idx,
+            orig_len,
+        } => {
             let cur_len = list.borrow().len();
             if cur_len != *orig_len {
                 return Err(runtime_error("list changed size during iteration"));
@@ -6470,7 +6847,10 @@ fn subscript_get(obj: &Value, index: &Value) -> VResult<Value> {
             Some(v) => Ok(v),
             None => Err(key_error(format!("key error: {}", index.repr()))),
         },
-        other => Err(type_error(format!("'{}' object is not subscriptable", other.type_name()))),
+        other => Err(type_error(format!(
+            "'{}' object is not subscriptable",
+            other.type_name()
+        ))),
     }
 }
 
@@ -6484,21 +6864,14 @@ fn subscript_set(obj: &Value, index: &Value, value: Value) -> VResult<()> {
             Ok(())
         }
         Value::Dict(d) => d.borrow_mut().insert(index.clone(), value),
-        other => {
-            Err(type_error(format!(
-                "'{}' object does not support item assignment",
-                other.type_name()
-            )))
-        }
+        other => Err(type_error(format!(
+            "'{}' object does not support item assignment",
+            other.type_name()
+        ))),
     }
 }
 
-fn slice_get(
-    obj: &Value,
-    lower: &Value,
-    upper: &Value,
-    step: &Value,
-) -> VResult<Value> {
+fn slice_get(obj: &Value, lower: &Value, upper: &Value, step: &Value) -> VResult<Value> {
     let opt = |v: &Value| -> VResult<Option<i64>> {
         match v {
             Value::None => Ok(None),
@@ -6535,7 +6908,9 @@ fn slice_get(
                 return Ok(Value::bytes(b[start..stop].to_vec()));
             }
             let idxs = slice_indices(b.len(), lo, hi, step);
-            Ok(Value::bytes(idxs.into_iter().map(|i| b[i]).collect::<Vec<u8>>()))
+            Ok(Value::bytes(
+                idxs.into_iter().map(|i| b[i]).collect::<Vec<u8>>(),
+            ))
         }
         Value::List(l) => {
             let l = l.borrow();
@@ -6544,7 +6919,9 @@ fn slice_get(
                 return Ok(Value::List(OroList::new(l[start..stop].to_vec())));
             }
             let idxs = slice_indices(l.len(), lo, hi, step);
-            Ok(Value::List(OroList::new(idxs.into_iter().map(|i| l[i].clone()).collect())))
+            Ok(Value::List(OroList::new(
+                idxs.into_iter().map(|i| l[i].clone()).collect(),
+            )))
         }
         Value::Tuple(t) => {
             if step == 1 {
@@ -6552,9 +6929,14 @@ fn slice_get(
                 return Ok(Value::Tuple(OroTuple::new(t[start..stop].to_vec())));
             }
             let idxs = slice_indices(t.len(), lo, hi, step);
-            Ok(Value::Tuple(OroTuple::new(idxs.into_iter().map(|i| t[i].clone()).collect())))
+            Ok(Value::Tuple(OroTuple::new(
+                idxs.into_iter().map(|i| t[i].clone()).collect(),
+            )))
         }
-        other => Err(type_error(format!("'{}' object is not sliceable", other.type_name()))),
+        other => Err(type_error(format!(
+            "'{}' object is not sliceable",
+            other.type_name()
+        ))),
     }
 }
 
@@ -6616,7 +6998,11 @@ fn slice_indices(len: usize, lower: Option<i64>, upper: Option<i64>, step: i64) 
 enum MethodRef {
     /// An Oro method: the receiver, the function, and the class it is defined
     /// in (which fixes `super()`'s search origin).
-    User { recv: Value, func: Rc<Function>, defclass: Rc<Class> },
+    User {
+        recv: Value,
+        func: Rc<Function>,
+        defclass: Rc<Class>,
+    },
     /// A native method on this receiver; the name is the instruction's.
     Native(Value),
     /// Not a method: a value to call with the arguments alone.
@@ -6640,15 +7026,16 @@ fn resolve_method(obj: &Value, name: &Rc<str>) -> VResult<MethodRef> {
                 return Ok(MethodRef::Plain(v.clone()));
             }
             match Class::find(&inst.class, key) {
-                Some((Value::Func(func), defclass)) => {
-                    Ok(MethodRef::User { recv: obj.clone(), func, defclass })
-                }
+                Some((Value::Func(func), defclass)) => Ok(MethodRef::User {
+                    recv: obj.clone(),
+                    func,
+                    defclass,
+                }),
                 Some((member, _)) => Ok(MethodRef::Plain(member)),
                 None if crate::builtins::is_cast_method(key) => Ok(MethodRef::Native(obj.clone())),
                 None => Err(attribute_error(format!(
                     "'{}' object has no attribute '{}'",
-                    inst.class.name,
-                    key
+                    inst.class.name, key
                 ))),
             }
         }
@@ -6659,15 +7046,19 @@ fn resolve_method(obj: &Value, name: &Rc<str>) -> VResult<MethodRef> {
                 let found = c.members.borrow().get(key).cloned();
                 if let Some(member) = found {
                     return Ok(match member {
-                        Value::Func(func) => {
-                            MethodRef::User { recv: sp.instance.clone(), func, defclass: c }
-                        }
+                        Value::Func(func) => MethodRef::User {
+                            recv: sp.instance.clone(),
+                            func,
+                            defclass: c,
+                        },
                         other => MethodRef::Plain(other),
                     });
                 }
                 cur = c.base.clone();
             }
-            Err(attribute_error(format!("'super' object has no attribute '{key}'")))
+            Err(attribute_error(format!(
+                "'super' object has no attribute '{key}'"
+            )))
         }
         Value::Stream(s) if s.has_addr_attr(key) => {
             Ok(MethodRef::Plain(Value::str(s.addr_attr(key)?)))
@@ -6683,13 +7074,17 @@ fn resolve_method(obj: &Value, name: &Rc<str>) -> VResult<MethodRef> {
             "stdout" => Ok(MethodRef::Plain(p.stdout.clone())),
             "stderr" => Ok(MethodRef::Plain(p.stderr.clone())),
             "wait" => Ok(MethodRef::Native(obj.clone())),
-            _ => Err(attribute_error(format!("'Proc' object has no attribute '{key}'"))),
+            _ => Err(attribute_error(format!(
+                "'Proc' object has no attribute '{key}'"
+            ))),
         },
         // A builtin type has no members, and says so the way a user class
         // does — `str.upper()` and `Square.nope` are the same mistake.
-        Value::Type(t) => {
-            Err(attribute_error(format!("type object '{}' has no attribute '{}'", t.name(), key)))
-        }
+        Value::Type(t) => Err(attribute_error(format!(
+            "type object '{}' has no attribute '{}'",
+            t.name(),
+            key
+        ))),
         _ => {
             if crate::builtins::method_exists(obj, key) {
                 Ok(MethodRef::Native(obj.clone()))
@@ -6728,13 +7123,15 @@ fn get_attr(obj: &Value, name: &Rc<str>) -> VResult<Value> {
                 Some((member, defclass)) => Ok(bind_member(member, obj.clone(), defclass)),
                 // The conversion methods exist on every value, instances
                 // included — `to_str` runs the class's `__str__` if it has one.
-                None if crate::builtins::is_cast_method(key) => Ok(Value::Method(Rc::new(
-                    BoundMethod { receiver: obj.clone(), kind: MethodKind::Native(name.clone()) },
-                ))),
+                None if crate::builtins::is_cast_method(key) => {
+                    Ok(Value::Method(Rc::new(BoundMethod {
+                        receiver: obj.clone(),
+                        kind: MethodKind::Native(name.clone()),
+                    })))
+                }
                 None => Err(attribute_error(format!(
                     "'{}' object has no attribute '{}'",
-                    inst.class.name,
-                    key
+                    inst.class.name, key
                 ))),
             }
         }
@@ -6743,19 +7140,23 @@ fn get_attr(obj: &Value, name: &Rc<str>) -> VResult<Value> {
             Some((member, _)) => Ok(member),
             None => Err(attribute_error(format!(
                 "type object '{}' has no attribute '{}'",
-                class.name,
-                key
+                class.name, key
             ))),
         },
         // A builtin type has no members at all, so every attribute on one is
         // this — and it is the class message, not the generic one, because a
         // builtin type is the same kind of thing a user class is.
-        Value::Type(t) => {
-            Err(attribute_error(format!("type object '{}' has no attribute '{}'", t.name(), key)))
-        }
+        Value::Type(t) => Err(attribute_error(format!(
+            "type object '{}' has no attribute '{}'",
+            t.name(),
+            key
+        ))),
         Value::Module(m) => match m.members.borrow().get(key) {
             Some(v) => Ok(v.clone()),
-            None => Err(attribute_error(format!("module '{}' has no attribute '{}'", m.name, key))),
+            None => Err(attribute_error(format!(
+                "module '{}' has no attribute '{}'",
+                m.name, key
+            ))),
         },
         Value::Super(sp) => {
             let mut cur = sp.start.clone();
@@ -6765,7 +7166,9 @@ fn get_attr(obj: &Value, name: &Rc<str>) -> VResult<Value> {
                 }
                 cur = c.base.clone();
             }
-            Err(attribute_error(format!("'super' object has no attribute '{key}'")))
+            Err(attribute_error(format!(
+                "'super' object has no attribute '{key}'"
+            )))
         }
         // A socket's `peer` and `local` are data attributes, not methods
         // (§4): they are strings read once when the socket was opened.
@@ -6784,7 +7187,9 @@ fn get_attr(obj: &Value, name: &Rc<str>) -> VResult<Value> {
             "stdout" => Ok(p.stdout.clone()),
             "stderr" => Ok(p.stderr.clone()),
             "wait" => Ok(native_method(obj, name)),
-            _ => Err(attribute_error(format!("'Proc' object has no attribute '{key}'"))),
+            _ => Err(attribute_error(format!(
+                "'Proc' object has no attribute '{key}'"
+            ))),
         },
         _ => {
             if crate::builtins::method_exists(obj, key) {
@@ -6900,7 +7305,9 @@ where
 {
     std::thread::spawn(move || {
         let mut collected = Vec::new();
-        let Some(p) = pipe.as_mut() else { return collected };
+        let Some(p) = pipe.as_mut() else {
+            return collected;
+        };
         let mut buf = [0u8; 8192];
         loop {
             match p.read(&mut buf) {
@@ -6937,11 +7344,19 @@ fn run_process(
     let mut child = cmd.spawn().map_err(RunError::Io)?;
     let out_handle = drain_pipe(
         child.stdout.take(),
-        if stream { Some(std::io::stdout()) } else { None },
+        if stream {
+            Some(std::io::stdout())
+        } else {
+            None
+        },
     );
     let err_handle = drain_pipe(
         child.stderr.take(),
-        if stream { Some(std::io::stderr()) } else { None },
+        if stream {
+            Some(std::io::stderr())
+        } else {
+            None
+        },
     );
     // Feed stdin on its own thread. Writing it all on this thread would deadlock
     // a child that fills its stdout before reading all of stdin — the output is
@@ -6984,14 +7399,22 @@ fn run_process(
     if let Some(h) = in_handle {
         let _ = h.join();
     }
-    Ok(std::process::Output { status, stdout, stderr })
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 /// Lex, parse, and compile module source (for `import`). Errors are flattened
 /// to a string for the ImportError message.
 fn compile_source(source: &str, origin: Rc<str>) -> Result<Rc<CodeObject>, String> {
-    let tokens = crate::lexer::Lexer::new(source).tokenize().map_err(|e| e.to_string())?;
-    let program = crate::parser::Parser::new(tokens).parse().map_err(|e| e.message.clone())?;
+    let tokens = crate::lexer::Lexer::new(source)
+        .tokenize()
+        .map_err(|e| e.to_string())?;
+    let program = crate::parser::Parser::new(tokens)
+        .parse()
+        .map_err(|e| e.message.clone())?;
     crate::compiler::compile(&program, origin).map_err(|e| e.message.clone())
 }
 
@@ -7055,7 +7478,12 @@ fn collect_repr_instances(value: &Value, out: &mut Vec<Value>, path: &mut Vec<*c
 /// Phase-3 half: rebuild the repr string, splicing the phase-2 `results` in for
 /// instances that have an Oro `__repr__` (consumed left-to-right via `idx`), and
 /// emitting `[...]`/`{...}`/`(...)` for reference cycles — matching CPython.
-fn build_repr(value: &Value, results: &[String], idx: &mut usize, path: &mut Vec<*const ()>) -> String {
+fn build_repr(
+    value: &Value,
+    results: &[String],
+    idx: &mut usize,
+    path: &mut Vec<*const ()>,
+) -> String {
     match value {
         Value::List(l) => {
             let p = Rc::as_ptr(l) as *const ();
@@ -7063,8 +7491,11 @@ fn build_repr(value: &Value, results: &[String], idx: &mut usize, path: &mut Vec
                 return "[...]".to_string();
             }
             path.push(p);
-            let parts: Vec<String> =
-                l.borrow().iter().map(|v| build_repr(v, results, idx, path)).collect();
+            let parts: Vec<String> = l
+                .borrow()
+                .iter()
+                .map(|v| build_repr(v, results, idx, path))
+                .collect();
             path.pop();
             format!("[{}]", parts.join(", "))
         }
@@ -7074,8 +7505,10 @@ fn build_repr(value: &Value, results: &[String], idx: &mut usize, path: &mut Vec
                 return "(...)".to_string();
             }
             path.push(p);
-            let parts: Vec<String> =
-                t.iter().map(|v| build_repr(v, results, idx, path)).collect();
+            let parts: Vec<String> = t
+                .iter()
+                .map(|v| build_repr(v, results, idx, path))
+                .collect();
             path.pop();
             if parts.len() == 1 {
                 format!("({},)", parts[0])

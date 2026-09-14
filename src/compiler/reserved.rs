@@ -98,7 +98,13 @@ fn check_stmt(stmt: &Stmt) -> Result<(), CompileError> {
             check_target(target, As::Variable)?;
             check_expr(value)?;
         }
-        Stmt::If { cond, body, elifs, orelse, .. } => {
+        Stmt::If {
+            cond,
+            body,
+            elifs,
+            orelse,
+            ..
+        } => {
             check_expr(cond)?;
             check_body(body)?;
             for (c, b) in elifs {
@@ -113,17 +119,31 @@ fn check_stmt(stmt: &Stmt) -> Result<(), CompileError> {
             check_expr(cond)?;
             check_body(body)?;
         }
-        Stmt::For { target, iter, body, .. } => {
+        Stmt::For {
+            target, iter, body, ..
+        } => {
             check_target(target, As::LoopVariable)?;
             check_expr(iter)?;
             check_body(body)?;
         }
-        Stmt::Def { name, params, body, line, col } => {
+        Stmt::Def {
+            name,
+            params,
+            body,
+            line,
+            col,
+        } => {
             reject(name, As::Function, *line, *col)?;
             check_params(params)?;
             check_body(body)?;
         }
-        Stmt::Class { name, base, body, line, col } => {
+        Stmt::Class {
+            name,
+            base,
+            body,
+            line,
+            col,
+        } => {
             reject(name, As::Class, *line, *col)?;
             if let Some(b) = base {
                 check_expr(b)?;
@@ -146,7 +166,12 @@ fn check_stmt(stmt: &Stmt) -> Result<(), CompileError> {
                 check_expr(v)?;
             }
         }
-        Stmt::Try { body, handlers, finalbody, .. } => {
+        Stmt::Try {
+            body,
+            handlers,
+            finalbody,
+            ..
+        } => {
             check_body(body)?;
             for h in handlers {
                 check_expr(&h.exc_type)?;
@@ -164,7 +189,12 @@ fn check_stmt(stmt: &Stmt) -> Result<(), CompileError> {
                 check_expr(e)?;
             }
         }
-        Stmt::Import { path, alias, line, col } => {
+        Stmt::Import {
+            path,
+            alias,
+            line,
+            col,
+        } => {
             if let Some(bound) = super::symbols::import_bound_name(path, alias) {
                 reject(bound, As::Import, *line, *col)?;
             }
@@ -235,12 +265,16 @@ fn check_expr(expr: &Expr) -> Result<(), CompileError> {
                 check_expr(e)?;
             }
         }
-        Expr::Ternary { cond, then, orelse, .. } => {
+        Expr::Ternary {
+            cond, then, orelse, ..
+        } => {
             check_expr(cond)?;
             check_expr(then)?;
             check_expr(orelse)?;
         }
-        Expr::Call { func, args, kwargs, .. } => {
+        Expr::Call {
+            func, args, kwargs, ..
+        } => {
             check_expr(func)?;
             for a in args {
                 check_expr(a)?;
@@ -257,7 +291,13 @@ fn check_expr(expr: &Expr) -> Result<(), CompileError> {
             check_expr(value)?;
             check_expr(index)?;
         }
-        Expr::Slice { value, lower, upper, step, .. } => {
+        Expr::Slice {
+            value,
+            lower,
+            upper,
+            step,
+            ..
+        } => {
             check_expr(value)?;
             for part in [lower, upper, step].into_iter().flatten() {
                 check_expr(part)?;

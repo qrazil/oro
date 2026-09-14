@@ -145,7 +145,10 @@ fn finish(mut w: Worker, name: &str) -> String {
             None => std::thread::sleep(Duration::from_millis(5)),
         }
     }
-    let out = w.child.wait_with_output().expect("collect the worker's output");
+    let out = w
+        .child
+        .wait_with_output()
+        .expect("collect the worker's output");
     let _ = std::fs::remove_file(&w.path);
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
@@ -162,7 +165,9 @@ fn accepted(stdout: &str, name: &str) -> usize {
         .lines()
         .find_map(|l| l.strip_prefix("ACCEPTED "))
         .unwrap_or_else(|| panic!("{name} printed no count:\n{stdout}"));
-    line.trim().parse().unwrap_or_else(|_| panic!("{name}: bad count {line:?}"))
+    line.trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("{name}: bad count {line:?}"))
 }
 
 /// **The test the feature exists for.** Three processes, one port, and the
@@ -249,7 +254,11 @@ fn wait_for_ready(w: &mut Worker, name: &str, deadline: Instant) {
         assert!(Instant::now() < deadline, "{name} never printed READY");
         if let Some(status) = w.child.try_wait().expect("wait on the worker") {
             let mut rest = String::new();
-            let _ = w.child.stderr.take().map(|mut e| e.read_to_string(&mut rest));
+            let _ = w
+                .child
+                .stderr
+                .take()
+                .map(|mut e| e.read_to_string(&mut rest));
             panic!(
                 "{name} exited ({status}) before it was ready\n--- stdout ---\n{}\n--- stderr ---\n{rest}",
                 String::from_utf8_lossy(&buf)

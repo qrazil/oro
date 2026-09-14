@@ -1,0 +1,12 @@
+# The Rust source is rustfmt-formatted, and CI enforces it (`cargo fmt --check`).
+#
+# `edition` is pinned here, not left to be read from Cargo.toml, so `rustfmt` run
+# directly (an editor-on-save, a pre-commit hook) formats identically to
+# `cargo fmt`. It must match Cargo.toml's edition.
+#
+# Everything else is rustfmt's default on purpose: adopting the formatter means
+# adopting its style, and a config full of per-knob preferences is the churn this
+# decision exists to end. If a future toolchain's defaults shift the output, that
+# is a deliberate re-format commit, not a silent drift — the `--check` gate makes
+# it visible rather than letting it rot.
+edition = "2021"

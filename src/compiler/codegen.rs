@@ -60,17 +60,17 @@ struct Codegen<'a> {
 }
 
 /// Compile the module body into its top-level code object.
-pub fn compile_module(
-    table: &SymTable,
-    body: &[Stmt],
-    source: Rc<str>,
-) -> CResult<Rc<CodeObject>> {
+pub fn compile_module(table: &SymTable, body: &[Stmt], source: Rc<str>) -> CResult<Rc<CodeObject>> {
     let module = table.module;
     let mut cg = Codegen::new(table, module, source);
     cg.emit_body(body)?;
     cg.emit(Op::LoadNone, 1, 1);
     cg.emit(Op::Return, 1, 1);
-    Ok(Rc::new(cg.finish("<module>".to_string(), Vec::new(), Vec::new())))
+    Ok(Rc::new(cg.finish(
+        "<module>".to_string(),
+        Vec::new(),
+        Vec::new(),
+    )))
 }
 
 impl<'a> Codegen<'a> {
@@ -97,12 +97,7 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    fn finish(
-        self,
-        name: String,
-        params: Vec<ParamInfo>,
-        defaults: Vec<Value>,
-    ) -> CodeObject {
+    fn finish(self, name: String, params: Vec<ParamInfo>, defaults: Vec<Value>) -> CodeObject {
         CodeObject {
             name,
             source: self.source,
@@ -207,7 +202,11 @@ impl<'a> Codegen<'a> {
     }
 
     fn err(&self, msg: impl Into<String>, line: usize, col: usize) -> CompileError {
-        CompileError { message: msg.into(), line, col }
+        CompileError {
+            message: msg.into(),
+            line,
+            col,
+        }
     }
 
     // --- Statements ----------------------------------------------------------
@@ -235,18 +234,42 @@ impl<'a> Codegen<'a> {
                     self.emit_store(t)?;
                 }
             }
-            Stmt::AugAssign { target, op, value, line, col } => {
+            Stmt::AugAssign {
+                target,
+                op,
+                value,
+                line,
+                col,
+            } => {
                 self.emit_aug_assign(target, *op, value, *line, *col)?;
             }
-            Stmt::If { cond, body, elifs, orelse, .. } => {
+            Stmt::If {
+                cond,
+                body,
+                elifs,
+                orelse,
+                ..
+            } => {
                 self.emit_if(cond, body, elifs, orelse)?;
             }
             Stmt::While { cond, body, .. } => self.emit_while(cond, body)?,
-            Stmt::For { target, iter, body, .. } => self.emit_for(target, iter, body)?,
-            Stmt::Match { subject, cases, line, col } => {
-                self.emit_match(subject, cases, *line, *col)?
-            }
-            Stmt::Def { name, params, body, line, col, .. } => {
+            Stmt::For {
+                target, iter, body, ..
+            } => self.emit_for(target, iter, body)?,
+            Stmt::Match {
+                subject,
+                cases,
+                line,
+                col,
+            } => self.emit_match(subject, cases, *line, *col)?,
+            Stmt::Def {
+                name,
+                params,
+                body,
+                line,
+                col,
+                ..
+            } => {
                 self.emit_def(name, params, body, *line, *col)?;
             }
             Stmt::Return { value, line, col } => {
@@ -265,10 +288,22 @@ impl<'a> Codegen<'a> {
             // A declaration only — its effect was recorded by the symbol pass,
             // so name references now resolve to module scope. No code to emit.
             Stmt::Global { .. } => {}
-            Stmt::Class { name, base, body, line, col } => {
+            Stmt::Class {
+                name,
+                base,
+                body,
+                line,
+                col,
+            } => {
                 self.emit_class(name, base, body, *line, *col)?;
             }
-            Stmt::Try { body, handlers, finalbody, line, col } => {
+            Stmt::Try {
+                body,
+                handlers,
+                finalbody,
+                line,
+                col,
+            } => {
                 self.emit_try(body, handlers, finalbody, *line, *col)?;
             }
             Stmt::Raise { exc, line, col } => match exc {
@@ -280,14 +315,23 @@ impl<'a> Codegen<'a> {
                     self.emit(Op::Reraise, *line, *col);
                 }
             },
-            Stmt::Import { path, alias, line, col } => {
+            Stmt::Import {
+                path,
+                alias,
+                line,
+                col,
+            } => {
                 let bound = super::symbols::import_bound_name(path, alias)
                     .ok_or_else(|| self.err("empty import path", *line, *col))?
                     .to_string();
                 let dotted = path.join(".");
                 let n = self.add_name(&dotted);
                 self.emit(Op::ImportModule(n), *line, *col);
-                self.emit_store(&Expr::Name { name: bound, line: *line, col: *col })?;
+                self.emit_store(&Expr::Name {
+                    name: bound,
+                    line: *line,
+                    col: *col,
+                })?;
             }
             Stmt::Yield { value, line, col } => {
                 match value {
@@ -498,7 +542,12 @@ impl<'a> Codegen<'a> {
             Expr::Bytes { value, .. } => Ok(Value::bytes(value.clone())),
             Expr::Bool { value, .. } => Ok(Value::Bool(*value)),
             Expr::NoneLit { .. } => Ok(Value::None),
-            Expr::Unary { op: UnaryOp::Neg, operand, line, col } => {
+            Expr::Unary {
+                op: UnaryOp::Neg,
+                operand,
+                line,
+                col,
+            } => {
                 let v = self.literal_value(operand)?;
                 crate::vm::arith::neg(&v).map_err(|e| self.err(e.message, *line, *col))
             }
@@ -607,7 +656,11 @@ impl<'a> Codegen<'a> {
         self.cursor = 0;
         if let Some(name) = &h.name {
             self.emit(Op::LoadHandling, h.line, h.col);
-            self.emit_store(&Expr::Name { name: name.clone(), line: h.line, col: h.col })?;
+            self.emit_store(&Expr::Name {
+                name: name.clone(),
+                line: h.line,
+                col: h.col,
+            })?;
         }
         self.emit_body(&h.body)?;
         self.scope = saved_scope;
@@ -625,14 +678,18 @@ impl<'a> Codegen<'a> {
     /// nothing else can.
     fn check_while_not_a_counter(&self, cond: &Expr, body: &[Stmt]) -> CResult<()> {
         // The condition must be a single comparison `name <rel> bound`.
-        let Expr::Compare { first, rest, .. } = cond else { return Ok(()) };
+        let Expr::Compare { first, rest, .. } = cond else {
+            return Ok(());
+        };
         if rest.len() != 1 {
             return Ok(());
         }
         if !matches!(rest[0].0, CmpOp::Lt | CmpOp::LtEq | CmpOp::Gt | CmpOp::GtEq) {
             return Ok(());
         }
-        let Expr::Name { name, .. } = &**first else { return Ok(()) };
+        let Expr::Name { name, .. } = &**first else {
+            return Ok(());
+        };
         // Its body must step that same name by an integer literal.
         if let Some((l, c)) = body.iter().find_map(|s| counter_step_pos(s, name)) {
             return Err(self.err(
@@ -790,8 +847,10 @@ impl<'a> Codegen<'a> {
         line: usize,
         col: usize,
     ) -> CResult<()> {
-        let leaves =
-            self.finally_loops.last().is_some_and(|&d| !loop_jump || self.loops.len() == d);
+        let leaves = self
+            .finally_loops
+            .last()
+            .is_some_and(|&d| !loop_jump || self.loops.len() == d);
         if leaves {
             return Err(self.err(
                 format!(
@@ -848,7 +907,9 @@ impl<'a> Codegen<'a> {
                 self.emit(binop, line, col);
                 self.emit_store(target)?;
             }
-            Expr::Subscript { value: obj, index, .. } => {
+            Expr::Subscript {
+                value: obj, index, ..
+            } => {
                 // Evaluate obj and index exactly once, then reuse both for the
                 // load and the store.
                 self.emit_expr(obj)?; // [obj]
@@ -860,13 +921,7 @@ impl<'a> Codegen<'a> {
                 self.emit(Op::RotThree, line, col); // [newval, obj, idx]
                 self.emit(Op::StoreSubscript, line, col);
             }
-            _ => {
-                return Err(self.err(
-                    "invalid target for augmented assignment",
-                    line,
-                    col,
-                ))
-            }
+            _ => return Err(self.err("invalid target for augmented assignment", line, col)),
         }
         Ok(())
     }
@@ -882,14 +937,23 @@ impl<'a> Codegen<'a> {
         col: usize,
     ) -> CResult<()> {
         self.emit_make_function(name, params, body, line, col)?;
-        self.emit_store(&Expr::Name { name: name.to_string(), line, col })?;
+        self.emit_store(&Expr::Name {
+            name: name.to_string(),
+            line,
+            col,
+        })?;
         Ok(())
     }
 
     /// Compile a lambda: a function whose whole body is `return <expr>`. Its
     /// scope was assigned by the resolve pass and is read from the node, rather
     /// than taken from the `def`/block child cursor.
-    fn emit_lambda(&mut self, data: &crate::ast::LambdaData, line: usize, col: usize) -> CResult<()> {
+    fn emit_lambda(
+        &mut self,
+        data: &crate::ast::LambdaData,
+        line: usize,
+        col: usize,
+    ) -> CResult<()> {
         let child = data.scope.get();
         if child == usize::MAX {
             // f-string fields are parsed here at codegen time rather than by the
@@ -903,7 +967,11 @@ impl<'a> Codegen<'a> {
                 col,
             ));
         }
-        let body = vec![Stmt::Return { value: Some((*data.body).clone()), line, col }];
+        let body = vec![Stmt::Return {
+            value: Some((*data.body).clone()),
+            line,
+            col,
+        }];
         let proto = self.compile_function("<lambda>", &data.params, &body, child)?;
         let proto_idx = self.protos.len() as u32;
         self.protos.push(Rc::new(proto));
@@ -951,14 +1019,26 @@ impl<'a> Codegen<'a> {
         let mut members: Vec<Rc<str>> = Vec::new();
         for member in body {
             match member {
-                Stmt::Def { name: mname, params, body: mbody, line: ml, col: mc, .. } => {
+                Stmt::Def {
+                    name: mname,
+                    params,
+                    body: mbody,
+                    line: ml,
+                    col: mc,
+                    ..
+                } => {
                     if let Some(why) = unsupported_dunder(mname) {
                         return Err(self.err(why, *ml, *mc));
                     }
                     self.emit_make_function(mname, params, mbody, *ml, *mc)?;
                     members.push(Rc::from(mname.as_str()));
                 }
-                Stmt::Assign { targets, value, line: al, col: ac } => {
+                Stmt::Assign {
+                    targets,
+                    value,
+                    line: al,
+                    col: ac,
+                } => {
                     // Class-level attributes: each target must be a bare name.
                     let mut names = Vec::new();
                     for t in targets {
@@ -992,7 +1072,10 @@ impl<'a> Codegen<'a> {
                 }
                 // Docstrings and `pass` are allowed and produce no member.
                 Stmt::Pass { .. } => {}
-                Stmt::Expr { value: Expr::Str { .. }, .. } => {}
+                Stmt::Expr {
+                    value: Expr::Str { .. },
+                    ..
+                } => {}
                 other => {
                     let (l, c) = other.pos();
                     return Err(self.err(
@@ -1005,10 +1088,18 @@ impl<'a> Codegen<'a> {
             }
         }
 
-        let spec = ClassSpec { name: Rc::from(name), members, has_base };
+        let spec = ClassSpec {
+            name: Rc::from(name),
+            members,
+            has_base,
+        };
         let idx = self.add_class(spec);
         self.emit(Op::BuildClass(idx), line, col);
-        self.emit_store(&Expr::Name { name: name.to_string(), line, col })?;
+        self.emit_store(&Expr::Name {
+            name: name.to_string(),
+            line,
+            col,
+        })?;
         Ok(())
     }
 
@@ -1132,7 +1223,6 @@ impl<'a> Codegen<'a> {
         })
     }
 
-
     /// Emit code that stores the value on top of the stack into `target`.
     fn emit_store(&mut self, target: &Expr) -> CResult<()> {
         match target {
@@ -1149,26 +1239,41 @@ impl<'a> Codegen<'a> {
                     Resolution::Cell(s) => self.emit(Op::StoreCell(s), *line, *col),
                     Resolution::Free(s) => self.emit(Op::StoreFree(s), *line, *col),
                     Resolution::Global => {
-                        return Err(self.err(
-                            format!("cannot assign to `{name}`"),
-                            *line,
-                            *col,
-                        ))
+                        return Err(self.err(format!("cannot assign to `{name}`"), *line, *col))
                     }
                 };
             }
-            Expr::Subscript { value, index, line, col } => {
+            Expr::Subscript {
+                value,
+                index,
+                line,
+                col,
+            } => {
                 self.emit_expr(value)?;
                 self.emit_expr(index)?;
                 self.emit(Op::StoreSubscript, *line, *col);
             }
-            Expr::Tuple { elements, line, col } | Expr::List { elements, line, col } => {
+            Expr::Tuple {
+                elements,
+                line,
+                col,
+            }
+            | Expr::List {
+                elements,
+                line,
+                col,
+            } => {
                 self.emit(Op::UnpackSequence(elements.len() as u32), *line, *col);
                 for e in elements {
                     self.emit_store(e)?;
                 }
             }
-            Expr::Attribute { value, attr, line, col } => {
+            Expr::Attribute {
+                value,
+                attr,
+                line,
+                col,
+            } => {
                 // Stack for StoreAttr: value (below), then the object.
                 self.emit_expr(value)?;
                 let n = self.add_name(attr);
@@ -1199,11 +1304,15 @@ impl<'a> Codegen<'a> {
                 let idx = self.add_const(Value::Float(f));
                 self.emit(Op::LoadConst(idx), *line, *col);
             }
-            Expr::Str { value, line, col, .. } => {
+            Expr::Str {
+                value, line, col, ..
+            } => {
                 let idx = self.add_const(Value::str(value.clone()));
                 self.emit(Op::LoadConst(idx), *line, *col);
             }
-            Expr::Bytes { value, line, col, .. } => {
+            Expr::Bytes {
+                value, line, col, ..
+            } => {
                 let idx = self.add_const(Value::bytes(value.clone()));
                 self.emit(Op::LoadConst(idx), *line, *col);
             }
@@ -1247,7 +1356,12 @@ impl<'a> Codegen<'a> {
                     }
                 };
             }
-            Expr::Unary { op, operand, line, col } => {
+            Expr::Unary {
+                op,
+                operand,
+                line,
+                col,
+            } => {
                 self.emit_expr(operand)?;
                 let o = match op {
                     UnaryOp::Neg => Op::UnaryNeg,
@@ -1257,7 +1371,13 @@ impl<'a> Codegen<'a> {
                 };
                 self.emit(o, *line, *col);
             }
-            Expr::Binary { op, left, right, line, col } => {
+            Expr::Binary {
+                op,
+                left,
+                right,
+                line,
+                col,
+            } => {
                 self.emit_expr(left)?;
                 self.emit_expr(right)?;
                 let o = match op {
@@ -1276,7 +1396,13 @@ impl<'a> Codegen<'a> {
                 };
                 self.emit(o, *line, *col);
             }
-            Expr::BoolOp { op, left, right, line, col } => {
+            Expr::BoolOp {
+                op,
+                left,
+                right,
+                line,
+                col,
+            } => {
                 self.emit_expr(left)?;
                 let jump = match op {
                     BoolOp::And => self.emit(Op::JumpIfFalseOrPop(0), *line, *col),
@@ -1289,10 +1415,21 @@ impl<'a> Codegen<'a> {
                 let end = self.here();
                 self.set_target(jump, end);
             }
-            Expr::Compare { first, rest, line, col } => {
+            Expr::Compare {
+                first,
+                rest,
+                line,
+                col,
+            } => {
                 self.emit_compare(first, rest, *line, *col)?;
             }
-            Expr::Ternary { cond, then, orelse, line, col } => {
+            Expr::Ternary {
+                cond,
+                then,
+                orelse,
+                line,
+                col,
+            } => {
                 // Depth cap: at most two ternaries in one expression, counting
                 // nesting in *both* branches and the condition (parentheses do
                 // not exempt it). A hard compile error, the way `case` rejects a
@@ -1322,33 +1459,64 @@ impl<'a> Codegen<'a> {
                 let end = self.here();
                 self.set_target(to_end, end);
             }
-            Expr::Call { func, args, kwargs, line, col } => {
+            Expr::Call {
+                func,
+                args,
+                kwargs,
+                line,
+                col,
+            } => {
                 self.emit_call(func, args, kwargs, *line, *col, false)?;
             }
-            Expr::Attribute { value, attr, line, col } => {
+            Expr::Attribute {
+                value,
+                attr,
+                line,
+                col,
+            } => {
                 self.emit_expr(value)?;
                 let n = self.add_name(attr);
                 self.emit(Op::LoadAttr(n), *line, *col);
             }
-            Expr::Subscript { value, index, line, col } => {
+            Expr::Subscript {
+                value,
+                index,
+                line,
+                col,
+            } => {
                 self.emit_expr(value)?;
                 self.emit_expr(index)?;
                 self.emit(Op::LoadSubscript, *line, *col);
             }
-            Expr::Slice { value, lower, upper, step, line, col } => {
+            Expr::Slice {
+                value,
+                lower,
+                upper,
+                step,
+                line,
+                col,
+            } => {
                 self.emit_expr(value)?;
                 self.emit_slice_part(lower, *line, *col)?;
                 self.emit_slice_part(upper, *line, *col)?;
                 self.emit_slice_part(step, *line, *col)?;
                 self.emit(Op::LoadSlice, *line, *col);
             }
-            Expr::List { elements, line, col } => {
+            Expr::List {
+                elements,
+                line,
+                col,
+            } => {
                 for e in elements {
                     self.emit_expr(e)?;
                 }
                 self.emit(Op::BuildList(elements.len() as u32), *line, *col);
             }
-            Expr::Tuple { elements, line, col } => {
+            Expr::Tuple {
+                elements,
+                line,
+                col,
+            } => {
                 for e in elements {
                     self.emit_expr(e)?;
                 }
@@ -1365,7 +1533,12 @@ impl<'a> Codegen<'a> {
         Ok(())
     }
 
-    fn emit_slice_part(&mut self, part: &Option<Box<Expr>>, line: usize, col: usize) -> CResult<()> {
+    fn emit_slice_part(
+        &mut self,
+        part: &Option<Box<Expr>>,
+        line: usize,
+        col: usize,
+    ) -> CResult<()> {
         match part {
             Some(e) => self.emit_expr(e)?,
             None => {
@@ -1436,7 +1609,10 @@ impl<'a> Codegen<'a> {
         if args.is_empty() && kwargs.is_empty() {
             if let Expr::Name { name, .. } = func {
                 if name == "super"
-                    && matches!(self.table.resolve_name(self.scope, name), Some(Resolution::Global))
+                    && matches!(
+                        self.table.resolve_name(self.scope, name),
+                        Some(Resolution::Global)
+                    )
                 {
                     self.emit(Op::LoadSuper, line, col);
                     return Ok(());
@@ -1476,7 +1652,13 @@ impl<'a> Codegen<'a> {
         // exactly as the `LoadAttr` it replaces did, so a missing attribute
         // still reports where the attribute is written.
         if simple {
-            if let Expr::Attribute { value, attr, line: aline, col: acol } = func {
+            if let Expr::Attribute {
+                value,
+                attr,
+                line: aline,
+                col: acol,
+            } = func
+            {
                 // Chain fusion, decided here because this is the only place the
                 // *shape* of a chain is visible: `xs.filter(p).map(f)` is one
                 // expression, and the intermediate collection it builds has no
@@ -1494,7 +1676,13 @@ impl<'a> Codegen<'a> {
                     && chain_step(value).is_some_and(crate::compiler::chain_defers);
                 if fusable_recv {
                     match value.as_ref() {
-                        Expr::Call { func: rf, args: ra, kwargs: rk, line: rl, col: rc } => {
+                        Expr::Call {
+                            func: rf,
+                            args: ra,
+                            kwargs: rk,
+                            line: rl,
+                            col: rc,
+                        } => {
                             self.emit_call(rf, ra, rk, *rl, *rc, true)?;
                         }
                         _ => unreachable!("chain_step matched a non-call"),
@@ -1510,7 +1698,11 @@ impl<'a> Codegen<'a> {
                 let pair = self.add_pair();
                 let argc = args.len() as u32
                     | if hint { crate::compiler::CHAIN_HINT } else { 0 }
-                    | if fusable_recv { crate::compiler::CHAIN_FLUSH } else { 0 };
+                    | if fusable_recv {
+                        crate::compiler::CHAIN_FLUSH
+                    } else {
+                        0
+                    };
                 self.pairs[pair as usize] = (n, argc);
                 self.emit(Op::CallMethod(pair), line, col);
                 return Ok(());
@@ -1538,7 +1730,10 @@ impl<'a> Codegen<'a> {
             self.emit_expr(e)?;
         }
         let site = self.kwsites.len() as u32;
-        self.kwsites.push(KwSite { npos: args.len() as u32, names: names.into_boxed_slice() });
+        self.kwsites.push(KwSite {
+            npos: args.len() as u32,
+            names: names.into_boxed_slice(),
+        });
         self.emit(Op::CallKw(site), line, col);
         Ok(())
     }
@@ -1586,7 +1781,9 @@ impl<'a> Codegen<'a> {
             Some('a') => crate::format::CONV_ASCII,
             Some(c) => {
                 return Err(self.err(
-                    format!("f-string: invalid conversion character '{c}' (expected 's', 'r', or 'a')"),
+                    format!(
+                        "f-string: invalid conversion character '{c}' (expected 's', 'r', or 'a')"
+                    ),
                     line,
                     col,
                 ))
@@ -1698,7 +1895,8 @@ pub(super) fn scan_fstring(raw: &str) -> Result<Vec<FPiece>, String> {
             // f-string text raw so interpolation can be parsed here).
             '\\' => {
                 i += 1;
-                let decoded = decode_escape(&chars, &mut i).map_err(|m| format!("in f-string: {m}"))?;
+                let decoded =
+                    decode_escape(&chars, &mut i).map_err(|m| format!("in f-string: {m}"))?;
                 literal.push_str(&decoded);
             }
             '{' => {
@@ -1805,8 +2003,12 @@ fn parse_field_expr(src: &str) -> Result<Expr, String> {
     if src.is_empty() {
         return Err("empty expression in f-string".to_string());
     }
-    let tokens = Lexer::new(src).tokenize().map_err(|e| format!("in f-string: {}", e.message))?;
-    let prog = Parser::new(tokens).parse().map_err(|e| format!("in f-string: {}", e.message))?;
+    let tokens = Lexer::new(src)
+        .tokenize()
+        .map_err(|e| format!("in f-string: {}", e.message))?;
+    let prog = Parser::new(tokens)
+        .parse()
+        .map_err(|e| format!("in f-string: {}", e.message))?;
     match prog.as_slice() {
         [Stmt::Expr { value, .. }] => Ok(value.clone()),
         _ => Err("f-string field must be a single expression".to_string()),
@@ -1824,7 +2026,9 @@ fn parse_field_expr(src: &str) -> Result<Expr, String> {
 /// [`emit_fstring`]: Compiler::emit_fstring
 pub(super) fn fstring_field_exprs(raw: &str) -> Vec<Expr> {
     let mut out = Vec::new();
-    let Ok(pieces) = scan_fstring(raw) else { return out };
+    let Ok(pieces) = scan_fstring(raw) else {
+        return out;
+    };
     for piece in pieces {
         let FPiece::Field(src) = piece else { continue };
         let field = split_field(&src);
@@ -1832,7 +2036,9 @@ pub(super) fn fstring_field_exprs(raw: &str) -> Vec<Expr> {
             out.push(expr);
         }
         let Some(spec) = field.spec else { continue };
-        let Ok(inner) = scan_spec(&spec) else { continue };
+        let Ok(inner) = scan_spec(&spec) else {
+            continue;
+        };
         for piece in inner {
             let FPiece::Field(src) = piece else { continue };
             let field = split_field(&src);
@@ -1889,14 +2095,19 @@ fn split_field(src: &str) -> Field {
                 // A conversion is `!` + one of r/s/a, then end-of-field or `:`.
                 // Anything else (e.g. `!=`) belongs to the expression.
                 if let Some(&n) = chars.get(i + 1) {
-                    if matches!(n, 'r' | 's' | 'a') && matches!(chars.get(i + 2), None | Some(':')) {
+                    if matches!(n, 'r' | 's' | 'a') && matches!(chars.get(i + 2), None | Some(':'))
+                    {
                         let expr: String = chars[..i].iter().collect();
                         let spec = if chars.get(i + 2) == Some(&':') {
                             Some(chars[i + 3..].iter().collect())
                         } else {
                             None
                         };
-                        return Field { expr, conv: Some(n), spec };
+                        return Field {
+                            expr,
+                            conv: Some(n),
+                            spec,
+                        };
                     }
                 }
             }
@@ -1907,13 +2118,21 @@ fn split_field(src: &str) -> Field {
             ':' if depth == 0 => {
                 let expr: String = chars[..i].iter().collect();
                 let spec: String = chars[i + 1..].iter().collect();
-                return Field { expr, conv: None, spec: Some(spec) };
+                return Field {
+                    expr,
+                    conv: None,
+                    spec: Some(spec),
+                };
             }
             _ => {}
         }
         i += 1;
     }
-    Field { expr: src.to_string(), conv: None, spec: None }
+    Field {
+        expr: src.to_string(),
+        conv: None,
+        spec: None,
+    }
 }
 
 /// Decode one escape sequence in f-string literal text. `i` points at the
@@ -1923,7 +2142,9 @@ fn split_field(src: &str) -> Field {
 /// the lexer (see `crate::lexer::simple_escape`) so the two can never disagree
 /// about what an escape means.
 fn decode_escape(chars: &[char], i: &mut usize) -> Result<String, String> {
-    use crate::lexer::{decode_hex_escape, hex_escape_width, simple_escape, unknown_escape_message};
+    use crate::lexer::{
+        decode_hex_escape, hex_escape_width, simple_escape, unknown_escape_message,
+    };
     let Some(&e) = chars.get(*i) else {
         return Err("a string may not end with a lone backslash".to_string());
     };
@@ -1956,13 +2177,23 @@ fn contains_yield(stmts: &[Stmt]) -> bool {
 fn stmt_yields(s: &Stmt) -> bool {
     match s {
         Stmt::Yield { .. } => true,
-        Stmt::If { body, elifs, orelse, .. } => {
+        Stmt::If {
+            body,
+            elifs,
+            orelse,
+            ..
+        } => {
             contains_yield(body)
                 || elifs.iter().any(|(_, b)| contains_yield(b))
                 || orelse.as_ref().is_some_and(|b| contains_yield(b))
         }
         Stmt::While { body, .. } | Stmt::For { body, .. } => contains_yield(body),
-        Stmt::Try { body, handlers, finalbody, .. } => {
+        Stmt::Try {
+            body,
+            handlers,
+            finalbody,
+            ..
+        } => {
             contains_yield(body)
                 || handlers.iter().any(|h| contains_yield(&h.body))
                 || finalbody.as_ref().is_some_and(|b| contains_yield(b))
@@ -2048,7 +2279,9 @@ fn bigint_in_radix(digits: &str, radix: u32) -> Option<BigInt> {
     let base = BigInt::from_i64(radix as i64);
     let mut acc = BigInt::zero();
     for c in digits.chars() {
-        acc = acc.mul(&base).add(&BigInt::from_i64(c.to_digit(radix)? as i64));
+        acc = acc
+            .mul(&base)
+            .add(&BigInt::from_i64(c.to_digit(radix)? as i64));
     }
     Some(acc)
 }
@@ -2083,7 +2316,11 @@ fn const_default(e: &Expr) -> Option<()> {
         | Expr::Bytes { .. }
         | Expr::Bool { .. }
         | Expr::NoneLit { .. } => Some(()),
-        Expr::Unary { op: UnaryOp::Neg, operand, .. } => const_default(operand),
+        Expr::Unary {
+            op: UnaryOp::Neg,
+            operand,
+            ..
+        } => const_default(operand),
         _ => None,
     }
 }
@@ -2092,7 +2329,11 @@ fn const_default(e: &Expr) -> Option<()> {
 fn is_int_literal(e: &Expr) -> bool {
     match e {
         Expr::Int { .. } => true,
-        Expr::Unary { op: UnaryOp::Neg | UnaryOp::Pos, operand, .. } => is_int_literal(operand),
+        Expr::Unary {
+            op: UnaryOp::Neg | UnaryOp::Pos,
+            operand,
+            ..
+        } => is_int_literal(operand),
         _ => false,
     }
 }
@@ -2104,15 +2345,26 @@ fn is_int_literal(e: &Expr) -> bool {
 fn counter_step_pos(stmt: &Stmt, name: &str) -> Option<(usize, usize)> {
     let is_name = |e: &Expr| matches!(e, Expr::Name { name: n, .. } if n == name);
     match stmt {
-        Stmt::AugAssign { target, op: AugOp::Add | AugOp::Sub, value, line, col }
-            if is_name(target) && is_int_literal(value) =>
-        {
-            Some((*line, *col))
-        }
-        Stmt::Assign { targets, value, line, col }
-            if targets.len() == 1 && is_name(&targets[0]) =>
-        {
-            if let Expr::Binary { op: BinOp::Add | BinOp::Sub, left, right, .. } = value {
+        Stmt::AugAssign {
+            target,
+            op: AugOp::Add | AugOp::Sub,
+            value,
+            line,
+            col,
+        } if is_name(target) && is_int_literal(value) => Some((*line, *col)),
+        Stmt::Assign {
+            targets,
+            value,
+            line,
+            col,
+        } if targets.len() == 1 && is_name(&targets[0]) => {
+            if let Expr::Binary {
+                op: BinOp::Add | BinOp::Sub,
+                left,
+                right,
+                ..
+            } = value
+            {
                 // `name + K`, or (for `+`) the commuted `K + name`.
                 let stepped = (is_name(left) && is_int_literal(right))
                     || (matches!(value, Expr::Binary { op: BinOp::Add, .. })
@@ -2136,9 +2388,9 @@ fn counter_step_pos(stmt: &Stmt, name: &str) -> Option<(usize, usize)> {
 /// argument, is its own expression and is capped on its own when it compiles.)
 fn ternary_depth(e: &Expr) -> usize {
     match e {
-        Expr::Ternary { cond, then, orelse, .. } => {
-            1 + ternary_depth(cond) + ternary_depth(then) + ternary_depth(orelse)
-        }
+        Expr::Ternary {
+            cond, then, orelse, ..
+        } => 1 + ternary_depth(cond) + ternary_depth(then) + ternary_depth(orelse),
         _ => 0,
     }
 }
@@ -2161,12 +2413,10 @@ fn call_label(func: &Expr) -> String {
 /// chain (`xs` itself, a subscript, a parenthesised expression).
 fn chain_step(e: &Expr) -> Option<&str> {
     match e {
-        Expr::Call { func, kwargs, .. } if kwargs.is_empty() => {
-            match func.as_ref() {
-                Expr::Attribute { attr, .. } => Some(attr),
-                _ => None,
-            }
-        }
+        Expr::Call { func, kwargs, .. } if kwargs.is_empty() => match func.as_ref() {
+            Expr::Attribute { attr, .. } => Some(attr),
+            _ => None,
+        },
         _ => None,
     }
 }

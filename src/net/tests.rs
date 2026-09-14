@@ -188,7 +188,10 @@ fn read_returns_at_most_n_and_at_least_one_byte() {
     // arrived". The only thing guaranteed is 1..=3, which is precisely why
     // code needing exactly n bytes calls `io.read(r, fixed_size=n)`.
     let got = rd(&server, 4096).unwrap();
-    assert!(!got.is_empty() && got.len() <= 3, "read(4096) returned {got:?}");
+    assert!(
+        !got.is_empty() && got.len() <= 3,
+        "read(4096) returned {got:?}"
+    );
     assert!(b"abc".starts_with(&got[..]));
 }
 
@@ -299,7 +302,10 @@ fn a_connected_socket_knows_both_ends() {
     let bound = ln.addr_attr("local").unwrap();
     assert_eq!(client.addr_attr("peer").unwrap(), bound);
     assert_eq!(server.addr_attr("local").unwrap(), bound);
-    assert_eq!(server.addr_attr("peer").unwrap(), client.addr_attr("local").unwrap());
+    assert_eq!(
+        server.addr_attr("peer").unwrap(),
+        client.addr_attr("local").unwrap()
+    );
     // A listener has one address and no peer.
     assert!(ln.has_addr_attr("local"));
     assert!(!ln.has_addr_attr("peer"));
@@ -430,7 +436,10 @@ fn a_listener_is_not_a_stream_of_bytes() {
     let ln = listen("127.0.0.1:0").unwrap();
     let e = rd(&ln, 16).unwrap_err();
     assert!(e.message.contains("not a stream of bytes"), "{e}");
-    assert!(wr(&ln, b"x").unwrap_err().message.contains("not a stream of bytes"));
+    assert!(wr(&ln, b"x")
+        .unwrap_err()
+        .message
+        .contains("not a stream of bytes"));
     assert!(ru(&ln, b"\n", 16).is_err());
     // ...and the socket operations are the other way round.
     assert!(ln.shutdown_write().is_err());
@@ -453,7 +462,10 @@ fn close_frees_the_port_and_the_stream() {
     // Every operation on a closed stream says so, rather than answering with a
     // plausible EOF.
     assert!(failure(ac(&ln)).message.contains("on a closed TcpListener"));
-    assert!(rd(&ln, 1).unwrap_err().message.contains("on a closed TcpListener"));
+    assert!(rd(&ln, 1)
+        .unwrap_err()
+        .message
+        .contains("on a closed TcpListener"));
     // The fd really went: the port is refused and bindable again, which is also
     // what makes `dead_addr()` above trustworthy.
     assert!(failure(dial(&addr)).message.contains("Connection refused"));
@@ -465,9 +477,19 @@ fn close_frees_the_port_and_the_stream() {
 fn a_closed_socket_refuses_reads_and_writes() {
     let (_ln, server, client) = pair();
     client.close().unwrap();
-    assert!(rd(&client, 1).unwrap_err().message.contains("on a closed TcpStream"));
-    assert!(wr(&client, b"x").unwrap_err().message.contains("on a closed TcpStream"));
-    assert!(client.shutdown_write().unwrap_err().message.contains("on a closed TcpStream"));
+    assert!(rd(&client, 1)
+        .unwrap_err()
+        .message
+        .contains("on a closed TcpStream"));
+    assert!(wr(&client, b"x")
+        .unwrap_err()
+        .message
+        .contains("on a closed TcpStream"));
+    assert!(client
+        .shutdown_write()
+        .unwrap_err()
+        .message
+        .contains("on a closed TcpStream"));
     let _ = server;
 }
 
@@ -585,7 +607,10 @@ fn drain(ln: &OroStream) -> Vec<OroStream> {
             Io::Ready(s) => out.push(s),
             Io::Block(_) => return out,
         }
-        assert!(std::time::Instant::now() < until, "drain() ran past the guard");
+        assert!(
+            std::time::Instant::now() < until,
+            "drain() ran past the guard"
+        );
     }
 }
 
@@ -613,8 +638,15 @@ fn two_listeners_on_one_port_both_receive_connections() {
         .collect();
 
     let (got_a, got_b) = (drain(&a).len(), drain(&b).len());
-    assert_eq!(got_a + got_b, SPREAD_CONNS, "connections went missing: {got_a} + {got_b}");
-    assert!(got_a > 0 && got_b > 0, "one listener got everything: {got_a} / {got_b}");
+    assert_eq!(
+        got_a + got_b,
+        SPREAD_CONNS,
+        "connections went missing: {got_a} + {got_b}"
+    );
+    assert!(
+        got_a > 0 && got_b > 0,
+        "one listener got everything: {got_a} / {got_b}"
+    );
     drop(clients);
 }
 
@@ -657,16 +689,32 @@ fn both_options_are_set_on_a_reuseport_listener_and_neither_is_on_a_plain_one() 
     use super::reuseport::getsockopt_int;
 
     let ln = super::reuseport::bind(&resolve("127.0.0.1:0", "listen").unwrap()).unwrap();
-    assert_ne!(getsockopt_int(&ln, libc::SO_REUSEPORT).unwrap(), 0, "SO_REUSEPORT");
-    assert_ne!(getsockopt_int(&ln, libc::SO_REUSEADDR).unwrap(), 0, "SO_REUSEADDR");
+    assert_ne!(
+        getsockopt_int(&ln, libc::SO_REUSEPORT).unwrap(),
+        0,
+        "SO_REUSEPORT"
+    );
+    assert_ne!(
+        getsockopt_int(&ln, libc::SO_REUSEADDR).unwrap(),
+        0,
+        "SO_REUSEADDR"
+    );
 
     // The default path: std's bind, which sets `SO_REUSEADDR` and only that.
     // This pins the asymmetry the two paths are supposed to have — if std ever
     // started setting `SO_REUSEPORT` too, `reuseport=false` would silently
     // become a shared port and this would say so.
     let plain = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    assert_ne!(getsockopt_int(&plain, libc::SO_REUSEADDR).unwrap(), 0, "SO_REUSEADDR");
-    assert_eq!(getsockopt_int(&plain, libc::SO_REUSEPORT).unwrap(), 0, "SO_REUSEPORT");
+    assert_ne!(
+        getsockopt_int(&plain, libc::SO_REUSEADDR).unwrap(),
+        0,
+        "SO_REUSEADDR"
+    );
+    assert_eq!(
+        getsockopt_int(&plain, libc::SO_REUSEPORT).unwrap(),
+        0,
+        "SO_REUSEPORT"
+    );
 }
 
 /// IPv6 goes down the other `bind_fd` arm, and the two arms share no code.
@@ -680,14 +728,19 @@ fn both_options_are_set_on_a_reuseport_listener_and_neither_is_on_a_plain_one() 
 /// as `an_ipv6_listener_accepts_an_ipv6_dial` above, and for the same reason.
 #[test]
 fn reuseport_works_over_ipv6() {
-    let Ok(a) = reuse_listen("[::1]:0") else { return };
+    let Ok(a) = reuse_listen("[::1]:0") else {
+        return;
+    };
     let addr = a.addr_attr("local").unwrap();
     let b = reuse_listen(&addr).expect("a second v6 listener on the same port");
 
     let clients: Vec<_> = (0..SPREAD_CONNS).map(|_| dial(&addr).unwrap()).collect();
     let (got_a, got_b) = (drain(&a).len(), drain(&b).len());
     assert_eq!(got_a + got_b, SPREAD_CONNS);
-    assert!(got_a > 0 && got_b > 0, "one v6 listener got everything: {got_a} / {got_b}");
+    assert!(
+        got_a > 0 && got_b > 0,
+        "one v6 listener got everything: {got_a} / {got_b}"
+    );
     drop(clients);
 }
 

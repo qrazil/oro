@@ -195,10 +195,18 @@ impl Park {
     fn what(&self) -> String {
         match self {
             Park::Recv(ch) | Park::IterRecv(ch, _) => {
-                format!("recv (channel cap {}, {} buffered)", ch.cap, ch.buf.borrow().len())
+                format!(
+                    "recv (channel cap {}, {} buffered)",
+                    ch.cap,
+                    ch.buf.borrow().len()
+                )
             }
             Park::Send(ch) => {
-                format!("send (channel cap {}, {} buffered)", ch.cap, ch.buf.borrow().len())
+                format!(
+                    "send (channel cap {}, {} buffered)",
+                    ch.cap,
+                    ch.buf.borrow().len()
+                )
             }
             Park::Join(h) => format!("join(task {})", h.id),
             Park::Import(p) => format!("import '{p}'"),
@@ -288,9 +296,16 @@ pub(super) enum IoOp {
     /// only by falling through. `localhost` is the case in this tree —
     /// `::1` first, `127.0.0.1` second — so the fallback is exercised by the
     /// test suite rather than only by other people's networks.
-    Connect { addrs: Vec<SocketAddr>, next: usize },
+    Connect {
+        addrs: Vec<SocketAddr>,
+        next: usize,
+    },
     Read(i64),
-    ReadUntil { delim: Rc<Vec<u8>>, limit: i64, acc: Vec<u8> },
+    ReadUntil {
+        delim: Rc<Vec<u8>>,
+        limit: i64,
+        acc: Vec<u8>,
+    },
     /// `done` bytes of `buf` have gone. §2's `write(b)` writes all of `b` or
     /// raises, and this counter is how that contract survives a suspension:
     /// the caller has no return value to learn about it from, and does not.
@@ -298,7 +313,10 @@ pub(super) enum IoOp {
     /// The `Rc` is the caller's `bytes` object, not a copy of it: Oro's `bytes`
     /// is immutable and refcounted, so a parked write borrows nothing and
     /// copies nothing, however long it waits.
-    Write { buf: Rc<Vec<u8>>, done: usize },
+    Write {
+        buf: Rc<Vec<u8>>,
+        done: usize,
+    },
 }
 
 impl IoOp {
@@ -340,10 +358,12 @@ fn attempt(w: &mut IoWait) -> VResult<Io<Value>> {
             Io::Ready(b) => Io::Ready(Value::bytes(b)),
             Io::Block(i) => Io::Block(i),
         }),
-        IoOp::ReadUntil { delim, limit, acc } => Ok(match stream.read_until(delim, *limit, acc)? {
-            Io::Ready(b) => Io::Ready(Value::bytes(b)),
-            Io::Block(i) => Io::Block(i),
-        }),
+        IoOp::ReadUntil { delim, limit, acc } => {
+            Ok(match stream.read_until(delim, *limit, acc)? {
+                Io::Ready(b) => Io::Ready(Value::bytes(b)),
+                Io::Block(i) => Io::Block(i),
+            })
+        }
         // The `write_all` loop that used to live in `crate::stream`, moved to
         // where its progress can survive a park.
         IoOp::Write { buf, done } => loop {
@@ -715,7 +735,10 @@ impl Reactor {
             // 256 is a compromise nobody has to tune: large enough that a busy
             // accept loop drains a batch per syscall, small enough that the
             // allocation is invisible next to the epoll fd it accompanies.
-            self.os = Some(Os { poll, events: mio::Events::with_capacity(256) });
+            self.os = Some(Os {
+                poll,
+                events: mio::Events::with_capacity(256),
+            });
         }
         Ok(self.os.as_mut().expect("just built"))
     }
@@ -761,7 +784,9 @@ impl Reactor {
 
     /// This task is no longer waiting on this side of this fd.
     fn disarm(&mut self, token: usize, task: TaskId) {
-        let Some(w) = self.waiters.get_mut(&token) else { return };
+        let Some(w) = self.waiters.get_mut(&token) else {
+            return;
+        };
         if w.read == Some(task) {
             w.read = None;
         }
@@ -776,7 +801,9 @@ impl Reactor {
     /// Every task waiting on this fd, forgetting all of them. `close()`'s half
     /// of the hazard: the fd is about to go, so nobody can be left parked on it.
     fn take_waiters(&mut self, token: usize) -> Vec<TaskId> {
-        let Some(w) = self.waiters.remove(&token) else { return Vec::new() };
+        let Some(w) = self.waiters.remove(&token) else {
+            return Vec::new();
+        };
         w.read.into_iter().chain(w.write).collect()
     }
 
@@ -925,27 +952,29 @@ fn spawn_resolver_thread(
     answers: Sender<Resolved>,
     waker: Arc<mio::Waker>,
 ) -> std::io::Result<()> {
-    std::thread::Builder::new().name("oro-dns".to_string()).spawn(move || loop {
-        let job = {
-            // Poisoning cannot happen — the guarded value is a `Receiver` and
-            // nothing in this block can panic — but `into_inner` is the honest
-            // answer to it anyway. An `unwrap` here would turn a panic in one
-            // worker into a hang in every other one.
-            let rx = jobs.lock().unwrap_or_else(|e| e.into_inner());
-            match rx.recv() {
-                Ok(j) => j,
-                // The `Resolver` was dropped: the VM is going away.
-                Err(_) => return,
+    std::thread::Builder::new()
+        .name("oro-dns".to_string())
+        .spawn(move || loop {
+            let job = {
+                // Poisoning cannot happen — the guarded value is a `Receiver` and
+                // nothing in this block can panic — but `into_inner` is the honest
+                // answer to it anyway. An `unwrap` here would turn a panic in one
+                // worker into a hang in every other one.
+                let rx = jobs.lock().unwrap_or_else(|e| e.into_inner());
+                match rx.recv() {
+                    Ok(j) => j,
+                    // The `Resolver` was dropped: the VM is going away.
+                    Err(_) => return,
+                }
+            };
+            let result = crate::net::resolve(&job.addr, "dial");
+            if answers.send(Resolved { id: job.id, result }).is_err() {
+                return;
             }
-        };
-        let result = crate::net::resolve(&job.addr, "dial");
-        if answers.send(Resolved { id: job.id, result }).is_err() {
-            return;
-        }
-        // A failed wake means the reactor is gone, which the next `recv` will
-        // say properly. There is nothing useful to do about it here.
-        let _ = waker.wake();
-    })?;
+            // A failed wake means the reactor is gone, which the next `recv` will
+            // say properly. There is nothing useful to do about it here.
+            let _ = waker.wake();
+        })?;
     Ok(())
 }
 
@@ -1043,7 +1072,9 @@ impl Vm {
     /// where "push one value" completes the operation. Nothing re-enters the
     /// resource, so nothing re-borrows it.
     fn wake_with_value(&mut self, id: TaskId, v: Value) {
-        let Some(mut p) = self.parked.remove(&id) else { return };
+        let Some(mut p) = self.parked.remove(&id) else {
+            return;
+        };
         p.task
             .frames
             .last_mut()
@@ -1080,7 +1111,9 @@ impl Vm {
     /// here — unwinding walks `Vm::task` — so it rides on the task until the
     /// scheduler makes it current.
     fn wake_with_raise(&mut self, id: TaskId, exc: Value) {
-        let Some(mut p) = self.parked.remove(&id) else { return };
+        let Some(mut p) = self.parked.remove(&id) else {
+            return;
+        };
         p.task.pending_raise = Some(exc);
         self.ready.push_back(p.task);
     }
@@ -1089,7 +1122,9 @@ impl Vm {
     /// how it was waiting: `recv()` raises, `for x in ch` ends the loop
     /// cleanly (§3), and a blocked `send` raises.
     fn wake_channel_closed(&mut self, id: TaskId) {
-        let Some(p) = self.parked.get(&id) else { return };
+        let Some(p) = self.parked.get(&id) else {
+            return;
+        };
         match &p.park {
             Park::IterRecv(_, target) => {
                 let target = *target;
@@ -1128,16 +1163,20 @@ impl Vm {
     /// rule 3 for a task nobody kept.
     fn finish_task(&mut self, outcome: Result<Value, (Value, VmError)>) {
         let mut task = std::mem::replace(&mut self.task, Task::new());
-        let handle = task.handle.take().expect("only a spawned task is retired here");
+        let handle = task
+            .handle
+            .take()
+            .expect("only a spawned task is retired here");
         let joiners = std::mem::take(&mut *handle.joiners.borrow_mut());
 
         // A joined failure belongs to the joiner (rule 2); an unjoined one is
         // still the task's to report when its last handle dies (rule 3).
         *handle.state.borrow_mut() = match &outcome {
             Ok(v) => TaskState::Done(v.clone()),
-            Err((exc, err)) if joiners.is_empty() => {
-                TaskState::Failed { exc: exc.clone(), report: self.render_report(err) }
-            }
+            Err((exc, err)) if joiners.is_empty() => TaskState::Failed {
+                exc: exc.clone(),
+                report: self.render_report(err),
+            },
             Err((exc, _)) => TaskState::FailedJoined(exc.clone()),
         };
 
@@ -1311,7 +1350,10 @@ impl Vm {
         if !self.ready.is_empty() {
             return true;
         }
-        let deadline = self.reactor.next_deadline().map(|at| at.saturating_duration_since(Instant::now()));
+        let deadline = self
+            .reactor
+            .next_deadline()
+            .map(|at| at.saturating_duration_since(Instant::now()));
         let timeout = if self.reactor.no_pipes() {
             deadline
         } else {
@@ -1391,7 +1433,9 @@ impl Vm {
     /// unconditionally means such an answer is never held until the next one
     /// arrives to fetch it.
     fn io_ready(&mut self, r: &ReadyFd) {
-        let Some(w) = self.reactor.waiters.get(&r.token) else { return };
+        let Some(w) = self.reactor.waiters.get(&r.token) else {
+            return;
+        };
         let (rd, wr) = (w.read, w.write);
         if r.readable {
             if let Some(id) = rd {
@@ -1413,7 +1457,9 @@ impl Vm {
     /// resume protocol a channel wake uses, and the reason resumption never
     /// re-borrows anything the parking site was holding.
     fn retry_io(&mut self, id: TaskId) {
-        let Some(mut p) = self.parked.remove(&id) else { return };
+        let Some(mut p) = self.parked.remove(&id) else {
+            return;
+        };
         let mut w = match std::mem::replace(&mut p.park, Park::Yield) {
             Park::Io(w) => w,
             other => {
@@ -1482,7 +1528,9 @@ impl Vm {
     /// spawned child. A snapshot of the ids is taken first so the borrow of
     /// `parked` is over before `retry_pipe` mutates it.
     fn drain_pipes(&mut self) {
-        let Some(h) = self.reactor.pipes.as_ref() else { return };
+        let Some(h) = self.reactor.pipes.as_ref() else {
+            return;
+        };
         if h.waiters.is_empty() {
             return;
         }
@@ -1499,7 +1547,9 @@ impl Vm {
     /// standing. `Connect` cannot occur on a pipe, so the one branch `retry_io`
     /// keeps for it is gone too.
     fn retry_pipe(&mut self, id: TaskId) {
-        let Some(mut p) = self.parked.remove(&id) else { return };
+        let Some(mut p) = self.parked.remove(&id) else {
+            return;
+        };
         let mut w = match std::mem::replace(&mut p.park, Park::Yield) {
             Park::Pipe(w) => w,
             other => {
@@ -1538,7 +1588,9 @@ impl Vm {
     /// thread signals the same `Waker`, so this re-checks each waiting task's
     /// `Proc` for a delivered exit code.
     fn drain_procs(&mut self) {
-        let Some(h) = self.reactor.pipes.as_ref() else { return };
+        let Some(h) = self.reactor.pipes.as_ref() else {
+            return;
+        };
         if h.proc_waiters.is_empty() {
             return;
         }
@@ -1640,8 +1692,11 @@ impl Vm {
     /// better exception than anything this function could synthesise once the
     /// socket is gone.
     fn connect_woken(&mut self, task: TaskId, addrs: Vec<SocketAddr>, from: usize, last: VErr) {
-        let started =
-            if from < addrs.len() { start_connect(addrs, from) } else { Err(last) };
+        let started = if from < addrs.len() {
+            start_connect(addrs, from)
+        } else {
+            Err(last)
+        };
         match started {
             Ok(Connecting::Done(v)) => self.wake_with_value(task, v),
             Ok(Connecting::Wait(w)) => self.repark_io(task, w),
@@ -1797,7 +1852,10 @@ impl Vm {
         kwargs: Vec<(String, Value)>,
     ) -> Result<Step, VmError> {
         if args.is_empty() {
-            return Ok(self.raise(Exc::TypeError, "spawn() takes at least 1 argument (0 given)"));
+            return Ok(self.raise(
+                Exc::TypeError,
+                "spawn() takes at least 1 argument (0 given)",
+            ));
         }
         let callee = args.remove(0);
 
@@ -1807,24 +1865,24 @@ impl Vm {
         let frame = match &callee {
             Value::Func(f) if !f.code.is_generator => self.bind_call(f, None, args, kwargs)?,
             Value::Func(_) => {
-                return Ok(self.raise(Exc::TypeError,
+                return Ok(self.raise(
+                    Exc::TypeError,
                     "spawn() cannot start a generator function as a task",
                 ))
             }
             Value::Method(m) => match &m.kind {
                 MethodKind::User { func, defclass } if !func.code.is_generator => {
-                    let mut frame =
-                        self.bind_call(func, Some(m.receiver.clone()), args, kwargs)?;
+                    let mut frame = self.bind_call(func, Some(m.receiver.clone()), args, kwargs)?;
                     frame.super_ctx = Some((defclass.clone(), m.receiver.clone()));
                     frame
                 }
                 _ => {
-                    return Ok(self
-                        .raise(Exc::TypeError, "spawn() needs a function defined in Oro"))
+                    return Ok(self.raise(Exc::TypeError, "spawn() needs a function defined in Oro"))
                 }
             },
             other => {
-                return Ok(self.raise(Exc::TypeError,
+                return Ok(self.raise(
+                    Exc::TypeError,
                     format!(
                         "spawn() needs a function defined in Oro, not '{}'",
                         other.type_label()
@@ -1867,8 +1925,12 @@ impl Vm {
             return Ok(self.raise(Exc::TypeError, "yield_now() takes no keyword arguments"));
         }
         if !args.is_empty() {
-            return Ok(self.raise(Exc::TypeError,
-                format!("yield_now() takes 0 argument(s) but {} were given", args.len()),
+            return Ok(self.raise(
+                Exc::TypeError,
+                format!(
+                    "yield_now() takes 0 argument(s) but {} were given",
+                    args.len()
+                ),
             ));
         }
         // Nothing is pushed here: the scheduler pushes the `null` when it
@@ -1924,30 +1986,36 @@ impl Vm {
                 Value::Int(n) => format!("chan(cap={n})"),
                 _ => "chan(cap=n)".to_string(),
             };
-            return Ok(self.raise(Exc::TypeError, format!(
+            return Ok(self.raise(
+                Exc::TypeError,
+                format!(
                 "chan() takes no positional arguments — the capacity is passed by name: {spelled}"
-            )));
+            ),
+            ));
         }
         let mut cap = 0;
         for (k, v) in &kwargs {
             cap = match (k.as_str(), v) {
                 ("cap", Value::Int(n)) if *n >= 0 => *n as usize,
                 ("cap", Value::Int(n)) => {
-                    return Ok(self
-                        .raise(Exc::ValueError, format!("chan() cap must not be negative ({n})")))
-                }
-                ("cap", Value::None) => {
-                    return Ok(self.raise(Exc::TypeError,
-                        "chan() cap must be an int, not null — leave it out for a rendezvous: chan()",
+                    return Ok(self.raise(
+                        Exc::ValueError,
+                        format!("chan() cap must not be negative ({n})"),
                     ))
                 }
+                ("cap", Value::None) => return Ok(self.raise(
+                    Exc::TypeError,
+                    "chan() cap must be an int, not null — leave it out for a rendezvous: chan()",
+                )),
                 ("cap", other) => {
-                    return Ok(self.raise(Exc::TypeError,
+                    return Ok(self.raise(
+                        Exc::TypeError,
                         format!("chan() cap must be an int, not '{}'", other.type_label()),
                     ))
                 }
                 (other, _) => {
-                    return Ok(self.raise(Exc::TypeError,
+                    return Ok(self.raise(
+                        Exc::TypeError,
                         format!("chan() got an unexpected keyword argument '{other}'"),
                     ))
                 }
@@ -1962,11 +2030,7 @@ impl Vm {
     /// A waiting receiver is handed the value directly and the sender does not
     /// block — an unbuffered send completes the instant a receiver is known to
     /// be there, which is what "rendezvous" means.
-    pub(super) fn chan_send(
-        &mut self,
-        ch: Rc<Channel>,
-        v: Value,
-    ) -> Result<Step, VmError> {
+    pub(super) fn chan_send(&mut self, ch: Rc<Channel>, v: Value) -> Result<Step, VmError> {
         if ch.closed.get() {
             return Ok(Step::Raise(self.channel_closed_exc()));
         }
@@ -2081,8 +2145,12 @@ impl Vm {
         if !ch.closed.get() {
             ch.closed.set(true);
             let receivers: Vec<TaskId> = ch.recv_waiters.borrow_mut().drain(..).collect();
-            let senders: Vec<TaskId> =
-                ch.send_waiters.borrow_mut().drain(..).map(|(id, _)| id).collect();
+            let senders: Vec<TaskId> = ch
+                .send_waiters
+                .borrow_mut()
+                .drain(..)
+                .map(|(id, _)| id)
+                .collect();
             for id in receivers {
                 self.wake_channel_closed(id);
             }
@@ -2103,7 +2171,9 @@ impl Vm {
     /// `outcome` is the module value, or the exception the body raised.
     pub(super) fn release_import(&mut self, path: &str, outcome: Result<Value, Value>) {
         self.importing.remove(path);
-        let Some(waiters) = self.import_waiters.remove(path) else { return };
+        let Some(waiters) = self.import_waiters.remove(path) else {
+            return;
+        };
         for id in waiters {
             match &outcome {
                 Ok(m) => self.wake_with_value(id, m.clone()),
@@ -2121,7 +2191,10 @@ impl Vm {
             let msg = Value::str(format!("circular import detected while importing '{path}'"));
             return Step::Raise(self.make_exception_instance(class, vec![msg]));
         }
-        self.import_waiters.entry(path.to_string()).or_default().push(self.task.id);
+        self.import_waiters
+            .entry(path.to_string())
+            .or_default()
+            .push(self.task.id);
         Step::Park(Box::new(Park::Import(Rc::from(path))))
     }
 
@@ -2150,14 +2223,17 @@ impl Vm {
         args: &[Value],
         kwargs: &[(String, Value)],
     ) -> Result<Option<Step>, VmError> {
-        let Value::Stream(s) = recv else { return Ok(None) };
+        let Value::Stream(s) = recv else {
+            return Ok(None);
+        };
         if !matches!(name, "read" | "write" | "read_until" | "accept" | "close") {
             return Ok(None);
         }
         if !kwargs.is_empty() {
-            return Ok(Some(self.raise(Exc::TypeError, format!(
-                "{name}() takes no keyword arguments"
-            ))));
+            return Ok(Some(self.raise(
+                Exc::TypeError,
+                format!("{name}() takes no keyword arguments"),
+            )));
         }
         let s = Rc::clone(s);
         let op = match name {
@@ -2192,9 +2268,9 @@ impl Vm {
                     // client sending an unbounded header block, and a default
                     // would be a number nobody chose.
                     None => {
-                        return Err(self.err(type_error(
-                            "read_until() takes a delimiter and a limit",
-                        )))
+                        return Err(
+                            self.err(type_error("read_until() takes a delimiter and a limit"))
+                        )
                     }
                     Some(_) => {
                         return Err(self.err(type_error(format!(
@@ -2204,7 +2280,11 @@ impl Vm {
                     }
                 };
                 self.wrap(crate::builtins::exactly(args, 2, "read_until"))?;
-                IoOp::ReadUntil { delim, limit, acc: Vec::new() }
+                IoOp::ReadUntil {
+                    delim,
+                    limit,
+                    acc: Vec::new(),
+                }
             }
             "accept" => {
                 self.wrap(crate::builtins::exactly(args, 0, "accept"))?;
@@ -2424,7 +2504,10 @@ impl Vm {
                     Ok(id) => id,
                     Err(msg) => return Err(self.err(msg)),
                 };
-                Ok(Step::Park(Box::new(Park::Dns { id, addr: Rc::from(addr) })))
+                Ok(Step::Park(Box::new(Park::Dns {
+                    id,
+                    addr: Rc::from(addr),
+                })))
             }
         }
     }

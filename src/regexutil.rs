@@ -46,7 +46,10 @@ pub fn compile(pattern: &str) -> RResult<regex::Regex> {
 
 pub fn regex_value(pattern: &str) -> RResult<Value> {
     let re = compile(pattern)?;
-    Ok(Value::Regex(Rc::new(OroRegex { re, pattern: pattern.to_string() })))
+    Ok(Value::Regex(Rc::new(OroRegex {
+        re,
+        pattern: pattern.to_string(),
+    })))
 }
 
 /// Build a match value from a crate `Captures`, converting byte spans to char
@@ -111,7 +114,10 @@ pub fn findall(re: &regex::Regex, s: &str) -> Value {
 /// `re.finditer`: a list of match objects (iterable by `for`), each carrying
 /// group spans and texts — the positions users need for two-pass techniques.
 pub fn finditer(re: &regex::Regex, s: &str) -> Value {
-    let out: Vec<Value> = re.captures_iter(s).map(|caps| match_from_caps(&caps, s)).collect();
+    let out: Vec<Value> = re
+        .captures_iter(s)
+        .map(|caps| match_from_caps(&caps, s))
+        .collect();
     Value::List(OroList::new(out))
 }
 

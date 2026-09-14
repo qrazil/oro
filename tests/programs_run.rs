@@ -63,7 +63,10 @@ fn runtime_error_reports_position_without_panicking() {
     let script = dir.join("oro_err_test.oro");
     std::fs::write(&script, "x = 1\nprint(x + \"oops\")\n").unwrap();
 
-    let output = Command::new(oro_bin()).arg(&script).output().expect("launch oro");
+    let output = Command::new(oro_bin())
+        .arg(&script)
+        .output()
+        .expect("launch oro");
     assert!(!output.status.success(), "expected a failing exit code");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -71,19 +74,28 @@ fn runtime_error_reports_position_without_panicking() {
         "expected a clean type error, got: {stderr}"
     );
     // The position of the faulting line should be reported.
-    assert!(stderr.contains(":2:"), "error should carry a line number: {stderr}");
+    assert!(
+        stderr.contains(":2:"),
+        "error should carry a line number: {stderr}"
+    );
     let _ = std::fs::remove_file(&script);
 }
 
 #[test]
 fn version_flag_prints_version() {
     let bin = env!("CARGO_BIN_EXE_oro");
-    let out = std::process::Command::new(bin).arg("--version").output().expect("run");
+    let out = std::process::Command::new(bin)
+        .arg("--version")
+        .output()
+        .expect("run");
     assert!(out.status.success());
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.starts_with("oro "), "got: {s}");
     // The short flag works too.
-    let out2 = std::process::Command::new(bin).arg("-V").output().expect("run");
+    let out2 = std::process::Command::new(bin)
+        .arg("-V")
+        .output()
+        .expect("run");
     assert_eq!(String::from_utf8_lossy(&out2.stdout), s);
 }
 
@@ -92,7 +104,10 @@ fn version_flag_prints_version() {
 fn run_source(name: &str, src: &str) -> (String, String, i32) {
     let script = std::env::temp_dir().join(format!("oro_{name}.oro"));
     std::fs::write(&script, src).unwrap();
-    let out = Command::new(oro_bin()).arg(&script).output().expect("launch oro");
+    let out = Command::new(oro_bin())
+        .arg(&script)
+        .output()
+        .expect("launch oro");
     let _ = std::fs::remove_file(&script);
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -114,8 +129,14 @@ fn an_unjoined_failing_task_reports_and_exits_one() {
         "def boom():\n    raise ValueError('nobody joined me')\nspawn(boom)\nprint('main done')\n",
     );
     assert_eq!(stdout, "main done\n");
-    assert!(stderr.contains("ValueError: nobody joined me"), "stderr was: {stderr}");
-    assert!(stderr.contains(":2:"), "it carries the faulting position: {stderr}");
+    assert!(
+        stderr.contains("ValueError: nobody joined me"),
+        "stderr was: {stderr}"
+    );
+    assert!(
+        stderr.contains(":2:"),
+        "it carries the faulting position: {stderr}"
+    );
     assert_eq!(code, 1, "an unreported task failure must not exit 0");
 }
 
@@ -176,7 +197,10 @@ fn an_unjoined_task_failure_says_a_task_failed() {
     assert!(line.starts_with("task failed: "), "stderr was: {stderr}");
     // Everything after the prefix is what it always was: path, line, column,
     // exception class and message.
-    assert!(line.ends_with(":3:12: KeyError: 'user'"), "stderr was: {stderr}");
+    assert!(
+        line.ends_with(":3:12: KeyError: 'user'"),
+        "stderr was: {stderr}"
+    );
     assert_eq!(code, 1, "an unjoined failure still exits 1");
 }
 
@@ -200,6 +224,9 @@ fn spawned_tasks_finish_after_main_returns() {
         "joinall",
         "def logger():\n    print('the last line the logger was writing')\nspawn(logger)\nprint('main returns')\n",
     );
-    assert_eq!(stdout, "main returns\nthe last line the logger was writing\n");
+    assert_eq!(
+        stdout,
+        "main returns\nthe last line the logger was writing\n"
+    );
     assert_eq!(code, 0);
 }

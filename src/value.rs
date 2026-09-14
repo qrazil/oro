@@ -525,7 +525,10 @@ pub const KEYWORD_TYPES: &[(&str, TypeTag)] = &[
 pub fn keyword_type(name: &str) -> Option<TypeTag> {
     // Linear over 17 entries, and only on the names that reach it: a `&str`
     // compare fails on the first byte for almost every identifier.
-    KEYWORD_TYPES.iter().find(|(n, _)| *n == name).map(|(_, t)| *t)
+    KEYWORD_TYPES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, t)| *t)
 }
 
 /// A UTF-8 string with a precomputed ASCII flag (architecture point 5).
@@ -600,7 +603,8 @@ pub struct RangeVal {
 impl RangeVal {
     pub fn len(&self) -> usize {
         if self.step > 0 && self.stop > self.start {
-            (((self.stop - self.start) as i128 + self.step as i128 - 1) / self.step as i128) as usize
+            (((self.stop - self.start) as i128 + self.step as i128 - 1) / self.step as i128)
+                as usize
         } else if self.step < 0 && self.stop < self.start {
             (((self.start - self.stop) as i128 + (-self.step as i128) - 1) / (-self.step as i128))
                 as usize
@@ -638,21 +642,42 @@ pub enum IterState {
     /// `n` is the position counter — a `for` yields `(index, value)`, and a
     /// range's index is its position, which the raw `cur`/`step` do not give
     /// directly once `start` is not zero.
-    Range { cur: i64, stop: i64, step: i64, n: i64 },
+    Range {
+        cur: i64,
+        stop: i64,
+        step: i64,
+        n: i64,
+    },
     /// Iterates by index, remembering the original length so a size change
     /// during iteration is reported as a clean error rather than silently
     /// skipping or panicking.
-    List { list: Rc<OroList>, idx: usize, orig_len: usize },
-    Tuple { tuple: Rc<OroTuple>, idx: usize },
-    Str { chars: Vec<String>, idx: usize },
+    List {
+        list: Rc<OroList>,
+        idx: usize,
+        orig_len: usize,
+    },
+    Tuple {
+        tuple: Rc<OroTuple>,
+        idx: usize,
+    },
+    Str {
+        chars: Vec<String>,
+        idx: usize,
+    },
     /// Iterating `bytes` yields the octets as `int`s, so no per-element
     /// allocation is needed — the source `Rc` is simply held and indexed.
-    Bytes { bytes: Rc<Vec<u8>>, idx: usize },
+    Bytes {
+        bytes: Rc<Vec<u8>>,
+        idx: usize,
+    },
     /// Iterating a dict yields its `(key, value)` pairs — the same shape
     /// `map` and `filter` over a dict already answer with. The entries are
     /// snapshotted at `GetIter` time; the pair tuple itself is built per step,
     /// so a loop that unpacks and drops it never holds more than one.
-    DictPairs { items: Vec<(Value, Value)>, idx: usize },
+    DictPairs {
+        items: Vec<(Value, Value)>,
+        idx: usize,
+    },
 }
 
 /// A compiled Oro function together with its captured environment.
@@ -742,7 +767,10 @@ pub enum MethodKind {
     /// An Oro method: `func` is called with `receiver` as its first (`self`)
     /// argument. `defclass` is the class the method is defined in, so that
     /// `super()` inside it searches from `defclass`'s base.
-    User { func: Rc<Function>, defclass: Rc<Class> },
+    User {
+        func: Rc<Function>,
+        defclass: Rc<Class>,
+    },
 }
 
 /// A user-defined class (single inheritance only).
@@ -846,7 +874,9 @@ pub struct Fields {
 
 impl Fields {
     pub fn new() -> Fields {
-        Fields { entries: Vec::new() }
+        Fields {
+            entries: Vec::new(),
+        }
     }
 
     #[inline]
@@ -860,7 +890,9 @@ impl Fields {
     }
 
     pub fn with_capacity(n: usize) -> Fields {
-        Fields { entries: Vec::with_capacity(n) }
+        Fields {
+            entries: Vec::with_capacity(n),
+        }
     }
 
     pub fn contains_key(&self, name: &str) -> bool {
@@ -1140,7 +1172,10 @@ impl HKey {
             Value::Int(i) => HKey::Int(*i),
             Value::Big(b) => HKey::Big((**b).clone()),
             Value::Float(f) => {
-                if f.is_finite() && f.fract() == 0.0 && *f >= i64::MIN as f64 && *f <= i64::MAX as f64
+                if f.is_finite()
+                    && f.fract() == 0.0
+                    && *f >= i64::MIN as f64
+                    && *f <= i64::MAX as f64
                 {
                     HKey::Int(*f as i64)
                 } else {
@@ -1208,7 +1243,12 @@ fn hkey_cold(v: &Value) -> VResult<HKey> {
             // above, or is a reference type with an identity. Spelled as an
             // error rather than `unreachable!` because a panic in the dict path
             // would be a worse answer than a diagnostic.
-            None => return Err(type_error(format!("unhashable type: '{}'", other.type_name()))),
+            None => {
+                return Err(type_error(format!(
+                    "unhashable type: '{}'",
+                    other.type_name()
+                )))
+            }
         },
     })
 }
@@ -1745,11 +1785,7 @@ fn try_seq_eq(a: &[Value], b: &[Value], depth: u32) -> Option<bool> {
 }
 
 #[inline(never)]
-fn try_dict_eq(
-    a: &Rc<RefCell<OroDict>>,
-    b: &Rc<RefCell<OroDict>>,
-    depth: u32,
-) -> Option<bool> {
+fn try_dict_eq(a: &Rc<RefCell<OroDict>>, b: &Rc<RefCell<OroDict>>, depth: u32) -> Option<bool> {
     if depth >= MAX_EQ_DEPTH {
         return None;
     }
@@ -1772,11 +1808,7 @@ fn try_dict_eq(
 }
 
 #[inline(never)]
-fn try_seq_cmp(
-    a: &[Value],
-    b: &[Value],
-    sym: &'static str,
-) -> VResult<Option<std::cmp::Ordering>> {
+fn try_seq_cmp(a: &[Value], b: &[Value], sym: &'static str) -> VResult<Option<std::cmp::Ordering>> {
     for (x, y) in a.iter().zip(b.iter()) {
         match x.try_equals(y) {
             Some(true) => continue,
@@ -1975,7 +2007,11 @@ pub(crate) fn push_unicode_escape(out: &mut String, c: char) {
 /// does not reliably reproduce the value. Printable non-ASCII (`é`, `日本語`)
 /// still goes out raw, as it does in Python 3.
 pub fn repr_str(s: &str) -> String {
-    let quote = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
+    let quote = if s.contains('\'') && !s.contains('"') {
+        '"'
+    } else {
+        '\''
+    };
     let qb = quote as u8;
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len() + 2);
@@ -2026,7 +2062,11 @@ pub fn repr_str(s: &str) -> String {
 /// quote flips to `"` when the data holds a `'` and no `"`, so the common case
 /// never needs an escaped quote — the rule CPython uses.
 fn repr_bytes(b: &[u8]) -> String {
-    let quote = if b.contains(&b'\'') && !b.contains(&b'"') { '"' } else { '\'' };
+    let quote = if b.contains(&b'\'') && !b.contains(&b'"') {
+        '"'
+    } else {
+        '\''
+    };
     let mut out = String::with_capacity(b.len() + 3);
     out.push('b');
     out.push(quote);

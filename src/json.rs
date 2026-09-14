@@ -57,7 +57,11 @@ struct Parser<'a> {
 
 /// `parse(text)`: a JSON document to an Oro value.
 pub fn parse(text: &str) -> VResult<Value> {
-    let mut p = Parser { text, b: text.as_bytes(), i: 0 };
+    let mut p = Parser {
+        text,
+        b: text.as_bytes(),
+        i: 0,
+    };
     p.skip_ws();
     let value = p.value()?;
     p.skip_ws();
@@ -83,7 +87,10 @@ impl<'a> Parser<'a> {
     }
 
     fn fail_at<T>(&self, msg: impl std::fmt::Display, at: usize) -> VResult<T> {
-        Err(value_error(format!("{msg} at position {}", self.char_pos(at))))
+        Err(value_error(format!(
+            "{msg} at position {}",
+            self.char_pos(at)
+        )))
     }
 
     fn fail<T>(&self, msg: impl std::fmt::Display) -> VResult<T> {
@@ -332,10 +339,7 @@ impl<'a> Parser<'a> {
 
         let cp = self.hex4()?;
         if HIGH.contains(&cp) {
-            if self.i + 1 < self.b.len()
-                && self.b[self.i] == b'\\'
-                && self.b[self.i + 1] == b'u'
-            {
+            if self.i + 1 < self.b.len() && self.b[self.i] == b'\\' && self.b[self.i + 1] == b'u' {
                 let save = self.i;
                 self.i += 1;
                 let low = self.hex4()?;
@@ -432,7 +436,11 @@ enum Job {
     /// Write element `at` of a list or tuple (`at == len` closes it).
     Elem { seq: Value, at: usize, level: usize },
     /// Write entry `at` of a dict (`at == len` closes it).
-    Entry { dict: Rc<RefCell<OroDict>>, at: usize, level: usize },
+    Entry {
+        dict: Rc<RefCell<OroDict>>,
+        at: usize,
+        level: usize,
+    },
 }
 
 /// `stringify(value, indent)`: an Oro value to JSON text. `indent` is the
@@ -459,7 +467,11 @@ pub fn stringify(value: &Value, indent: Option<&Value>) -> VResult<String> {
                         newline_pad(&mut out, level + 1, indent)?;
                     }
                     let item = seq_get(&seq, at);
-                    jobs.push(Job::Elem { seq, at: at + 1, level });
+                    jobs.push(Job::Elem {
+                        seq,
+                        at: at + 1,
+                        level,
+                    });
                     jobs.push(Job::Value(item, level + 1));
                 }
             }
@@ -487,7 +499,11 @@ pub fn stringify(value: &Value, indent: Option<&Value>) -> VResult<String> {
                     if indent.is_some() {
                         out.push(' ');
                     }
-                    jobs.push(Job::Entry { dict, at: at + 1, level });
+                    jobs.push(Job::Entry {
+                        dict,
+                        at: at + 1,
+                        level,
+                    });
                     jobs.push(Job::Value(item, level + 1));
                 }
             }
@@ -525,7 +541,11 @@ fn write_value(
                 if indent.is_some() {
                     newline_pad(out, level + 1, indent)?;
                 }
-                jobs.push(Job::Elem { seq: v, at: 0, level });
+                jobs.push(Job::Elem {
+                    seq: v,
+                    at: 0,
+                    level,
+                });
             }
         }
         Value::Dict(d) => {
@@ -536,7 +556,11 @@ fn write_value(
                 if indent.is_some() {
                     newline_pad(out, level + 1, indent)?;
                 }
-                jobs.push(Job::Entry { dict: d.clone(), at: 0, level });
+                jobs.push(Job::Entry {
+                    dict: d.clone(),
+                    at: 0,
+                    level,
+                });
             }
         }
         other => {

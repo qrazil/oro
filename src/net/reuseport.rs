@@ -103,9 +103,7 @@ pub(super) fn bind(addrs: &[SocketAddr]) -> io::Result<std::net::TcpListener> {
             Err(e) => last = Some(e),
         }
     }
-    Err(last.unwrap_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "no addresses to bind")
-    }))
+    Err(last.unwrap_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no addresses to bind")))
 }
 
 /// One address: socket, both options, bind, listen.
@@ -215,7 +213,9 @@ fn bind_fd(sock: &OwnedFd, addr: &SocketAddr) -> io::Result<()> {
             let sa = libc::sockaddr_in {
                 sin_family: libc::AF_INET as libc::sa_family_t,
                 sin_port: a.port().to_be(),
-                sin_addr: libc::in_addr { s_addr: u32::from_ne_bytes(a.ip().octets()) },
+                sin_addr: libc::in_addr {
+                    s_addr: u32::from_ne_bytes(a.ip().octets()),
+                },
                 sin_zero: [0; 8],
             };
             // SAFETY: the kernel reads `size_of::<sockaddr_in>()` bytes from
@@ -236,7 +236,9 @@ fn bind_fd(sock: &OwnedFd, addr: &SocketAddr) -> io::Result<()> {
                 sin6_family: libc::AF_INET6 as libc::sa_family_t,
                 sin6_port: a.port().to_be(),
                 sin6_flowinfo: a.flowinfo(),
-                sin6_addr: libc::in6_addr { s6_addr: a.ip().octets() },
+                sin6_addr: libc::in6_addr {
+                    s6_addr: a.ip().octets(),
+                },
                 sin6_scope_id: a.scope_id(),
             };
             // SAFETY: as above, with `sockaddr_in6` throughout — the struct

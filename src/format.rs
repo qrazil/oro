@@ -177,7 +177,10 @@ fn parse_spec(s: &str) -> VResult<Spec> {
 
     // [type]
     if let Some(&c) = chars.get(i) {
-        if matches!(c, 's' | 'd' | 'f' | 'F' | 'e' | 'E' | 'g' | 'G' | 'x' | 'X' | 'o' | 'b' | '%' | 'n' | 'c') {
+        if matches!(
+            c,
+            's' | 'd' | 'f' | 'F' | 'e' | 'E' | 'g' | 'G' | 'x' | 'X' | 'o' | 'b' | '%' | 'n' | 'c'
+        ) {
             spec.ty = Some(c);
             i += 1;
         }
@@ -196,7 +199,9 @@ fn take_int(chars: &[char], mut i: usize) -> (Option<usize>, usize) {
     let mut n: usize = 0;
     while let Some(&c) = chars.get(i) {
         if c.is_ascii_digit() {
-            n = n.saturating_mul(10).saturating_add((c as u8 - b'0') as usize);
+            n = n
+                .saturating_mul(10)
+                .saturating_add((c as u8 - b'0') as usize);
             i += 1;
         } else {
             break;
@@ -226,9 +231,11 @@ fn apply(value: &Value, spec: &Spec) -> VResult<String> {
 fn format_str(s: &str, spec: &Spec) -> VResult<String> {
     match spec.ty {
         None | Some('s') => {}
-        Some(t) => return Err(value_error(format!(
-            "Unknown format code '{t}' for object of type 'str'"
-        ))),
+        Some(t) => {
+            return Err(value_error(format!(
+                "Unknown format code '{t}' for object of type 'str'"
+            )))
+        }
     }
     if spec.sign != Sign::Minus || spec.alt || spec.zero || spec.grouping.is_some() {
         return Err(value_error("invalid format spec for a string"));
@@ -246,7 +253,10 @@ fn format_str(s: &str, spec: &Spec) -> VResult<String> {
 
 fn format_int(value: &Value, spec: &Spec) -> VResult<String> {
     // Types that reinterpret the integer as a float.
-    if matches!(spec.ty, Some('f') | Some('F') | Some('e') | Some('E') | Some('g') | Some('G') | Some('%')) {
+    if matches!(
+        spec.ty,
+        Some('f') | Some('F') | Some('e') | Some('E') | Some('g') | Some('G') | Some('%')
+    ) {
         let f = value_to_f64(value);
         return format_float(f, spec);
     }
@@ -255,24 +265,48 @@ fn format_int(value: &Value, spec: &Spec) -> VResult<String> {
     let base_ty = spec.ty.unwrap_or('d');
 
     if spec.precision.is_some() {
-        return Err(value_error("Precision not allowed in integer format specifier"));
+        return Err(value_error(
+            "Precision not allowed in integer format specifier",
+        ));
     }
 
     let (mut body, prefix) = match base_ty {
         'd' | 'n' => (group(&digits, spec.grouping, 3), String::new()),
-        'x' => (group(&to_radix(&digits, 16, false), spec.grouping, 4), if spec.alt { "0x".into() } else { String::new() }),
-        'X' => (group(&to_radix(&digits, 16, true), spec.grouping, 4), if spec.alt { "0X".into() } else { String::new() }),
-        'o' => (group(&to_radix(&digits, 8, false), spec.grouping, 4), if spec.alt { "0o".into() } else { String::new() }),
-        'b' => (group(&to_radix(&digits, 2, false), spec.grouping, 4), if spec.alt { "0b".into() } else { String::new() }),
+        'x' => (
+            group(&to_radix(&digits, 16, false), spec.grouping, 4),
+            if spec.alt { "0x".into() } else { String::new() },
+        ),
+        'X' => (
+            group(&to_radix(&digits, 16, true), spec.grouping, 4),
+            if spec.alt { "0X".into() } else { String::new() },
+        ),
+        'o' => (
+            group(&to_radix(&digits, 8, false), spec.grouping, 4),
+            if spec.alt { "0o".into() } else { String::new() },
+        ),
+        'b' => (
+            group(&to_radix(&digits, 2, false), spec.grouping, 4),
+            if spec.alt { "0b".into() } else { String::new() },
+        ),
         'c' => {
-            let code = digits.parse::<u32>().map_err(|_| value_error("%c arg not in range"))?;
-            let ch = char::from_u32(code)
-                .ok_or_else(|| value_error("%c arg not in range(0x110000)"))?;
-            return format_str(&ch.to_string(), &Spec { ty: None, ..copy_spec(spec) });
+            let code = digits
+                .parse::<u32>()
+                .map_err(|_| value_error("%c arg not in range"))?;
+            let ch =
+                char::from_u32(code).ok_or_else(|| value_error("%c arg not in range(0x110000)"))?;
+            return format_str(
+                &ch.to_string(),
+                &Spec {
+                    ty: None,
+                    ..copy_spec(spec)
+                },
+            );
         }
-        other => return Err(value_error(format!(
-            "Unknown format code '{other}' for object of type 'int'"
-        ))),
+        other => {
+            return Err(value_error(format!(
+                "Unknown format code '{other}' for object of type 'int'"
+            )))
+        }
     };
 
     let sign = sign_str(neg, spec.sign);
@@ -297,7 +331,10 @@ fn format_float(f: f64, spec: &Spec) -> VResult<String> {
         let sign = sign_str(neg, spec.sign);
         let align = spec.align.unwrap_or(Align::Right);
         // Zero-fill never applies to inf/nan.
-        let spec = Spec { fill: if spec.zero { ' ' } else { spec.fill }, ..copy_spec(spec) };
+        let spec = Spec {
+            fill: if spec.zero { ' ' } else { spec.fill },
+            ..copy_spec(spec)
+        };
         return Ok(pad(word, &sign, &spec, align));
     }
 
@@ -320,9 +357,11 @@ fn format_float(f: f64, spec: &Spec) -> VResult<String> {
             Some(p) => general(mag, Some(p.max(1)), false, spec.alt),
             None => default_float(mag),
         },
-        Some(other) => return Err(value_error(format!(
-            "Unknown format code '{other}' for object of type 'float'"
-        ))),
+        Some(other) => {
+            return Err(value_error(format!(
+                "Unknown format code '{other}' for object of type 'float'"
+            )))
+        }
     };
 
     // Thousands separators group the integer part only.
@@ -495,7 +534,10 @@ fn general(mag: f64, precision: Option<usize>, upper: bool, alt: bool) -> String
     }
     // Determine the decimal exponent after rounding to p significant digits.
     let raw = format!("{mag:.*e}", p - 1);
-    let exp: i32 = raw.split_once('e').and_then(|(_, e)| e.parse().ok()).unwrap_or(0);
+    let exp: i32 = raw
+        .split_once('e')
+        .and_then(|(_, e)| e.parse().ok())
+        .unwrap_or(0);
 
     let mut out = if exp < -4 || exp >= p as i32 {
         sci(mag, p - 1, upper)
@@ -527,7 +569,12 @@ fn strip_g_zeros(s: &str) -> String {
 /// (always with a fractional part, e.g. `1.0`).
 fn default_float(mag: f64) -> String {
     let s = format!("{mag}");
-    if s.contains('.') || s.contains('e') || s.contains('E') || s.contains("inf") || s.contains("nan") {
+    if s.contains('.')
+        || s.contains('e')
+        || s.contains('E')
+        || s.contains("inf")
+        || s.contains("nan")
+    {
         s
     } else {
         format!("{s}.0")

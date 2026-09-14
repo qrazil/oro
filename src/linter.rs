@@ -51,7 +51,13 @@ pub fn lint(program: &[Stmt]) -> Vec<Finding> {
 // --- The rules ---------------------------------------------------------------
 
 fn check_expr(e: &Expr, out: &mut Vec<Finding>) {
-    if let Expr::Compare { first, rest, line, col } = e {
+    if let Expr::Compare {
+        first,
+        rest,
+        line,
+        col,
+    } = e
+    {
         if rest.len() == 1 {
             let (op, rhs) = &rest[0];
             check_find_membership(first, *op, rhs, *line, *col, out);
@@ -62,7 +68,14 @@ fn check_expr(e: &Expr, out: &mut Vec<Finding>) {
     // A depth-2 ternary is legal (depth 3+ is a compile error), but a nested
     // conditional is often a predicate chain wearing the wrong syntax. Advisory
     // — the depth-3 cap is the hard line; this only nudges.
-    if let Expr::Ternary { cond, then, orelse, line, col } = e {
+    if let Expr::Ternary {
+        cond,
+        then,
+        orelse,
+        line,
+        col,
+    } = e
+    {
         if is_ternary(cond) || is_ternary(then) || is_ternary(orelse) {
             out.push(Finding {
                 line: *line,
@@ -74,7 +87,15 @@ fn check_expr(e: &Expr, out: &mut Vec<Finding>) {
             });
         }
     }
-    if let Expr::Slice { value, step, lower, upper, line, col } = e {
+    if let Expr::Slice {
+        value,
+        step,
+        lower,
+        upper,
+        line,
+        col,
+    } = e
+    {
         // `xs[::-1]` — a reversed copy spelled as punctuation.
         if lower.is_none() && upper.is_none() && step.as_deref().is_some_and(is_neg_one) {
             out.push(Finding {
@@ -128,7 +149,9 @@ fn check_find_membership(
     col: usize,
     out: &mut Vec<Finding>,
 ) {
-    let Some((recv, arg)) = find_call(first) else { return };
+    let Some((recv, arg)) = find_call(first) else {
+        return;
+    };
     // Which sentinel comparison, and therefore whether it means `in` or `not in`.
     let membership = match (op, int_value(rhs)) {
         (CmpOp::GtEq, Some(0)) | (CmpOp::Gt, Some(-1)) | (CmpOp::NotEq, Some(-1)) => Some("in"),
@@ -167,11 +190,18 @@ fn check_get_null(
         return;
     }
     // A bare `x.get(k)`: exactly one positional arg, no `default=`.
-    let Expr::Call { func, args, kwargs, .. } = first else { return };
+    let Expr::Call {
+        func, args, kwargs, ..
+    } = first
+    else {
+        return;
+    };
     if args.len() != 1 || !kwargs.is_empty() {
         return;
     }
-    let Expr::Attribute { value, attr, .. } = &**func else { return };
+    let Expr::Attribute { value, attr, .. } = &**func else {
+        return;
+    };
     if attr != "get" {
         return;
     }
@@ -206,7 +236,16 @@ fn check_slice_affix(
     if op != CmpOp::Eq {
         return;
     }
-    let Expr::Slice { value, lower, upper, step, .. } = first else { return };
+    let Expr::Slice {
+        value,
+        lower,
+        upper,
+        step,
+        ..
+    } = first
+    else {
+        return;
+    };
     if step.is_some() {
         return;
     }
@@ -245,11 +284,18 @@ fn check_slice_affix(
 /// A `something.find(arg)` call with exactly one positional argument, returning
 /// `(receiver, arg)`.
 fn find_call(e: &Expr) -> Option<(&Expr, &Expr)> {
-    let Expr::Call { func, args, kwargs, .. } = e else { return None };
+    let Expr::Call {
+        func, args, kwargs, ..
+    } = e
+    else {
+        return None;
+    };
     if args.len() != 1 || !kwargs.is_empty() {
         return None;
     }
-    let Expr::Attribute { value, attr, .. } = &**func else { return None };
+    let Expr::Attribute { value, attr, .. } = &**func else {
+        return None;
+    };
     (attr == "find").then_some((&**value, &args[0]))
 }
 
@@ -257,7 +303,11 @@ fn find_call(e: &Expr) -> Option<(&Expr, &Expr)> {
 fn int_value(e: &Expr) -> Option<i64> {
     match e {
         Expr::Int { value, .. } => value.replace('_', "").parse().ok(),
-        Expr::Unary { op: UnaryOp::Neg, operand, .. } => int_value(operand).map(|n| -n),
+        Expr::Unary {
+            op: UnaryOp::Neg,
+            operand,
+            ..
+        } => int_value(operand).map(|n| -n),
         _ => None,
     }
 }
@@ -310,7 +360,13 @@ fn describe(e: &Expr) -> String {
 /// that would not compile.
 fn check_manual_aug_stmts(stmts: &[Stmt], out: &mut Vec<Finding>) {
     for s in stmts {
-        if let Stmt::Assign { targets, value, line, col } = s {
+        if let Stmt::Assign {
+            targets,
+            value,
+            line,
+            col,
+        } = s
+        {
             if let [target] = targets.as_slice() {
                 if let Expr::Binary { op, left, .. } = value {
                     if is_aug_target(target) && same_path(target, left) {
@@ -353,8 +409,16 @@ fn same_path(a: &Expr, b: &Expr) -> bool {
     match (a, b) {
         (Expr::Name { name: x, .. }, Expr::Name { name: y, .. }) => x == y,
         (
-            Expr::Subscript { value: av, index: ai, .. },
-            Expr::Subscript { value: bv, index: bi, .. },
+            Expr::Subscript {
+                value: av,
+                index: ai,
+                ..
+            },
+            Expr::Subscript {
+                value: bv,
+                index: bi,
+                ..
+            },
         ) => same_path(av, bv) && same_atom(ai, bi),
         _ => false,
     }
@@ -366,9 +430,14 @@ fn same_atom(a: &Expr, b: &Expr) -> bool {
     match (a, b) {
         (Expr::Name { name: x, .. }, Expr::Name { name: y, .. }) => x == y,
         (Expr::Int { value: x, .. }, Expr::Int { value: y, .. }) => x == y,
-        (Expr::Str { value: x, raw: rx, .. }, Expr::Str { value: y, raw: ry, .. }) => {
-            x == y && rx == ry
-        }
+        (
+            Expr::Str {
+                value: x, raw: rx, ..
+            },
+            Expr::Str {
+                value: y, raw: ry, ..
+            },
+        ) => x == y && rx == ry,
         _ => false,
     }
 }
@@ -394,7 +463,12 @@ fn binop_sym(op: BinOp) -> &'static str {
 fn child_bodies(s: &Stmt) -> Vec<&[Stmt]> {
     let mut v: Vec<&[Stmt]> = Vec::new();
     match s {
-        Stmt::If { body, elifs, orelse, .. } => {
+        Stmt::If {
+            body,
+            elifs,
+            orelse,
+            ..
+        } => {
             v.push(body);
             for (_, b) in elifs {
                 v.push(b);
@@ -405,7 +479,12 @@ fn child_bodies(s: &Stmt) -> Vec<&[Stmt]> {
         }
         Stmt::While { body, .. } | Stmt::For { body, .. } => v.push(body),
         Stmt::Def { body, .. } | Stmt::Class { body, .. } => v.push(body),
-        Stmt::Try { body, handlers, finalbody, .. } => {
+        Stmt::Try {
+            body,
+            handlers,
+            finalbody,
+            ..
+        } => {
             v.push(body);
             for h in handlers {
                 v.push(&h.body);
@@ -441,7 +520,13 @@ fn walk_stmt(s: &Stmt, f: &mut impl FnMut(&Expr)) {
             }
             walk_expr(value, f);
         }
-        Stmt::If { cond, body, elifs, orelse, .. } => {
+        Stmt::If {
+            cond,
+            body,
+            elifs,
+            orelse,
+            ..
+        } => {
             walk_expr(cond, f);
             walk_stmts(body, f);
             for (c, b) in elifs {
@@ -456,7 +541,9 @@ fn walk_stmt(s: &Stmt, f: &mut impl FnMut(&Expr)) {
             walk_expr(cond, f);
             walk_stmts(body, f);
         }
-        Stmt::For { target, iter, body, .. } => {
+        Stmt::For {
+            target, iter, body, ..
+        } => {
             walk_expr(target, f);
             walk_expr(iter, f);
             walk_stmts(body, f);
@@ -465,7 +552,12 @@ fn walk_stmt(s: &Stmt, f: &mut impl FnMut(&Expr)) {
         Stmt::Return { value: Some(v), .. }
         | Stmt::Yield { value: Some(v), .. }
         | Stmt::Raise { exc: Some(v), .. } => walk_expr(v, f),
-        Stmt::Try { body, handlers, finalbody, .. } => {
+        Stmt::Try {
+            body,
+            handlers,
+            finalbody,
+            ..
+        } => {
             walk_stmts(body, f);
             for h in handlers {
                 walk_stmts(&h.body, f);
@@ -498,12 +590,16 @@ fn walk_expr(e: &Expr, f: &mut impl FnMut(&Expr)) {
                 walk_expr(r, f);
             }
         }
-        Expr::Ternary { cond, then, orelse, .. } => {
+        Expr::Ternary {
+            cond, then, orelse, ..
+        } => {
             walk_expr(cond, f);
             walk_expr(then, f);
             walk_expr(orelse, f);
         }
-        Expr::Call { func, args, kwargs, .. } => {
+        Expr::Call {
+            func, args, kwargs, ..
+        } => {
             walk_expr(func, f);
             for a in args {
                 walk_expr(a, f);
@@ -517,7 +613,13 @@ fn walk_expr(e: &Expr, f: &mut impl FnMut(&Expr)) {
             walk_expr(value, f);
             walk_expr(index, f);
         }
-        Expr::Slice { value, lower, upper, step, .. } => {
+        Expr::Slice {
+            value,
+            lower,
+            upper,
+            step,
+            ..
+        } => {
             walk_expr(value, f);
             for p in [lower, upper, step].into_iter().flatten() {
                 walk_expr(p, f);

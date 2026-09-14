@@ -58,7 +58,9 @@ use std::time::Duration;
 
 use mio::net::{TcpListener, TcpStream};
 
-use crate::exc::{attribute_error, broken_pipe_error, runtime_error, type_error, value_error, VErr};
+use crate::exc::{
+    attribute_error, broken_pipe_error, runtime_error, type_error, value_error, VErr,
+};
 use crate::value::VResult;
 
 /// A file or stdio `io::Error`, as the fault it raises. The message is std's
@@ -226,7 +228,10 @@ impl OroStream {
     pub fn open_read(path: &str) -> std::io::Result<OroStream> {
         let f = std::fs::File::open(path)?;
         Ok(OroStream::new(
-            StreamKind::File { path: path.to_string(), mode: "r" },
+            StreamKind::File {
+                path: path.to_string(),
+                mode: "r",
+            },
             Backing::Read(f),
         ))
     }
@@ -235,16 +240,25 @@ impl OroStream {
     pub fn open_write(path: &str) -> std::io::Result<OroStream> {
         let f = std::fs::File::create(path)?;
         Ok(OroStream::new(
-            StreamKind::File { path: path.to_string(), mode: "w" },
+            StreamKind::File {
+                path: path.to_string(),
+                mode: "w",
+            },
             Backing::Write(f),
         ))
     }
 
     /// `open(path, "a")` — appending.
     pub fn open_append(path: &str) -> std::io::Result<OroStream> {
-        let f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
         Ok(OroStream::new(
-            StreamKind::File { path: path.to_string(), mode: "a" },
+            StreamKind::File {
+                path: path.to_string(),
+                mode: "a",
+            },
             Backing::Write(f),
         ))
     }
@@ -274,7 +288,13 @@ impl OroStream {
             "<stderr>" => (Backing::Stderr, "w"),
             _ => (Backing::Stdout, "w"),
         };
-        OroStream::new(StreamKind::File { path: which.to_string(), mode }, back)
+        OroStream::new(
+            StreamKind::File {
+                path: which.to_string(),
+                mode,
+            },
+            back,
+        )
     }
 
     /// The read end of a child's stdout/stderr — a `proc.spawn` pipe fed by a
@@ -288,20 +308,33 @@ impl OroStream {
     /// *kind* only so `type(r)` tells `io.read` its size is unknowable, exactly
     /// as a `TcpStream` is a distinct kind for the same reason.
     pub fn pipe_read(rx: Receiver<Vec<u8>>, which: &str) -> OroStream {
-        OroStream::new(StreamKind::Pipe { which: which.to_string() }, Backing::PipeRead(rx))
+        OroStream::new(
+            StreamKind::Pipe {
+                which: which.to_string(),
+            },
+            Backing::PipeRead(rx),
+        )
     }
 
     /// The write end of a child's stdin — a `proc.spawn` pipe drained by a
     /// helper thread reading `tx`.
     pub fn pipe_write(tx: SyncSender<Vec<u8>>, which: &str) -> OroStream {
-        OroStream::new(StreamKind::Pipe { which: which.to_string() }, Backing::PipeWrite(tx))
+        OroStream::new(
+            StreamKind::Pipe {
+                which: which.to_string(),
+            },
+            Backing::PipeWrite(tx),
+        )
     }
 
     /// Whether this stream is a `proc.spawn` pipe. The scheduler asks because a
     /// pipe that would block parks on the pipe helper's waker rather than on the
     /// mio reactor — a pipe fd is not registered with mio at all.
     pub fn is_pipe(&self) -> bool {
-        matches!(self.inner.borrow().back, Backing::PipeRead(_) | Backing::PipeWrite(_))
+        matches!(
+            self.inner.borrow().back,
+            Backing::PipeRead(_) | Backing::PipeWrite(_)
+        )
     }
 
     /// A connected TCP socket — `net.dial`'s result, and `accept`'s.
@@ -313,7 +346,10 @@ impl OroStream {
     pub fn socket(sock: TcpStream) -> std::io::Result<OroStream> {
         let peer = sock.peer_addr()?.to_string();
         let local = sock.local_addr()?.to_string();
-        Ok(OroStream::new(StreamKind::TcpStream { peer, local }, Backing::Socket(sock)))
+        Ok(OroStream::new(
+            StreamKind::TcpStream { peer, local },
+            Backing::Socket(sock),
+        ))
     }
 
     /// A socket whose `connect(2)` is still in flight — `net.dial`'s result
@@ -338,7 +374,10 @@ impl OroStream {
             },
         };
         OroStream::new(
-            StreamKind::TcpStream { peer: target.to_string(), local },
+            StreamKind::TcpStream {
+                peer: target.to_string(),
+                local,
+            },
             Backing::Socket(sock),
         )
     }
@@ -385,7 +424,10 @@ impl OroStream {
     /// A listening TCP socket — `net.listen`'s result.
     pub fn listener(ln: TcpListener) -> std::io::Result<OroStream> {
         let local = ln.local_addr()?.to_string();
-        Ok(OroStream::new(StreamKind::TcpListener { local }, Backing::Listener(ln)))
+        Ok(OroStream::new(
+            StreamKind::TcpListener { local },
+            Backing::Listener(ln),
+        ))
     }
 
     /// `listener.accept()`: the next queued connection, as a stream that
@@ -416,7 +458,9 @@ impl OroStream {
         // Dropped before the new stream is built, so `accept` never holds two
         // stream borrows at once.
         drop(inner);
-        OroStream::socket(sock).map(Io::Ready).map_err(|e| crate::net::io_error(&e))
+        OroStream::socket(sock)
+            .map(Io::Ready)
+            .map_err(|e| crate::net::io_error(&e))
     }
 
     /// `conn.shutdown_write()`: send FIN, keep reading.
@@ -427,7 +471,9 @@ impl OroStream {
     pub fn shutdown_write(&self) -> VResult<()> {
         let inner = self.borrow_open("shutdown_write")?;
         match &inner.back {
-            Backing::Socket(s) => s.shutdown(Shutdown::Write).map_err(|e| crate::net::io_error(&e)),
+            Backing::Socket(s) => s
+                .shutdown(Shutdown::Write)
+                .map_err(|e| crate::net::io_error(&e)),
             _ => Err(value_error(format!(
                 "shutdown_write() on a '{}', which is not a socket",
                 self.kind.type_name()
@@ -453,7 +499,9 @@ impl OroStream {
             None => None,
             Some(s) if s > 0.0 && s.is_finite() => Some(Duration::from_secs_f64(s)),
             Some(s) => {
-                return Err(value_error(format!("set_timeout() seconds must be positive, not {s}")));
+                return Err(value_error(format!(
+                    "set_timeout() seconds must be positive, not {s}"
+                )));
             }
         };
         let mut inner = self.borrow_open_mut("set_timeout")?;
@@ -533,7 +581,10 @@ impl OroStream {
     fn borrow_open(&self, who: &str) -> VResult<Ref<'_, Inner>> {
         let inner = self.inner.borrow();
         if inner.closed {
-            return Err(value_error(format!("{who}() on a closed {}", self.kind.type_name())));
+            return Err(value_error(format!(
+                "{who}() on a closed {}",
+                self.kind.type_name()
+            )));
         }
         Ok(inner)
     }
@@ -542,7 +593,10 @@ impl OroStream {
     fn borrow_open_mut(&self, who: &str) -> VResult<RefMut<'_, Inner>> {
         let inner = self.inner.borrow_mut();
         if inner.closed {
-            return Err(value_error(format!("{who}() on a closed {}", self.kind.type_name())));
+            return Err(value_error(format!(
+                "{who}() on a closed {}",
+                self.kind.type_name()
+            )));
         }
         Ok(inner)
     }
@@ -557,7 +611,9 @@ impl OroStream {
                     "{who}() on a TcpListener, which is not a stream of bytes"
                 )));
             }
-            return Err(value_error(format!("{who}() on a stream open for writing (mode 'w')")));
+            return Err(value_error(format!(
+                "{who}() on a stream open for writing (mode 'w')"
+            )));
         }
         Ok(inner)
     }
@@ -569,7 +625,9 @@ impl OroStream {
         // `read(0)` would return b"" and look like EOF, so it is a ValueError
         // rather than a second thing b"" can mean.
         if n < 1 {
-            return Err(value_error(format!("read() size must be at least 1, not {n}")));
+            return Err(value_error(format!(
+                "read() size must be at least 1, not {n}"
+            )));
         }
         let n = n as usize;
         let mut inner = self.borrow_readable("read")?;
@@ -633,12 +691,17 @@ impl OroStream {
             return Err(value_error("read_until() delimiter must not be empty"));
         }
         if limit < 1 {
-            return Err(value_error(format!("read_until() limit must be at least 1, not {limit}")));
+            return Err(value_error(format!(
+                "read_until() limit must be at least 1, not {limit}"
+            )));
         }
         let limit = limit as usize;
         let mut inner = self.borrow_readable("read_until")?;
-        let too_long =
-            || value_error(format!("read_until() found no delimiter in the first {limit} bytes"));
+        let too_long = || {
+            value_error(format!(
+                "read_until() found no delimiter in the first {limit} bytes"
+            ))
+        };
         loop {
             match inner.fill()? {
                 // EOF: the end of a stream is not a fault, so what has arrived
@@ -878,8 +941,12 @@ impl Inner {
                 }
             }
             // A Buffer's bytes are all in `buf`, and a writer never reads.
-            Backing::Mem | Backing::Write(_) | Backing::Stdout | Backing::Stderr
-            | Backing::Listener(_) | Backing::PipeWrite(_) => {
+            Backing::Mem
+            | Backing::Write(_)
+            | Backing::Stdout
+            | Backing::Stderr
+            | Backing::Listener(_)
+            | Backing::PipeWrite(_) => {
                 return Err(runtime_error("internal: read from a stream with no source"))
             }
             _ => {}
@@ -924,7 +991,10 @@ impl Inner {
             }
             // A Buffer is already whole; `read_all` took its remainder above.
             Backing::Mem => Ok(()),
-            Backing::Write(_) | Backing::Stdout | Backing::Stderr | Backing::Listener(_)
+            Backing::Write(_)
+            | Backing::Stdout
+            | Backing::Stderr
+            | Backing::Listener(_)
             | Backing::PipeWrite(_) => {
                 return Err(runtime_error("internal: read from a stream with no source"))
             }
@@ -975,7 +1045,9 @@ impl Inner {
                 }
             }
             Backing::Listener(_) => {
-                return Err(value_error("write() on a TcpListener, which is not a stream of bytes"))
+                return Err(value_error(
+                    "write() on a TcpListener, which is not a stream of bytes",
+                ))
             }
             // A child's stdin, over the writer thread's bounded channel. A full
             // channel is `Io::Block(WRITABLE)`: the task parks and the scheduler
@@ -996,10 +1068,12 @@ impl Inner {
                     Err(TrySendError::Disconnected(_)) => {
                         Err(broken_pipe_error("[Errno 32] Broken pipe"))
                     }
-                }
+                };
             }
             Backing::Read(_) | Backing::Stdin | Backing::PipeRead(_) => {
-                return Err(value_error("write() on a stream open for reading (mode 'r')"))
+                return Err(value_error(
+                    "write() on a stream open for reading (mode 'r')",
+                ))
             }
         };
         // Everything that is not a socket wrote all of `b` or failed; there is
@@ -1022,7 +1096,6 @@ impl Inner {
         let pos = std::io::Seek::stream_position(f).ok()?;
         usize::try_from(meta.len().saturating_sub(pos)).ok()
     }
-
 }
 
 /// Whether an `io::Error` is the kernel saying "not now".
@@ -1032,7 +1105,10 @@ impl Inner {
 /// that costs one loop of the scheduler. `WouldBlock` is `EAGAIN` and
 /// `EWOULDBLOCK` both — `io::ErrorKind` already unifies the two spellings.
 fn would_block(e: &std::io::Error) -> bool {
-    matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted)
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+    )
 }
 
 /// The offset of `needle` in `hay`, or `None`.

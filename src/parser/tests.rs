@@ -64,7 +64,9 @@ fn sexp(e: &Expr) -> String {
             };
             format!("({o} {})", sexp(operand))
         }
-        Expr::Binary { op, left, right, .. } => {
+        Expr::Binary {
+            op, left, right, ..
+        } => {
             let o = match op {
                 BinOp::Add => "+",
                 BinOp::Sub => "-",
@@ -81,14 +83,18 @@ fn sexp(e: &Expr) -> String {
             };
             format!("({o} {} {})", sexp(left), sexp(right))
         }
-        Expr::BoolOp { op, left, right, .. } => {
+        Expr::BoolOp {
+            op, left, right, ..
+        } => {
             let o = match op {
                 BoolOp::And => "and",
                 BoolOp::Or => "or",
             };
             format!("({o} {} {})", sexp(left), sexp(right))
         }
-        Expr::Ternary { cond, then, orelse, .. } => {
+        Expr::Ternary {
+            cond, then, orelse, ..
+        } => {
             format!("(?: {} {} {})", sexp(cond), sexp(then), sexp(orelse))
         }
         Expr::Compare { first, rest, .. } => {
@@ -109,7 +115,9 @@ fn sexp(e: &Expr) -> String {
             s.push(')');
             s
         }
-        Expr::Call { func, args, kwargs, .. } => {
+        Expr::Call {
+            func, args, kwargs, ..
+        } => {
             let mut parts: Vec<String> = args.iter().map(sexp).collect();
             for (k, v) in kwargs {
                 parts.push(format!("{k}={}", sexp(v)));
@@ -120,7 +128,13 @@ fn sexp(e: &Expr) -> String {
         Expr::Subscript { value, index, .. } => {
             format!("([] {} {})", sexp(value), sexp(index))
         }
-        Expr::Slice { value, lower, upper, step, .. } => {
+        Expr::Slice {
+            value,
+            lower,
+            upper,
+            step,
+            ..
+        } => {
             let part = |o: &Option<Box<Expr>>| o.as_ref().map(|e| sexp(e)).unwrap_or_default();
             format!(
                 "(slice {} {}:{}:{})",
@@ -139,8 +153,10 @@ fn sexp(e: &Expr) -> String {
             format!("(tuple {})", parts.join(" "))
         }
         Expr::Dict { entries, .. } => {
-            let parts: Vec<String> =
-                entries.iter().map(|(k, v)| format!("{}:{}", sexp(k), sexp(v))).collect();
+            let parts: Vec<String> = entries
+                .iter()
+                .map(|(k, v)| format!("{}:{}", sexp(k), sexp(v)))
+                .collect();
             format!("(dict {})", parts.join(" "))
         }
     }
@@ -275,7 +291,11 @@ fn call_unpacking_is_refused_and_names_apply() {
         ("f(k=1, *rest)", "apply(f, args=xs)"),
     ] {
         let e = parse_err(src);
-        assert!(e.message.contains(fix), "for `{src}` expected `{fix}`, got: {}", e.message);
+        assert!(
+            e.message.contains(fix),
+            "for `{src}` expected `{fix}`, got: {}",
+            e.message
+        );
     }
 }
 
@@ -285,7 +305,8 @@ fn call_unpacking_is_refused_and_names_apply() {
 fn positional_after_keyword_is_rejected() {
     let e = parse_err("f(k=1, rest)");
     assert!(
-        e.message.contains("positional arguments cannot follow keyword arguments"),
+        e.message
+            .contains("positional arguments cannot follow keyword arguments"),
         "got: {}",
         e.message
     );
@@ -353,7 +374,10 @@ fn literals() {
     assert!(matches!(parse_expr("'hi'"), Expr::Str { .. }));
     assert!(matches!(parse_expr("f'x'"), Expr::FString { .. }));
     assert!(matches!(parse_expr("true"), Expr::Bool { value: true, .. }));
-    assert!(matches!(parse_expr("false"), Expr::Bool { value: false, .. }));
+    assert!(matches!(
+        parse_expr("false"),
+        Expr::Bool { value: false, .. }
+    ));
     assert!(matches!(parse_expr("null"), Expr::NoneLit { .. }));
 }
 
@@ -362,7 +386,16 @@ fn numbers_kept_as_raw_text() {
     // The spelling survives the parser intact — radix prefix, letter case and
     // separators included. `oro fmt` reprints this text, so a literal the
     // author wrote as `0xff` must not come back as `255`.
-    for src in ["0", "000", "0xff", "0XFF", "0o17", "0b1010", "1_000", "0x_dead_beef"] {
+    for src in [
+        "0",
+        "000",
+        "0xff",
+        "0XFF",
+        "0o17",
+        "0b1010",
+        "1_000",
+        "0x_dead_beef",
+    ] {
         match parse_expr(src) {
             Expr::Int { value, .. } => assert_eq!(value, src),
             other => panic!("expected int for {src}, got {other:?}"),
@@ -452,7 +485,13 @@ else:
     x = 4
 ";
     match parse_one(src) {
-        Stmt::If { cond, body, elifs, orelse, .. } => {
+        Stmt::If {
+            cond,
+            body,
+            elifs,
+            orelse,
+            ..
+        } => {
             assert_eq!(sexp(&cond), "a");
             assert_eq!(body.len(), 1);
             assert_eq!(elifs.len(), 2);
@@ -489,7 +528,9 @@ for k, v in items:
     print(k)
 ";
     match parse_one(src) {
-        Stmt::For { target, iter, body, .. } => {
+        Stmt::For {
+            target, iter, body, ..
+        } => {
             assert_eq!(sexp(&target), "(tuple k v)");
             assert_eq!(sexp(&iter), "items");
             assert_eq!(body.len(), 1);
@@ -519,7 +560,11 @@ fn semicolons_are_rejected() {
     );
     // Also rejected after a simple keyword statement.
     let e = parse_err("return 1; x = 2");
-    assert!(e.message.contains("semicolons are not supported"), "got: {}", e.message);
+    assert!(
+        e.message.contains("semicolons are not supported"),
+        "got: {}",
+        e.message
+    );
 }
 
 // --- Functions & classes ----------------------------------------------------
@@ -531,7 +576,9 @@ def f(a, b, c=1, d=2):
     return a
 ";
     match parse_one(src) {
-        Stmt::Def { name, params, body, .. } => {
+        Stmt::Def {
+            name, params, body, ..
+        } => {
             assert_eq!(name, "f");
             assert_eq!(params.len(), 4);
             assert!(params[0].default.is_none());
@@ -554,7 +601,10 @@ def f(a, b, c=1, d=2):
 fn cut_type_annotations() {
     assert_cut("def f(a: int):\n    pass\n", "no type annotations");
     assert_cut("def f(a, b: int = 1):\n    pass\n", "no type annotations");
-    assert_cut("def f(a, b, kw: str = \"x\"):\n    pass\n", "no type annotations");
+    assert_cut(
+        "def f(a, b, kw: str = \"x\"):\n    pass\n",
+        "no type annotations",
+    );
     assert_cut("def f() -> int:\n    pass\n", "no type annotations");
     assert_cut("x: int = 5", "no type annotations");
     assert_cut("x: int", "no type annotations");
@@ -613,8 +663,16 @@ fn def_varargs_is_refused_and_names_the_alternative() {
         ("def f(a, **opts):\n    pass\n", "take a dict parameter"),
     ] {
         let e = parse_err(src);
-        assert!(e.message.contains(want), "for `{src}` expected {want:?}, got: {}", e.message);
-        assert!(e.message.contains("apply(f, "), "the fix forwards with apply: {}", e.message);
+        assert!(
+            e.message.contains(want),
+            "for `{src}` expected {want:?}, got: {}",
+            e.message
+        );
+        assert!(
+            e.message.contains("apply(f, "),
+            "the fix forwards with apply: {}",
+            e.message
+        );
     }
 }
 
@@ -622,12 +680,12 @@ fn def_varargs_is_refused_and_names_the_alternative() {
 fn def_required_after_default_is_rejected() {
     let e = parse_err("def f(a=1, b):\n    pass\n");
     assert!(
-        e.message.contains("required parameter cannot follow a defaulted parameter"),
+        e.message
+            .contains("required parameter cannot follow a defaulted parameter"),
         "got: {}",
         e.message
     );
 }
-
 
 #[test]
 fn class_without_base() {
@@ -636,7 +694,9 @@ class C:
     pass
 ";
     match parse_one(src) {
-        Stmt::Class { name, base, body, .. } => {
+        Stmt::Class {
+            name, base, body, ..
+        } => {
             assert_eq!(name, "C");
             assert!(base.is_none());
             assert!(matches!(body[0], Stmt::Pass { .. }));
@@ -686,7 +746,12 @@ finally:
     cleanup()
 ";
     match parse_one(src) {
-        Stmt::Try { body, handlers, finalbody, .. } => {
+        Stmt::Try {
+            body,
+            handlers,
+            finalbody,
+            ..
+        } => {
             assert_eq!(body.len(), 1);
             assert_eq!(handlers.len(), 2);
             assert_eq!(sexp(&handlers[0].exc_type), "ValueError");
@@ -708,7 +773,11 @@ finally:
     y = 2
 ";
     match parse_one(src) {
-        Stmt::Try { handlers, finalbody, .. } => {
+        Stmt::Try {
+            handlers,
+            finalbody,
+            ..
+        } => {
             assert!(handlers.is_empty());
             assert!(finalbody.is_some());
         }
@@ -718,7 +787,10 @@ finally:
 
 #[test]
 fn raise_with_and_without_value() {
-    assert!(matches!(parse_one("raise E('boom')"), Stmt::Raise { exc: Some(_), .. }));
+    assert!(matches!(
+        parse_one("raise E('boom')"),
+        Stmt::Raise { exc: Some(_), .. }
+    ));
     assert!(matches!(parse_one("raise"), Stmt::Raise { exc: None, .. }));
 }
 
@@ -760,8 +832,14 @@ fn break_continue_pass_return() {
     assert!(matches!(parse_one("break"), Stmt::Break { .. }));
     assert!(matches!(parse_one("continue"), Stmt::Continue { .. }));
     assert!(matches!(parse_one("pass"), Stmt::Pass { .. }));
-    assert!(matches!(parse_one("return"), Stmt::Return { value: None, .. }));
-    assert!(matches!(parse_one("return 1"), Stmt::Return { value: Some(_), .. }));
+    assert!(matches!(
+        parse_one("return"),
+        Stmt::Return { value: None, .. }
+    ));
+    assert!(matches!(
+        parse_one("return 1"),
+        Stmt::Return { value: Some(_), .. }
+    ));
 }
 
 #[test]
@@ -774,8 +852,14 @@ fn return_tuple() {
 
 #[test]
 fn yield_statement() {
-    assert!(matches!(parse_one("yield"), Stmt::Yield { value: None, .. }));
-    assert!(matches!(parse_one("yield x"), Stmt::Yield { value: Some(_), .. }));
+    assert!(matches!(
+        parse_one("yield"),
+        Stmt::Yield { value: None, .. }
+    ));
+    assert!(matches!(
+        parse_one("yield x"),
+        Stmt::Yield { value: Some(_), .. }
+    ));
 }
 
 // --- line / col propagation -------------------------------------------------
@@ -854,7 +938,10 @@ fn cut_list_comprehension() {
 
 #[test]
 fn cut_dict_comprehension() {
-    assert_cut("{k: v for k in xs}", "dict comprehensions are not supported");
+    assert_cut(
+        "{k: v for k in xs}",
+        "dict comprehensions are not supported",
+    );
 }
 
 #[test]
@@ -887,7 +974,10 @@ fn cut_generator_expression() {
 
 #[test]
 fn cut_with_statement() {
-    assert_cut("with open('f') as fh:\n    pass\n", "`with` statement is not supported");
+    assert_cut(
+        "with open('f') as fh:\n    pass\n",
+        "`with` statement is not supported",
+    );
 }
 
 #[test]
@@ -913,7 +1003,10 @@ fn cut_import_star() {
 
 #[test]
 fn cut_multiple_inheritance() {
-    assert_cut("class C(A, B):\n    pass\n", "multiple inheritance is not supported");
+    assert_cut(
+        "class C(A, B):\n    pass\n",
+        "multiple inheritance is not supported",
+    );
 }
 
 #[test]
@@ -932,7 +1025,10 @@ fn cut_nonlocal_but_global_is_supported() {
     }
     match parse_one("global a, b, c") {
         Stmt::Global { names, .. } => {
-            assert_eq!(names, vec!["a".to_string(), "b".to_string(), "c".to_string()])
+            assert_eq!(
+                names,
+                vec!["a".to_string(), "b".to_string(), "c".to_string()]
+            )
         }
         other => panic!("expected a Global statement, got {other:?}"),
     }
@@ -976,9 +1072,15 @@ fn cut_is() {
 
 #[test]
 fn cut_decorators() {
-    assert_cut("@decorator\ndef f():\n    pass\n", "decorators are not supported in Oro");
+    assert_cut(
+        "@decorator\ndef f():\n    pass\n",
+        "decorators are not supported in Oro",
+    );
     // The `@` reaches the parser as a token rather than dying in the lexer.
-    assert_cut("@app.route('/')\ndef f():\n    pass\n", "decorators are not supported in Oro");
+    assert_cut(
+        "@app.route('/')\ndef f():\n    pass\n",
+        "decorators are not supported in Oro",
+    );
 }
 
 // --- Ordinary malformed input still errors gracefully (no panic) ------------
@@ -998,7 +1100,11 @@ fn missing_block_errors() {
 #[test]
 fn dangling_operator_errors() {
     let e = parse_err("1 +");
-    assert!(e.message.contains("expected an expression"), "got: {}", e.message);
+    assert!(
+        e.message.contains("expected an expression"),
+        "got: {}",
+        e.message
+    );
 }
 
 #[test]
@@ -1025,9 +1131,18 @@ fn match_parses_literals_dotted_and_wildcard() {
         other => panic!("expected a Match, got {other:?}"),
     };
     assert_eq!(cases.len(), 4);
-    assert!(matches!(cases[0].pattern, Pattern::Literal(Expr::Int { .. })));
-    assert!(matches!(cases[1].pattern, Pattern::Literal(Expr::Str { .. })));
-    assert!(matches!(cases[2].pattern, Pattern::Dotted(Expr::Attribute { .. })));
+    assert!(matches!(
+        cases[0].pattern,
+        Pattern::Literal(Expr::Int { .. })
+    ));
+    assert!(matches!(
+        cases[1].pattern,
+        Pattern::Literal(Expr::Str { .. })
+    ));
+    assert!(matches!(
+        cases[2].pattern,
+        Pattern::Dotted(Expr::Attribute { .. })
+    ));
     assert!(matches!(cases[3].pattern, Pattern::Wildcard));
 }
 
@@ -1038,9 +1153,18 @@ fn match_accepts_negative_and_special_literals() {
          case null:\n        pass\n",
     );
     if let Stmt::Match { cases, .. } = stmt {
-        assert!(matches!(cases[0].pattern, Pattern::Literal(Expr::Unary { .. })));
-        assert!(matches!(cases[1].pattern, Pattern::Literal(Expr::Bool { value: true, .. })));
-        assert!(matches!(cases[2].pattern, Pattern::Literal(Expr::NoneLit { .. })));
+        assert!(matches!(
+            cases[0].pattern,
+            Pattern::Literal(Expr::Unary { .. })
+        ));
+        assert!(matches!(
+            cases[1].pattern,
+            Pattern::Literal(Expr::Bool { value: true, .. })
+        ));
+        assert!(matches!(
+            cases[2].pattern,
+            Pattern::Literal(Expr::NoneLit { .. })
+        ));
     } else {
         panic!("expected a Match");
     }
@@ -1056,7 +1180,11 @@ fn match_is_a_soft_keyword() {
 #[test]
 fn reject_bare_capture_name() {
     let e = match_with("QUIT:\n        pass");
-    assert!(e.message.contains("bare capture name"), "got: {}", e.message);
+    assert!(
+        e.message.contains("bare capture name"),
+        "got: {}",
+        e.message
+    );
     assert!(e.message.contains("SILENTLY REBINDS"), "got: {}", e.message);
     assert!(e.message.contains("footgun"), "got: {}", e.message);
 }
@@ -1077,7 +1205,11 @@ fn reject_class_pattern() {
 #[test]
 fn reject_sequence_pattern() {
     let e = match_with("[a, b]:\n        pass");
-    assert!(e.message.contains("sequence patterns"), "got: {}", e.message);
+    assert!(
+        e.message.contains("sequence patterns"),
+        "got: {}",
+        e.message
+    );
 }
 
 #[test]
@@ -1115,7 +1247,11 @@ fn reject_metaclass_kwarg() {
 #[test]
 fn reject_multiple_inheritance() {
     let e = parse_err("class X(A, B):\n    pass\n");
-    assert!(e.message.contains("multiple inheritance"), "got: {}", e.message);
+    assert!(
+        e.message.contains("multiple inheritance"),
+        "got: {}",
+        e.message
+    );
 }
 
 #[test]
@@ -1156,7 +1292,10 @@ fn import_parses_dotted_and_alias() {
     }
     match parse_one("import a.b.c as z\n") {
         Stmt::Import { path, alias, .. } => {
-            assert_eq!(path, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+            assert_eq!(
+                path,
+                vec!["a".to_string(), "b".to_string(), "c".to_string()]
+            );
             assert_eq!(alias, Some("z".to_string()));
         }
         other => panic!("expected Import, got {other:?}"),
@@ -1171,7 +1310,10 @@ fn reject_bare_multisegment_import() {
     assert!(e.message.contains("must use `as`"), "got: {}", e.message);
     // Single-segment is fine, and the `as` form is fine.
     assert!(matches!(parse_one("import json\n"), Stmt::Import { .. }));
-    assert!(matches!(parse_one("import a.b.c as c\n"), Stmt::Import { .. }));
+    assert!(matches!(
+        parse_one("import a.b.c as c\n"),
+        Stmt::Import { .. }
+    ));
 }
 
 #[test]
@@ -1189,7 +1331,10 @@ fn reject_import_star() {
 #[test]
 fn lambda_body_precedence() {
     // The body extends through a full expression...
-    assert_eq!(sexp(&parse_expr("x => x * 2 + 1")), "(lambda (x) (+ (* x 2) 1))");
+    assert_eq!(
+        sexp(&parse_expr("x => x * 2 + 1")),
+        "(lambda (x) (+ (* x 2) 1))"
+    );
     // ...but stops at a comma, so a lambda in an argument list or a tuple does
     // not swallow what follows it.
     assert_eq!(
@@ -1197,13 +1342,19 @@ fn lambda_body_precedence() {
         "(tuple (lambda (x) (+ x 1)) 9)"
     );
     // Lambdas curry right-associatively.
-    assert_eq!(sexp(&parse_expr("a => b => a + b")), "(lambda (a) (lambda (b) (+ a b)))");
+    assert_eq!(
+        sexp(&parse_expr("a => b => a + b")),
+        "(lambda (a) (lambda (b) (+ a b)))"
+    );
 }
 
 #[test]
 fn lambda_forms_parse() {
     assert_eq!(sexp(&parse_expr("x => x * 2")), "(lambda (x) (* x 2))");
-    assert_eq!(sexp(&parse_expr("(a, b) => a + b")), "(lambda (a b) (+ a b))");
+    assert_eq!(
+        sexp(&parse_expr("(a, b) => a + b")),
+        "(lambda (a b) (+ a b))"
+    );
     assert_eq!(sexp(&parse_expr("() => 1")), "(lambda () 1)");
     // The body extends as far as it can, so a lambda in an argument list ends
     // at the comma rather than swallowing the rest of the call.

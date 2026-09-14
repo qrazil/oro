@@ -61,7 +61,11 @@ const CAP: usize = 32;
 /// `wake` after the loop is what a consumer parked for EOF needs — dropping the
 /// sender is the EOF the reader sees, and it produces no send to wake on, so the
 /// thread wakes once more on its way out.
-pub fn drain_to_stream(src: impl Read + Send + 'static, waker: Arc<mio::Waker>, label: &str) -> OroStream {
+pub fn drain_to_stream(
+    src: impl Read + Send + 'static,
+    waker: Arc<mio::Waker>,
+    label: &str,
+) -> OroStream {
     let (tx, rx) = sync_channel::<Vec<u8>>(CAP);
     let mut src = src;
     std::thread::spawn(move || {
@@ -99,7 +103,11 @@ pub fn drain_to_stream(src: impl Read + Send + 'static, waker: Arc<mio::Waker>, 
 /// EOF. A write that fails (the child closed its stdin, or exited) ends the
 /// thread; a writer parked on it is woken to find the channel disconnected and
 /// raises `BrokenPipe`, the same a dead socket peer gives.
-pub fn feed_from_stream(dst: impl Write + Send + 'static, waker: Arc<mio::Waker>, label: &str) -> OroStream {
+pub fn feed_from_stream(
+    dst: impl Write + Send + 'static,
+    waker: Arc<mio::Waker>,
+    label: &str,
+) -> OroStream {
     let (tx, rx) = sync_channel::<Vec<u8>>(CAP);
     let mut dst = dst;
     std::thread::spawn(move || {
@@ -146,7 +154,13 @@ pub struct Proc {
 }
 
 impl Proc {
-    pub fn new(args: Vec<String>, child: Child, stdin: Value, stdout: Value, stderr: Value) -> Proc {
+    pub fn new(
+        args: Vec<String>,
+        child: Child,
+        stdin: Value,
+        stdout: Value,
+        stderr: Value,
+    ) -> Proc {
         Proc {
             args,
             child: RefCell::new(Some(child)),
@@ -172,7 +186,9 @@ impl Proc {
         if self.code.get().is_some() || self.code_rx.borrow().is_some() {
             return;
         }
-        let Some(mut child) = self.child.borrow_mut().take() else { return };
+        let Some(mut child) = self.child.borrow_mut().take() else {
+            return;
+        };
         let (tx, rx) = sync_channel::<i64>(1);
         *self.code_rx.borrow_mut() = Some(rx);
         std::thread::spawn(move || {
@@ -188,7 +204,11 @@ impl Proc {
         if let Some(c) = self.code.get() {
             return Some(c);
         }
-        let got = self.code_rx.borrow().as_ref().and_then(|rx| rx.try_recv().ok());
+        let got = self
+            .code_rx
+            .borrow()
+            .as_ref()
+            .and_then(|rx| rx.try_recv().ok());
         if let Some(c) = got {
             self.code.set(Some(c));
         }
@@ -216,7 +236,10 @@ impl Proc {
 /// An `ExitStatus` as one integer: the exit code, or `-signal` for a child a
 /// signal killed (which has no code), matching CPython.
 fn exit_code(status: &ExitStatus) -> i64 {
-    status.code().map(i64::from).unwrap_or_else(|| signal_code(status))
+    status
+        .code()
+        .map(i64::from)
+        .unwrap_or_else(|| signal_code(status))
 }
 
 /// A child killed by a signal has no exit code; report `-signal` as CPython

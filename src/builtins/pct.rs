@@ -46,7 +46,10 @@ pub fn build() -> Value {
     let mut map: HashMap<Rc<str>, Value> = HashMap::new();
     map.insert(Rc::from("encode"), builtin("_pct.encode", encode));
     map.insert(Rc::from("decode"), builtin("_pct.decode", decode));
-    Value::Module(Rc::new(Module { name: Rc::from("_pct"), members: RefCell::new(map) }))
+    Value::Module(Rc::new(Module {
+        name: Rc::from("_pct"),
+        members: RefCell::new(map),
+    }))
 }
 
 fn builtin(name: &'static str, func: fn(Vec<Value>) -> VResult<Value>) -> Value {

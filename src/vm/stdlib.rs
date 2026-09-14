@@ -24,7 +24,10 @@ const MODULES: &[(&str, &str)] = &[
 /// callers must check this before falling back to the script-directory
 /// search path.
 pub fn source_for(path: &str) -> Option<&'static str> {
-    MODULES.iter().find(|(name, _)| *name == path).map(|(_, src)| *src)
+    MODULES
+        .iter()
+        .find(|(name, _)| *name == path)
+        .map(|(_, src)| *src)
 }
 
 /// How a diagnostic names a frame from embedded module `path`.
