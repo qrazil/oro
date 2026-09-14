@@ -165,7 +165,8 @@ Implemented and working today:
 
 - **Values:** `int` (inline `i64`, promoting to arbitrary-precision bignum on
   overflow), `float`, `bool`, `str`, `bytes`, `null`, `list`, `tuple`, `dict`,
-  `set`, `range`, and functions (including closures over *read* access).
+  `range`, and functions (including closures over *read* access). There is no
+  `set` type — `set()` raises, pointing at a `dict` of `true` values.
 - **Numeric literals:** decimal, `0x` hex, `0o` octal, `0b` binary (prefix
   letters and hex digits case-insensitive), `1e10` / `1.5e-3` / `.5` floats, and
   `_` as a digit separator anywhere between two digits — `1_000`, `0xff_ff`,
@@ -230,11 +231,12 @@ Implemented and working today:
   `{x:,}`, alignment (`<^>`), sign/`#`/`0` flags, the `!r`/`!s` conversions, and
   nested specs like `{x:.{p}f}`.
 - **Builtins:** `print` (with `sep=`/`end=`), `len`, `repr`, `type`, `abs`,
-  `min`, `max`, `round`, `chr`, `ord`, `open`, and the three concurrency names.
+  `clamp`, `round`, `chr`, `ord`, `open`, and the three concurrency names.
   **A builtin takes scalars; a collection method takes a collection** — that is
-  the line, and it is why the list is short. `min(a, b)` and `max(a, b)` take
-  two or more *values*; the whole-sequence form is `xs.min()`. `len` is the one
-  name on both sides of the line, and the reason is stated where the cut is
+  the line, and it is why the list is short. `min`/`max` are collection
+  reductions only (`xs.min()` / `xs.max()`); the two-argument scalar form was
+  cut for `clamp(v, min=…, max=…)`, which reads as the bound it is. `len` is the
+  one name on both sides of the line, and the reason is stated where the cut is
   (below). See `corpus/divergence/65_builtin_method_line.oro`.
 - **Type keywords:** `bool`, `int`, `float`, `str`, `bytes`, `list`, `tuple`,
   `dict`, `range`, and the runtime handles `File`, `Buffer`, `TcpStream`,
@@ -583,13 +585,15 @@ Each of these is omitted on purpose. The reason matters more than the list.
   were found and fixed by making each pair share one body, which is the right
   repair; one spelling is what keeps it repaired.
 
-  **`min` and `max` are narrowed rather than cut**, because the variadic form
-  is a different operation and has no chain spelling. `std/http.oro` clamps a
-  backoff with `min(backoff * 2, _ACCEPT_BACKOFF_MAX)`, and
-  `[backoff * 2, _ACCEPT_BACKOFF_MAX].min()` allocates a list to compare two
-  floats and reads worse — the same ergonomics test `rsplit` failed. So
-  `min(a, b)` stays and `min(xs)` becomes `xs.min()`, which leaves `min` with
-  one meaning where it had two.
+  **`min` and `max` are collection reductions, and the two-argument scalar form
+  is cut for `clamp`.** `min(a, b)` had two readings — the extreme of two values,
+  and (far more often) a bound — and the bound reads backwards: `max(v, 0)` makes
+  you translate "the maximum of these two" into "floor at zero", and two-sided
+  clamping was the nest `min(max(v, 0), 100)`, easy to write inside-out. So the
+  bound became `clamp(v, min=…, max=…)` — `std/http.oro` caps its backoff with
+  `clamp(backoff * 2, max=_ACCEPT_BACKOFF_MAX)` — and `min`/`max` keep the one
+  job a bound cannot express, reducing a whole collection (`xs.min()`,
+  `xs.max()`). Each name has one meaning where `min` had two.
 
   **`len` is the one exception, and it is named rather than quietly kept.** It
   is the only one of the nine that reaches `str` and `bytes`, which are
@@ -1428,7 +1432,7 @@ different.
 | `enumerate(xs)` / `xs.enumerate()` | `for i, x in xs` | Gone entirely: every `for` yields `(index, value)`. A chain has no index — needing one is a reason to use a loop |
 | `sorted(xs, key=f, reverse=true)` | `xs.sort(f, reverse=true)` | The key is the operand, so it is positional; `reverse=` is a stable descending sort, `.reverse()` is not |
 | `xs.sort(key=f)` / `xs.reverse()` (Python's in-place) | `xs = xs.sort(f)` / `xs = xs.reverse()` | **Silent change:** Oro's `sort`/`reverse` return a new collection and do not mutate — rebind. There is no in-place form; `sorted`/`sort_in_place`/`reversed` all raise, naming these. |
-| `min(xs)` / `max(xs)` | `xs.min()` / `xs.max()` | `min(a, b)` over two or more *values* is unchanged |
+| `min(a, b)` / `max(a, b)` | `clamp(v, min=…, max=…)` for a bound; `[a, b].min()` for two values | The scalar form is **cut**; `min`/`max` are reductions (`xs.min()`) |
 | `sorted("ba")` / `min(b"ba")` | `"ba".to_list().sort(x => x)` | A `str` and a `bytes` are not collections; `to_list()` is the bridge |
 
 `f"{x}"` is unchanged and is usually the better replacement for `str(x)` in

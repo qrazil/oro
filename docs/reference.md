@@ -2058,7 +2058,7 @@ The takeaway a Python reader needs: **rebind.** `a = a.sort(f)`, `a = a.reverse(
 | `any(xs)` / `all(xs)` | `xs.any(x => x)` / `xs.all(x => x)` | The predicate is required; truthiness is spelled out |
 | `enumerate(xs)` / `xs.enumerate()` | `for i, x in xs` | Gone: every `for` yields `(index, value)`. A chain has no index — needing one is a reason to use a loop |
 | `zip(a, b)` | `a.zip(b)` | as `sorted`; takes any number of further sequences, eager |
-| `min(xs)` / `max(xs)` | `xs.min()` / `xs.max()` | `min(a, b)` over two or more values is unchanged |
+| `min(a, b)` / `max(a, b)` | `clamp(v, min=…, max=…)` for a bound; `[a, b].min()` for two values | The scalar form is **cut**; `min`/`max` are reductions (`xs.min()`) |
 | `sorted("ba")` / `min(b"ba")` | `"ba".to_list().sort(x => x)` | A `str`/`bytes` is not a collection; `to_list()` is the bridge |
 | `xs.count(v)` | `xs.count(x => x == v)` | The collection `count` takes a predicate |
 | `int(s)` / `str(x)` / `float(s)` / `bool(x)` | `s.to_int()` / `f"{x}"` or `x.to_str()` / `s.to_float()` / `x.to_bool()` | Type names are not callable; conversion is a method that chains |

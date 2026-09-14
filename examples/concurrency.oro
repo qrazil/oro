@@ -38,7 +38,7 @@ def worker(name, jobs, results):
     done = 0
     for _, job in jobs:
         results.send((name, job, handle(job)))
-        done = done + 1
+        done += 1
     return done
 
 

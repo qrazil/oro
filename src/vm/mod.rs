@@ -1974,12 +1974,17 @@ impl Vm {
                             inst.fields.borrow_mut().insert(name.clone(), value);
                         }
                         other => {
+                            // Only an instance has settable attributes; a class,
+                            // module, or scalar does not. An `AttributeError`,
+                            // the type an attribute operation raises, rather than
+                            // a bare `RuntimeError`.
                             let msg = format!(
-                                "cannot set attribute '{}' on '{}' object",
+                                "cannot set attribute '{}' on a '{}' — only an instance has \
+                                 settable attributes",
                                 name,
                                 other.type_label()
                             );
-                            return Err(self.err(runtime_error(msg)));
+                            return Err(self.err(attribute_error(msg)));
                         }
                     }
                 }
@@ -4274,7 +4279,7 @@ impl Vm {
                 Value::None => {}
                 other => {
                     return Err(self.err(type_error(format!(
-                        "print() argument '{k}' must be str or None, not '{}'",
+                        "print() argument '{k}' must be str or null, not '{}'",
                         other.type_name()
                     ))))
                 }
@@ -5474,7 +5479,7 @@ impl Vm {
                 // __init__ must return None; the instance is already on the
                 // caller's stack as the constructor result.
                 if !matches!(value, Value::None) {
-                    return Err(self.err(type_error("__init__() should return None")));
+                    return Err(self.err(type_error("__init__() should return null")));
                 }
             }
             ReturnAction::DrivePrint => {

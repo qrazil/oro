@@ -58,17 +58,17 @@ for _, path in paths:
     try:
         counts = measure(path)
         for _, i in range(3):
-            totals[i] = totals[i] + counts[i]
+            totals[i] += counts[i]
         if len(flags) > 0:
             print(f"{counts[0]:>8}  {path}")
         else:
             print(f"{counts[0]:>8}{counts[1]:>8}{counts[2]:>9}  {path}")
     except FileNotFoundError:
         warn(f"{path}: no such file")
-        failed = failed + 1
+        failed += 1
     except PermissionError:
         warn(f"{path}: permission denied")
-        failed = failed + 1
+        failed += 1
 
 if len(paths) - failed > 1:
     if len(flags) > 0:

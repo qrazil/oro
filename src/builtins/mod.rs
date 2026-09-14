@@ -37,7 +37,6 @@ pub fn lookup(name: &str) -> Option<Value> {
         "clamp" => bi_clamp,
         "repr" => bi_repr,
         "open" => bi_open,
-        "set" => bi_set,
         "round" => bi_round,
         "chr" => bi_chr,
         "ord" => bi_ord,
@@ -70,7 +69,6 @@ fn intern(name: &str) -> &'static str {
         "clamp" => "clamp",
         "repr" => "repr",
         "open" => "open",
-        "set" => "set",
         "round" => "round",
         "chr" => "chr",
         "ord" => "ord",
@@ -371,12 +369,6 @@ fn bi_repr(args: Vec<Value>) -> VResult<Value> {
     Ok(Value::str(args[0].repr()))
 }
 
-fn bi_set(_args: Vec<Value>) -> VResult<Value> {
-    Err(runtime_error("set() is not supported in Oro — sets are cut. Use a dict for membership \
-         (`{k: True}`, then `k in d`), or dedup with a loop that skips keys already in a dict; \
-         a Set data structure may return in the stdlib."
-        ))
-}
 
 fn bi_open(args: Vec<Value>) -> VResult<Value> {
     open_with(args, &[])
@@ -945,6 +937,11 @@ pub fn cut_global_message(name: &str) -> Option<&'static str> {
              takes a collection: use `a.zip(b)`, which takes any number of further \
              sequences"
         }
+        "set" => {
+            "`set` is not defined in Oro — there is no set type. Use a `dict` of `true` values \
+             for membership: `{k: true}`, then `k in d`; dedup with a loop that skips keys \
+             already in the dict. A set type may return in the stdlib."
+        }
         "min" | "max" => {
             "`min`/`max` are collection reductions in Oro — `xs.min()` / `xs.max()`. The \
              two-argument scalar form is cut: use `clamp(v, min=…, max=…)` for a bound (which \
@@ -1276,7 +1273,7 @@ fn stream_method(
                 [Value::Float(f)] => Some(*f),
                 [other] => {
                     return Err(type_error(format!(
-                        "set_timeout() argument must be a number of seconds or None, not '{}'",
+                        "set_timeout() argument must be a number of seconds or null, not '{}'",
                         other.type_name()
                     )))
                 }

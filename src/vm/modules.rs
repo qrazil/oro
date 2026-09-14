@@ -456,7 +456,7 @@ fn sys_exit(args: Vec<Value>) -> VResult<Value> {
         [Value::Int(n)] => *n,
         [Value::Bool(b)] => *b as i64,
         [] => return Err(type_error("sys.exit() missing its exit code — sys.exit(0) for success")),
-        [_] => return Err(type_error("sys.exit() code must be an int or None in this build")),
+        [_] => return Err(type_error("sys.exit() code must be an int or null in this build")),
         _ => {
             return Err(type_error(format!(
                 "sys.exit() takes 1 argument(s) but {} were given",

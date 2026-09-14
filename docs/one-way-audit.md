@@ -277,6 +277,13 @@ Applied:
   and reads worse. That is the ergonomics test failing, so `min(a, b)` stays.
   What goes is the *single-iterable* form: `min(xs)` becomes `xs.min()`, and
   `min` becomes a two-or-more-argument builtin with one meaning instead of two.
+
+  > **Superseded (2026):** the scalar `min(a, b)`/`max(a, b)` was cut after all.
+  > The bound reading — the common one — became `clamp(v, min=…, max=…)`, which
+  > reads as the bound it is (the backoff above is now
+  > `clamp(backoff * 2, max=_ACCEPT_BACKOFF_MAX)`), and `min`/`max` keep only the
+  > reduction (`xs.min()`). "Narrow to two meanings" turned out to be one meaning
+  > too many; `clamp` is the spelling that made cutting it clean.
 - **`sorted` — cut the builtin**, and see §3, which is a bigger mess than this
   one. Until then the builtin means what the method means: it preserves the
   argument's shape.
