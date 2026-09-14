@@ -1118,7 +1118,7 @@ b = d.to_list().map(label)
 g = d.reduce(0, fold)
 h = d.to_list().map(s.pair)
 i = d.map(s.whole)
-j = {3: 1, 0: 0}.count(max)
+j = {3: 1, 0: 0}.count((k, v) => k)
 k = [(1, 2), (3, 4, 5)].map(len)
 out = f"{a} {b} {g} {h} {i} {j} {k}"
 "#;
@@ -1232,21 +1232,30 @@ fn the_six_duplicate_builtins_are_cut_naming_their_methods() {
 /// `min(a, b)` is the half that has no chain spelling, so it stays; `min(xs)`
 /// is the half that duplicates `xs.min()`, so it goes.
 #[test]
-fn min_and_max_keep_only_the_variadic_scalar_form() {
-    assert_eq!(int(&eval("r = min(3, 1)\n")), 1);
-    assert_eq!(int(&eval("r = max(3, 1)\n")), 3);
-    assert_eq!(int(&eval("r = min(5, 2, 9)\n")), 2);
-    for call in ["r = min([3, 1])\n", "r = max([3, 1])\n"] {
+fn min_and_max_reduce_and_the_scalar_form_is_cut() {
+    // `min`/`max` are collection reductions — the methods.
+    assert_eq!(int(&eval("r = [3, 1, 2].min()\n")), 1);
+    assert_eq!(int(&eval("r = [3, 1, 2].max()\n")), 3);
+    // The two-argument scalar form is cut; the message names both replacements.
+    for call in ["r = min(3, 1)\n", "r = max(3, 1)\n"] {
         let e = run_err(call);
-        assert!(e.message.contains("two or more values"), "got: {}", e.message);
-        assert!(e.message.contains(".min()") || e.message.contains(".max()"),
-            "the replacement must be named: {}", e.message);
+        assert!(e.message.contains("clamp"), "names clamp for a bound: {}", e.message);
+        assert!(
+            e.message.contains(".min()") || e.message.contains(".max()"),
+            "names the reduction method: {}",
+            e.message
+        );
     }
-    // A receiver of instances takes the VM's frame-driven path, which has to
-    // narrow the same way or the two arities disagree about what they accept.
-    let src = "class V:\n    def __init__(self, n):\n        self.n = n\n\n    def __lt__(self, o):\n        return self.n < o.n\n\nr = min([V(2), V(1)])\n";
-    let e = run_err(src);
-    assert!(e.message.contains("two or more values"), "got: {}", e.message);
+    // A receiver of instances still reduces through the VM's frame-driven path,
+    // driving the user `__lt__` — the capability the scalar form used to carry
+    // now lives only on the method.
+    let src = "class V:\n    def __init__(self, n):\n        self.n = n\n\n    def __lt__(self, o):\n        return self.n < o.n\n\nr = [V(2), V(1)].min()\nr = r.n\n";
+    assert_eq!(int(&eval_var(src, "r")), 1);
+    // `clamp` is the bound: floor, cap, and both.
+    assert_eq!(int(&eval("r = clamp(-5, min=0)\n")), 0);
+    assert_eq!(int(&eval("r = clamp(150, max=100)\n")), 100);
+    assert_eq!(int(&eval("r = clamp(50, min=0, max=100)\n")), 50);
+    assert!(run_err("r = clamp(5)\n").message.contains("at least one of min= or max="));
 }
 
 /// `len` is the single exception, and both spellings still work.

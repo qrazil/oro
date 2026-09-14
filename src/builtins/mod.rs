@@ -34,8 +34,7 @@ pub fn lookup(name: &str) -> Option<Value> {
         "len" => bi_len,
         "type" => bi_type,
         "abs" => bi_abs,
-        "min" => bi_min,
-        "max" => bi_max,
+        "clamp" => bi_clamp,
         "repr" => bi_repr,
         "open" => bi_open,
         "set" => bi_set,
@@ -68,8 +67,7 @@ fn intern(name: &str) -> &'static str {
         "len" => "len",
         "type" => "type",
         "abs" => "abs",
-        "min" => "min",
-        "max" => "max",
+        "clamp" => "clamp",
         "repr" => "repr",
         "open" => "open",
         "set" => "set",
@@ -276,8 +274,65 @@ pub fn call_builtin_kw(
     match name {
         "round" => round_with(args, kwargs),
         "open" => open_with(args, kwargs),
+        "clamp" => clamp_with(args, kwargs),
         _ => Err(type_error(format!("{name}() takes no keyword arguments"))),
     }
+}
+
+/// `clamp(v, min=lo, max=hi)` — bound `v` below by `lo`, above by `hi`, either
+/// or both. It reads as what it means ("floor at zero", "cap at 100") where
+/// `max(v, 0)` makes the reader translate "the maximum of these two" into a
+/// bound, and it replaces the backwards-writable nesting `min(max(v, 0), 100)`.
+/// At least one bound is required — clamping to nothing is a no-op and almost
+/// certainly a mistake.
+fn clamp_with(args: Vec<Value>, kwargs: &[(String, Value)]) -> VResult<Value> {
+    exactly(&args, 1, "clamp")?;
+    let [lo, hi] = bind_kwargs("clamp", kwargs, ["min", "max"])?;
+    if lo.is_none() && hi.is_none() {
+        return Err(type_error(
+            "clamp() needs at least one of min= or max= — clamp(v, min=0), clamp(v, max=100), \
+             or both"
+                .to_string(),
+        ));
+    }
+    let mut v = args.into_iter().next().expect("one positional");
+    // Floor first, then cap. `try_compare` answers `None` only for a receiver
+    // whose ordering needs a user `__lt__` and so the VM — clamp is native, so
+    // it declines that cleanly rather than leaking the internal sentinel. Bounds
+    // are numbers in every real use; the collection reductions keep `__lt__`.
+    if let Some(lo) = lo {
+        match v.try_compare(lo, "<")? {
+            Some(std::cmp::Ordering::Less) => v = lo.clone(),
+            Some(_) => {}
+            None => return Err(clamp_unorderable(&v, lo)),
+        }
+    }
+    if let Some(hi) = hi {
+        match v.try_compare(hi, ">")? {
+            Some(std::cmp::Ordering::Greater) => v = hi.clone(),
+            Some(_) => {}
+            None => return Err(clamp_unorderable(&v, hi)),
+        }
+    }
+    Ok(v)
+}
+
+fn clamp_unorderable(a: &Value, b: &Value) -> VErr {
+    type_error(format!(
+        "clamp() needs values it can order with `<`, not '{}' and '{}'",
+        a.type_name(),
+        b.type_name()
+    ))
+}
+
+/// `clamp(v)` with no bounds — the no-keyword path lands here. Always an error:
+/// a clamp with neither bound is a no-op nobody means.
+fn bi_clamp(_args: Vec<Value>) -> VResult<Value> {
+    Err(type_error(
+        "clamp() needs at least one of min= or max= — clamp(v, min=0), clamp(v, max=100), \
+         or both"
+            .to_string(),
+    ))
 }
 
 // --- Builtins ---------------------------------------------------------------
@@ -404,51 +459,17 @@ fn bi_abs(args: Vec<Value>) -> VResult<Value> {
     }
 }
 
-/// What `min(xs)` / `max(xs)` answer with now that only the scalar form is
-/// left. Named rather than inlined because the VM's frame-driven path
-/// (`do_extreme`, for elements with a user `__lt__`) has to give the same
-/// answer as the native one.
+/// The message for a bare `min`/`max` used as a scalar call. Both are now
+/// **only** collection reductions (`xs.min()` / `xs.max()`); the two-argument
+/// scalar forms were cut in favour of `clamp`, which reads as the bound it is
+/// (`clamp(v, min=0)` rather than `max(v, 0)`). Kept as a named message because
+/// the chain-terminal ordering path (`ord_callback`) refers to it.
 pub fn extreme_arity_message(who: &str) -> String {
     format!(
-        "{who}() takes two or more values in Oro — a builtin takes scalars and a \
-         collection method takes a collection, so the whole-sequence form is \
-         `xs.{who}()`. `{who}(a, b)` is unchanged."
+        "`{who}()` is a collection reduction in Oro — write `xs.{who}()`. For a bound, \
+         `clamp(v, min=…, max=…)` reads as what it means; for the extreme of two values, \
+         `[a, b].{who}()`."
     )
-}
-
-fn bi_min(args: Vec<Value>) -> VResult<Value> {
-    fold_extreme(args, "min", std::cmp::Ordering::Less)
-}
-
-fn bi_max(args: Vec<Value>) -> VResult<Value> {
-    fold_extreme(args, "max", std::cmp::Ordering::Greater)
-}
-
-/// Shared core of `min`/`max`: the extreme of two or more *scalars*.
-///
-/// The single-iterable form is cut. `min(xs)` and `xs.min()` were the same
-/// operation spelled twice, and the method is the half the rule keeps — but
-/// `min(a, b)` is not that operation at all: `[backoff * 2, _MAX].min()`
-/// allocates a list to clamp a float and reads worse, which is the ergonomics
-/// test failing, so the variadic scalar form stays and `min` becomes a
-/// two-or-more-argument builtin with one meaning instead of two.
-fn fold_extreme(args: Vec<Value>, who: &str, want: std::cmp::Ordering) -> VResult<Value> {
-    let items = match args.len() {
-        0 => return Err(value_error(format!("{who}() expected at least 1 argument"))),
-        1 => return Err(type_error(extreme_arity_message(who))),
-        _ => args,
-    };
-    let mut it = items.into_iter();
-    let mut best =
-        it.next().ok_or_else(|| value_error(format!("{who}() arg is an empty sequence")))?;
-    for v in it {
-        if ord_or_defer(&v, &best, if want == std::cmp::Ordering::Less { "<" } else { ">" })?
-            == want
-        {
-            best = v;
-        }
-    }
-    Ok(best)
 }
 
 /// The shape `sorted(x)` rebuilds — for the native path and, through
@@ -923,6 +944,12 @@ pub fn cut_global_message(name: &str) -> Option<&'static str> {
             "`zip` is not defined in Oro — a builtin takes scalars and a collection method \
              takes a collection: use `a.zip(b)`, which takes any number of further \
              sequences"
+        }
+        "min" | "max" => {
+            "`min`/`max` are collection reductions in Oro — `xs.min()` / `xs.max()`. The \
+             two-argument scalar form is cut: use `clamp(v, min=…, max=…)` for a bound (which \
+             reads as the bound it is, where `max(v, 0)` reads backwards), or `[a, b].min()` \
+             for the extreme of two values"
         }
         _ => return None,
     })

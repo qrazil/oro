@@ -1,0 +1,25 @@
+# INTENTIONAL DIVERGENCE. `clamp(v, min=…, max=…)` is Oro's bound — there is no
+# CPython equivalent, and it replaces the two-argument scalar `min`/`max`, which
+# are cut. `clamp` reads as the bound it is ("floor at zero", "cap at 100")
+# where `max(v, 0)` made the reader translate "the maximum of these two" into a
+# bound, and it replaces the backwards-writable nesting `min(max(v, 0), 100)`.
+# min/max keep only the collection-reduction form (`xs.min()` / `xs.max()`).
+
+# floor, cap, and both
+print(clamp(-5, min=0), clamp(5, min=0), clamp(150, max=100), clamp(5, max=100))
+print(clamp(50, min=0, max=100), clamp(-5, min=0, max=100), clamp(150, min=0, max=100))
+# floats, and a bound that is itself the answer
+print(clamp(2.5, min=0.0, max=1.0), clamp(0.5, min=0.0, max=1.0))
+
+# min/max reduce; the scalar form is a NameError naming the replacements.
+print([3, 1, 2].min(), [3, 1, 2].max())
+try:
+    x = min(3, 1)
+except NameError as e:
+    print(e)
+
+# neither bound is a mistake, not a no-op.
+try:
+    x = clamp(5)
+except TypeError as e:
+    print(e)

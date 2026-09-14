@@ -55,21 +55,18 @@ except NameError as e:
 
 print("---")
 
-# --- min/max: narrowed, not cut ----------------------------------------------
-# The variadic scalar form is load-bearing and has no chain spelling.
-# `std/http.oro` clamps a backoff with it — `min(backoff * 2, _MAX)` — and
-# `[backoff * 2, _MAX].min()` allocates a list to compare two floats and reads
-# worse. That is the ergonomics test, so `min(a, b)` stays and `min(xs)` goes.
-print(min(3, 1), max(3, 1), min(1.5, 2, 0.5), max("a", "b"))
+# --- min/max reduce; clamp bounds --------------------------------------------
+# The scalar `min(a, b)` / `max(a, b)` form is cut: `xs.min()` / `xs.max()`
+# reduce, and `clamp(v, min=…, max=…)` bounds — reading as the bound it is,
+# where `max(v, 0)` read backwards. `std/http.oro` caps a backoff with
+# `clamp(backoff * 2, max=_MAX)`.
+print([3, 1].min(), [3, 1].max(), [1.5, 2, 0.5].min(), ["a", "b"].max())
+print(clamp(5, min=0, max=10), clamp(-3, min=0), clamp(99, max=10))
 
+# The cut scalar form is a NameError, raised where it is written.
 try:
-    min([3, 1])
-except TypeError as e:
-    print(e)
-
-try:
-    max([3, 1])
-except TypeError as e:
+    x = min(3, 1)
+except NameError as e:
     print(e)
 
 print("---")

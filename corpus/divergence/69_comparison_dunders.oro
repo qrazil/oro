@@ -29,8 +29,9 @@
 #   xs = xs.sort(x => x)                     ->  xs.sort(...)
 #   xs.min() / xs.max()                      ->  min(xs) / max(xs)
 #
-# `min(V(2), V(1), V(3))` is unchanged: two or more *values* is the form the
-# builtin keeps, and it has no chain spelling.
+# `min`/`max` are reductions only — `vs.min()` below drives a user `__lt__`
+# through the VM, exactly as the cut scalar `min(a, b)` used to. The scalar
+# form is gone (use `clamp` for a bound, `[a, b].min()` for two values).
 
 
 class Cell:
@@ -180,7 +181,6 @@ print(V(1) < V(2), V(2) < V(1), V(2) > V(1))
 print(vs.sort(v => v))
 print(vs.sort(v => v, reverse=true))
 print(vs.min(), vs.max())
-print(min(V(2), V(1), V(3)), max(V(2), V(1), V(3)))
 mutable = [V(3), V(1), V(2)]
 mutable = mutable.sort(v => v)
 print(mutable)

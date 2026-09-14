@@ -1400,7 +1400,7 @@ def serve(addr, handler, ready=null, max_conns=_MAX_CONNS, max_requests=_MAX_REQ
                 _drain_live(live, tally, drain)
                 raise failed
             time.sleep(backoff)
-            backoff = min(backoff * 2, _ACCEPT_BACKOFF_MAX)
+            backoff = clamp(backoff * 2, max=_ACCEPT_BACKOFF_MAX)
             continue
         if conn == null:
             continue

@@ -293,7 +293,7 @@ print(apply(area, args=dims), apply(area, args=dims, kwargs=opts))
 Because `args` binds by position it can only fill required parameters, and
 because `kwargs` binds by name it can only fill defaulted ones — the rule holds
 through `apply` too. A handful of builtins are variadic *natively*, because
-being variadic is what they are: `print`, `min`, `max`, `xs.zip(...)`, `spawn`,
+being variadic is what they are: `print`, `xs.zip(...)`, `spawn`,
 `os.path.join`, and `http.Router().add` chaining.
 ---
 
@@ -310,7 +310,7 @@ print(*values, sep=" ", end="\n")   write a line; str only, no file=/flush=
 len(x)                              length of str/bytes/list/tuple/dict/range/__len__
 type(x)                             the type, for `type(x) == str`
 abs(x)                              magnitude
-min(a, b, ...) / max(a, b, ...)     extreme of two or more scalars (not of one iterable)
+clamp(v, min=, max=)                bound v below/above; at least one bound
 round(x, ndigits=)                  int without ndigits, float with it; ties to even
 repr(x)                             the repr, running __repr__
 chr(n) / ord(c)                     codepoint <-> one-character str
@@ -1063,8 +1063,7 @@ These are all of them. There are no other global functions.
 | `len(x)` | `int` | `TypeError` if `x` has no length | `str`, `bytes`, `list`, `tuple`, `dict`, `range`, and a class with `__len__`. Not a `Channel`. |
 | `type(x)` | the type (a `Type`, or the class for an instance) | — | `type(x) == str` is the type test. |
 | `abs(x)` | `int` / `float` | `TypeError` on a non-number | |
-| `min(a, b, …)` | the smallest | `TypeError` on one argument, `ValueError` on none | **CPython trap**: `min(xs)` over one iterable is cut — that is `xs.min()`. No `key=`. |
-| `max(a, b, …)` | the largest | as `min` | as `min` |
+| `clamp(v, min=, max=)` | `v` bounded below by `min` and above by `max` | `TypeError` when neither bound is given, or when a bound is not orderable with `v` | Keyword bounds, either or both. `clamp(v, min=0)` is a floor, `clamp(v, max=100)` a cap. Replaces the cut two-argument `min`/`max` and the backwards-writable `min(max(v, 0), 100)`. |
 | `round(x, ndigits=)` | `int` with no `ndigits`, `float` with it | `TypeError` on a non-number | Banker's rounding, as CPython. `round(2.5)` is `2`; `round(2.5, ndigits=0)` is `2.0`. |
 | `repr(x)` | `str` | — | Runs `__repr__`; cycle-safe on containers. |
 | `chr(n)` | one-character `str` | `ValueError` out of range | |
@@ -1077,7 +1076,7 @@ These are all of them. There are no other global functions.
 | `set(...)` | — | always `RuntimeError` | Exists only to say sets are cut. |
 
 ```oro
-print(len("abc"), type(1.5), abs(-3), min(3, 1, 2), max(3, 1, 2))
+print(len("abc"), type(1.5), abs(-3), clamp(15, min=0, max=10), clamp(-3, min=0))
 print(round(2.5), round(2.675, ndigits=2), chr(65), ord("A"))
 print(repr("a'b"), repr([1, "x"]), repr(b"\x00"))
 print(1, 2, sep="-", end="!\n")
@@ -1191,7 +1190,8 @@ for _, x in b"ab":
 `int` and `float`. Integers are inline `i64` promoting to arbitrary precision on
 overflow — you never silently wrap. Numbers have **no methods of their own**
 beyond the conversions in [5.2](#52-conversions-on-every-value); arithmetic is
-operators, and `abs`, `min`, `max` and `round` are free builtins.
+operators, and `abs`, `clamp` and `round` are free builtins (`min`/`max` are
+collection reductions — `xs.min()` / `xs.max()`).
 
 ```oro
 n = 5

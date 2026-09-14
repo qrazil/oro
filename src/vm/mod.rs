@@ -2882,13 +2882,6 @@ impl Vm {
                     // "wait". See `sched::Vm::do_dial`.
                     "net.dial" => return self.do_dial(args, kwargs),
                     "print" => return self.do_print(args, kwargs).map(|()| Step::Next),
-                    // `min`/`max` decide with `<`, which may be a user
-                    // `__lt__` — so they are driven from the VM, which is the
-                    // only layer that can run one. Elements with no dunder
-                    // still take the native path, one branch further in.
-                    "min" | "max" if ord_needs_vm(&args) => {
-                        return self.do_extreme(b.name, args, kwargs)
-                    }
                     // proc.run is finished here so it can take keyword args and
                     // build a Completed instance.
                     "proc.run" => return self.do_proc_run(args, kwargs).map(|()| Step::Next),
@@ -4118,36 +4111,6 @@ impl Vm {
                 }
             }
         }
-    }
-
-    /// `min(...)` / `max(...)`. With one argument it ranges over an iterable,
-    /// with several over the arguments themselves — and either way the `<` it
-    /// decides with may be a user `__lt__`.
-    fn do_extreme(
-        &mut self,
-        who: &'static str,
-        args: Vec<Value>,
-        kwargs: Vec<(String, Value)>,
-    ) -> Result<Step, VmError> {
-        if let Some(callee) = crate::builtins::lookup(who) {
-            if let Some(step) = self.materialize_generator_args(&callee, &args, &kwargs)? {
-                return Ok(step);
-            }
-        }
-        if !kwargs.is_empty() {
-            return Err(self.err(type_error(format!("{who}() takes no keyword arguments"))));
-        }
-        let items = match args.len() {
-            0 => return Err(self.err(value_error(format!("{who}() expected at least 1 argument")))),
-            // Narrowed with the native path, and it has to be: this arm is the
-            // one a receiver of instances takes, and two arities of one name
-            // that disagree about what they accept is worse than either.
-            1 => return Err(self.err(type_error(crate::builtins::extreme_arity_message(who)))),
-            _ => args,
-        };
-        let keys = items.clone();
-        self.begin_order(OrdKind::Extreme { want_min: who == "min", who }, items, keys, false)
-            .map(|()| Step::Next)
     }
 
     /// The `reverse=` option `sort` takes: a flag, so it

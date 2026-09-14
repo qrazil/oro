@@ -1,0 +1,6 @@
+0 5 100 5
+50 0 100
+1.0 0.5
+1 3
+`min`/`max` are collection reductions in Oro — `xs.min()` / `xs.max()`. The two-argument scalar form is cut: use `clamp(v, min=…, max=…)` for a bound (which reads as the bound it is, where `max(v, 0)` reads backwards), or `[a, b].min()` for the extreme of two values
+clamp() needs at least one of min= or max= — clamp(v, min=0), clamp(v, max=100), or both
