@@ -1474,6 +1474,44 @@ whole receiver has been walked. Every other dict step passes the original pair
 through and fuses. This was the fiddly case and it is the one place the
 implementation says no on purpose.
 
+### Why barriers are not fused — the per-step sweep
+
+That barriers materialise rather than fuse is a measured decision, not only a
+structural one. The sweep below is `xs.map(f).STEP(…)` against
+`ys = xs.map(f); ys.STEP(…)` — fused versus the same pipeline split across
+variables — interleaved, min of seven, the build loop subtracted. Positive
+means fused is **slower**.
+
+| step | kind | n=20000 | n=120000 |
+|---|---|---|---|
+| `sort_by` | barrier | +6.0% | +5.1% |
+| `group_by` | barrier | +9.7% | +5.2% |
+| `partition` | barrier | +6.2% | +9.6% |
+| `unique_by` | barrier | +8.1% | +9.5% |
+| `min_by` / `max_by` | barrier | +12.8% / +14.2% | +11.0% / +5.9% |
+| `take_while` / `drop_while` | barrier | +9.7% / +11.2% | +10.5% / +7.4% |
+| `filter` / `flat_map` | streaming | +7.5% / +9.4% | +5.4% / +4.2% |
+| `map` | streaming | **−1.5%** | **−1.7%** |
+| `count` | full scan | +7.5% | +5.0% |
+| `first` / `take(10)` | short-circuit | **−98.0%** | — |
+
+**A barrier cannot short-circuit** — it needs the finished collection — so
+fusion's upside there is capped at one skipped allocation while its cost, a
+pipeline dispatch per element, scales with `n`: a loss at every size, with no
+sign flip. **The short-circuit steps are the whole case for fusion**: `first`
+and `take(n)` stop the upstream pass instead of running it to the end, which is
+the 98% and the reason the pass exists. `map`-into-`map` is the one streaming
+step that pays (it never keeps the intermediate), which is why stages are
+exactly `map`/`filter`.
+
+These figures were taken during the fusion sweep, on the collection driver as it
+then stood; the load-bearing result is the **sign** — barrier fused is slower at
+every size, short-circuit fused is a rout — which the current driver preserves
+and which is why the implementation fuses only stages and materialises at every
+barrier. (Re-running the exact percentages needs a quiet machine with retired-
+instruction counts, not this container's wall clock, which cannot separate a
+2 ms workload from process startup.)
+
 ### Two semantics, one preserved and one deliberately changed
 
 **Mutating the receiver from inside a callback is unchanged**, fused or not.
