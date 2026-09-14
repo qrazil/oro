@@ -78,8 +78,14 @@ fn all_oro_files() -> Vec<PathBuf> {
 ///
 /// Neither is about line breaks. If this list needs to grow, that is a decision
 /// worth making deliberately, which is what this test is for.
-const EXPECTED_UNFORMATTED: [&str; 2] =
-    ["corpus/divergence/35_bytes.oro", "corpus/divergence/36_json.oro"];
+const EXPECTED_UNFORMATTED: [&str; 3] = [
+    "corpus/divergence/35_bytes.oro",
+    "corpus/divergence/36_json.oro",
+    // Keeps an author-written parenthesised nested ternary so the depth-cap
+    // test shows parentheses do not exempt it; the formatter would strip the
+    // redundant parens (the middle branch is greedy, so the parse is the same).
+    "corpus/divergence/92_ternary_depth3_parens.oro",
+];
 
 /// `fmt(fmt(x)) == fmt(x)` for every `.oro` file in the repo's test corpora.
 /// A formatter that cannot reach a fixed point on its own output is broken by

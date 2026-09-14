@@ -137,6 +137,10 @@ const UNARY_BP: u8 = 11;
 /// …) it needs parens — `prec = 0` guarantees that against every other
 /// nonzero `min_bp` used below.
 const LAMBDA_PREC: u8 = 0;
+/// The conditional `? :` — looser than everything but a lambda body, so a
+/// ternary used as an operand of anything tighter (or as another ternary's
+/// condition) is parenthesised, while the branches print bare.
+const TERNARY_PREC: u8 = 0;
 
 /// An error produced while formatting: a lex/parse failure on malformed
 /// input, or a comment `oro fmt` cannot safely place (see the module docs).
@@ -751,6 +755,16 @@ fn expr_inner(lb: &LineBreaks, e: &Expr) -> (String, u8) {
             let params = lambda_params_str(&data.params);
             let body = expr(lb, &data.body, 0);
             (format!("{params} => {body}"), LAMBDA_PREC)
+        }
+        Expr::Ternary { cond, then, orelse, .. } => {
+            // The condition binds at `or`-level, so a ternary used as another
+            // ternary's condition is parenthesised; the branches print bare,
+            // matching the greedy middle and right-associative else the parser
+            // produces.
+            let c = expr(lb, cond, OR_PREC);
+            let t = expr(lb, then, 0);
+            let e = expr(lb, orelse, 0);
+            (format!("{c} ? {t} : {e}"), TERNARY_PREC)
         }
         Expr::Unary { op: UnaryOp::Not, operand, .. } => {
             (format!("not {}", expr(lb, operand, NOT_BP)), NOT_PREC)

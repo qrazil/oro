@@ -101,6 +101,7 @@ pub enum TokenKind {
     LBrace,      // {
     RBrace,      // }
     Pipe,        // |
+    Question,    // ? (ternary)
     Comma,       // ,
     Dot,         // .
     Colon,       // :

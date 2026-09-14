@@ -1,0 +1,12 @@
+# INTENTIONAL DIVERGENCE (a compile error). The same depth-3 cap, but the third
+# ternary is nested in the then-branch behind parentheses — which do not exempt
+# it. Counting is over both branches.
+a = true
+b = true
+c = 1
+d = 2
+e = false
+f = 3
+g = 4
+x = a ? (b ? c : d) : e ? f : g
+print(x)

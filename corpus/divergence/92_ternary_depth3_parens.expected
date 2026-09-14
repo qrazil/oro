@@ -1,0 +1,1 @@
+divergence/92_ternary_depth3_parens.oro:11:5: ternary nesting deeper than 2 is not permitted — use match, if/elif, or a named function

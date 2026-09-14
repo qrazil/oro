@@ -1,0 +1,12 @@
+# INTENTIONAL DIVERGENCE (a compile error). Three ternaries in one expression
+# is past the depth-2 cap — a hard error, not a lint, the way `case` rejects a
+# bare capture name. This is the else-chain form.
+a = true
+b = 1
+c = false
+d = 2
+e = false
+f = 3
+g = 4
+x = a ? b : c ? d : e ? f : g
+print(x)

@@ -235,6 +235,11 @@ fn check_expr(expr: &Expr) -> Result<(), CompileError> {
                 check_expr(e)?;
             }
         }
+        Expr::Ternary { cond, then, orelse, .. } => {
+            check_expr(cond)?;
+            check_expr(then)?;
+            check_expr(orelse)?;
+        }
         Expr::Call { func, args, kwargs, .. } => {
             check_expr(func)?;
             for a in args {

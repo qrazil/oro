@@ -88,6 +88,9 @@ fn sexp(e: &Expr) -> String {
             };
             format!("({o} {} {})", sexp(left), sexp(right))
         }
+        Expr::Ternary { cond, then, orelse, .. } => {
+            format!("(?: {} {} {})", sexp(cond), sexp(then), sexp(orelse))
+        }
         Expr::Compare { first, rest, .. } => {
             let mut s = format!("(cmp {}", sexp(first));
             for (op, r) in rest {
@@ -162,6 +165,16 @@ fn precedence_parens_override() {
 #[test]
 fn power_is_right_associative() {
     assert_eq!(sexp_of("2 ** 3 ** 4"), "(** 2 (** 3 4))");
+}
+
+#[test]
+fn ternary_is_right_associative_and_looser_than_or() {
+    // Right-associative: `a ? b : c ? d : e` is `a ? b : (c ? d : e)`.
+    assert_eq!(sexp_of("a ? b : c ? d : e"), "(?: a b (?: c d e))");
+    // Looser than `or`: the condition is the whole `a or b`.
+    assert_eq!(sexp_of("a or b ? c : d"), "(?: (or a b) c d)");
+    // Tighter than the branches' contents: `x + 1 ? y : z` conditions on `x + 1`.
+    assert_eq!(sexp_of("x + 1 ? y : z"), "(?: (+ x 1) y z)");
 }
 
 #[test]

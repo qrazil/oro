@@ -356,6 +356,16 @@ pub enum Expr {
         line: usize,
         col: usize,
     },
+    /// The conditional expression `cond ? then : orelse`. Only the taken branch
+    /// is evaluated (it short-circuits), which is why it is syntax and not a
+    /// function. Nesting is capped at two ternaries per expression.
+    Ternary {
+        cond: Box<Expr>,
+        then: Box<Expr>,
+        orelse: Box<Expr>,
+        line: usize,
+        col: usize,
+    },
     /// A call: `func(a, b, kw=val)`. `args` holds the positional arguments in
     /// order, `kwargs` the keyword ones as `(name, value)` pairs in order.
     ///
@@ -421,6 +431,7 @@ impl Expr {
             | Expr::Binary { line, col, .. }
             | Expr::BoolOp { line, col, .. }
             | Expr::Compare { line, col, .. }
+            | Expr::Ternary { line, col, .. }
             | Expr::Call { line, col, .. }
             | Expr::Attribute { line, col, .. }
             | Expr::Subscript { line, col, .. }

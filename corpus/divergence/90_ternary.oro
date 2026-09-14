@@ -1,0 +1,38 @@
+# INTENTIONAL DIVERGENCE. The conditional expression is C-style `cond ? a : b`,
+# not Python's `a if c else b` (which reads backwards and is a parse error here).
+# It short-circuits — only the taken branch is evaluated, which is why it is
+# syntax and not a function — and it is lower precedence than `or`, higher than
+# assignment, and right-associative.
+
+# depth 1
+x = 5
+print(x == 0 ? "zero" : "nonzero")
+
+# short-circuit: the else divides by x, and with x == 0 it must NOT be evaluated.
+x = 0
+print(x == 0 ? 0 : 100 / x)
+
+# short-circuit the other way: a raising branch not taken never runs.
+def boom():
+    raise ValueError("must not run")
+
+print(true ? "safe" : boom())
+print(false ? boom() : "safe")
+
+# depth 2, right-associative: a ? b : (c ? d : e)
+n = 0
+print(n < 0 ? "neg" : n == 0 ? "zero" : "pos")
+n = 7
+print(n < 0 ? "neg" : n == 0 ? "zero" : "pos")
+
+# lower than `or` (`(a or b) ? …`), higher than assignment (`y = (…)`).
+y = true or false ? "t" : "f"
+print(y)
+
+# a bound branch, and inside a call argument
+v = -3
+print("clamped", v < 0 ? 0 : v)
+
+# the condition must be a bool — no truthiness
+ok = len([1, 2]) > 0 ? "some" : "none"
+print(ok)

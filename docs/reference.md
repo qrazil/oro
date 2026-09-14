@@ -567,7 +567,7 @@ is not listed is a parse error.
 | membership | `in`, `not in` | — |
 | assignment | `=`, augmented `+=` `-=` `*=` `/=` `//=` `%=` `**=` `&=` `\|=` `^=` `<<=` `>>=` (the complete set — one rule, no exceptions), tuple unpacking | chained `a = b = c`, walrus `:=` |
 | bitwise | `&` `\|` `^` `~` `<<` `>>` (integers/bools; CPython's precedence and semantics) | — |
-| conditional | *nothing* | `a if c else b` |
+| conditional | `cond ? a : b` (C-style; short-circuits; max nesting depth 2) | `a if c else b` (Python's spelling) |
 | indexing | `x[i]`, `x[i:j]`, `x[i:j:k]`, negative indices | — |
 
 ```oro
@@ -597,9 +597,21 @@ Four consequences worth stating plainly:
   for `+`); a `float` operand is a `TypeError`, not a truncation. Their precedence
   is CPython's — `|` loosest, then `^`, `&`, the shifts — and all are tighter than
   a comparison, so `x & 1 == 0` is `(x & 1) == 0`.
-- **There is no conditional expression.** `x = "big" if n > 40 else "small"` is a
-  parse error; write an `if`/`else` statement. This also means an f-string field
-  cannot contain one.
+- **The conditional expression is C-style `cond ? a : b`**, not Python's
+  `a if c else b` (which reads value-before-condition and is a parse error).
+  `x = n > 40 ? "big" : "small"`. It **short-circuits** — only the taken branch
+  is evaluated, so `y == 0 ? 0 : x / y` never divides by zero — which is why it
+  is syntax and not a function (a function's arguments are all evaluated first).
+  It is looser than `or`, tighter than assignment, and right-associative
+  (`a ? b : c ? d : e` is `a ? b : (c ? d : e)`). **Nesting is capped at two**
+  ternaries per expression, counting both branches; a third is a compile error
+  pointing at `match` / `if`-`elif` / a named function, because past two levels
+  it is a predicate chain wearing the wrong syntax. Inside an f-string field it
+  must be **parenthesised** — `f"{(c ? a : b)}"` — because a bare `:` there is
+  the format-spec separator. (Python's own motivation, PEP 308's fix for the
+  buggy `c and a or b`, does not apply: Oro has no truthiness and `and`/`or` are
+  boolean-only, so the justification is short-circuiting and the lack of an
+  inline `if`-expression under indentation, not a broken idiom.)
 - **`==` is the identity test too.** A function, generator, class, instance,
   module, stream, pattern, match, task or channel compares equal only to itself,
   which is why `is` could be cut. `len == len` is true (builtins compare by
@@ -725,7 +737,7 @@ Two restrictions:
   rejected with a message telling you to bind it to a name first. (f-string
   fields are parsed at code generation, so the scope pass never sees the lambda
   the emitter makes.)
-- **No conditional expression inside a field**, because the language has none.
+- **A conditional in a field must be parenthesised** — `f"{(c ? a : b)}"` — because a bare `:` is the format-spec separator.
 
 `f"{x}"` is also the replacement for `str(x)`: it runs `__str__`, and it still
 parses as CPython, which keeps such programs inside the differential corpus.
@@ -2113,7 +2125,7 @@ The takeaway a Python reader needs: **rebind.** `a = a.sort(f)`, `a = a.reverse(
 | `x and y` / `x or y` returning an operand | both operands are `bool`, the result is a `bool` |
 | `x is y` / `x is not y` | `x == y` / `x != y` |
 | `True` / `False` / `None` | `true` / `false` / `null` |
-| `a if c else b` | an `if`/`else` statement |
+| `a if c else b` | `cond ? a : b` (Oro's ternary is C-style) |
 | `obj.n += 1` | `obj.n = obj.n + 1` (an attribute is not an augmented-assignment target) |
 | `a = b = c` | `a, b = c, c` |
 | `(n := f())` | an assignment statement |

@@ -1281,6 +1281,36 @@ impl<'a> Codegen<'a> {
             Expr::Compare { first, rest, line, col } => {
                 self.emit_compare(first, rest, *line, *col)?;
             }
+            Expr::Ternary { cond, then, orelse, line, col } => {
+                // Depth cap: at most two ternaries in one expression, counting
+                // nesting in *both* branches and the condition (parentheses do
+                // not exempt it). A hard compile error, the way `case` rejects a
+                // bare capture name — past two levels a ternary is a predicate
+                // chain wearing the wrong syntax, which `match` and `if`/`elif`
+                // do better. Checked here rather than in the parser so the parse
+                // stays total and the formatter can reprint an over-deep one.
+                if 1 + ternary_depth(cond) + ternary_depth(then) + ternary_depth(orelse) > 2 {
+                    return Err(self.err(
+                        "ternary nesting deeper than 2 is not permitted — use match, if/elif, or \
+                         a named function",
+                        *line,
+                        *col,
+                    ));
+                }
+                // The same jump shape `emit_if` produces, so the condition is
+                // bool-checked by `PopJumpIfFalse` exactly as a statement's is,
+                // and only the taken branch's expression is evaluated — the
+                // short-circuit that makes this syntax rather than a function.
+                self.emit_expr(cond)?;
+                let to_else = self.emit(Op::PopJumpIfFalse(0), *line, *col);
+                self.emit_expr(then)?;
+                let to_end = self.emit(Op::Jump(0), *line, *col);
+                let else_here = self.here();
+                self.set_target(to_else, else_here);
+                self.emit_expr(orelse)?;
+                let end = self.here();
+                self.set_target(to_end, end);
+            }
             Expr::Call { func, args, kwargs, line, col } => {
                 self.emit_call(func, args, kwargs, *line, *col, false)?;
             }
@@ -2063,6 +2093,21 @@ fn counter_step_pos(stmt: &Stmt, name: &str) -> Option<(usize, usize)> {
             None
         }
         _ => None,
+    }
+}
+
+/// The total number of ternary nodes reachable through a conditional's own
+/// structure — its condition and both branches, recursively. This is the
+/// "depth" the cap of two is on, and counting through both branches is why a
+/// ternary nested in a parenthesised then-branch counts the same as one in the
+/// else-chain. (A ternary buried in a separate sub-expression, e.g. a call
+/// argument, is its own expression and is capped on its own when it compiles.)
+fn ternary_depth(e: &Expr) -> usize {
+    match e {
+        Expr::Ternary { cond, then, orelse, .. } => {
+            1 + ternary_depth(cond) + ternary_depth(then) + ternary_depth(orelse)
+        }
+        _ => 0,
     }
 }
 

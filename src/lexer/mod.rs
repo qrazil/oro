@@ -731,6 +731,7 @@ impl Lexer {
                 }
             }
             '~' => TokenKind::Tilde,
+            '?' => TokenKind::Question,
             ',' => TokenKind::Comma,
             '.' => TokenKind::Dot,
             ':' => TokenKind::Colon,

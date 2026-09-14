@@ -59,6 +59,21 @@ fn check_expr(e: &Expr, out: &mut Vec<Finding>) {
             check_slice_affix(first, *op, rhs, *line, *col, out);
         }
     }
+    // A depth-2 ternary is legal (depth 3+ is a compile error), but a nested
+    // conditional is often a predicate chain wearing the wrong syntax. Advisory
+    // — the depth-3 cap is the hard line; this only nudges.
+    if let Expr::Ternary { cond, then, orelse, line, col } = e {
+        if is_ternary(cond) || is_ternary(then) || is_ternary(orelse) {
+            out.push(Finding {
+                line: *line,
+                col: *col,
+                rule: "nested-ternary",
+                message: "a nested `? :` (depth 2) is legal but often reads better as `if`/`elif` \
+                          for a chain of predicates, or `match` for dispatch on a value"
+                    .to_string(),
+            });
+        }
+    }
     if let Expr::Slice { value, step, lower, upper, line, col } = e {
         // `xs[::-1]` — a reversed copy spelled as punctuation.
         if lower.is_none() && upper.is_none() && step.as_deref().is_some_and(is_neg_one) {
@@ -321,6 +336,10 @@ fn check_manual_aug_stmts(stmts: &[Stmt], out: &mut Vec<Finding>) {
     }
 }
 
+fn is_ternary(e: &Expr) -> bool {
+    matches!(e, Expr::Ternary { .. })
+}
+
 /// A valid augmented-assignment target: a name or a subscript, the two the
 /// compiler accepts. Not an attribute.
 fn is_aug_target(e: &Expr) -> bool {
@@ -478,6 +497,11 @@ fn walk_expr(e: &Expr, f: &mut impl FnMut(&Expr)) {
             for (_, r) in rest {
                 walk_expr(r, f);
             }
+        }
+        Expr::Ternary { cond, then, orelse, .. } => {
+            walk_expr(cond, f);
+            walk_expr(then, f);
+            walk_expr(orelse, f);
         }
         Expr::Call { func, args, kwargs, .. } => {
             walk_expr(func, f);

@@ -791,7 +791,32 @@ impl Parser {
 
     /// Parse a single expression at the loosest precedence.
     fn expression(&mut self) -> PResult<Expr> {
-        self.parse_expr(0)
+        // The ternary `cond ? then : orelse` is the loosest expression operator —
+        // looser than `or`, tighter than assignment — so it wraps the Pratt
+        // parse. `parse_expr(0)` stops at `?` (not an infix operator), and the
+        // condition it returns is everything down to and including `or`.
+        let cond = self.parse_expr(0)?;
+        if !self.check(&TokenKind::Question) {
+            return Ok(cond);
+        }
+        let (line, col) = cond.pos();
+        self.advance(); // `?`
+        // The middle is a full expression; the else branch recurses, so the
+        // operator is right-associative: `a ? b : c ? d : e` is `a ? b : (c ? d : e)`.
+        let then = self.expression()?;
+        self.expect(&TokenKind::Colon, "`:` between the two branches of a `? :` conditional")?;
+        let orelse = self.expression()?;
+        // The depth-2 cap is enforced as a compile error (see `compiler`), not
+        // here: keeping the parse total lets the formatter reprint even an
+        // over-deep ternary, and the restriction reads as a rule rather than a
+        // parser limitation.
+        Ok(Expr::Ternary {
+            cond: Box::new(cond),
+            then: Box::new(then),
+            orelse: Box::new(orelse),
+            line,
+            col,
+        })
     }
 
     /// Parse an expression, then fold a trailing comma-separated run into a bare
@@ -1484,6 +1509,7 @@ fn describe(kind: &TokenKind) -> String {
         LBrace => "`{`".to_string(),
         RBrace => "`}`".to_string(),
         Pipe => "`|`".to_string(),
+        Question => "`?`".to_string(),
         Comma => "`,`".to_string(),
         Dot => "`.`".to_string(),
         Colon => "`:`".to_string(),

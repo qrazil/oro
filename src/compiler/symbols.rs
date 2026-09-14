@@ -556,6 +556,11 @@ impl SymTable {
                     self.resolve_expr(scope_id, e);
                 }
             }
+            Expr::Ternary { cond, then, orelse, .. } => {
+                self.resolve_expr(scope_id, cond);
+                self.resolve_expr(scope_id, then);
+                self.resolve_expr(scope_id, orelse);
+            }
             Expr::Call { func, args, kwargs, .. } => {
                 self.resolve_expr(scope_id, func);
                 for a in args {
