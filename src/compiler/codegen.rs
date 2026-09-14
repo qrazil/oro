@@ -21,7 +21,7 @@ use crate::value::{OroDict, Value};
 
 use super::symbols::{Resolution, SymTable};
 use super::{
-    CaptureSource, ClassSpec, CodeObject, CompileError, FuncProto, Op, ParamInfo, VarTarget,
+    CaptureSource, ClassSpec, CodeObject, CompileError, FuncProto, KwSite, Op, ParamInfo, VarTarget,
 };
 
 type CResult<T> = Result<T, CompileError>;
@@ -47,6 +47,7 @@ struct Codegen<'a> {
     name_idx: HashMap<Rc<str>, u32>,
     classes: Vec<Rc<ClassSpec>>,
     pairs: Vec<(u32, u32)>,
+    kwsites: Vec<KwSite>,
     protos: Vec<Rc<FuncProto>>,
     /// Cursor into the current scope's child list.
     cursor: usize,
@@ -87,6 +88,7 @@ impl<'a> Codegen<'a> {
             name_idx: HashMap::new(),
             classes: Vec::new(),
             pairs: Vec::new(),
+            kwsites: Vec::new(),
             protos: Vec::new(),
             cursor: 0,
             loops: Vec::new(),
@@ -111,6 +113,7 @@ impl<'a> Codegen<'a> {
             names: self.names,
             classes: self.classes,
             pairs: self.pairs,
+            kwsites: self.kwsites,
             protos: self.protos,
             nlocals: self.table.scopes()[self.func].nlocals as usize,
             ncells: self.table.ncells(self.func) as usize,
@@ -159,6 +162,14 @@ impl<'a> Codegen<'a> {
         self.names.push(rc.clone());
         self.name_idx.insert(rc, idx);
         idx
+    }
+
+    /// The interned `Rc<str>` for a name — the same clone `add_name` stores, so a
+    /// name used at several sites is one allocation. Used by `CallKw`'s keyword
+    /// names, which live in the code object rather than on the stack.
+    fn intern(&mut self, name: &str) -> Rc<str> {
+        let idx = self.add_name(name);
+        self.names[idx as usize].clone()
     }
 
     fn add_class(&mut self, spec: ClassSpec) -> u32 {
@@ -1513,20 +1524,22 @@ impl<'a> Codegen<'a> {
             self.emit(Op::Call(args.len() as u32), line, col);
             return Ok(());
         }
-        // General path: assemble a positional list and a keyword dict.
-        self.emit(Op::BuildList(0), line, col);
+        // Keyword path (`func` is already on the stack): push the positional
+        // arguments, then the keyword *values*, and call. The keyword names go
+        // in a `KwSite` on the code object — interned once, never on the stack —
+        // so `CallKw` builds no positional list and no keyword dict, where the
+        // old `CallEx` built both. Duplicate keywords were already refused at
+        // the top of this function, so every keyword call reaches here.
         for a in args {
             self.emit_expr(a)?;
-            self.emit(Op::ListAppend, line, col);
         }
-        self.emit(Op::BuildMap(0), line, col);
-        for (name, e) in kwargs {
-            let idx = self.add_const(Value::str(name.clone()));
-            self.emit(Op::LoadConst(idx), line, col);
+        let names: Vec<Rc<str>> = kwargs.iter().map(|(name, _)| self.intern(name)).collect();
+        for (_, e) in kwargs {
             self.emit_expr(e)?;
-            self.emit(Op::MapSetItem, line, col);
         }
-        self.emit(Op::CallEx, line, col);
+        let site = self.kwsites.len() as u32;
+        self.kwsites.push(KwSite { npos: args.len() as u32, names: names.into_boxed_slice() });
+        self.emit(Op::CallKw(site), line, col);
         Ok(())
     }
 

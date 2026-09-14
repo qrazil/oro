@@ -66,6 +66,16 @@ pub struct ClassSpec {
     pub has_base: bool,
 }
 
+/// One keyword call site (see [`Op::CallKw`]). The keyword *names* live here,
+/// interned once with the rest of the code object's names; only the *values*
+/// ride the operand stack. `npos` is how many positional arguments precede the
+/// keyword values on the stack.
+#[derive(Debug)]
+pub struct KwSite {
+    pub npos: u32,
+    pub names: Box<[Rc<str>]>,
+}
+
 /// A single instruction: a one-byte tag plus at most one 32-bit operand, so
 /// **`Op` is exactly 8 bytes and `Copy`**. Jump targets are absolute
 /// instruction indices.
@@ -302,9 +312,14 @@ pub enum Op {
     /// name and the argument count — so they live in [`CodeObject::pairs`] as
     /// `(name, argc)` and the instruction carries the index.
     CallMethod(u32),
-    /// Call with an assembled positional list and keyword dict on the stack:
-    /// `func, poslist, kwdict`.
-    CallEx,
+    /// A keyword call: `func`, then the positional arguments, then the keyword
+    /// *values* — all on the operand stack, nothing assembled. The operand
+    /// indexes [`CodeObject::kwsites`], which holds the positional count and the
+    /// keyword *names* (interned `Rc<str>`, in source order). This replaced the
+    /// old `CallEx`, which built a positional list *and* a keyword dict — two
+    /// heap collections per call — and re-hashed the names into it; here the
+    /// names never leave the code object and only the values are pushed.
+    CallKw(u32),
     /// Return the top of the stack from the current frame.
     Return,
     /// Suspend the current generator frame, yielding the top value.
@@ -439,6 +454,12 @@ pub struct CodeObject {
     /// indirection on them is free, and it is what keeps every other
     /// instruction one word wide.
     pub pairs: Vec<(u32, u32)>,
+    /// One entry per keyword call site, indexed by [`Op::CallKw`]. Holds the
+    /// positional-argument count and the keyword names (interned `Rc<str>`, in
+    /// the order the call writes them). Keeping the names here rather than on
+    /// the stack is the whole point of `CallKw`: a keyword name is a compile-time
+    /// constant and never needs to reach the heap a second time per call.
+    pub kwsites: Vec<KwSite>,
     /// Nested function prototypes, indexed by `MakeFunction`.
     pub protos: Vec<Rc<FuncProto>>,
     /// Number of plain local slots to allocate for a frame.

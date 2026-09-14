@@ -124,6 +124,20 @@ const MAX_FRAMES: usize = 200_000;
 /// the pool after it unwinds.
 const FRAME_POOL_MAX: usize = 128;
 
+/// The most keyword arguments `CallKw`'s fast path binds inline. A call with
+/// more falls to the general path — real calls pass one or two keywords, and a
+/// fixed-size slot array keeps the fast path allocation-free.
+const MAX_INLINE_KW: usize = 8;
+
+/// What [`Vm::kw_fast_plan`] resolved: the callee and where each keyword's value
+/// goes, so [`Vm::call_kw_fast`] can bind straight off the operand stack.
+struct KwPlan {
+    func: Rc<Function>,
+    npos: usize,
+    nkw: usize,
+    slots: [VarTarget; MAX_INLINE_KW],
+}
+
 /// A single activation record. Everything a running function needs lives here,
 /// on the heap, in the `frames` vector — never on the Rust call stack.
 /// What `apply(f, args=…, kwargs=…)` forwards, once checked: the callee, the
@@ -2127,7 +2141,7 @@ impl Vm {
                 }
                 Op::MakeFunction(idx) => self.make_function(idx as usize)?,
                 Op::Call(n) => return self.do_call(n as usize),
-                Op::CallEx => return self.do_call_ex(),
+                Op::CallKw(site) => return self.do_call_kw(site as usize),
                 Op::LoadMethod(n) => {
                     let name = self.task.frames.last().unwrap().code.names[n as usize].clone();
                     let obj = self.pop();
@@ -2525,29 +2539,110 @@ impl Vm {
         Ok(Step::Next)
     }
 
-    fn do_call_ex(&mut self) -> Result<Step, VmError> {
-        let kwdict = self.pop();
-        let poslist = self.pop();
-        let callee = self.pop();
-        let args = match poslist {
-            Value::List(l) => l.borrow().clone(),
-            _ => return Err(self.err(runtime_error("internal: CallEx positional list malformed"))),
+    /// A keyword call (see [`Op::CallKw`]). The stack holds `func`, the
+    /// positional arguments, then the keyword values; the names are in the code
+    /// object's [`KwSite`](crate::compiler::KwSite).
+    ///
+    /// The fast path is why the opcode exists: when the callee is an ordinary
+    /// Oro function whose shape the call fits, every value moves from the
+    /// caller's stack straight into the callee's slots — no positional list, no
+    /// keyword dict, no argument vector, and no name copied. Everything else (a
+    /// builtin, a class, a wrong arity that owes a diagnostic) assembles the
+    /// carrier and goes through [`Vm::invoke`], where every refusal is worded.
+    fn do_call_kw(&mut self, site: usize) -> Result<Step, VmError> {
+        if let Some(plan) = self.kw_fast_plan(site) {
+            return Ok(self.call_kw_fast(plan));
+        }
+        let (npos, nkw) = {
+            let s = &self.task.frames.last().expect("no active frame").code.kwsites[site];
+            (s.npos as usize, s.names.len())
         };
-        let kwargs = match kwdict {
-            Value::Dict(d) => {
-                let d = d.borrow();
-                let mut out = Vec::with_capacity(d.len());
-                for (k, v) in d.items() {
-                    match k {
-                        Value::Str(s) => out.push((s.s.clone(), v.clone())),
-                        _ => return Err(self.err(type_error("keywords must be strings"))),
-                    }
-                }
-                out
-            }
-            _ => return Err(self.err(runtime_error("internal: CallEx keyword dict malformed"))),
+        let values = self.popn(nkw);
+        let args = self.popn(npos);
+        let callee = self.pop();
+        let kwargs: Vec<(String, Value)> = {
+            let s = &self.task.frames.last().expect("no active frame").code.kwsites[site];
+            s.names.iter().map(|n| n.to_string()).zip(values).collect()
         };
         self.invoke(callee, args, kwargs)
+    }
+
+    /// Whether this keyword call site can bind straight off the operand stack,
+    /// and if so where each keyword goes. Every test here is one the general
+    /// path would make anyway; answering `None` hands the call to the code that
+    /// owns the corresponding diagnostic, so this never decides something is an
+    /// *error* — only that it is not simple.
+    fn kw_fast_plan(&self, site: usize) -> Option<KwPlan> {
+        if self.task.frames.len() >= MAX_FRAMES {
+            return None;
+        }
+        let frame = self.task.frames.last()?;
+        let s = &frame.code.kwsites[site];
+        let (npos, nkw) = (s.npos as usize, s.names.len());
+        if nkw > MAX_INLINE_KW {
+            return None;
+        }
+        let stack = &frame.stack;
+        let callee = stack.get(stack.len().checked_sub(npos + nkw + 1)?)?;
+        let Value::Func(f) = callee else { return None };
+        let code = &f.code;
+        // The argument rule, as `fast_call_target` reads it: the positional
+        // arguments cover exactly the parameters with no default.
+        let first_defaulted = code.params.len() - code.defaults.len();
+        if code.is_generator || npos != first_defaulted {
+            return None;
+        }
+        let mut slots = [VarTarget::Local(0); MAX_INLINE_KW];
+        let base = stack.len() - nkw;
+        for (i, name) in s.names.iter().enumerate() {
+            // A keyword may only name a parameter that has a default. A name
+            // that is not a parameter, or reaches past the line, is a refusal
+            // with its own words in `bind_call`, so it goes the general way.
+            let pos = code.params.iter().position(|p| *p.name == **name)?;
+            if pos < first_defaulted {
+                return None;
+            }
+            // An explicit `null` for a keyword whose default is not `null` is
+            // refused by name, so it belongs to the general path too.
+            if matches!(stack[base + i], Value::None)
+                && !matches!(code.defaults[pos - first_defaulted], Value::None)
+            {
+                return None;
+            }
+            slots[i] = code.params[pos].target;
+        }
+        Some(KwPlan { func: f.clone(), npos, nkw, slots })
+    }
+
+    /// Bind what [`Vm::kw_fast_plan`] resolved: positional arguments into the
+    /// parameters with no default, every defaulted parameter to its default,
+    /// then each keyword over the one it named. The order is [`Vm::bind_call`]'s
+    /// — a non-constant default is `Unbound` here and filled by the callee's
+    /// prologue, which decides by whether the slot is bound, so the default is
+    /// written first and the keyword second.
+    fn call_kw_fast(&mut self, plan: KwPlan) -> Step {
+        let KwPlan { func, npos, nkw, slots } = plan;
+        let mut frame = self.take_frame(func.code.clone(), &func.freevars);
+        let params = &func.code.params;
+        let defaults = &func.code.defaults;
+        let first_defaulted = params.len() - defaults.len();
+        {
+            let caller = self.task.frames.last_mut().expect("no active frame");
+            let base = caller.stack.len() - npos - nkw;
+            let mut values = caller.stack.drain(base..);
+            for p in &params[..npos] {
+                store_param(&mut frame, p.target, values.next().expect("npos values"));
+            }
+            for (i, p) in params.iter().enumerate().skip(first_defaulted) {
+                store_param(&mut frame, p.target, defaults[i - first_defaulted].clone());
+            }
+            for slot in &slots[..nkw] {
+                store_param(&mut frame, *slot, values.next().expect("nkw values"));
+            }
+        }
+        self.top().stack.pop().expect("the callee itself");
+        self.task.frames.push(frame);
+        Step::Next
     }
 
     /// `apply(f, args=[], kwargs={})` — call `f` with a list bound by position
