@@ -465,6 +465,9 @@ os.path.exists/isfile/isdir(p)      bool
 os.path.join(*parts)                POSIX join
 os.path.basename(p) / dirname(p)    str
 os.path.splitext(p)                 (root, ext)
+os.path.realpath(p)                 str, symlinks resolved (raises if p is missing)
+os.path.islink(p)                   bool
+os.path.is_within(child, parent)    bool, containment done right (raises if either is missing)
 
 proc.run(args, input=, cwd=, env=, timeout=, check=true, quiet=false)
                                     a Completed: .returncode .ok .truncated .stdout .stderr
@@ -1040,6 +1043,64 @@ import os
 import json as j
 
 print(os.path.basename("/x/y.txt"), os.getcwd().startswith("/"), j.stringify({"a": 1}))
+```
+
+##### Resolving paths, and serving files safely
+
+`os.path.realpath(p)` returns `p` absolute with every symlink resolved, by asking
+the kernel (`std::fs::canonicalize`) rather than editing the string — symlink
+following and `..` collapsing are exactly where hand-written path code grows
+traversal holes. It **raises `FileNotFoundError` if `p` does not exist**, a
+deliberate divergence from CPython's `realpath` (which resolves as far as it can
+and never raises): a file server resolving a request path wants a missing file to
+become a clean **404**, not a `500` and not a containment decision about a path
+that is not there. `os.path.islink(p)` reports whether `p` itself is a link
+(false, not an error, when `p` is missing) — cheap enough for a page generator to
+audit its own output tree.
+
+`os.path.is_within(child, parent)` is the containment check, and it exists
+because the obvious version is wrong. **`os.path.realpath(p).startswith(root)` is
+a bug**: `startswith` is a *string* test, so `/srv/site-evil` counts as inside
+`/srv/site`; and it compares a resolved path against an unresolved `root`, which
+misaligns them. `is_within` resolves *both* sides and compares them
+**component by component**, so neither trap fires. Like `realpath` it raises
+`FileNotFoundError` when a side is missing.
+
+The lesson the git server learned the hard way: **checking the request-path
+string is not enough.** Rejecting `..`, `%2e%2e`, NUL and backslashes stops a
+path from *spelling* an escape, but a symlink sitting inside the served root can
+point straight out of it — `site/notes -> /etc` turns an innocent `/notes/passwd`
+into `/etc/passwd`, and no amount of string inspection sees it. Only resolving
+does. The correct shape is layered — cheap string checks first to shed obvious
+attacks, then `is_within` as the actual defence:
+
+```
+# resolve a request path against the served root (illustrative)
+def serve(root, reqpath):
+    if reqpath.find("..") != -1 or reqpath.find("\x00") != -1:
+        return 400                      # cheap first pass, NOT the defence
+    candidate = os.path.join(root, reqpath)
+    try:
+        ok = os.path.is_within(candidate, root)   # resolves symlinks, both sides
+    except FileNotFoundError:
+        return 404                      # nothing resolved -> Not Found
+    return ok ? open(candidate) : 403   # 403: a real file, but outside the root
+```
+
+`http.oro` does not ship a static-file server (it is out of scope by design,
+alongside multipart and WebSocket), so this pattern lives here and in
+`corpus/divergence/99_path_realpath.oro`, which drives it against a real symlink
+fixture. **TOCTOU is not closed**: a symlink swapped between `is_within` and the
+`open` is a race, because the airtight fix (`openat` with `O_NOFOLLOW`) needs a
+second `unsafe` module and Oro's one-audited-unsafe rule forbids it. CPython
+carries the identical race; this is stated, not hidden.
+
+```oro
+import os
+
+print(os.path.realpath(".") == os.path.realpath("./"))  # true: same dir
+print(os.path.is_within(".", "."))                       # true: a dir is within itself
+print(os.path.islink("."))                               # false
 ```
 
 `import a.b.c` and `import x as y` only. **No `from X import Y`** and no

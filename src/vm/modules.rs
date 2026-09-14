@@ -114,6 +114,9 @@ fn build_os_path() -> Value {
             ("basename", builtin("os.path.basename", path_basename)),
             ("dirname", builtin("os.path.dirname", path_dirname)),
             ("splitext", builtin("os.path.splitext", path_splitext)),
+            ("realpath", builtin("os.path.realpath", path_realpath)),
+            ("islink", builtin("os.path.islink", path_islink)),
+            ("is_within", builtin("os.path.is_within", path_is_within)),
         ],
     )
 }
@@ -558,6 +561,78 @@ fn path_dirname(args: Vec<Value>) -> VResult<Value> {
         Some(i) => Ok(Value::str(path[..i].to_string())),
         None => Ok(Value::str(String::new())),
     }
+}
+
+/// `os.path.realpath(p)` — the absolute path with every symlink resolved, from
+/// `std::fs::canonicalize`. This is the one path operation that *asks the kernel*
+/// rather than manipulating the string, which is the whole point: symlink
+/// resolution and `..` collapsing are exactly where hand-rolled path code grows
+/// traversal bugs, so this hands both to the OS.
+///
+/// **It requires the path to exist**, and raises `FileNotFoundError` when it
+/// does not — a deliberate divergence from CPython's `realpath`, which resolves
+/// the deepest existing ancestor and appends the rest without raising. The
+/// reason is the caller this exists for: a static file server resolves a request
+/// path to check it is inside the served root, and a path that does not resolve
+/// is Not Found — raising the OS's own error lets the server catch it as a clean
+/// 404 rather than reach a containment check with a half-real path. Rebuilding
+/// CPython's ancestor-walk in Oro would reintroduce the string surface `realpath`
+/// exists to remove. See `docs/reference.md` for the containment pattern.
+fn path_realpath(args: Vec<Value>) -> VResult<Value> {
+    let path = one_path(&args, "realpath")?;
+    match std::fs::canonicalize(&path) {
+        Ok(p) => Ok(Value::str(p.to_string_lossy().into_owned())),
+        Err(e) => Err(io_err(&e, &path)),
+    }
+}
+
+/// `os.path.islink(p)` — whether `p` itself is a symbolic link.
+///
+/// Uses `symlink_metadata`, which does *not* follow the final component, so a
+/// link reports as one rather than as whatever it points at. A missing path is
+/// `false`, not an error, matching CPython — this is a question about a path, and
+/// a path that is not there is not a link. Cheap enough that a page generator can
+/// check its own output tree with it instead of resolving at request time.
+fn path_islink(args: Vec<Value>) -> VResult<Value> {
+    let path = one_path(&args, "islink")?;
+    let is = std::fs::symlink_metadata(&path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false);
+    Ok(Value::Bool(is))
+}
+
+/// `os.path.is_within(child, parent)` — whether `child` is at or below `parent`,
+/// the containment check a static file server needs and the one everyone gets
+/// wrong.
+///
+/// It does the safe thing so the caller cannot forget to: it `realpath`s **both**
+/// arguments — following symlinks, collapsing `..` — and then compares the
+/// results **component by component**. Two things that are each a bug on their
+/// own are handled together here. `realpath(child).startswith(parent)` is wrong
+/// twice over: `startswith` is a *string* test, so `/srv/site-evil` counts as
+/// under `/srv/site`; and comparing a resolved child against an *unresolved*
+/// parent misaligns them. `Path::starts_with` is the component-wise test, and
+/// resolving both is what aligns them.
+///
+/// Because it resolves, it **raises `FileNotFoundError`** if either path does not
+/// exist — the same as [`realpath`](path_realpath), and for the same reason: a
+/// server catches it as a 404 rather than making a containment decision about a
+/// path that is not there. TOCTOU still applies (see the reference): a symlink
+/// swapped between this check and the `open` is a race Oro shares with CPython,
+/// because closing it needs `openat`/`O_NOFOLLOW` and thus a second unsafe
+/// module, which a locked decision forbids.
+fn path_is_within(args: Vec<Value>) -> VResult<Value> {
+    let (child, parent) = match args.as_slice() {
+        [c, p] => (as_str(c, "is_within")?.to_string(), as_str(p, "is_within")?.to_string()),
+        _ => {
+            return Err(type_error(
+                "os.path.is_within() takes exactly two arguments, (child, parent)".to_string(),
+            ))
+        }
+    };
+    let child_real = std::fs::canonicalize(&child).map_err(|e| io_err(&e, &child))?;
+    let parent_real = std::fs::canonicalize(&parent).map_err(|e| io_err(&e, &parent))?;
+    Ok(Value::Bool(child_real.starts_with(&parent_real)))
 }
 
 fn path_splitext(args: Vec<Value>) -> VResult<Value> {

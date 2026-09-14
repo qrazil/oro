@@ -1,0 +1,71 @@
+# INTENTIONAL DIVERGENCE. `os.path.realpath` resolves symlinks (via the kernel,
+# not string surgery) and, unlike CPython's, raises FileNotFoundError on a path
+# that does not exist — a static file server catches that as a clean 404. This
+# builds a real symlink fixture and drives the layered defence a file server
+# should use: cheap string checks first, then realpath + component-wise
+# containment (os.path.is_within). It is the lesson that request-path *string*
+# checks alone are not enough: a symlink inside the root can still point out of
+# it, and only resolving reveals that.
+import proc
+import os.path as path
+
+def sh(args):
+    proc.run(args, quiet=true, check=false)
+
+base = "/tmp/oro_pathtest"
+sh(["rm", "-rf", base])
+sh(["mkdir", "-p", base + "/site"])
+sh(["mkdir", "-p", base + "/site-evil"])
+open(base + "/site/notes.txt", mode="w").write(b"hello")
+open(base + "/secret.txt", mode="w").write(b"SECRET")
+open(base + "/site-evil/secret.txt", mode="w").write(b"EVIL")
+sh(["ln", "-s", "notes.txt", base + "/site/good"])  # inside root -> inside root
+sh(["ln", "-s", "../secret.txt", base + "/site/escape"])  # inside root -> outside root
+sh(["ln", "-s", "../site-evil", base + "/site/toevil"])  # inside root -> sibling dir
+
+root = base + "/site"
+
+# The cheap first pass: reject obvious traversal strings before touching the
+# filesystem. It short-circuits the common attacks but is NOT the defence — a
+# clean-looking name can still be a symlink out of the tree.
+def looks_bad(reqpath):
+    if reqpath == "":
+        return true
+    if reqpath.find("..") != -1:
+        return true
+    if reqpath.find("\x00") != -1:
+        return true
+    if reqpath.find("\\") != -1:
+        return true
+    return reqpath.lower().find("%2e") != -1
+
+# The real defence: is_within resolves both paths (symlinks and all) and checks
+# containment component-wise. A missing file surfaces as FileNotFoundError, which
+# is the 404 — never a 500, never a containment decision on a path that is not
+# there.
+def resolve(reqpath):
+    if looks_bad(reqpath):
+        return "refused-string"
+    candidate = path.join(root, reqpath)
+    try:
+        return path.is_within(candidate, root) ? "served" : "refused-escape"
+    except FileNotFoundError:
+        return "404"
+
+print("good symlink in->in:  " + resolve("good"))
+print("escape symlink out:   " + resolve("escape"))
+print("sibling via symlink:  " + resolve("toevil/secret.txt"))
+print("plain file:           " + resolve("notes.txt"))
+print("missing file:         " + resolve("nope.txt"))
+print("traversal string:     " + resolve("../secret.txt"))
+
+# is_within on its own, on paths that exist: the sibling-prefix trap `startswith`
+# falls into is refused, a genuine nested path is allowed.
+print("within nested:        " + f"{path.is_within(root + '/notes.txt', root)}")
+print("within sibling:       " + f"{path.is_within(base + '/site-evil/secret.txt', root)}")
+# realpath leaves a link-free path's target unchanged (resolves flat).
+flat = path.realpath(root + "/notes.txt") == path.realpath(root) + "/notes.txt"
+print("realpath flat:        " + f"{flat}")
+# islink sees the link, not its target, and is false on a plain file.
+print("islink good/notes:    " + f"{path.islink(root + '/good')} {path.islink(root + '/notes.txt')}")
+sh(["rm", "-rf", base])

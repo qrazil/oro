@@ -1,0 +1,10 @@
+good symlink in->in:  served
+escape symlink out:   refused-escape
+sibling via symlink:  refused-escape
+plain file:           served
+missing file:         404
+traversal string:     refused-string
+within nested:        true
+within sibling:       false
+realpath flat:        true
+islink good/notes:    true false
