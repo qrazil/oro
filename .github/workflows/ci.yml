@@ -1,0 +1,87 @@
+# Continuous integration: every gate we had been running by hand, run on every
+# push and pull request to `main` — and callable from `release.yml`, so a tag
+# cannot be built and shipped without passing all of this first.
+#
+# Every step fails the build; nothing here only warns. Linux only — the
+# cross-target build matrix lives in release.yml.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_call: # release.yml gates on this
+
+jobs:
+  gate:
+    name: gate (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      # Caches the cargo registry and the target dir keyed on the lockfile, so a
+      # run reuses the last build's artifacts instead of compiling from scratch.
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      # --- Rust source hygiene ---
+      # NOTE: `cargo fmt --check` is deliberately NOT a gate. The Rust source is
+      # hand-formatted (no rustfmt.toml; rustfmt would rewrite 738 hunks across
+      # 41 files, including untouched ones — the same author's-line-breaks stance
+      # the Oro formatter takes). Adopting rustfmt is a whole-tree reformat
+      # decision, not a CI gate to bolt on. Oro-code formatting *is* gated below
+      # (`oro fmt --check`) and by the round-trip test in `cargo test`.
+      - name: cargo clippy -D warnings
+        run: cargo clippy --all-targets -- -D warnings
+
+      # The release binary the corpus, lint, and fmt-check steps below invoke.
+      # Built before them because corpus/run.sh and `oro lint`/`oro fmt` need it.
+      - name: cargo build --release
+        run: cargo build --release
+
+      # The whole test suite: unit tests, the size tripwires, the fused-chain and
+      # quadratic-scan guards, the fmt round-trip, the lint gate over std/ and
+      # examples/ (tests/lint_test.rs), and doc conformance — every reference
+      # `oro` snippet compiles and runs (tests/doc_test.rs).
+      - name: cargo test
+        run: cargo test --all-targets
+
+      # --- Behaviour gates over the shipped Oro ---
+      - name: corpus (CPython oracle + reviewed divergences)
+        run: ./corpus/run.sh
+
+      - name: oro fmt --check (std + examples)
+        # `fmt --check` takes one file at a time, so loop; any unformatted file
+        # exits non-zero and fails the step.
+        run: |
+          set -e
+          for f in std/*.oro examples/*.oro; do
+            ./target/release/oro fmt --check "$f"
+          done
+
+      - name: oro lint (std + examples must be 0)
+        run: ./target/release/oro lint std/*.oro examples/*.oro
+
+      # The oracle regenerates the core .expected from CPython; on a clean tree
+      # it must change nothing. A diff means an .expected drifted from CPython.
+      - name: oracle leaves the tree unchanged
+        run: |
+          ./corpus/oracle.sh
+          git diff --exit-code
+
+      # The standalone examples must run to a clean exit; `cli` with a real file
+      # argument must too. The rest (server/client/json_api/files) need a socket
+      # or a fixture and are exercised through the http corpus divergences.
+      - name: examples exit as designed
+        run: |
+          set -e
+          for ex in classes concurrency text; do
+            timeout 30 ./target/release/oro examples/$ex.oro >/dev/null
+          done
+          timeout 30 ./target/release/oro examples/cli.oro README.md >/dev/null

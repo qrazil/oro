@@ -20,8 +20,15 @@ env:
   BIN_NAME: oro
 
 jobs:
+  # The full CI gate (cargo test, clippy, fmt, corpus, oro lint/fmt, the oracle
+  # check, doc conformance) run on the tagged commit. `build` needs it, so a
+  # commit that fails any gate cannot be built or shipped.
+  gate:
+    uses: ./.github/workflows/ci.yml
+
   build:
     name: build ${{ matrix.target }}
+    needs: gate
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
