@@ -1620,6 +1620,14 @@ impl Value {
 /// NUL is not one, the same trick the `sys.exit` sentinel uses.
 pub const RENDERED_MESSAGE: &str = "\u{0}rendered";
 
+/// Reserved field recording where an exception was first raised, as the tuple
+/// `(source, line, col)`. Stamped once, the first time the exception unwinds,
+/// and never overwritten — so an exception that passes through an `except` clause
+/// it does not match, or a `finally`, is still reported at its raise site rather
+/// than at the clause it travelled through. NUL-prefixed like
+/// [`RENDERED_MESSAGE`], so no Oro attribute name can reach or collide with it.
+pub const RAISE_ORIGIN: &str = "\u{0}origin";
+
 /// Whether `class` is `KeyError` or descends from it — the one built-in
 /// exception CPython gives a `__str__` of its own.
 fn is_key_error(class: &Rc<Class>) -> bool {

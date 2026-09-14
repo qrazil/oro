@@ -27,8 +27,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::io::{Read, Write};
-use std::process::Child;
-use std::sync::mpsc::sync_channel;
+use std::process::{Child, ExitStatus};
+use std::sync::mpsc::{sync_channel, Receiver};
 use std::sync::Arc;
 
 use crate::stream::OroStream;
@@ -119,19 +119,23 @@ pub fn feed_from_stream(dst: impl Write + Send + 'static, waker: Arc<mio::Waker>
 /// The handle `proc.spawn` returns.
 ///
 /// Holds the three pipe streams as ordinary [`Value`]s and the live child. The
-/// child is behind a `RefCell<Option<_>>` because `wait()` consumes it (a
-/// process is reaped once) and drop must be able to see whether it still needs
-/// reaping.
+/// reaping is **off the VM thread**: `wait()` must park the calling task, not
+/// freeze every other task at the join, so the child is `wait(2)`-ed on a helper
+/// thread that delivers the code through `code_rx` and signals the pipe `Waker`
+/// — the same shape the pipes and the DNS pool use. See `Vm::do_proc_wait`.
 pub struct Proc {
-    /// The command as spawned, for `repr()` and for the diagnostic a second
-    /// `wait()` might want. Never mutated after construction.
+    /// The command as spawned, for `repr()`. Never mutated after construction.
     pub args: Vec<String>,
-    /// The child, until `wait()` reaps it. `None` afterwards, so a second
-    /// `wait()` returns the cached code rather than reaping a corpse.
+    /// The child, until it is handed to a reaper — by [`ensure_waiter`] when
+    /// `wait()` is first called, or by `drop` when the handle is discarded
+    /// unwaited. `None` once handed off, so it is reaped exactly once.
     child: RefCell<Option<Child>>,
-    /// The exit code, once known. Set by the first `wait()`; read by every
-    /// later one.
+    /// The exit code, once known: cached the first time it is delivered so every
+    /// later `wait()` (and any second waiter) reads it without a second reap.
     code: Cell<Option<i64>>,
+    /// The reaper thread's delivery end, present once `ensure_waiter` has started
+    /// it. Read non-blocking by [`try_code`](Self::try_code).
+    code_rx: RefCell<Option<Receiver<i64>>>,
     /// Write end (`Backing::PipeWrite`), or a closed stream after
     /// `p.stdin.close()`. Feeding the child is `p.stdin.write(b)`.
     pub stdin: Value,
@@ -147,40 +151,48 @@ impl Proc {
             args,
             child: RefCell::new(Some(child)),
             code: Cell::new(None),
+            code_rx: RefCell::new(None),
             stdin,
             stdout,
             stderr,
         }
     }
 
-    /// `p.wait()` — block until the child exits, and answer its exit code.
-    ///
-    /// **This blocks the calling task** (and, like `proc.run`, the VM) until the
-    /// child is gone. That is deliberate and matches `proc.run`, which reaps the
-    /// same way: by the time a program calls `wait()` it has drained the output,
-    /// and a child whose stdout has hit EOF has closed it — it is exiting, so
-    /// the wait returns at once. The one way to make `wait()` hang is to call it
-    /// *before* draining `stdout`/`stderr`: an undrained pipe fills, the child
-    /// blocks writing to it, and neither side moves. Drain first — the same rule
-    /// every subprocess API has.
-    ///
-    /// A signal-killed child has no exit code; CPython reports `-signal` for
-    /// that case and this does the same, via `ExitStatus::code`'s `None`.
-    pub fn wait(&self) -> std::io::Result<i64> {
-        if let Some(code) = self.code.get() {
-            return Ok(code);
+    /// The exit code if it is already known, without touching the reaper.
+    pub fn cached_code(&self) -> Option<i64> {
+        self.code.get()
+    }
+
+    /// Start the reaper thread, once. It owns the child, blocks in `wait(2)` off
+    /// the VM thread, sends the exit code down `code_rx`, and signals `waker` so
+    /// [`Vm::drain_procs`] wakes the parked task — never blocking the VM.
+    /// Idempotent: a second `wait()`, or a `wait()` after the code is known, is a
+    /// no-op.
+    pub fn ensure_waiter(&self, waker: Arc<mio::Waker>) {
+        if self.code.get().is_some() || self.code_rx.borrow().is_some() {
+            return;
         }
-        // `take` so the child is reaped exactly once; a second `wait()` after
-        // this reads the cached code above.
-        let status = match self.child.borrow_mut().take() {
-            Some(mut child) => child.wait()?,
-            // Cannot happen — `code` is set whenever the child is taken — but a
-            // panic here would be a worse answer than a defined one.
-            None => return Ok(self.code.get().unwrap_or(-1)),
-        };
-        let code = status.code().map(i64::from).unwrap_or_else(|| signal_code(&status));
-        self.code.set(Some(code));
-        Ok(code)
+        let Some(mut child) = self.child.borrow_mut().take() else { return };
+        let (tx, rx) = sync_channel::<i64>(1);
+        *self.code_rx.borrow_mut() = Some(rx);
+        std::thread::spawn(move || {
+            let code = child.wait().map(|s| exit_code(&s)).unwrap_or(-1);
+            let _ = tx.send(code);
+            let _ = waker.wake();
+        });
+    }
+
+    /// The exit code if known *now* — the cache, or a fresh delivery from the
+    /// reaper (then cached). `None` means the child is still running.
+    pub fn try_code(&self) -> Option<i64> {
+        if let Some(c) = self.code.get() {
+            return Some(c);
+        }
+        let got = self.code_rx.borrow().as_ref().and_then(|rx| rx.try_recv().ok());
+        if let Some(c) = got {
+            self.code.set(Some(c));
+        }
+        got
     }
 
     /// `<Proc ['git', 'upload-pack', ...]>` — the command, and whether it is
@@ -201,6 +213,12 @@ impl Proc {
     }
 }
 
+/// An `ExitStatus` as one integer: the exit code, or `-signal` for a child a
+/// signal killed (which has no code), matching CPython.
+fn exit_code(status: &ExitStatus) -> i64 {
+    status.code().map(i64::from).unwrap_or_else(|| signal_code(status))
+}
+
 /// A child killed by a signal has no exit code; report `-signal` as CPython
 /// does. On platforms without `ExitStatusExt` there is nothing to report but
 /// the placeholder.
@@ -217,16 +235,18 @@ fn signal_code(_status: &std::process::ExitStatus) -> i64 {
 
 impl Drop for Proc {
     /// A handle dropped without `wait()` does not leak the child: it is killed
-    /// and reaped here, the same deterministic cleanup refcounting gives a file
-    /// (§3's reason there is no `with`). A child that has already exited — the
-    /// overwhelmingly common case, since `wait()` clears `child` — costs this
-    /// nothing: `child` is `None` and the block is skipped. `kill()` on an
-    /// already-dead process is harmless, and the `wait()` after it is the reap
-    /// that turns a zombie back into nothing.
+    /// and reaped, the same deterministic cleanup refcounting gives a file (§3's
+    /// reason there is no `with`). The kill and the reap run **on a detached
+    /// thread**, not here, so `drop` never blocks the VM — a child wedged in an
+    /// uninterruptible syscall must not freeze every other task while it is
+    /// reaped. If `wait()` already handed the child to its reaper, `child` is
+    /// `None` and that thread does the reaping; this does nothing.
     fn drop(&mut self) {
-        if let Some(child) = self.child.get_mut() {
-            let _ = child.kill();
-            let _ = child.wait();
+        if let Some(mut child) = self.child.get_mut().take() {
+            std::thread::spawn(move || {
+                let _ = child.kill();
+                let _ = child.wait();
+            });
         }
     }
 }

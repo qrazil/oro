@@ -1023,6 +1023,13 @@ pub struct Vm {
     /// Task switches since the program started, for the periodic non-blocking
     /// reactor sweep. Only ever incremented while something is registered.
     tick: u64,
+    /// Consecutive I/O operations that completed *without* blocking. A ready
+    /// operation never suspends on its own, so a tight `io.copy` loop over a fast
+    /// peer would hold the VM until EOF and starve every other task; every
+    /// [`READY_IO_YIELD`](sched::READY_IO_YIELD) of them, the running task yields
+    /// so the scheduler can run someone else. Reset whenever an operation blocks
+    /// (a park is already a yield). See `Vm::begin_io`.
+    ready_io_run: u32,
 }
 
 /// Add two values with the VM's numeric/sequence `+` semantics. Exposed for
@@ -1102,6 +1109,7 @@ impl Vm {
             reactor: Box::default(),
             park_seq: 0,
             tick: 0,
+            ready_io_run: 0,
         }
     }
 
@@ -3205,13 +3213,10 @@ impl Vm {
                 format!("wait() takes no arguments ({} given)", args.len()),
             )));
         }
-        match p.wait() {
-            Ok(code) => {
-                self.push(Value::Int(code));
-                Ok(Some(Step::Next))
-            }
-            Err(e) => Ok(Some(self.raise(Exc::OSError, e.to_string()))),
-        }
+        // Parks the calling task (reaping happens on a helper thread) rather than
+        // blocking the VM — a join that froze every other task would defeat the
+        // streaming spawn it completes.
+        self.do_proc_wait(p.clone()).map(Some)
     }
 
     /// `obj.m(...)` where `m` contains a `yield`: produce a generator rather
@@ -5826,6 +5831,15 @@ impl Vm {
     /// is re-entered from that frame, so all three come from the same place.
     fn unwind(&mut self, exc: Value) -> Option<(Value, Rc<str>)> {
         let source = self.err_source();
+        // Stamp the raise site the first time this exception unwinds — before any
+        // frame is popped, while `line`/`col` still name the raising instruction.
+        // A re-raise (a non-matching `except`, a `finally`, a bare `raise`)
+        // re-enters here with `line`/`col` moved to the clause it passed through,
+        // but the stamp is already set and is not overwritten, so the report
+        // points at the raise, not the passthrough. Covers every raise path —
+        // `raise`, a runtime fault, `self.raise` — because all of them reach an
+        // uncaught end through this one function.
+        self.stamp_origin(&exc, &source, self.task.line, self.task.col);
         // A chain pending in the frame the exception came from will never reach
         // the step that was going to run it — a handler resumes at its own
         // target, not at the middle of the expression that raised.
@@ -5905,15 +5919,53 @@ impl Vm {
             other => ("Exception".to_string(), other.display()),
         };
         let message = if msg.is_empty() { name } else { format!("{name}: {msg}") };
+        // Report at the raise site if one was recorded — an exception that
+        // unwound through a non-matching `except` has `task.line`/`col` pointing
+        // at that clause, not where it was raised. `unwind` stamps the origin on
+        // the way in, so this recovers it.
+        let (source, line, col) = self
+            .origin_of(exc)
+            .unwrap_or((source, self.task.line, self.task.col));
         Box::new(RuntimeError {
             // The rendering is `Class: message` already; nothing re-raises a
             // diagnostic built here, so the class field only has to be honest.
             class: Exc::RuntimeError,
             message: message.into_boxed_str(),
             source,
-            line: self.task.line,
-            col: self.task.col,
+            line,
+            col,
         })
+    }
+
+    /// Record where `exc` was first raised — `(source, line, col)` — unless it is
+    /// already recorded. See [`crate::value::RAISE_ORIGIN`].
+    fn stamp_origin(&self, exc: &Value, source: &Rc<str>, line: u32, col: u32) {
+        let Value::Instance(i) = exc else { return };
+        let mut f = i.fields.borrow_mut();
+        if f.contains_key(crate::value::RAISE_ORIGIN) {
+            return;
+        }
+        f.insert(
+            Rc::from(crate::value::RAISE_ORIGIN),
+            Value::Tuple(OroTuple::new(vec![
+                Value::str(source.to_string()),
+                Value::Int(i64::from(line)),
+                Value::Int(i64::from(col)),
+            ])),
+        );
+    }
+
+    /// The raise site stamped on `exc` by [`stamp_origin`](Self::stamp_origin).
+    fn origin_of(&self, exc: &Value) -> Option<(Rc<str>, u32, u32)> {
+        let Value::Instance(i) = exc else { return None };
+        let f = i.fields.borrow();
+        let Some(Value::Tuple(t)) = f.get(crate::value::RAISE_ORIGIN) else { return None };
+        match (t.first(), t.get(1), t.get(2)) {
+            (Some(Value::Str(s)), Some(Value::Int(l)), Some(Value::Int(c))) => {
+                Some((Rc::from(s.s.as_str()), *l as u32, *c as u32))
+            }
+            _ => None,
+        }
     }
 
     /// Bind arguments to a fresh frame's slots and cells.

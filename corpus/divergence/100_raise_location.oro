@@ -1,0 +1,13 @@
+# INTENTIONAL DIVERGENCE. An uncaught exception is reported at its RAISE site,
+# even when it propagates through a `try` that does not catch it — not at the
+# `try` it passed through. CPython prints a multi-line traceback ending at the
+# raise; Oro prints the single origin line, and the point of this case is that
+# the line and column are the raise inside `boom` (line 8), not the `try` below.
+def boom():
+    x = 1
+    raise RuntimeError("kaboom")
+
+try:
+    boom()
+except ValueError:
+    print("this branch does not run")

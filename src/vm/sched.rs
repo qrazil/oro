@@ -147,6 +147,12 @@ pub(super) enum Park {
     /// same way [`drain_dns`](Vm::drain_dns) settles a finished lookup. The
     /// `token`/`interest`/`seq` fields of the `IoWait` go unused here.
     Pipe(Box<IoWait>),
+    /// `p.wait()` — waiting for a spawned child to exit. A reaper thread is
+    /// inside `wait(2)` on this task's behalf (the child's exit is a blocking-only
+    /// OS event, like `getaddrinfo`), and delivers the code through the `Proc`'s
+    /// channel; [`drain_procs`](Vm::drain_procs) wakes this task when it lands.
+    /// Owned `Rc<Proc>`, so `'static` like every other variant.
+    ProcWait(Rc<crate::process::Proc>),
     /// `time.sleep(secs)`. Carries the park's sequence number, which is how its
     /// timer entry knows it is still the one this task is waiting on.
     Sleep(u64),
@@ -164,6 +170,11 @@ pub(super) enum Park {
         id: u64,
         addr: Rc<str>,
     },
+    /// A cooperative yield inserted by the VM after a run of I/O operations that
+    /// completed without blocking (see [`READY_IO_YIELD`]). Unlike [`Yield`], the
+    /// operation's result is *already on the stack* — the task resumes at the
+    /// next instruction with it in place — so requeueing must push nothing.
+    YieldReady,
     /// `yield_now()` — the odd one out, and deliberately in this enum anyway.
     ///
     /// Every other variant names something the task is *waiting for*; this one
@@ -202,6 +213,10 @@ impl Park {
             // but a child that will never produce (blocked reading a stdin the
             // program never writes) is a genuine one, and this is what it says.
             Park::Pipe(w) => format!("{} on {}", w.op.what(), w.stream.repr()),
+            // Like a pipe park, reachable through the deadlock diagnostic in
+            // principle but not in practice: a reaper thread the reactor counts
+            // is what wakes it, so it is never idle while one is outstanding.
+            Park::ProcWait(p) => format!("wait() on {}", p.repr()),
             Park::Sleep(_) => "time.sleep()".to_string(),
             // Unreachable through the deadlock diagnostic for the same reason
             // the two above are: a task waiting on a lookup has one registered
@@ -214,6 +229,9 @@ impl Park {
             // `unreachable!` because a diagnostic that panics is worse than a
             // diagnostic that is briefly wrong.
             Park::Yield => "yield_now()".to_string(),
+            // Unreachable through the deadlock diagnostic for the same reason
+            // `Yield` is: a yielding task is requeued, never parked.
+            Park::YieldReady => "yield (I/O fairness)".to_string(),
         }
     }
 }
@@ -436,6 +454,22 @@ const MAX_DNS_THREADS: usize = 8;
 /// imperceptible, large enough not to be a spin; tunable, not API.
 const PIPE_POLL_BACKSTOP: Duration = Duration::from_millis(20);
 
+/// After this many I/O operations complete in a row without blocking, the
+/// running task yields so its peers get a turn.
+///
+/// A ready operation — a buffered read, a write the kernel takes whole — never
+/// suspends, so a fast `io.copy` loop would otherwise run to EOF holding the VM,
+/// and another connection's request would wait behind the whole transfer (49 ms
+/// stalls were measured serving an index page during a push). Making it the VM's
+/// job, per *operation* rather than per byte, means every correct caller gets it
+/// for free — `io.copy` included — and none has to hand-roll a yield. Per
+/// operation, not per byte: it needs no size accounting and covers read, write
+/// and accept uniformly. Sixteen bounds the work between yields to ~16 chunks
+/// (about 1 MiB at `io.copy`'s 64 KiB) — a few hundred microseconds, so a
+/// waiting peer sees sub-millisecond latency — while amortising the yield's cost
+/// so a lone transfer barely notices. Tunable, not API.
+pub(super) const READY_IO_YIELD: u32 = 16;
+
 /// A lookup on its way to a helper thread.
 struct Lookup {
     id: u64,
@@ -551,6 +585,11 @@ struct PipeHub {
     /// emptiness is what [`no_pipes`](Reactor::no_pipes) reports and thus part
     /// of the deadlock test.
     waiters: HashSet<TaskId>,
+    /// Tasks parked on `p.wait()`, waiting for a child to exit. Woken by
+    /// [`drain_procs`](Vm::drain_procs) when the reaper thread delivers the code.
+    /// Counted in `no_pipes` for the same reason `waiters` is: a reaper thread is
+    /// outside the VM and can still make the task runnable.
+    proc_waiters: HashSet<TaskId>,
 }
 
 struct Os {
@@ -614,7 +653,9 @@ impl Reactor {
     /// make a task runnable, so this being false keeps [`is_idle`](Self::is_idle)
     /// from calling that a deadlock.
     fn no_pipes(&self) -> bool {
-        self.pipes.as_ref().is_none_or(|p| p.waiters.is_empty())
+        self.pipes
+            .as_ref()
+            .is_none_or(|p| p.waiters.is_empty() && p.proc_waiters.is_empty())
     }
 
     /// The pipe hub's waker, creating the hub (and its `Waker`, and — via
@@ -632,7 +673,11 @@ impl Reactor {
             let token = self.next_token;
             let waker = mio::Waker::new(self.os()?.poll.registry(), mio::Token(token))
                 .map_err(|e| crate::net::io_error(&e))?;
-            self.pipes = Some(Box::new(PipeHub { waker: Arc::new(waker), waiters: HashSet::new() }));
+            self.pipes = Some(Box::new(PipeHub {
+                waker: Arc::new(waker),
+                waiters: HashSet::new(),
+                proc_waiters: HashSet::new(),
+            }));
         }
         Ok(Arc::clone(&self.pipes.as_ref().expect("just built").waker))
     }
@@ -648,6 +693,19 @@ impl Reactor {
     fn pipe_unwait(&mut self, task: TaskId) {
         if let Some(h) = self.pipes.as_mut() {
             h.waiters.remove(&task);
+        }
+    }
+
+    /// Record / clear that `task` is parked on `p.wait()`.
+    fn proc_wait(&mut self, task: TaskId) {
+        if let Some(h) = self.pipes.as_mut() {
+            h.proc_waiters.insert(task);
+        }
+    }
+
+    fn proc_unwait(&mut self, task: TaskId) {
+        if let Some(h) = self.pipes.as_mut() {
+            h.proc_waiters.remove(&task);
         }
     }
 
@@ -1011,6 +1069,13 @@ impl Vm {
         self.ready.push_back(task);
     }
 
+    /// Requeue the current task without pushing a value — the I/O fairness yield,
+    /// where the operation's result is already on the stack.
+    fn requeue_current_bare(&mut self) {
+        let task = std::mem::replace(&mut self.task, Task::new());
+        self.ready.push_back(task);
+    }
+
     /// Wake `id` and raise `exc` in it. The exception cannot be unwound from
     /// here — unwinding walks `Vm::task` — so it rides on the task until the
     /// scheduler makes it current.
@@ -1142,6 +1207,11 @@ impl Vm {
                     // a single-task program is a no-op, never a deadlock.
                     self.requeue_current(Value::None);
                 }
+                Slice::Parked(park) if matches!(*park, Park::YieldReady) => {
+                    // The I/O fairness yield: the operation's result is already
+                    // on the stack, so this requeues without pushing anything.
+                    self.requeue_current_bare();
+                }
                 Slice::Parked(park) => {
                     // §3's corrected deadlock condition: nothing ready *and*
                     // nothing registered. A task that parked on I/O or a
@@ -1237,23 +1307,25 @@ impl Vm {
         // ever entered when there is genuinely nothing to do — the standard
         // close of the lost-wakeup race for a condition read across threads.
         self.drain_pipes();
+        self.drain_procs();
         if !self.ready.is_empty() {
             return true;
         }
-        let timeout = match self.reactor.next_deadline() {
-            Some(at) => Some(at.saturating_duration_since(Instant::now())),
-            // A backstop, and only while a pipe op is outstanding: the pipe
-            // `Waker` is edge-triggered (mio registers every fd `EPOLLET`), and
-            // an edge-triggered wake races the park it is meant to catch. The
-            // pre-poll drain above closes that race in the common case; this
-            // bounds the pathological one, so a missed edge costs a few
-            // milliseconds of latency, never a hang. `try_recv` is the source of
-            // truth, and this only decides how soon it is consulted. Nothing
-            // else in the reactor needs it — a socket's readiness is
-            // level-checked by the kernel — so a program that never spawns a
-            // child never waits on a timeout it did not ask for.
-            None if !self.reactor.no_pipes() => Some(PIPE_POLL_BACKSTOP),
-            None => None,
+        let deadline = self.reactor.next_deadline().map(|at| at.saturating_duration_since(Instant::now()));
+        let timeout = if self.reactor.no_pipes() {
+            deadline
+        } else {
+            // While any off-thread work is outstanding — a pipe op or a
+            // `p.wait()` — never block longer than the backstop, *even with a
+            // timer pending*. The pipe/proc `Waker` is edge-triggered (mio
+            // registers every fd `EPOLLET`) and an edge races the park it is
+            // meant to catch; the pre-poll drain closes that in the common case
+            // and this bounds the pathological one. Taking the *earlier* of the
+            // timer and the backstop is the fix for the bug where a single
+            // sleeping task let a missed pipe wake wait out the whole sleep
+            // (round-trips seen at 4-60s against a 22ms worst case). `try_recv`
+            // is the source of truth; this only decides how soon it is consulted.
+            Some(deadline.map_or(PIPE_POLL_BACKSTOP, |d| d.min(PIPE_POLL_BACKSTOP)))
         };
         match self.reactor.poll(timeout) {
             Ok(ready) => {
@@ -1269,6 +1341,7 @@ impl Vm {
         }
         self.drain_dns();
         self.drain_pipes();
+        self.drain_procs();
         self.fire_timers();
         true
     }
@@ -1304,6 +1377,7 @@ impl Vm {
         }
         self.drain_dns();
         self.drain_pipes();
+        self.drain_procs();
         self.fire_timers();
     }
 
@@ -1459,6 +1533,59 @@ impl Vm {
         }
     }
 
+    /// Wake every `p.wait()` whose child has been reaped. The proc twin of
+    /// [`drain_pipes`](Self::drain_pipes), run after every poll: the reaper
+    /// thread signals the same `Waker`, so this re-checks each waiting task's
+    /// `Proc` for a delivered exit code.
+    fn drain_procs(&mut self) {
+        let Some(h) = self.reactor.pipes.as_ref() else { return };
+        if h.proc_waiters.is_empty() {
+            return;
+        }
+        let ids: Vec<TaskId> = h.proc_waiters.iter().copied().collect();
+        for id in ids {
+            self.retry_proc(id);
+        }
+    }
+
+    /// Deliver `id`'s exit code if the reaper has it. Caching on the `Proc` means
+    /// several tasks may wait on one child: the first delivery caches the code
+    /// and every waiter reads it, this pass or the next.
+    fn retry_proc(&mut self, id: TaskId) {
+        let proc = match self.parked.get(&id).map(|p| &p.park) {
+            Some(Park::ProcWait(proc)) => proc.clone(),
+            _ => return,
+        };
+        if let Some(code) = proc.try_code() {
+            self.reactor.proc_unwait(id);
+            self.wake_with_value(id, Value::Int(code));
+        }
+    }
+
+    /// `p.wait()` — park the calling task until the child exits, never blocking
+    /// the VM. The reaper thread does the blocking `wait(2)` off-thread and
+    /// delivers the code, exactly as the pipes stream bytes and the resolver
+    /// resolves names. If the code is already known the task does not park at all.
+    pub(super) fn do_proc_wait(&mut self, p: Rc<crate::process::Proc>) -> Result<Step, VmError> {
+        if let Some(code) = p.cached_code() {
+            self.push(Value::Int(code));
+            return Ok(Step::Next);
+        }
+        let waker = match self.reactor.pipe_waker() {
+            Ok(w) => w,
+            Err(msg) => return Err(self.err(msg)),
+        };
+        p.ensure_waiter(waker);
+        // The child may have exited between spawn and now; take the code without
+        // a park if it is already there.
+        if let Some(code) = p.try_code() {
+            self.push(Value::Int(code));
+            return Ok(Step::Next);
+        }
+        self.reactor.proc_wait(self.task.id);
+        Ok(Step::Park(Box::new(Park::ProcWait(p))))
+    }
+
     /// Everything the resolver threads have finished, handed to the tasks that
     /// asked for it.
     ///
@@ -1562,7 +1689,12 @@ impl Vm {
         let ids: Vec<TaskId> = self
             .parked
             .iter()
-            .filter(|(_, p)| matches!(p.park, Park::Io(_) | Park::Dns { .. } | Park::Pipe(_)))
+            .filter(|(_, p)| {
+                matches!(
+                    p.park,
+                    Park::Io(_) | Park::Dns { .. } | Park::Pipe(_) | Park::ProcWait(_)
+                )
+            })
             .map(|(id, _)| *id)
             .collect();
         for id in ids {
@@ -1573,10 +1705,11 @@ impl Vm {
         if let Some(d) = self.reactor.dns.as_mut() {
             d.waiters.clear();
         }
-        // A pipe waits on the same epoll's `Waker`; a dead reactor strands it as
-        // surely as a socket, so the pipe waiters are cleared with the rest.
+        // A pipe read and a `p.wait()` both wait on the same epoll's `Waker`; a
+        // dead reactor strands them as surely as a socket, so both are cleared.
         if let Some(h) = self.reactor.pipes.as_mut() {
             h.waiters.clear();
+            h.proc_waiters.clear();
         }
     }
 
@@ -2158,9 +2291,21 @@ impl Vm {
         match attempt(&mut w) {
             Ok(Io::Ready(v)) => {
                 self.push(v);
-                Ok(Step::Next)
+                // A ready operation never suspends, so a tight copy loop would
+                // hold the VM to EOF. Count the run of them and, every
+                // `READY_IO_YIELD`, hand control back so peers get a turn — the
+                // fairness `io.copy` used to need a hand-rolled `yield_now` for.
+                self.ready_io_run += 1;
+                if self.ready_io_run >= READY_IO_YIELD {
+                    self.ready_io_run = 0;
+                    Ok(Step::Park(Box::new(Park::YieldReady)))
+                } else {
+                    Ok(Step::Next)
+                }
             }
             Ok(Io::Block(i)) => {
+                // A block is already a yield; the run of ready ops ends here.
+                self.ready_io_run = 0;
                 w.interest = i;
                 // A pipe would block for a reason the reactor cannot watch — no
                 // chunk yet, or no room in the writer's channel — so it parks on

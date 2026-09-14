@@ -2752,19 +2752,20 @@ fn a_stdlib_error_caught_in_user_code_is_still_the_users_to_re_raise() {
 #[test]
 fn the_file_and_the_line_always_come_from_the_same_frame() {
     // The invariant behind the fix, stated as a test: whatever frame supplies
-    // `line`, supplies `source`. A `finally` that re-raises reports its own
-    // `EndFinally` — that is pre-existing behaviour and not what is under test
-    // here; what is under test is that the *file* moved with it, so the pair
-    // still names somewhere that exists.
+    // `line`, supplies `source` — they are stamped together as one origin at the
+    // raise, so they can never drift apart. An exception that unwinds through a
+    // `finally` (a `try` that does not catch) is reported at its raise site, not
+    // at the `finally` it passed through — the same rule as an uncaught `except`.
     let err = run_err(
-        "import json\n\
+        "def boom():\n\
+         \x20   raise RuntimeError(\"kaboom\")\n\
          try:\n\
-         \x20   json.stringify({1: 2})\n\
+         \x20   boom()\n\
          finally:\n\
          \x20   x = 1\n",
     );
     assert_eq!(&*err.source, "test.oro", "got: {}", err.source);
-    assert_eq!(err.line, 2, "the try statement's EndFinally, in the script's own frame");
+    assert_eq!(err.line, 2, "the raise inside boom, preserved through the finally");
 }
 
 /// `apply(f, args=[…], kwargs={…})` calls `f` with the list bound by position

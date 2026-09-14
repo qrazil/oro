@@ -358,6 +358,120 @@ print(a.join(), b.join(), c.join())
     );
 }
 
+/// `p.wait()` parks the calling task, not the whole VM.
+///
+/// The regression: `wait()` used to reap on the VM thread, so a join on a slow
+/// child froze every other task until it exited — defeating the streaming spawn
+/// it completes. The claim is ordering, not just completion: a fast peer must
+/// finish *while* the wait is still outstanding. With a blocking wait it cannot
+/// run at all until the 400 ms child is gone; with a parking one it sends first.
+#[test]
+fn wait_parks_the_task_and_not_the_vm() {
+    let (out, took) = run_timed(
+        "wait_overlaps",
+        r#"
+import proc
+import time
+
+order = chan(cap=2)
+
+def waiter():
+    p = proc.spawn(["sleep", "0.4"])
+    p.wait()
+    order.send("waiter")
+
+def fast():
+    time.sleep(0.05)
+    order.send("fast")
+
+spawn(waiter)
+spawn(fast)
+print(order.recv(), order.recv())
+"#,
+    );
+    assert_eq!(out, "fast waiter\n", "the fast task did not run while wait() was parked");
+    // The child is 400 ms; overlapped, the whole thing is ~that. Blocked, it is
+    // still ~400 ms but `fast` could not have gone first. Timing is the weak
+    // check, the order above is the real one.
+    assert!(took < Duration::from_millis(900), "took {took:?}");
+}
+
+/// A pending timer must not defeat the pipe/proc wake backstop.
+///
+/// The regression (BUG 2): `wait_for_external` applied the 20 ms backstop only
+/// when *no* timer existed, so with one sleeping task a missed edge on the
+/// edge-triggered pipe `Waker` waited for the timer instead — round-trips seen
+/// at 4-60 s against a 22 ms worst case. The fix waits the *earlier* of the
+/// timer and the backstop. Here a task sleeps a whole second (a timer pending
+/// throughout) while another runs 120 spawn round-trips; none may stall.
+#[test]
+fn a_pending_timer_does_not_stall_pipe_roundtrips() {
+    let out = run(
+        "backstop_under_timer",
+        r#"
+import proc
+import io
+import time
+
+def sleeper():
+    time.sleep(1.0)          # a timer pending for the whole run
+
+spawn(sleeper)
+worst = 0.0
+for i, _ in range(120):
+    t0 = time.monotonic()
+    p = proc.spawn(["cat"])
+    p.stdin.write(b"ping")
+    p.stdin.close()
+    io.read(p.stdout)
+    p.wait()
+    dt = time.monotonic() - t0
+    worst = dt > worst ? dt : worst
+print(worst < 0.5 ? "roundtrips stayed fast" : f"STALLED at {worst}s")
+"#,
+    );
+    assert_eq!(
+        out, "roundtrips stayed fast\n",
+        "a pipe round-trip stalled behind a pending timer"
+    );
+}
+
+/// A tight loop of ready I/O operations yields so peers are not starved.
+///
+/// The regression (BUG 3): a ready operation never suspends, so an `io.copy`
+/// over an always-ready source ran to EOF holding the VM, and another
+/// connection waited behind the whole transfer (orogit hand-rolled a per-chunk
+/// `yield_now` to cut a 49 ms index-page stall to 2 ms). The runtime now yields
+/// every N ready ops. Here a 4 MiB in-memory copy — all ready, never blocking —
+/// races a peer that only sends: with yielding the peer runs first, without it
+/// the copy finishes before the peer is ever scheduled.
+#[test]
+fn a_fast_copy_loop_yields_to_its_peers() {
+    let out = run(
+        "copy_yields",
+        r#"
+import io
+
+src = io.buffer(b"x" * (4 * 1024 * 1024))   # reads never block
+sink = open("/dev/null", mode="w")
+
+order = chan(cap=2)
+
+def copier():
+    io.copy(sink, src)
+    order.send("copier")
+
+def peer():
+    order.send("peer")
+
+spawn(copier)
+spawn(peer)
+print(order.recv())
+"#,
+    );
+    assert_eq!(out, "peer\n", "the copy loop ran to EOF without yielding — a peer was starved");
+}
+
 /// A task keeps running while another one's `set_timeout` expires.
 ///
 /// Two things are being checked at once, and both were broken before M3b. The
