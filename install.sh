@@ -8,6 +8,11 @@
 # Environment overrides:
 #   ORO_VERSION=v0.2.0        pin a specific release (default: latest)
 #   ORO_INSTALL_DIR=/opt/bin  install location (default: ~/.local/bin)
+#   ORO_BASE_URL=...          where to fetch the archive and SHA256SUMS from,
+#                             instead of this release's GitHub download URL. A
+#                             mirror, or `file:///path` to a local directory —
+#                             which is how the installer is tested against a
+#                             locally-built archive without a release existing.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # The published repo. Change these three if the project moves.
@@ -93,7 +98,7 @@ main() {
     version=$(resolve_version)
     info "Installing ${BIN_NAME} ${version} for ${target}"
 
-    base="https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download/${version}"
+    base="${ORO_BASE_URL:-https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download/${version}}"
     archive="${BIN_NAME}-${version}-${target}.tar.gz"
 
     tmp=$(mktemp -d 2>/dev/null || mktemp -d -t oro)
