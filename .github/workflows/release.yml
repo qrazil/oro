@@ -86,21 +86,42 @@ jobs:
           ls -l "$bin"
           echo "size: $(wc -c < "$bin") bytes"
 
-          # The static-musl release gate, checked and not merely asserted. A
-          # fully static binary has no dynamic interpreter; `file` reports
-          # "statically linked" identically for x86_64 and aarch64, so this
-          # verifies the cross-built arm64 artifact on the x86_64 runner too.
-          # If a future dependency ever pulls in a C or `-sys` crate and
-          # re-links libc, this fails the release rather than shipping the
-          # glibc-dynamic binary the musl target exists to prevent.
+          # The static-musl release gate. If a future dependency pulls in a C or
+          # `-sys` crate and re-links libc, this fails the release rather than
+          # shipping the glibc-dynamic binary the musl target exists to prevent.
+          #
+          # The gate is the ELF structure, NOT a tool's prose. `file`'s wording
+          # varies by version and platform — modern Rust musl links static-pie,
+          # which `file` calls "static-pie linked", not "statically linked", and
+          # asserting on that string is how this broke. What actually defines
+          # "no libc dependency" is: no PT_INTERP program header (no dynamic
+          # loader) and no DT_NEEDED dynamic entries (no shared libraries). A
+          # static-pie binary still has a *dynamic section* for its own
+          # relocations, so the test is NEEDED-count, not section presence.
+          # readelf reads the ELF the same on any runner and works cross-arch, so
+          # the aarch64 artifact is verified on the x86_64 host too. `file` stays
+          # as a logged signal, never the thing that fails the build.
           case "${{ matrix.target }}" in
             *-linux-musl)
-              info="$(file -b "$bin")"
-              echo "linkage: $info"
-              case "$info" in
-                *"statically linked"*) ;;
-                *) echo "::error::$bin is NOT statically linked; the musl release gate failed" >&2; exit 1 ;;
-              esac
+              file -b "$bin" 2>/dev/null | sed 's/^/file: /' || true
+              # `readelf` itself failing is a real error; capture it explicitly.
+              headers=$(readelf -l "$bin") || { echo "::error::readelf -l failed on $bin" >&2; exit 1; }
+              # `grep -c` EXITS 1 on zero matches, and a correctly static binary
+              # has zero INTERP/NEEDED — so under `set -e -o pipefail` (the shell
+              # GitHub runs) an unguarded `n=$(… | grep -c …)` kills the step
+              # SILENTLY exactly when it should pass. `|| true` makes the *count*,
+              # not grep's exit status, the thing the gate tests.
+              interp=$(printf '%s\n' "$headers" | grep -c 'INTERP' || true)
+              needed=$(readelf -d "$bin" 2>/dev/null | grep -c 'NEEDED' || true)
+              echo "linkage: PT_INTERP=$interp DT_NEEDED=$needed"
+              if [ "$interp" -ne 0 ]; then
+                echo "::error::$bin has a PT_INTERP header ($interp) — it needs a dynamic loader; not static" >&2
+                exit 1
+              fi
+              if [ "$needed" -ne 0 ]; then
+                echo "::error::$bin has $needed DT_NEEDED entries — it depends on shared libraries; not static" >&2
+                exit 1
+              fi
               ;;
           esac
           stage="${BIN_NAME}-${version}-${{ matrix.target }}"
