@@ -1,0 +1,12 @@
+# Pinned so local builds and CI use one toolchain — and, with it, one Unicode
+# version. The Oro formatter's `is_printable` (src/value.rs) delegates to std's
+# Unicode tables to decide which code points print raw and which become `\xNN`.
+# A floating toolchain reclassifies boundary code points (U+180E is the textbook
+# case: format character in one Unicode version, unassigned in another), so the
+# formatter's output — and the `fmt` gate that checks it — changes underfoot,
+# green locally and red in CI. rustfmt's own output is version-sensitive for the
+# same reason. Pinning makes both deterministic everywhere; bumping the channel
+# is a deliberate, reviewed step whose diff is the reformat it causes.
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]

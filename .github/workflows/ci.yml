@@ -20,9 +20,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Pinned, not `@stable`: the formatter classifies Unicode with std's
+      # tables, so a floating toolchain reformats boundary code points and this
+      # gate goes green locally / red here. Must match rust-toolchain.toml.
       - name: Install the toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.97.1"
           components: clippy, rustfmt
 
       # Caches the cargo registry and the target dir keyed on the lockfile, so a

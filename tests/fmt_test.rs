@@ -82,8 +82,17 @@ fn all_oro_files() -> Vec<PathBuf> {
 ///
 /// Neither is about line breaks. If this list needs to grow, that is a decision
 /// worth making deliberately, which is what this test is for.
+// Files the formatter deliberately would change, kept unformatted because the
+// exact source *is* the fixture. Each entry says why; an allowlist without
+// reasons rots into "some files, for some reason".
 const EXPECTED_UNFORMATTED: [&str; 3] = [
+    // Exercises every byte-literal spelling the lexer accepts — `b'…'`, `B"…"`,
+    // `\0`/`\a`/`\x41` — which the formatter canonicalises to one. Formatting it
+    // would delete the variety it exists to test.
     "corpus/divergence/35_bytes.oro",
+    // Feeds `json.parse` strings written with escaped double-quotes
+    // (`"{\"a\":…}"`); the formatter reprints those as single-quoted. The
+    // escaped spellings are the input under test.
     "corpus/divergence/36_json.oro",
     // Keeps an author-written parenthesised nested ternary so the depth-cap
     // test shows parentheses do not exempt it; the formatter would strip the
@@ -312,7 +321,16 @@ fn only_the_documented_files_are_unformatted() {
     want.sort();
     assert_eq!(
         dirty, want,
-        "`oro fmt --check` disagrees with EXPECTED_UNFORMATTED"
+        "\n`oro fmt --check` disagrees with EXPECTED_UNFORMATTED.\n\
+         A file in `dirty` but not `want` is unformatted: run \
+         `oro fmt --write <file>` to fix it, or — if its exact source is a \
+         fixture the formatter must not touch — add it to EXPECTED_UNFORMATTED \
+         with a one-line reason.\n\
+         A file in `want` but not `dirty` is now formatted: remove it from \
+         EXPECTED_UNFORMATTED.\n\
+         If this passes locally but fails in CI (or the reverse), the toolchain \
+         drifted: the formatter classifies Unicode with std's tables, so the \
+         version must match rust-toolchain.toml — that is what pins it."
     );
 }
 

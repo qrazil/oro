@@ -55,10 +55,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Pinned to match rust-toolchain.toml and the CI gate, so the shipped
+      # binary is built with the same toolchain everything else is verified on.
       - name: Install Rust
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup target add ${{ matrix.target }}
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup target add ${{ matrix.target }} --toolchain 1.97.1
 
       # `cross` builds the musl targets in a container with the right linker,
       # which "just works" for a pure-Rust crate on both x86_64 and aarch64.
