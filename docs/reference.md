@@ -134,7 +134,7 @@ SHA256 against the published `SHA256SUMS`** (never skipped), unpack it, install
 the binary, and run `oro --version` to prove it works.
 
 ```text
-curl -fsSL https://raw.githubusercontent.com/OWNER/oro/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/qrazil/oro/main/install.sh | sh
 
 ORO_VERSION=v0.2.0        pin a release instead of taking the latest
 ORO_INSTALL_DIR=/opt/bin  install here instead of ~/.local/bin
@@ -143,8 +143,7 @@ ORO_INSTALL_DIR=/opt/bin  install here instead of ~/.local/bin
 It supports Linux (musl) and macOS on `x86_64` and `aarch64`, uses `curl` or
 `wget`, never edits your shell rc files (it prints the `export PATH=…` line for
 you to add), and falls back to `/usr/local/bin` with `sudo` only when
-`~/.local/bin` is not writable. `GITHUB_OWNER` in its SUBSTITUTIONS block must
-be set before publishing.
+`~/.local/bin` is not writable.
 
 ### The repo's own scripts
 

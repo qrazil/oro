@@ -3,15 +3,15 @@
 # verifies its SHA256, and installs the `oro` binary. POSIX sh; works with curl
 # or wget; no bash features.
 #
-#   curl -fsSL https://raw.githubusercontent.com/OWNER/oro/BRANCH/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/qrazil/oro/main/install.sh | sh
 #
 # Environment overrides:
 #   ORO_VERSION=v0.2.0        pin a specific release (default: latest)
 #   ORO_INSTALL_DIR=/opt/bin  install location (default: ~/.local/bin)
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# SUBSTITUTIONS — set these three to the published repo, then this file is done.
-GITHUB_OWNER="OWNER"
+# The published repo. Change these three if the project moves.
+GITHUB_OWNER="qrazil"
 GITHUB_REPO="oro"
 BIN_NAME="oro"
 # ─────────────────────────────────────────────────────────────────────────────

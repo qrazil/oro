@@ -71,12 +71,8 @@ for free.
 
 ## Install
 
-<!-- SUBSTITUTIONS: replace OWNER with the GitHub owner and, if your default
-     branch is not `main`, the branch in the raw URL below. The same OWNER must
-     be set in install.sh's SUBSTITUTIONS block. -->
-
 ```sh
-curl -fsSL https://raw.githubusercontent.com/OWNER/oro/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/qrazil/oro/main/install.sh | sh
 ```
 
 This detects your OS/arch, downloads the matching prebuilt binary, **verifies
@@ -92,7 +88,7 @@ distros alike. Prebuilt for `x86_64`/`aarch64` on Linux and macOS.
 **Prefer not to pipe curl into a shell?** That's a reasonable stance — you're
 running code you haven't read. Download `install.sh` and read it first, or skip
 it entirely: grab the archive for your platform from the
-[releases page](https://github.com/OWNER/oro/releases), verify it against
+[releases page](https://github.com/qrazil/oro/releases), verify it against
 `SHA256SUMS`, `tar -xzf` it, and move the `oro` binary onto your `PATH`.
 
 **Uninstall:** delete the binary — `rm ~/.local/bin/oro` (or wherever you put
