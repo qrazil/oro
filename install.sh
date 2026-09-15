@@ -31,14 +31,33 @@ err() {
 }
 
 # --- http: prefer curl, fall back to wget ------------------------------------
-# fetch <url>            -> body to stdout
+# All downloads are of PUBLIC release assets, so there is no authentication
+# anywhere here — no token, no Authorization header. Do not add one.
+#
 # download <url> <path>  -> body to a file
+# latest_tag             -> the newest release's tag, via the /releases/latest
+#                           redirect (unauthenticated, and not subject to the
+#                           GitHub API's 60-req/hour-per-IP limit that hitting
+#                           /repos/.../releases/latest would be).
 if command -v curl >/dev/null 2>&1; then
-    fetch() { curl -fsSL "$1"; }
     download() { curl -fsSL "$1" -o "$2"; }
+    latest_tag() {
+        # Follow the redirect and read the tag off the final URL.
+        eff=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+            "https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest") || return 1
+        case "$eff" in */tag/*) printf '%s' "${eff##*/tag/}" ;; *) return 1 ;; esac
+    }
 elif command -v wget >/dev/null 2>&1; then
-    fetch() { wget -qO- "$1"; }
     download() { wget -qO "$2" "$1"; }
+    latest_tag() {
+        # wget cannot print the effective URL, so read the first redirect's
+        # Location header (`-S` prints headers to stderr; `--max-redirect=0`
+        # stops before following it).
+        loc=$(wget -S --max-redirect=0 -O /dev/null \
+            "https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest" 2>&1 \
+            | awk 'tolower($1) == "location:" { print $2 }' | tr -d '\r' | head -n 1)
+        case "$loc" in */tag/*) printf '%s' "${loc##*/tag/}" ;; *) return 1 ;; esac
+    }
 else
     err "need curl or wget to download Oro"
 fi
@@ -66,10 +85,14 @@ resolve_version() {
         printf '%s' "$ORO_VERSION"
         return
     fi
-    api="https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest"
-    tag=$(fetch "$api" | grep '"tag_name"' | head -n 1 | sed 's/.*"tag_name"[ ]*:[ ]*"\([^"]*\)".*/\1/')
-    [ -n "$tag" ] || err "could not determine the latest release from $api (set ORO_VERSION to pin one)"
-    printf '%s' "$tag"
+    tag=$(latest_tag) || tag=""
+    # Validate it looks like a version tag, so a redirect that went somewhere
+    # unexpected (a rate-limit page, a moved repo) is a clear error rather than a
+    # garbage version that 404s the download a step later.
+    case "$tag" in
+        v[0-9]* | [0-9]*) printf '%s' "$tag" ;;
+        *) err "could not resolve the latest release of ${GITHUB_OWNER}/${GITHUB_REPO} — pin one instead, e.g. ORO_VERSION=v0.2.0" ;;
+    esac
 }
 
 # --- sha256 of a file (portable) ---------------------------------------------

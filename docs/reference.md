@@ -138,12 +138,16 @@ curl -fsSL https://raw.githubusercontent.com/qrazil/oro/main/install.sh | sh
 
 ORO_VERSION=v0.2.0        pin a release instead of taking the latest
 ORO_INSTALL_DIR=/opt/bin  install here instead of ~/.local/bin
+ORO_BASE_URL=file:///…    fetch from a mirror or local dir (for testing)
 ```
 
 It supports Linux (musl) and macOS on `x86_64` and `aarch64`, uses `curl` or
 `wget`, never edits your shell rc files (it prints the `export PATH=…` line for
 you to add), and falls back to `/usr/local/bin` with `sudo` only when
-`~/.local/bin` is not writable.
+`~/.local/bin` is not writable. The releases are public, so nothing here
+authenticates: the archive is a plain download, and "latest" is resolved through
+the `/releases/latest` redirect (no token, and not subject to the GitHub API's
+per-IP rate limit). `ORO_VERSION` skips that resolution entirely.
 
 ### The repo's own scripts
 
